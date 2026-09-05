@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Molokh",
+    "slug": "molokh",
+    "scheme": "molokh",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": ["expo-router"],
+    "android": {
+      "package": "app.molokh.mobile"
+    },
+    "ios": {
+      "bundleIdentifier": "app.molokh.mobile",
+      "supportsTablet": true
+    },
+    "experiments": {
+      "typedRoutes": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    }
+  }
+}

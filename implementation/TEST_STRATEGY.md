@@ -1,0 +1,156 @@
+# MOLOKH MVP Test Strategy
+
+## 1. Objective
+
+Tests prove sporting fairness and recoverability, not only endpoint responses. The most important property is that no concurrency, retry, Appeal or administrative action can create an impossible status/history.
+
+## 2. Test layers
+
+| Layer | Purpose | Runtime |
+|---|---|---|
+| schema/contract | payloads, error codes, event versions | fast CI |
+| pure domain | transition guards, status function, deadlines | fast CI |
+| repository/integration | PostgreSQL constraints, locks, transactions | CI PostgreSQL |
+| workflow | multi-aggregate saga and timers | CI PostgreSQL + worker |
+| API | auth, permissions, idempotency, projections | CI |
+| universal client component | action/card states, responsive Web and accessibility | CI |
+| end-to-end | critical P0 vertical journeys | gated CI/staging |
+| operational rehearsal | incident/replay/backup/runbooks | pre-release |
+
+## 3. Machine conformance
+
+Generate a registry from `STATE_MACHINES.md` or a checked-in machine-readable derivative.
+
+Required gates:
+
+- every allowed transition has one handler/test/event schema;
+- no handler emits an unregistered event;
+- every non-allowed `(state,command)` returns stable rejection and changes nothing;
+- duplicate transition IDs/event names fail CI;
+- terminal states reject ordinary mutation;
+- same command with same idempotency key is observationally equivalent;
+- same idempotency key with changed payload is rejected.
+
+## 4. Status algebra properties
+
+Property/model tests enumerate role/stake/outcome combinations:
+
+- Champion changes only through TITLE, founding GENESIS, Succession or governed administrative/age event;
+- Ordinary beating Contender becomes Contender;
+- Champion beating Ordinary in OPEN changes no status;
+- TITLE Contender win swaps roles;
+- DRAW/NO_CONTEST never changes status;
+- no Competition has same User as Champion and Contender;
+- one replay and repeated replay yield the same projection hash;
+- compensation followed by replay yields the expected effective history without source deletion.
+
+## 5. Concurrency suite
+
+Mandatory database-level races:
+
+1. two pairs host-confirm one Slot;
+2. two workers activate one FIFO head;
+3. response command races its timeout;
+4. two Coaches attempt Result for one context;
+5. two status-changing Results become eligible simultaneously;
+6. Primary Admin transfer races another transfer;
+7. evidence upload intents race the 5-file/100MB limit;
+8. PlatformIncident compensation worker retries;
+9. Appeal/Integrity decision races ordinary finalizer;
+10. Block/Unmatch cleanup races optional Challenge acceptance.
+
+Expected result is not merely one HTTP success: exact aggregate/event/audit/outbox counts and final projection must be asserted.
+
+## 6. Time tests
+
+Use a controllable injected clock for domain tests and real PostgreSQL timestamps for integration assertions.
+
+Boundaries to test at `t-1ms`, `t`, `t+1ms`:
+
+- Like/archive/suppression expiry;
+- optional/mandatory/GENESIS response;
+- queue reconfirmation;
+- Slot selection and minimum booking notice;
+- scheduling + extension;
+- Session window, operational/no-show grace and actual Coach start;
+- Appeal/waiver;
+- birthday Youth→Adult;
+- phone-change hold;
+- evidence URL/retention;
+- exact PlatformIncident overlap.
+
+DST tests use Venue IANA timezone for display while business comparisons remain UTC.
+
+## 7. Permission and privacy tests
+
+For every privileged endpoint:
+
+- no role;
+- right role, wrong scope;
+- right scope, self-conflict;
+- revoked/expired grant;
+- active hold/restriction;
+- allowed actor;
+- audit reason missing/present.
+
+Privacy snapshots assert that public/member/participant/Coach/Admin/Central views expose different fields. Raw Safety evidence, reporter identity, birth date, phone, private invalidation reasons and old display names must never leak into public projections, push, logs or outbox payloads.
+
+## 8. Acceptance scenario execution
+
+`ACCEPTANCE_SCENARIOS.md` is the release catalogue. Tag each automated test with exact `AC-###`.
+
+- P0: required before MVP release;
+- P1: required before broad rollout unless explicitly accepted for pilot;
+- P2: schema/feature-flag contract only.
+
+Create a generated coverage report:
+
+```text
+AC ID → test file → status → last run → environment
+```
+
+No scenario may be marked covered only by a unit test when it asserts transaction/concurrency/privacy behavior.
+
+## 9. Client UX tests
+
+Golden component states for each action card:
+
+- who acts next;
+- deadline and timezone copy;
+- pending/expired/terminal;
+- irreversible consequence preview;
+- BLOCK service-only mode;
+- provisional/review marker;
+- READY_FOR_COACH vs actual Session;
+- offline/reconnect/refetch;
+- duplicate tap/idempotent response.
+
+Accessibility gates: screen-reader labels, dynamic text, contrast, touch size, focus order and non-color-only status communication.
+
+## 10. Failure injection
+
+In staging/CI simulate:
+
+- notification provider down after commit;
+- worker crash after event before delivery receipt;
+- database serialization/deadlock retry;
+- object scan timeout/quarantine;
+- API retry with lost response;
+- scheduler delayed beyond deadline;
+- projection table dropped and rebuilt;
+- PlatformIncident retroactively confirmed after timeout;
+- stale mobile client submits prior version.
+
+Business state must remain deterministic and recoverable.
+
+## 11. Release gates
+
+- all P0 mapped and passing;
+- no missing transition/event/error schema;
+- zero forbidden direct status/Result mutation paths;
+- concurrency suite green repeatedly;
+- replay hash verified from clean projection;
+- no high-severity security/privacy findings;
+- timer/outbox/case dashboards and alerts tested;
+- backup restore and projection rebuild rehearsed;
+- Central can resolve every stuck process without database editing.

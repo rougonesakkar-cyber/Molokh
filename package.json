@@ -1,0 +1,25 @@
+{
+  "name": "molokh",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "dev:api": "pnpm --filter @molokh/api dev",
+    "dev:client": "pnpm --filter @molokh/client start",
+    "dev:worker": "pnpm --filter @molokh/worker dev",
+    "test": "pnpm -r --if-present test",
+    "test:db": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/test-db.ps1",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "eas-cli": "23.2.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

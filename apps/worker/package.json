@@ -1,0 +1,21 @@
+{
+  "name": "@molokh/worker",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@molokh/db": "workspace:*",
+    "graphile-worker": "0.17.3",
+    "pino": "10.3.1"
+  },
+  "devDependencies": {
+    "tsx": "4.23.13"
+  }
+}
