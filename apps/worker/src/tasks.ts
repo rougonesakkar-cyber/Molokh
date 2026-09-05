@@ -1,3 +1,4 @@
+import { parseTimerCommandPayload, type TimerCommandPayload } from '@molokh/core';
 import type { TaskList } from 'graphile-worker';
 
 export interface OutboxJobPayload {
@@ -10,6 +11,7 @@ export interface OutboxJobPayload {
 export interface TaskDependencies {
   readonly onRuntimeProbe: (message: string) => void;
   readonly onOutboxEvent: (message: OutboxJobPayload) => Promise<void> | void;
+  readonly onTimer: (payload: TimerCommandPayload) => Promise<void> | void;
 }
 
 function parseOutboxJobPayload(payload: unknown): OutboxJobPayload {
@@ -41,5 +43,6 @@ export function createTaskList(dependencies: TaskDependencies): TaskList {
     },
     deliver_outbox_event: async (payload) =>
       dependencies.onOutboxEvent(parseOutboxJobPayload(payload)),
+    process_timer: async (payload) => dependencies.onTimer(parseTimerCommandPayload(payload)),
   };
 }

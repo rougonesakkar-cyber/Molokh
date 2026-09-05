@@ -68,4 +68,4 @@ See [technical spike status](implementation/TECHNICAL_SPIKE_STATUS.md) for envir
 
 ## Next executable action
 
-Finish the remaining M1 timer, notification projection and observability seams, then implement Identity/Community prerequisites and deliver the ordinary Training vertical slice before the Competition slice. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+Finish the remaining M1 notification projection and observability seams, then implement Identity/Community prerequisites and deliver the ordinary Training vertical slice before the Competition slice. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

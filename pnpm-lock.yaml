@@ -103,6 +103,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@molokh/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@molokh/db':
         specifier: workspace:*
         version: link:../../packages/db

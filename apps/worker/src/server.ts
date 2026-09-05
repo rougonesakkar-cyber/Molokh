@@ -24,6 +24,9 @@ const logger = pino({ name: 'molokh-worker' });
 const database = createDatabase(connectionString);
 const taskList = createTaskList({
   onRuntimeProbe: (message) => logger.info({ message }, 'runtime probe'),
+  onTimer: async (payload) => {
+    throw new Error(`No product timer handler registered for ${payload.commandType}`);
+  },
   onOutboxEvent: async (message) => {
     const claimed = await claimInboxEvent(database, `outbox:${message.topic}`, message.eventId);
     if (!claimed) {

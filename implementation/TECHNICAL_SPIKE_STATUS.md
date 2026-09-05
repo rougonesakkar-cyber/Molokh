@@ -1,6 +1,6 @@
 # Technical Spike Status
 
-**Date:** 2026-09-04  
+**Date:** 2026-09-05
 **Scope:** approved stack baseline, not a product vertical slice.
 
 ## Gates
@@ -16,9 +16,10 @@
 | PostgreSQL foundation | migration applies on PostgreSQL 18 | Pass |
 | Critical command transaction | concurrent commit/replay/conflict/rollback plus event/audit/outbox/inbox | Pass |
 | Outbox delivery | concurrent lease, retry and Graphile enqueue/deduplication | Pass |
+| Timer guard foundation | due boundary, early reschedule and diagnostic-only stale path | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
-| Source control | local repository supports isolated branches | Partial: local `main` initialized; baseline commit and remote remain |
+| Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
 
 ## Installed host toolchain
 
@@ -73,9 +74,10 @@ The critical-command primitive now provides:
 - one transaction for aggregate mutation, domain event, audit, outbox and saved response;
 - exact replay, changed-payload rejection, stale-version rejection and Inbox consumer deduplication;
 - leased `SKIP LOCKED` outbox claim, bounded retry and Graphile job-key deduplication;
+- canonical timer payload and deterministic `NOT_DUE`, `STALE` or `DUE` decision;
 - a dedicated `molokh_test` database gate that never truncates the development database.
 
-Remaining M1 work is timer stale-state behavior, notification projection and structured request/trace context.
+Remaining M1 work is notification projection and structured request/trace context. Product-specific timer handlers are added with their owning domain modules.
 
 ## Boundary
 
@@ -87,7 +89,7 @@ Verified on 2026-09-04:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- thirteen non-database automated tests pass across Core, DB, API, worker and testkit;
+- eighteen non-database automated tests pass across Core, DB, API, worker and testkit;
 - three additional PostgreSQL transaction/outbox scenarios pass through the dedicated database gate;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/`, `/_sitemap` and `/+not-found`;

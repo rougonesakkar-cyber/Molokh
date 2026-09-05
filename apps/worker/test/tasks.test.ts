@@ -5,7 +5,11 @@ import { createTaskList } from '../src/tasks.js';
 describe('worker task registry', () => {
   it('exposes an executable runtime probe without infrastructure', async () => {
     const onRuntimeProbe = vi.fn();
-    const tasks = createTaskList({ onRuntimeProbe, onOutboxEvent: vi.fn() });
+    const tasks = createTaskList({
+      onRuntimeProbe,
+      onOutboxEvent: vi.fn(),
+      onTimer: vi.fn(),
+    });
 
     await tasks.runtime_probe?.({ message: 'ready' }, {} as never);
 
@@ -14,7 +18,11 @@ describe('worker task registry', () => {
 
   it('validates and forwards an outbox event', async () => {
     const onOutboxEvent = vi.fn();
-    const tasks = createTaskList({ onRuntimeProbe: vi.fn(), onOutboxEvent });
+    const tasks = createTaskList({
+      onRuntimeProbe: vi.fn(),
+      onOutboxEvent,
+      onTimer: vi.fn(),
+    });
     const payload = {
       messageId: 'message-1',
       eventId: 'event-1',
