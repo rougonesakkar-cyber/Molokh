@@ -11,9 +11,13 @@ import type {
   IdentityEffectIds,
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
+  AppointGymAdminPayload,
+  ChangePrimaryAdminPayload,
   StartVerificationPayload,
   InviteCoachPayload,
   RoleGrantEffectIds,
+  PrimaryAdminEffectIds,
+  PrimaryAdminProjection,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -424,11 +428,13 @@ describe('runtime contract', () => {
     });
   });
 
-  it('invites a verified Coach and lets only that account accept', async () => {
+  it('executes scoped Coach and Central Venue role commands', async () => {
     const centralUserId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const communityId = '0199a1b2-1234-7000-8000-000000000703';
     const grantId = '0199a1b2-1234-7000-8000-000000000704';
+    const venueId = '0199a1b2-1234-7000-8000-000000000707';
+    const adminGrantId = '0199a1b2-1234-7000-8000-000000000708';
     const centralToken = 'molokh-role-central-test-token';
     const coachToken = 'molokh-role-coach-test-token';
     const pending: RoleGrantProjection = {
@@ -450,6 +456,26 @@ describe('runtime contract', () => {
       expiresAt: null,
       version: 2,
     };
+    const admin: RoleGrantProjection = {
+      grantId: adminGrantId,
+      userId: coachUserId,
+      role: 'GYM_ADMIN',
+      scopeType: 'VENUE',
+      scopeId: venueId,
+      state: 'ACTIVE',
+      authorizedBy: centralUserId,
+      authorizedAt: '2026-09-06T12:10:00.000Z',
+      expiresAt: null,
+      version: 1,
+    };
+    const primary: PrimaryAdminProjection = {
+      venueId,
+      primaryGrantId: '0199a1b2-1234-7000-8000-000000000709',
+      primaryAdminUserId: coachUserId,
+      previousPrimaryAdminUserId: null,
+      change: 'APPOINTED',
+      version: 1,
+    };
     const inviteCoach = vi.fn(async (
       _command: CommandEnvelope<InviteCoachPayload>,
       _ids: RoleGrantEffectIds,
@@ -470,6 +496,26 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     }));
+    const appointGymAdmin = vi.fn(async (
+      _command: CommandEnvelope<AppointGymAdminPayload>,
+      _ids: RoleGrantEffectIds,
+    ) => ({
+      responseStatus: 201,
+      response: admin,
+      eventId: '0199a1b2-1234-7000-8000-000000000710',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const changePrimaryAdmin = vi.fn(async (
+      _command: CommandEnvelope<ChangePrimaryAdminPayload>,
+      _ids: PrimaryAdminEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: primary,
+      eventId: '0199a1b2-1234-7000-8000-000000000711',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
     const app = await buildApp({
       roles: {
         operatorAuth: new StaticBearerAuthAdapter(centralToken, centralUserId),
@@ -477,6 +523,13 @@ describe('runtime contract', () => {
         inviteCoach,
         acceptCoachInvite,
         listPendingCoachInvites: async () => [pending],
+        appointGymAdmin,
+        changePrimaryAdmin,
+        readVenueRoleSummary: async () => ({
+          venueId,
+          primaryAdminVersion: 0,
+          activeGrants: [admin],
+        }),
       },
     });
     apps.push(app);
@@ -554,5 +607,55 @@ describe('runtime contract', () => {
     });
     expect(unsupported.statusCode).toBe(415);
     expect(unsupported.json()).toMatchObject({ code: 'UNSUPPORTED_MEDIA_TYPE' });
+
+    const appointed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/venues/${venueId}/admins`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'admin-appoint-test-1',
+      },
+      payload: { userId: coachUserId, reasonCode: 'PILOT_ADMIN' },
+    });
+    expect(appointed.statusCode).toBe(201);
+    expect(appointed.json()).toMatchObject({ data: { role: 'GYM_ADMIN' } });
+    expect(appointGymAdmin.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'APPOINT_ADMIN',
+      aggregateType: 'RoleGrant',
+      expectedVersion: 0,
+      payload: { userId: coachUserId, venueId, reasonCode: 'PILOT_ADMIN' },
+    });
+
+    const summary = await app.inject({
+      method: 'GET',
+      url: `/api/v1/central/venues/${venueId}/roles`,
+      headers: { authorization: `Bearer ${centralToken}` },
+    });
+    expect(summary.statusCode).toBe(200);
+    expect(summary.json()).toMatchObject({
+      data: { venueId, primaryAdminVersion: 0, activeGrants: [{ role: 'GYM_ADMIN' }] },
+    });
+
+    const primaryChanged = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/central/venues/${venueId}/primary-admin`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'primary-appoint-test-1',
+        'if-match': '0',
+      },
+      payload: { userId: coachUserId, reasonCode: 'PILOT_PRIMARY' },
+    });
+    expect(primaryChanged.statusCode).toBe(200);
+    expect(primaryChanged.json()).toMatchObject({
+      data: { change: 'APPOINTED', primaryAdminUserId: coachUserId, version: 1 },
+    });
+    expect(changePrimaryAdmin.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'SET_PRIMARY_ADMIN',
+      aggregateType: 'VenuePrimaryAdmin',
+      aggregateId: venueId,
+      expectedVersion: 0,
+      payload: { userId: coachUserId, venueId, reasonCode: 'PILOT_PRIMARY' },
+    });
   });
 });

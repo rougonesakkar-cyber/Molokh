@@ -2,8 +2,10 @@ import type { CommandEnvelope } from '@molokh/core';
 import {
   activateUser,
   acceptCoachInvite,
+  appointGymAdmin,
   approveAccountVerification,
   changeDisplayName,
+  changePrimaryAdmin,
   createDatabase,
   ensureLocalPilotCommunity,
   inviteCoach,
@@ -11,6 +13,7 @@ import {
   listPendingVerifications,
   readCommunityContext,
   readIdentityProjection,
+  readVenueRoleSummary,
   runMigrations,
   startAccountVerification,
 } from '@molokh/db';
@@ -40,11 +43,14 @@ const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
 const localCommunityId = '0199a1b2-1234-7000-8000-000000000502';
 const localCentralUserId = '0199a1b2-1234-7000-8000-000000000506';
 const localCoachUserId = '0199a1b2-1234-7000-8000-000000000508';
+const localAdminUserId = '0199a1b2-1234-7000-8000-000000000509';
 const localToken = process.env.LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 const localCentralToken =
   process.env.LOCAL_CENTRAL_AUTH_TOKEN ?? 'molokh-local-central-token';
 const localCoachToken =
   process.env.LOCAL_COACH_AUTH_TOKEN ?? 'molokh-local-coach-token';
+const localAdminToken =
+  process.env.LOCAL_ADMIN_AUTH_TOKEN ?? 'molokh-local-admin-token';
 const localActivation: CommandEnvelope<{
   readonly userId: string;
   readonly phoneE164: string;
@@ -133,6 +139,32 @@ const localCoachActivation: typeof localActivation = {
   },
 };
 
+const localAdminActivation: typeof localActivation = {
+  commandId: '0199a1b2-1234-7000-8000-000000000535',
+  commandType: 'ACTIVATE_ACCOUNT',
+  idempotencyKey: 'local-development-admin-v1',
+  actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+  aggregateType: 'User',
+  aggregateId: localAdminUserId,
+  expectedVersion: 0,
+  correlationId: '0199a1b2-1234-7000-8000-000000000536',
+  causationId: null,
+  requestId: '0199a1b2-1234-7000-8000-000000000537',
+  source: 'scheduler',
+  payloadVersion: 1,
+  payload: {
+    userId: localAdminUserId,
+    phoneE164: '+79990000509',
+    phoneVerifiedAt: '2026-09-05T09:00:00.000Z',
+    birthDate: '1989-08-20',
+    displayName: 'Пилотный администратор',
+    locale: 'ru-RU',
+    primarySport: 'BOXING',
+    secondarySport: null,
+    discoveryRadiusKm: 15,
+  },
+};
+
 await runMigrations(connectionString);
 const database = createDatabase(connectionString);
 const existingLocalIdentity = await readIdentityProjection(database, localUserId);
@@ -159,6 +191,14 @@ if (!existingCoachIdentity) {
     outboxMessageId: '0199a1b2-1234-7000-8000-000000000521',
   });
 }
+const existingAdminIdentity = await readIdentityProjection(database, localAdminUserId);
+if (!existingAdminIdentity) {
+  await activateUser(database, localAdminActivation, {
+    eventId: '0199a1b2-1234-7000-8000-000000000538',
+    auditId: '0199a1b2-1234-7000-8000-000000000539',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000540',
+  });
+}
 await ensureLocalPilotCommunity(database, {
   venueId: localVenueId,
   venueConfigurationId: '0199a1b2-1234-7000-8000-000000000503',
@@ -178,79 +218,151 @@ await ensureLocalPilotCommunity(database, {
   occurredAt: '2026-09-05T09:00:00.000Z',
 });
 
-const coachVerificationId = '0199a1b2-1234-7000-8000-000000000522';
-const coachIdentity = await readIdentityProjection(database, localCoachUserId);
-if (coachIdentity?.accountVerificationState === 'NOT_STARTED') {
-  await startAccountVerification(
-    database,
-    {
-      commandId: '0199a1b2-1234-7000-8000-000000000523',
-      commandType: 'START_VERIFICATION',
-      idempotencyKey: 'local-development-coach-verification-start-v1',
-      actor: {
-        type: 'USER',
-        id: localCoachUserId,
-        roles: ['ATHLETE'],
-        scopeIds: [],
-      },
-      aggregateType: 'AccountVerification',
-      aggregateId: coachVerificationId,
-      expectedVersion: 0,
-      correlationId: '0199a1b2-1234-7000-8000-000000000524',
-      causationId: null,
-      requestId: '0199a1b2-1234-7000-8000-000000000525',
-      source: 'api',
-      payloadVersion: 1,
-      payload: {
-        userId: localCoachUserId,
-        moderationChecklistVersion: 'identity-mvp-v1',
-      },
-    },
-    {
-      eventId: '0199a1b2-1234-7000-8000-000000000526',
-      auditId: '0199a1b2-1234-7000-8000-000000000527',
-      outboxMessageId: '0199a1b2-1234-7000-8000-000000000528',
-    },
-  );
+interface LocalVerificationFixture {
+  readonly userId: string;
+  readonly verificationId: string;
+  readonly idempotencyPrefix: string;
+  readonly start: {
+    readonly commandId: string;
+    readonly correlationId: string;
+    readonly requestId: string;
+    readonly eventId: string;
+    readonly auditId: string;
+    readonly outboxMessageId: string;
+  };
+  readonly approval: {
+    readonly commandId: string;
+    readonly correlationId: string;
+    readonly requestId: string;
+    readonly eventId: string;
+    readonly auditId: string;
+    readonly outboxMessageId: string;
+  };
 }
-const pendingCoachIdentity = await readIdentityProjection(database, localCoachUserId);
-if (pendingCoachIdentity?.accountVerificationState === 'PENDING') {
-  await approveAccountVerification(
-    database,
-    {
-      commandId: '0199a1b2-1234-7000-8000-000000000529',
-      commandType: 'APPROVE_VERIFICATION',
-      idempotencyKey: 'local-development-coach-verification-approve-v1',
-      actor: {
-        type: 'USER',
-        id: localCentralUserId,
-        roles: ['CENTRAL_ADMIN'],
-        scopeIds: [],
+
+const ensureLocalVerifiedUser = async (fixture: LocalVerificationFixture) => {
+  let identity = await readIdentityProjection(database, fixture.userId);
+  if (identity?.accountVerificationState === 'NOT_STARTED') {
+    await startAccountVerification(
+      database,
+      {
+        commandId: fixture.start.commandId,
+        commandType: 'START_VERIFICATION',
+        idempotencyKey: `${fixture.idempotencyPrefix}-start-v1`,
+        actor: {
+          type: 'USER',
+          id: fixture.userId,
+          roles: ['ATHLETE'],
+          scopeIds: [],
+        },
+        aggregateType: 'AccountVerification',
+        aggregateId: fixture.verificationId,
+        expectedVersion: 0,
+        correlationId: fixture.start.correlationId,
+        causationId: null,
+        requestId: fixture.start.requestId,
+        source: 'api',
+        payloadVersion: 1,
+        payload: {
+          userId: fixture.userId,
+          moderationChecklistVersion: 'identity-mvp-v1',
+        },
       },
-      aggregateType: 'AccountVerification',
-      aggregateId: coachVerificationId,
-      expectedVersion: 1,
-      correlationId: '0199a1b2-1234-7000-8000-000000000530',
-      causationId: '0199a1b2-1234-7000-8000-000000000526',
-      requestId: '0199a1b2-1234-7000-8000-000000000531',
-      source: 'admin',
-      payloadVersion: 1,
-      payload: {
-        userId: localCoachUserId,
-        moderationChecklistVersion: 'identity-mvp-v1',
+      {
+        eventId: fixture.start.eventId,
+        auditId: fixture.start.auditId,
+        outboxMessageId: fixture.start.outboxMessageId,
       },
-    },
-    {
-      eventId: '0199a1b2-1234-7000-8000-000000000532',
-      auditId: '0199a1b2-1234-7000-8000-000000000533',
-      outboxMessageId: '0199a1b2-1234-7000-8000-000000000534',
-    },
-  );
-}
+    );
+    identity = await readIdentityProjection(database, fixture.userId);
+  }
+  if (identity?.accountVerificationState === 'PENDING') {
+    await approveAccountVerification(
+      database,
+      {
+        commandId: fixture.approval.commandId,
+        commandType: 'APPROVE_VERIFICATION',
+        idempotencyKey: `${fixture.idempotencyPrefix}-approve-v1`,
+        actor: {
+          type: 'USER',
+          id: localCentralUserId,
+          roles: ['CENTRAL_ADMIN'],
+          scopeIds: [],
+        },
+        aggregateType: 'AccountVerification',
+        aggregateId: fixture.verificationId,
+        expectedVersion: 1,
+        correlationId: fixture.approval.correlationId,
+        causationId: fixture.start.eventId,
+        requestId: fixture.approval.requestId,
+        source: 'admin',
+        payloadVersion: 1,
+        payload: {
+          userId: fixture.userId,
+          moderationChecklistVersion: 'identity-mvp-v1',
+        },
+      },
+      {
+        eventId: fixture.approval.eventId,
+        auditId: fixture.approval.auditId,
+        outboxMessageId: fixture.approval.outboxMessageId,
+      },
+    );
+    identity = await readIdentityProjection(database, fixture.userId);
+  }
+  if (identity?.accountVerificationState !== 'VERIFIED') {
+    throw new Error(`Local user ${fixture.userId} must be VERIFIED`);
+  }
+};
+
+await ensureLocalVerifiedUser({
+  userId: localCoachUserId,
+  verificationId: '0199a1b2-1234-7000-8000-000000000522',
+  idempotencyPrefix: 'local-development-coach-verification',
+  start: {
+    commandId: '0199a1b2-1234-7000-8000-000000000523',
+    correlationId: '0199a1b2-1234-7000-8000-000000000524',
+    requestId: '0199a1b2-1234-7000-8000-000000000525',
+    eventId: '0199a1b2-1234-7000-8000-000000000526',
+    auditId: '0199a1b2-1234-7000-8000-000000000527',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000528',
+  },
+  approval: {
+    commandId: '0199a1b2-1234-7000-8000-000000000529',
+    correlationId: '0199a1b2-1234-7000-8000-000000000530',
+    requestId: '0199a1b2-1234-7000-8000-000000000531',
+    eventId: '0199a1b2-1234-7000-8000-000000000532',
+    auditId: '0199a1b2-1234-7000-8000-000000000533',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000534',
+  },
+});
+
+await ensureLocalVerifiedUser({
+  userId: localAdminUserId,
+  verificationId: '0199a1b2-1234-7000-8000-000000000541',
+  idempotencyPrefix: 'local-development-admin-verification',
+  start: {
+    commandId: '0199a1b2-1234-7000-8000-000000000542',
+    correlationId: '0199a1b2-1234-7000-8000-000000000543',
+    requestId: '0199a1b2-1234-7000-8000-000000000544',
+    eventId: '0199a1b2-1234-7000-8000-000000000545',
+    auditId: '0199a1b2-1234-7000-8000-000000000546',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000547',
+  },
+  approval: {
+    commandId: '0199a1b2-1234-7000-8000-000000000548',
+    correlationId: '0199a1b2-1234-7000-8000-000000000549',
+    requestId: '0199a1b2-1234-7000-8000-000000000550',
+    eventId: '0199a1b2-1234-7000-8000-000000000551',
+    auditId: '0199a1b2-1234-7000-8000-000000000552',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000553',
+  },
+});
 
 const localAuth = new StaticBearerAuthRegistryAdapter([
   { token: localToken, userId: localUserId },
   { token: localCoachToken, userId: localCoachUserId },
+  { token: localAdminToken, userId: localAdminUserId },
 ]);
 const localCentralAuth = new StaticBearerAuthAdapter(
   localCentralToken,
@@ -277,6 +389,11 @@ const app = await buildApp({
       acceptCoachInvite(database, command, ids),
     listPendingCoachInvites: (userId) =>
       listPendingCoachInvites(database, userId),
+    appointGymAdmin: (command, ids) => appointGymAdmin(database, command, ids),
+    changePrimaryAdmin: (command, ids) =>
+      changePrimaryAdmin(database, command, ids),
+    readVenueRoleSummary: (centralUserId, venueId) =>
+      readVenueRoleSummary(database, centralUserId, venueId),
   },
   verification: {
     athleteAuth: localAuth,

@@ -111,8 +111,9 @@ Chat API returns structured `action_card` objects. Clients never parse human mes
 | POST | `/memberships/{id}/reject` | neutral + internal reason |
 | POST | `/memberships/{id}/leave-preview` | exact status/obligation consequence token |
 | POST | `/memberships/{id}/leave-confirm` | consume preview token |
-| POST | `/venues/{id}/admins` | Central appointment |
-| POST | `/venues/{id}/primary-admin-transfer` | Central-only atomic transfer |
+| POST | `/central/venues/{venue_id}/admins` | Central appoints a verified Venue-scoped Gym Admin |
+| GET | `/central/venues/{venue_id}/roles` | Central reads active Gym/Primary grants and Primary version |
+| PUT | `/central/venues/{venue_id}/primary-admin` | Central-only atomic first appointment or transfer |
 | POST | `/communities/{id}/configuration-versions` | Admin within ranges |
 
 ## 7. Scheduling and Training

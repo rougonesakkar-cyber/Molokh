@@ -138,3 +138,49 @@ export function acceptCoachInviteState(
   }
   return 'ACTIVE';
 }
+
+export type VenueState = 'PENDING_VERIFICATION' | 'ACTIVE' | 'PAUSED' | 'CLOSED';
+
+export interface AppointGymAdminPolicyInput {
+  readonly actorIsCentral: boolean;
+  readonly venueState: VenueState;
+  readonly targetAccountState: AccountState;
+  readonly targetVerificationState: AccountVerificationState;
+}
+
+export function appointGymAdminState(
+  input: AppointGymAdminPolicyInput,
+): 'ACTIVE' {
+  if (!input.actorIsCentral) throw new RoleGrantPermissionDeniedError();
+  if (input.venueState !== 'ACTIVE') {
+    throw new InvalidRoleGrantTransitionError('NONE');
+  }
+  if (input.targetAccountState !== 'ACTIVE') {
+    throw new RoleGrantValidationError('targetAccountState');
+  }
+  if (input.targetVerificationState !== 'VERIFIED') {
+    throw new RoleGrantValidationError('targetVerificationState');
+  }
+  return 'ACTIVE';
+}
+
+export interface ChangePrimaryAdminPolicyInput extends AppointGymAdminPolicyInput {
+  readonly targetHasActiveGymAdmin: boolean;
+  readonly currentPrimaryAdminUserId: string | null;
+  readonly targetUserId: string;
+}
+
+export type PrimaryAdminChange = 'APPOINTED' | 'TRANSFERRED';
+
+export function changePrimaryAdminState(
+  input: ChangePrimaryAdminPolicyInput,
+): PrimaryAdminChange {
+  appointGymAdminState(input);
+  if (!input.targetHasActiveGymAdmin) {
+    throw new RoleGrantValidationError('targetGymAdminGrant');
+  }
+  if (input.currentPrimaryAdminUserId === input.targetUserId) {
+    throw new InvalidRoleGrantTransitionError('ACTIVE');
+  }
+  return input.currentPrimaryAdminUserId ? 'TRANSFERRED' : 'APPOINTED';
+}

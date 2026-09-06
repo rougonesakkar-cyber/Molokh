@@ -5,18 +5,31 @@ import {
 } from '@molokh/core';
 import {
   ApiErrorSchema,
+  AppointGymAdminBodySchema,
+  ChangePrimaryAdminBodySchema,
   CoachInviteBodySchema,
   PendingCoachInviteListResponseSchema,
   RoleGrantCommandResponseSchema,
+  PrimaryAdminCommandResponseSchema,
+  VenueRoleSummaryResponseSchema,
+  type AppointGymAdminBody,
+  type ChangePrimaryAdminBody,
   type CoachInviteBody,
   type PendingCoachInviteListResponse,
   type RoleGrantCommandResponse,
+  type PrimaryAdminCommandResponse,
+  type VenueRoleSummaryResponse,
 } from '@molokh/contracts';
 import type {
   AcceptCoachInvitePayload,
+  AppointGymAdminPayload,
+  ChangePrimaryAdminPayload,
   ExecutedCommand,
   InviteCoachPayload,
   RoleGrantEffectIds,
+  PrimaryAdminEffectIds,
+  PrimaryAdminProjection,
+  VenueRoleSummaryProjection,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -55,6 +68,18 @@ export interface RoleRouteDependencies {
   readonly listPendingCoachInvites: (
     userId: string,
   ) => Promise<readonly RoleGrantProjection[]>;
+  readonly appointGymAdmin: (
+    command: CommandEnvelope<AppointGymAdminPayload>,
+    ids: RoleGrantEffectIds,
+  ) => Promise<ExecutedCommand<RoleGrantProjection>>;
+  readonly changePrimaryAdmin: (
+    command: CommandEnvelope<ChangePrimaryAdminPayload>,
+    ids: PrimaryAdminEffectIds,
+  ) => Promise<ExecutedCommand<PrimaryAdminProjection>>;
+  readonly readVenueRoleSummary: (
+    centralUserId: string,
+    venueId: string,
+  ) => Promise<VenueRoleSummaryProjection | null>;
 }
 
 function unauthorized(request: FastifyRequest) {
@@ -71,13 +96,31 @@ function requiredIdempotencyKey(value: string | undefined): string {
   return key;
 }
 
-function expectedVersion(value: string | undefined): number {
+function expectedVersion(value: string | undefined, minimum = 1): number {
   const match = value?.trim().match(/^"?(\d+)"?$/);
   const version = match?.[1] ? Number(match[1]) : Number.NaN;
-  if (!Number.isSafeInteger(version) || version < 1) {
+  if (!Number.isSafeInteger(version) || version < minimum) {
     throw new InvalidCommandEnvelopeError('If-Match');
   }
   return version;
+}
+
+function primaryEffectIds(
+  actorId: string,
+  idempotencyKey: string,
+): PrimaryAdminEffectIds {
+  return {
+    eventId: newUuidV7(),
+    auditId: newUuidV7(),
+    outboxMessageId: newUuidV7(),
+    primaryGrantId: idempotentResourceId(
+      'PrimaryAdminRoleGrant',
+      actorId,
+      idempotencyKey,
+    ),
+    targetNotificationId: newUuidV7(),
+    previousNotificationId: newUuidV7(),
+  };
 }
 
 function effectIds(): RoleGrantEffectIds {
@@ -252,6 +295,182 @@ export async function registerRoleRoutes(
       };
       const executed = await dependencies.acceptCoachInvite(command, effectIds());
       return commandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Body: AppointGymAdminBody;
+    Headers: RoleHeaders;
+    Params: { readonly venueId: string };
+  }>(
+    '/api/v1/central/venues/:venueId/admins',
+    {
+      schema: {
+        operationId: 'appointVenueGymAdmin',
+        params: Type.Object({ venueId: Type.String({ format: 'uuid' }) }),
+        body: AppointGymAdminBodySchema,
+        response: {
+          201: RoleGrantCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const idempotencyKey = requiredIdempotencyKey(
+        request.headers['idempotency-key'],
+      );
+      const grantId = idempotentResourceId(
+        'GymAdminRoleGrant',
+        authenticated.userId,
+        idempotencyKey,
+      );
+      const command: CommandEnvelope<AppointGymAdminPayload> = {
+        commandId: newUuidV7(),
+        commandType: 'APPOINT_ADMIN',
+        idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+        aggregateType: 'RoleGrant',
+        aggregateId: grantId,
+        expectedVersion: 0,
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'admin',
+        payloadVersion: 1,
+        payload: {
+          userId: request.body.userId,
+          venueId: request.params.venueId,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.appointGymAdmin(command, effectIds());
+      await reply.status(201).send(commandResponse(executed, context.requestId));
+    },
+  );
+
+  app.get<{ Headers: RoleHeaders; Params: { readonly venueId: string } }>(
+    '/api/v1/central/venues/:venueId/roles',
+    {
+      schema: {
+        operationId: 'readVenueRoleSummary',
+        params: Type.Object({ venueId: Type.String({ format: 'uuid' }) }),
+        response: {
+          200: VenueRoleSummaryResponseSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<VenueRoleSummaryResponse | undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const summary = await dependencies.readVenueRoleSummary(
+        authenticated.userId,
+        request.params.venueId,
+      );
+      if (!summary) {
+        await reply.status(404).send({
+          code: 'VENUE_NOT_FOUND',
+          message: 'Venue was not found',
+          requestId: context.requestId,
+        });
+        return;
+      }
+      return {
+        data: {
+          ...summary,
+          activeGrants: summary.activeGrants.map((grant) => ({ ...grant })),
+        },
+        meta: { requestId: context.requestId },
+      };
+    },
+  );
+
+  app.put<{
+    Body: ChangePrimaryAdminBody;
+    Headers: RoleHeaders;
+    Params: { readonly venueId: string };
+  }>(
+    '/api/v1/central/venues/:venueId/primary-admin',
+    {
+      schema: {
+        operationId: 'changeVenuePrimaryAdmin',
+        params: Type.Object({ venueId: Type.String({ format: 'uuid' }) }),
+        body: ChangePrimaryAdminBodySchema,
+        response: {
+          200: PrimaryAdminCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<PrimaryAdminCommandResponse | undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const idempotencyKey = requiredIdempotencyKey(
+        request.headers['idempotency-key'],
+      );
+      const command: CommandEnvelope<ChangePrimaryAdminPayload> = {
+        commandId: newUuidV7(),
+        commandType: 'SET_PRIMARY_ADMIN',
+        idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+        aggregateType: 'VenuePrimaryAdmin',
+        aggregateId: request.params.venueId,
+        expectedVersion: expectedVersion(request.headers['if-match'], 0),
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'admin',
+        payloadVersion: 1,
+        payload: {
+          userId: request.body.userId,
+          venueId: request.params.venueId,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.changePrimaryAdmin(
+        command,
+        primaryEffectIds(authenticated.userId, idempotencyKey),
+      );
+      return {
+        data: { ...executed.response },
+        meta: {
+          requestId: context.requestId,
+          eventId: executed.eventId,
+          replayed: executed.replayed,
+        },
+      };
     },
   );
 }

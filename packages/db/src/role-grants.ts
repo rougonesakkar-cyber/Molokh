@@ -3,6 +3,8 @@ import {
   RoleGrantPermissionDeniedError,
   RoleGrantValidationError,
   acceptCoachInviteState,
+  appointGymAdminState,
+  changePrimaryAdminState,
   inviteCoachState,
   normalizeRoleReasonCode,
   type CommandEnvelope,
@@ -35,6 +37,38 @@ export interface AcceptCoachInvitePayload {
   readonly userId: string;
 }
 
+export interface AppointGymAdminPayload {
+  readonly userId: string;
+  readonly venueId: string;
+  readonly reasonCode: string;
+}
+
+export interface ChangePrimaryAdminPayload extends AppointGymAdminPayload {}
+
+export interface PrimaryAdminEffectIds {
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
+  readonly primaryGrantId: string;
+  readonly targetNotificationId: string;
+  readonly previousNotificationId: string;
+}
+
+export interface PrimaryAdminProjection {
+  readonly venueId: string;
+  readonly primaryGrantId: string;
+  readonly primaryAdminUserId: string;
+  readonly previousPrimaryAdminUserId: string | null;
+  readonly change: 'APPOINTED' | 'TRANSFERRED';
+  readonly version: number;
+}
+
+export interface VenueRoleSummaryProjection {
+  readonly venueId: string;
+  readonly primaryAdminVersion: number;
+  readonly activeGrants: readonly RoleGrantProjection[];
+}
+
 export class RoleGrantNotFoundError extends Error {
   readonly code = 'ROLE_GRANT_NOT_FOUND';
 
@@ -60,6 +94,18 @@ interface RoleGrantRow {
 interface CoachInviteContextRow {
   readonly community_state: 'ACTIVE' | 'PAUSED' | 'CLOSING' | 'CLOSED';
   readonly venue_id: string;
+  readonly target_account_state: 'ACTIVE' | 'RESTRICTED' | 'CLOSED';
+  readonly target_verification_state:
+    | 'NOT_STARTED'
+    | 'PENDING'
+    | 'VERIFIED'
+    | 'REJECTED'
+    | 'EXPIRED'
+    | 'REVOKED';
+}
+
+interface VenueTargetContextRow {
+  readonly venue_state: 'PENDING_VERIFICATION' | 'ACTIVE' | 'PAUSED' | 'CLOSED';
   readonly target_account_state: 'ACTIVE' | 'RESTRICTED' | 'CLOSED';
   readonly target_verification_state:
     | 'NOT_STARTED'
@@ -160,6 +206,58 @@ async function actorControlsVenue(
     for share
   `.execute(transaction);
   return result.rows.length === 1;
+}
+
+async function actorIsCentral(
+  transaction: Transaction<Database>,
+  actorId: string,
+): Promise<boolean> {
+  const result = await sql<{ readonly grant_id: string }>`
+    select grant_id
+    from community.role_grants
+    where user_id = ${actorId}::uuid
+      and role = 'CENTRAL_ADMIN'
+      and scope_type = 'GLOBAL'
+      and scope_id is null
+      and state = 'ACTIVE'
+    limit 1
+    for share
+  `.execute(transaction);
+  return result.rows.length === 1;
+}
+
+async function venueTargetContext(
+  transaction: Transaction<Database>,
+  venueId: string,
+  targetUserId: string,
+): Promise<VenueTargetContextRow | null> {
+  const resourceResult = await sql<{
+    readonly venue_state: VenueTargetContextRow['venue_state'];
+    readonly target_account_state: VenueTargetContextRow['target_account_state'];
+  }>`
+    select
+      venue.state as venue_state,
+      target.account_state as target_account_state
+    from community.venues as venue
+    cross join identity.users as target
+    where venue.venue_id = ${venueId}::uuid
+      and target.user_id = ${targetUserId}::uuid
+    for update of venue, target
+  `.execute(transaction);
+  const resource = resourceResult.rows[0];
+  if (!resource) return null;
+  const verificationResult = await sql<{
+    readonly state: VenueTargetContextRow['target_verification_state'];
+  }>`
+    select state
+    from identity.account_verifications
+    where user_id = ${targetUserId}::uuid and is_current
+    for share
+  `.execute(transaction);
+  return {
+    ...resource,
+    target_verification_state: verificationResult.rows[0]?.state ?? 'NOT_STARTED',
+  };
 }
 
 export async function readRoleGrant(
@@ -415,4 +513,323 @@ export async function listPendingCoachInvites(
     order by created_at, grant_id
   `.execute(database);
   return result.rows.map(projectRoleGrant);
+}
+
+export async function appointGymAdmin(
+  database: Kysely<Database>,
+  command: CommandEnvelope<AppointGymAdminPayload>,
+  ids: RoleGrantEffectIds,
+): Promise<ExecutedCommand<RoleGrantProjection>> {
+  if (!command.actor.id) throw new RoleGrantPermissionDeniedError();
+  const reasonCode = normalizeRoleReasonCode(command.payload.reasonCode);
+
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const actorId = command.actor.id;
+      if (!actorId) throw new RoleGrantPermissionDeniedError();
+      const target = await venueTargetContext(
+        transaction,
+        command.payload.venueId,
+        command.payload.userId,
+      );
+      if (!target) throw new RoleGrantNotFoundError();
+      const central = await actorIsCentral(transaction, actorId);
+      const nextState = appointGymAdminState({
+        actorIsCentral: central,
+        venueState: target.venue_state,
+        targetAccountState: target.target_account_state,
+        targetVerificationState: target.target_verification_state,
+      });
+
+      const relationshipLock = `gym-admin:${command.payload.venueId}:${command.payload.userId}`;
+      await sql`select pg_advisory_xact_lock(hashtextextended(${relationshipLock}, 0))`.execute(
+        transaction,
+      );
+      const existing = await sql<{ readonly state: RoleGrantState }>`
+        select state
+        from community.role_grants
+        where user_id = ${command.payload.userId}::uuid
+          and role = 'GYM_ADMIN'
+          and scope_type = 'VENUE'
+          and scope_id = ${command.payload.venueId}::uuid
+          and state in ('PENDING', 'ACTIVE')
+        limit 1
+      `.execute(transaction);
+      if (existing.rows[0]) {
+        throw new InvalidRoleGrantTransitionError(existing.rows[0].state);
+      }
+
+      await sql`
+        insert into community.role_grants (
+          grant_id, user_id, role, scope_type, scope_id, state,
+          authorized_by, authorized_at, expires_at, version
+        ) values (
+          ${command.aggregateId}::uuid, ${command.payload.userId}::uuid,
+          'GYM_ADMIN', 'VENUE', ${command.payload.venueId}::uuid, ${nextState},
+          ${actorId}::uuid, ${context.occurredAt.toISOString()}::timestamptz,
+          null, ${context.nextVersion}
+        )
+      `.execute(transaction);
+      const response: RoleGrantProjection = {
+        grantId: command.aggregateId,
+        userId: command.payload.userId,
+        role: 'GYM_ADMIN',
+        scopeType: 'VENUE',
+        scopeId: command.payload.venueId,
+        state: nextState,
+        authorizedBy: actorId,
+        authorizedAt: context.occurredAt.toISOString(),
+        expiresAt: null,
+        version: context.nextVersion,
+      };
+      return {
+        responseStatus: 201,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'GymAdminAppointed',
+          schemaVersion: 1,
+          transitionId: 'RG-08',
+          payload: {
+            grantId: command.aggregateId,
+            userId: command.payload.userId,
+            venueId: command.payload.venueId,
+          },
+          metadata: { policyVersion: 'roles-mvp-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'APPOINT_ADMIN',
+          transitionId: 'RG-08',
+          reasonCode,
+          beforeState: null,
+          afterState: nextState,
+          metadata: {
+            targetUserId: command.payload.userId,
+            venueId: command.payload.venueId,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: {
+              notifications: [
+                {
+                  notificationId: ids.notificationId,
+                  recipientUserId: command.payload.userId,
+                  category: 'SERVICE',
+                  renderKey: 'community.gym_admin_appointed',
+                  actionTarget: { type: 'VENUE', id: command.payload.venueId },
+                  payload: { grantId: command.aggregateId },
+                  deadlineAt: null,
+                },
+              ],
+            },
+          },
+        ],
+      };
+    },
+  });
+}
+
+export async function changePrimaryAdmin(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ChangePrimaryAdminPayload>,
+  ids: PrimaryAdminEffectIds,
+): Promise<ExecutedCommand<PrimaryAdminProjection>> {
+  if (!command.actor.id) throw new RoleGrantPermissionDeniedError();
+  if (command.aggregateId !== command.payload.venueId) {
+    throw new RoleGrantValidationError('venueId');
+  }
+  const reasonCode = normalizeRoleReasonCode(command.payload.reasonCode);
+
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const actorId = command.actor.id;
+      if (!actorId) throw new RoleGrantPermissionDeniedError();
+      const target = await venueTargetContext(
+        transaction,
+        command.payload.venueId,
+        command.payload.userId,
+      );
+      if (!target) throw new RoleGrantNotFoundError();
+      const central = await actorIsCentral(transaction, actorId);
+      const targetAdminResult = await sql<RoleGrantRow>`
+        select
+          grant_id, user_id, role, scope_type, scope_id, state,
+          authorized_by, authorized_at, expires_at, version::text as version
+        from community.role_grants
+        where user_id = ${command.payload.userId}::uuid
+          and role = 'GYM_ADMIN'
+          and scope_type = 'VENUE'
+          and scope_id = ${command.payload.venueId}::uuid
+          and state = 'ACTIVE'
+        limit 1
+        for share
+      `.execute(transaction);
+      const currentPrimaryResult = await sql<RoleGrantRow>`
+        select
+          grant_id, user_id, role, scope_type, scope_id, state,
+          authorized_by, authorized_at, expires_at, version::text as version
+        from community.role_grants
+        where role = 'PRIMARY_ADMIN'
+          and scope_type = 'VENUE'
+          and scope_id = ${command.payload.venueId}::uuid
+          and state = 'ACTIVE'
+        limit 1
+        for update
+      `.execute(transaction);
+      const currentPrimary = currentPrimaryResult.rows[0] ?? null;
+      const change = changePrimaryAdminState({
+        actorIsCentral: central,
+        venueState: target.venue_state,
+        targetAccountState: target.target_account_state,
+        targetVerificationState: target.target_verification_state,
+        targetHasActiveGymAdmin: targetAdminResult.rows.length === 1,
+        currentPrimaryAdminUserId: currentPrimary?.user_id ?? null,
+        targetUserId: command.payload.userId,
+      });
+
+      if (currentPrimary) {
+        await sql`
+          update community.role_grants
+          set state = 'REVOKED',
+              version = version + 1,
+              updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where grant_id = ${currentPrimary.grant_id}::uuid
+        `.execute(transaction);
+      }
+      await sql`
+        insert into community.role_grants (
+          grant_id, user_id, role, scope_type, scope_id, state,
+          authorized_by, authorized_at, expires_at, version
+        ) values (
+          ${ids.primaryGrantId}::uuid, ${command.payload.userId}::uuid,
+          'PRIMARY_ADMIN', 'VENUE', ${command.payload.venueId}::uuid, 'ACTIVE',
+          ${actorId}::uuid, ${context.occurredAt.toISOString()}::timestamptz,
+          null, 1
+        )
+      `.execute(transaction);
+      const response: PrimaryAdminProjection = {
+        venueId: command.payload.venueId,
+        primaryGrantId: ids.primaryGrantId,
+        primaryAdminUserId: command.payload.userId,
+        previousPrimaryAdminUserId: currentPrimary?.user_id ?? null,
+        change,
+        version: context.nextVersion,
+      };
+      const notifications: Array<{
+        notificationId: string;
+        recipientUserId: string;
+        category: 'SERVICE';
+        renderKey: string;
+        actionTarget: { type: 'VENUE'; id: string };
+        payload: Readonly<Record<string, unknown>>;
+        deadlineAt: null;
+      }> = [
+        {
+          notificationId: ids.targetNotificationId,
+          recipientUserId: command.payload.userId,
+          category: 'SERVICE',
+          renderKey:
+            change === 'APPOINTED'
+              ? 'community.primary_admin_appointed'
+              : 'community.primary_admin_transferred_to_you',
+          actionTarget: { type: 'VENUE', id: command.payload.venueId },
+          payload: { previousPrimaryAdminUserId: currentPrimary?.user_id ?? null },
+          deadlineAt: null,
+        },
+      ];
+      if (currentPrimary) {
+        notifications.push({
+          notificationId: ids.previousNotificationId,
+          recipientUserId: currentPrimary.user_id,
+          category: 'SERVICE',
+          renderKey: 'community.primary_admin_transferred_from_you',
+          actionTarget: { type: 'VENUE', id: command.payload.venueId },
+          payload: { primaryAdminUserId: command.payload.userId },
+          deadlineAt: null,
+        });
+      }
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName:
+            change === 'APPOINTED' ? 'PrimaryAdminAppointed' : 'PrimaryAdminTransferred',
+          schemaVersion: 1,
+          transitionId: change === 'APPOINTED' ? 'RG-09' : 'RG-10',
+          payload: {
+            venueId: command.payload.venueId,
+            primaryGrantId: ids.primaryGrantId,
+            primaryAdminUserId: command.payload.userId,
+            previousPrimaryAdminUserId: currentPrimary?.user_id ?? null,
+          },
+          metadata: { policyVersion: 'roles-mvp-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: change === 'APPOINTED' ? 'APPOINT_PRIMARY_ADMIN' : 'TRANSFER_PRIMARY_ADMIN',
+          transitionId: change === 'APPOINTED' ? 'RG-09' : 'RG-10',
+          reasonCode,
+          beforeState: currentPrimary?.user_id ?? null,
+          afterState: command.payload.userId,
+          metadata: {
+            venueId: command.payload.venueId,
+            previousPrimaryGrantId: currentPrimary?.grant_id ?? null,
+            primaryGrantId: ids.primaryGrantId,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: { notifications },
+          },
+        ],
+      };
+    },
+  });
+}
+
+export async function readVenueRoleSummary(
+  database: Kysely<Database>,
+  centralUserId: string,
+  venueId: string,
+): Promise<VenueRoleSummaryProjection | null> {
+  return database.transaction().execute(async (transaction) => {
+    if (!(await actorIsCentral(transaction, centralUserId))) {
+      throw new RoleGrantPermissionDeniedError();
+    }
+    const venueResult = await sql<{ readonly venue_id: string }>`
+      select venue_id from community.venues where venue_id = ${venueId}::uuid
+    `.execute(transaction);
+    if (!venueResult.rows[0]) return null;
+    const grants = await sql<RoleGrantRow>`
+      select
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, expires_at, version::text as version
+      from community.role_grants
+      where scope_type = 'VENUE'
+        and scope_id = ${venueId}::uuid
+        and role in ('GYM_ADMIN', 'PRIMARY_ADMIN')
+        and state = 'ACTIVE'
+      order by role, authorized_at, grant_id
+    `.execute(transaction);
+    const versionResult = await sql<{ readonly version: string }>`
+      select coalesce(max(aggregate_version), 0)::text as version
+      from platform.domain_events
+      where aggregate_type = 'VenuePrimaryAdmin'
+        and aggregate_id = ${venueId}::uuid
+    `.execute(transaction);
+    return {
+      venueId,
+      primaryAdminVersion: Number(versionResult.rows[0]?.version ?? '0'),
+      activeGrants: grants.rows.map(projectRoleGrant),
+    };
+  });
 }

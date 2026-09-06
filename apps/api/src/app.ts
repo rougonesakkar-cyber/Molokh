@@ -57,7 +57,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
         'access-control-allow-headers',
         'Authorization, Content-Type, Idempotency-Key, If-Match, X-Request-Id, X-Correlation-Id',
       );
-      void reply.header('access-control-allow-methods', 'GET, POST, PATCH, OPTIONS');
+      void reply.header('access-control-allow-methods', 'GET, POST, PUT, PATCH, OPTIONS');
       if (request.method === 'OPTIONS') await reply.status(204).send();
     }
   });

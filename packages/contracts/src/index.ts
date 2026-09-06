@@ -363,3 +363,73 @@ export const PendingCoachInviteListResponseSchema = Type.Object(
 export type PendingCoachInviteListResponse = Static<
   typeof PendingCoachInviteListResponseSchema
 >;
+
+export const AppointGymAdminBodySchema = Type.Object(
+  {
+    userId: Type.String({ format: 'uuid' }),
+    reasonCode: Type.String({ minLength: 3, maxLength: 80 }),
+  },
+  { $id: 'AppointGymAdminBody', additionalProperties: false },
+);
+
+export type AppointGymAdminBody = Static<typeof AppointGymAdminBodySchema>;
+
+export const ChangePrimaryAdminBodySchema = Type.Object(
+  {
+    userId: Type.String({ format: 'uuid' }),
+    reasonCode: Type.String({ minLength: 3, maxLength: 80 }),
+  },
+  { $id: 'ChangePrimaryAdminBody', additionalProperties: false },
+);
+
+export type ChangePrimaryAdminBody = Static<typeof ChangePrimaryAdminBodySchema>;
+
+export const PrimaryAdminProjectionSchema = Type.Object(
+  {
+    venueId: Type.String({ format: 'uuid' }),
+    primaryGrantId: Type.String({ format: 'uuid' }),
+    primaryAdminUserId: Type.String({ format: 'uuid' }),
+    previousPrimaryAdminUserId: Type.Union([
+      Type.String({ format: 'uuid' }),
+      Type.Null(),
+    ]),
+    change: Type.Union([Type.Literal('APPOINTED'), Type.Literal('TRANSFERRED')]),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'PrimaryAdminProjection', additionalProperties: false },
+);
+
+export const PrimaryAdminCommandResponseSchema = Type.Object(
+  {
+    data: PrimaryAdminProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }),
+  },
+  { $id: 'PrimaryAdminCommandResponse', additionalProperties: false },
+);
+
+export type PrimaryAdminCommandResponse = Static<
+  typeof PrimaryAdminCommandResponseSchema
+>;
+
+export const VenueRoleSummaryResponseSchema = Type.Object(
+  {
+    data: Type.Object(
+      {
+        venueId: Type.String({ format: 'uuid' }),
+        primaryAdminVersion: Type.Integer({ minimum: 0 }),
+        activeGrants: Type.Array(RoleGrantProjectionSchema),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'VenueRoleSummaryResponse', additionalProperties: false },
+);
+
+export type VenueRoleSummaryResponse = Static<
+  typeof VenueRoleSummaryResponseSchema
+>;

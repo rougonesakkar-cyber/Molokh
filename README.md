@@ -9,7 +9,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - registered events: **278**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1 and Sprint 1 Identity complete; Sprint 2 now includes the pilot Community, scoped role guard and no-document Central verification workflow;
+- implementation code: M0/M1, Sprint 1 Identity and the local Sprint 2 Community/role slice are complete; production authentication and account cases remain M2 hardening;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -109,8 +109,24 @@ the script accepts it as that account. Re-running the script is safe and reports
 already active grant. The API always rechecks actual database roles and never trusts a
 role claimed by the local token or request body.
 
+To configure the deterministic Gym Admins and ensure one Primary Admin for the pilot
+Venue, keep the API running and execute:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\configure-local-venue-admins.ps1
+```
+
+The script is safe to run again. It appoints only missing Venue-scoped grants and uses the
+current Primary aggregate version for an atomic appointment or transfer. To inspect the
+Admin profile in the universal client, set its local token before starting Expo:
+
+```powershell
+$env:EXPO_PUBLIC_LOCAL_AUTH_TOKEN = 'molokh-local-admin-token'
+pnpm.cmd --filter @molokh/client web
+```
+
 ## Next executable action
 
-Complete Central Gym Admin appointment and atomic Primary Admin appointment/transfer,
-then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR
-set and changes through a new ADR.
+Begin the Discovery hard-gate projection and deterministic card ordering, then add the
+Like/Skip/Match commands. The technology baseline is fixed by the accepted ADR set and
+changes through a new ADR.

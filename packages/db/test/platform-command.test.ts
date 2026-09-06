@@ -15,8 +15,10 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   activateUser,
   acceptCoachInvite,
+  appointGymAdmin,
   approveAccountVerification,
   changeDisplayName,
+  changePrimaryAdmin,
   claimOutboxBatch,
   claimInboxEvent,
   createDatabase,
@@ -30,6 +32,7 @@ import {
   projectNotificationBatch,
   readCommunityContext,
   readIdentityProjection,
+  readVenueRoleSummary,
   inviteCoach,
   releaseOutboxFailure,
   runMigrations,
@@ -92,6 +95,10 @@ const ids = {
   roleAcceptOutbox: '0199a1b2-1234-7000-8000-000000000250',
   roleAcceptNotification: '0199a1b2-1234-7000-8000-000000000260',
 } as const;
+
+function testId(value: number): string {
+  return `0199a1b2-1234-7000-8000-${String(value).padStart(12, '0')}`;
+}
 
 function command(
   overrides: Partial<CommandEnvelope<{ readonly amount: number }>> = {},
@@ -965,5 +972,205 @@ describePostgres('PostgreSQL critical command transaction', () => {
       where audit_id = ${ids.roleInviteAudit}::uuid
     `.execute(database);
     expect(audit.rows[0]?.reason_code).toBe('PILOT_COACH');
+
+    const adminCommand = (
+      userId: string,
+      aggregateId: string,
+      commandId: string,
+      idempotencyKey: string,
+      actorId: string = ids.centralActor,
+    ): CommandEnvelope<{
+      readonly userId: string;
+      readonly venueId: string;
+      readonly reasonCode: string;
+    }> => ({
+      commandId,
+      commandType: 'APPOINT_ADMIN',
+      idempotencyKey,
+      actor: { type: 'USER', id: actorId, roles: [], scopeIds: [] },
+      aggregateType: 'RoleGrant',
+      aggregateId,
+      expectedVersion: 0,
+      correlationId: ids.identityCorrelation,
+      causationId: null,
+      requestId: ids.identityRequest,
+      source: 'admin',
+      payloadVersion: 1,
+      payload: { userId, venueId: ids.venue, reasonCode: 'PILOT_ADMIN' },
+    });
+    const roleEffects = (offset: number) => ({
+      eventId: testId(offset),
+      auditId: testId(offset + 1),
+      outboxMessageId: testId(offset + 2),
+      notificationId: testId(offset + 3),
+    });
+
+    await expect(
+      appointGymAdmin(
+        database,
+        adminCommand(
+          ids.roleCoach,
+          testId(300),
+          testId(301),
+          'admin-appoint-not-central',
+          ids.roleCoach,
+        ),
+        roleEffects(302),
+      ),
+    ).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+    await expect(
+      appointGymAdmin(
+        database,
+        adminCommand(
+          ids.roleUnverified,
+          testId(306),
+          testId(307),
+          'admin-appoint-unverified',
+        ),
+        roleEffects(308),
+      ),
+    ).rejects.toBeInstanceOf(RoleGrantValidationError);
+
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        verified_at, decided_by, decision_reason, is_current, version
+      ) values (
+        ${testId(312)}::uuid, ${ids.roleUnverified}::uuid,
+        'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1',
+        '2026-09-06T09:00:00Z', ${ids.centralActor}::uuid,
+        'PROFILE_PHONE_DUPLICATE_CHECKS_PASSED', true, 2
+      )
+    `.execute(database);
+    const firstAdminGrantId = testId(313);
+    const secondAdminGrantId = testId(319);
+    const firstAdmin = await appointGymAdmin(
+      database,
+      adminCommand(ids.roleCoach, firstAdminGrantId, testId(314), 'admin-appoint-first'),
+      roleEffects(315),
+    );
+    const secondAdmin = await appointGymAdmin(
+      database,
+      adminCommand(
+        ids.roleUnverified,
+        secondAdminGrantId,
+        testId(320),
+        'admin-appoint-second',
+      ),
+      roleEffects(321),
+    );
+    expect(firstAdmin.response).toMatchObject({
+      role: 'GYM_ADMIN',
+      state: 'ACTIVE',
+      userId: ids.roleCoach,
+    });
+    expect(secondAdmin.response).toMatchObject({
+      role: 'GYM_ADMIN',
+      state: 'ACTIVE',
+      userId: ids.roleUnverified,
+    });
+
+    const primaryCommand = (
+      userId: string,
+      expectedVersion: number,
+      commandId: string,
+      idempotencyKey: string,
+    ): CommandEnvelope<{
+      readonly userId: string;
+      readonly venueId: string;
+      readonly reasonCode: string;
+    }> => ({
+      commandId,
+      commandType: 'SET_PRIMARY_ADMIN',
+      idempotencyKey,
+      actor: {
+        type: 'USER',
+        id: ids.centralActor,
+        roles: ['CENTRAL_ADMIN'],
+        scopeIds: [],
+      },
+      aggregateType: 'VenuePrimaryAdmin',
+      aggregateId: ids.venue,
+      expectedVersion,
+      correlationId: ids.identityCorrelation,
+      causationId: null,
+      requestId: ids.identityRequest,
+      source: 'admin',
+      payloadVersion: 1,
+      payload: { userId, venueId: ids.venue, reasonCode: 'PRIMARY_SUCCESSION' },
+    });
+    const primaryEffects = (offset: number) => ({
+      eventId: testId(offset),
+      auditId: testId(offset + 1),
+      outboxMessageId: testId(offset + 2),
+      primaryGrantId: testId(offset + 3),
+      targetNotificationId: testId(offset + 4),
+      previousNotificationId: testId(offset + 5),
+    });
+
+    const appointedPrimary = await changePrimaryAdmin(
+      database,
+      primaryCommand(ids.roleCoach, 0, testId(325), 'primary-appoint-first'),
+      primaryEffects(326),
+    );
+    expect(appointedPrimary.response).toMatchObject({
+      change: 'APPOINTED',
+      primaryAdminUserId: ids.roleCoach,
+      previousPrimaryAdminUserId: null,
+      version: 1,
+    });
+    const transferredPrimary = await changePrimaryAdmin(
+      database,
+      primaryCommand(ids.roleUnverified, 1, testId(332), 'primary-transfer-second'),
+      primaryEffects(333),
+    );
+    expect(transferredPrimary.response).toMatchObject({
+      change: 'TRANSFERRED',
+      primaryAdminUserId: ids.roleUnverified,
+      previousPrimaryAdminUserId: ids.roleCoach,
+      version: 2,
+    });
+
+    const racingTransfers = await Promise.allSettled([
+      changePrimaryAdmin(
+        database,
+        primaryCommand(ids.roleCoach, 2, testId(339), 'primary-race-one'),
+        primaryEffects(340),
+      ),
+      changePrimaryAdmin(
+        database,
+        primaryCommand(ids.roleCoach, 2, testId(346), 'primary-race-two'),
+        primaryEffects(347),
+      ),
+    ]);
+    expect(racingTransfers.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejectedRace = racingTransfers.find((result) => result.status === 'rejected');
+    expect(rejectedRace).toMatchObject({
+      status: 'rejected',
+      reason: expect.any(VersionConflictError),
+    });
+    const activePrimary = await sql<{ readonly user_id: string; readonly count: string }>`
+      select min(user_id::text) as user_id, count(*)::text as count
+      from community.role_grants
+      where role = 'PRIMARY_ADMIN'
+        and scope_type = 'VENUE'
+        and scope_id = ${ids.venue}::uuid
+        and state = 'ACTIVE'
+    `.execute(database);
+    expect(activePrimary.rows[0]).toEqual({ user_id: ids.roleCoach, count: '1' });
+    const roleSummary = await readVenueRoleSummary(
+      database,
+      ids.centralActor,
+      ids.venue,
+    );
+    expect(roleSummary).toMatchObject({
+      venueId: ids.venue,
+      primaryAdminVersion: 3,
+      activeGrants: expect.arrayContaining([
+        expect.objectContaining({ userId: ids.roleCoach, role: 'GYM_ADMIN' }),
+        expect.objectContaining({ userId: ids.roleUnverified, role: 'GYM_ADMIN' }),
+        expect.objectContaining({ userId: ids.roleCoach, role: 'PRIMARY_ADMIN' }),
+      ]),
+    });
   });
 });

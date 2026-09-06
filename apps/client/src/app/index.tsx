@@ -220,7 +220,7 @@ export default function IdentityScreen() {
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.eyebrow}>MOLOKH · IDENTITY</Text>
-        <Text style={styles.title}>Профиль атлета</Text>
+        <Text style={styles.title}>Профиль пользователя</Text>
         <Text style={styles.lead}>
           Первый рабочий вертикальный срез MVP: аккаунт, публичные возможности и свободное имя.
         </Text>
@@ -372,6 +372,21 @@ export default function IdentityScreen() {
                 {communityContext.access.capabilities.includes('RECORD_COMMUNITY_RESULT') ? (
                   <View style={styles.chip}>
                     <Text style={styles.chipText}>Роль Coach активна</Text>
+                  </View>
+                ) : null}
+                {communityContext.access.capabilities.includes('MANAGE_VENUE_OPERATIONS') ? (
+                  <View style={styles.chip}>
+                    <Text style={styles.chipText}>Роль Gym Admin активна</Text>
+                  </View>
+                ) : null}
+                {communityContext.activeRoleGrants.some(
+                  (grant) =>
+                    grant.role === 'PRIMARY_ADMIN' &&
+                    grant.scopeType === 'VENUE' &&
+                    grant.scopeId === communityContext.venue.venueId,
+                ) ? (
+                  <View style={styles.chip}>
+                    <Text style={styles.chipText}>Primary Admin этого зала</Text>
                   </View>
                 ) : null}
                 {communityContext.access.capabilities.includes('CREATE_OFFICIAL_CHALLENGE') ? (
