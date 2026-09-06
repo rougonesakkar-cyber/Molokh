@@ -9,6 +9,10 @@ import {
 } from '@molokh/contracts';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 
+import {
+  registerCommunityRoutes,
+  type CommunityRouteDependencies,
+} from './community-routes.js';
 import { registerRequestContext } from './request-context.js';
 import {
   registerIdentityRoutes,
@@ -17,11 +21,12 @@ import {
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
+  readonly community?: CommunityRouteDependencies;
   readonly identity?: IdentityRouteDependencies;
 }
 
 export async function buildApp(options: BuildAppOptions = {}) {
-  const { allowedOrigins = [], identity, ...serverOptions } = options;
+  const { allowedOrigins = [], community, identity, ...serverOptions } = options;
   const app = Fastify({
     logger: serverOptions.logger ?? false,
     ...serverOptions,
@@ -54,6 +59,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   });
 
   if (identity) await registerIdentityRoutes(app, identity);
+  if (community) await registerCommunityRoutes(app, community);
 
   app.get(
     '/health/ready',

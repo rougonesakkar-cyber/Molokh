@@ -4,7 +4,11 @@ import {
   type CommandEnvelope,
   type IdentityProjection,
 } from '@molokh/core';
-import type { ChangeDisplayNamePayload, IdentityEffectIds } from '@molokh/db';
+import type {
+  ChangeDisplayNamePayload,
+  CommunityContextProjection,
+  IdentityEffectIds,
+} from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
@@ -207,5 +211,80 @@ describe('runtime contract', () => {
 
     expect(response.statusCode).toBe(204);
     expect(response.headers['access-control-allow-origin']).toBe('http://localhost:8081');
+  });
+
+  it('returns the authenticated pilot Community with action-level denials', async () => {
+    const context: CommunityContextProjection = {
+      venue: {
+        venueId: '0199a1b2-1234-7000-8000-000000000401',
+        displayName: 'Pilot Gym',
+        address: 'Pilot address',
+        cityCode: 'MOSCOW',
+        timezone: 'Europe/Moscow',
+        minimumBookingNoticeHours: 8,
+        slotPublishHorizonDays: 30,
+        contactPayload: { phone: '+79990000401' },
+      },
+      community: {
+        communityId: '0199a1b2-1234-7000-8000-000000000402',
+        name: 'Pilot Community',
+        state: 'ACTIVE',
+        pairCooldownDays: 15,
+        noShowGraceMinutes: 15,
+        rulesetRef: 'MOLOKH_RECOMMENDED_V1',
+        rulesetAckMode: 'IMPLICIT_ON_ACCEPT',
+        version: 1,
+      },
+      membership: {
+        membershipId: '0199a1b2-1234-7000-8000-000000000403',
+        state: 'ACTIVE',
+        ageDivision: 'ADULT',
+        competitionEnabled: true,
+        joinPath: 'QR',
+      },
+      activeRoleGrants: [],
+      access: {
+        capabilities: ['VIEW_COMMUNITY'],
+        denials: [
+          {
+            capability: 'CREATE_OFFICIAL_CHALLENGE',
+            code: 'ACCOUNT_NOT_VERIFIED',
+            messageKey: 'community.account_not_verified',
+            retryable: true,
+          },
+        ],
+      },
+    };
+    const app = await buildApp({
+      community: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readContext: async () => context,
+      },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me/community',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: {
+        community: { name: 'Pilot Community' },
+        membership: { state: 'ACTIVE' },
+        access: {
+          denials: [
+            {
+              capability: 'CREATE_OFFICIAL_CHALLENGE',
+              code: 'ACCOUNT_NOT_VERIFIED',
+            },
+          ],
+        },
+      },
+    });
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty('/api/v1/me/community');
   });
 });

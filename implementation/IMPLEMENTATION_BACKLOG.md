@@ -169,7 +169,8 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - M1 exit: complete at the platform layer.
 - Story 4 Sprint 1 increment: complete. The 14+ User/AthleteProfile activation, arbitrary display name, private name audit, local replaceable auth adapter, public capability projection, typed API and minimal universal client run end to end. Phone-confirmed but Central-unverified Athletes can use Discovery and ordinary Training but receive an explicit Official Challenge denial.
 - Story 4 remaining production work: real OTP and rotating session adapter, Central account verification workflow, avatar malware/scan port and account recovery/duplicate cases. These do not block local Story 5 work.
-- Next: Story 5, with one deterministic pilot Venue/Community, Membership and server-enforced Coach/Admin/Central scope grants.
+- Story 5 foundation: in progress. One deterministic pilot Venue/Community and active Membership now render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
+- Story 5 remaining: audited/idempotent Coach invitation and acceptance, Central Admin/Primary appointment and transfer commands, deterministic Coach/Admin accounts and an operator path.
 
 ## 5. Work that needs product/external input later
 

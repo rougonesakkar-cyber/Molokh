@@ -1,4 +1,9 @@
-import type { ApiError, IdentityCommandResponse, MeResponse } from '@molokh/contracts';
+import type {
+  ApiError,
+  CommunityContextResponse,
+  IdentityCommandResponse,
+  MeResponse,
+} from '@molokh/contracts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -17,7 +22,9 @@ const apiUrl = (process.env.EXPO_PUBLIC_API_URL ?? defaultApiUrl).replace(/\/$/,
 const localToken = process.env.EXPO_PUBLIC_LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 
 type Identity = MeResponse['data'];
+type CommunityContext = CommunityContextResponse['data'];
 type Capability = Identity['capabilities'][number];
+type CommunityDenialCode = CommunityContext['access']['denials'][number]['code'];
 
 const capabilityLabels: Record<Capability, string> = {
   USE_DISCOVERY: 'Discovery доступен',
@@ -35,6 +42,18 @@ const verificationLabels: Record<Identity['accountVerificationState'], string> =
   REVOKED: 'Отозвана',
 };
 
+const officialDenialLabels: Record<CommunityDenialCode, string> = {
+  ACCOUNT_NOT_ACTIVE: 'Аккаунт временно не может участвовать в Official Challenge.',
+  ACCOUNT_NOT_VERIFIED: 'Official Challenge откроется после верификации аккаунта Central.',
+  COMMUNITY_NOT_ACTIVE: 'Новые Challenge недоступны, пока Community не активна.',
+  MEMBERSHIP_ALREADY_EXISTS: 'Membership в этой Community уже существует.',
+  MEMBERSHIP_NOT_ACTIVE: 'Для Official Challenge нужен активный competitive Membership.',
+  AGE_CONTOUR_MISMATCH: 'Возрастной контур Membership должен совпадать с профилем.',
+  MVP_ACTIVE_COMMUNITY_LIMIT: 'В MVP доступна одна активная competitive Community.',
+  ROLE_SCOPE_MISMATCH: 'Эта роль не действует в выбранной Community.',
+  CENTRAL_ONLY: 'Действие доступно только Central.',
+};
+
 async function errorMessage(response: Response): Promise<string> {
   try {
     const error = (await response.json()) as ApiError;
@@ -46,6 +65,7 @@ async function errorMessage(response: Response): Promise<string> {
 
 export default function IdentityScreen() {
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [communityContext, setCommunityContext] = useState<CommunityContext | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -62,6 +82,16 @@ export default function IdentityScreen() {
       const result = (await response.json()) as MeResponse;
       setIdentity(result.data);
       setDisplayName(result.data.displayName);
+      const communityResponse = await fetch(`${apiUrl}/api/v1/me/community`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (communityResponse.status === 404) {
+        setCommunityContext(null);
+      } else {
+        if (!communityResponse.ok) throw new Error(await errorMessage(communityResponse));
+        const communityResult = (await communityResponse.json()) as CommunityContextResponse;
+        setCommunityContext(communityResult.data);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
     } finally {
@@ -74,6 +104,9 @@ export default function IdentityScreen() {
   }, [loadIdentity]);
 
   const normalizedName = displayName.trim();
+  const officialChallengeDenial = communityContext?.access.denials.find(
+    (denial) => denial.capability === 'CREATE_OFFICIAL_CHALLENGE',
+  );
   const canSave = useMemo(
     () =>
       identity !== null &&
@@ -197,6 +230,33 @@ export default function IdentityScreen() {
                 </Text>
               ))}
             </View>
+
+            {communityContext ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>{communityContext.community.name}</Text>
+                <Text style={styles.venueName}>{communityContext.venue.displayName}</Text>
+                <Text style={styles.muted}>{communityContext.venue.address}</Text>
+                <View style={styles.row}>
+                  <Text style={styles.muted}>Membership</Text>
+                  <Text style={styles.value}>{communityContext.membership?.state ?? 'Нет'}</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.muted}>Pair Cooldown</Text>
+                  <Text style={styles.value}>{communityContext.community.pairCooldownDays} дней</Text>
+                </View>
+                {communityContext.access.capabilities.includes('CREATE_OFFICIAL_CHALLENGE') ? (
+                  <View style={styles.chip}>
+                    <Text style={styles.chipText}>Official Challenge доступен</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.denial}>
+                    {officialChallengeDenial
+                      ? officialDenialLabels[officialChallengeDenial.code]
+                      : 'Official Challenge сейчас недоступен.'}
+                  </Text>
+                )}
+              </View>
+            ) : null}
           </>
         ) : null}
 
@@ -268,6 +328,7 @@ const styles = StyleSheet.create({
   buttonPressed: { opacity: 0.85 },
   buttonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
   cardTitle: { color: '#171512', fontSize: 18, fontWeight: '700' },
+  venueName: { color: '#4c4943', fontSize: 16, fontWeight: '600' },
   row: { alignItems: 'flex-start', flexDirection: 'row', gap: 16, justifyContent: 'space-between' },
   muted: { color: '#777168', flexShrink: 1, fontSize: 14 },
   value: { color: '#171512', flexShrink: 1, fontSize: 14, fontWeight: '600', textAlign: 'right' },

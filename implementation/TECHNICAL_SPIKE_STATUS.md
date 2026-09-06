@@ -20,6 +20,7 @@
 | Notification projection | atomic event-to-inbox projection, duplicate delivery and read ownership | Pass |
 | Request context | validated request/correlation/causation headers, response propagation and safe error mapping | Pass |
 | Identity vertical slice | 14+ activation, arbitrary display name, public capability projection, local auth, API/client path and private audit | Pass |
+| Community scope foundation | pilot Venue/Community/Membership, immutable config ownership, role scope guard and universal client projection | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
@@ -97,9 +98,15 @@ The first product-owned slice now provides:
 - `GET /api/v1/me` and an idempotent, versioned `PATCH /api/v1/me/profile` path;
 - a minimal responsive Expo screen that loads the real projection and changes the display name.
 
+The first Sprint 2 increment additionally provides one deterministic local pilot Venue and
+Community, an active competitive Membership, immutable configuration ownership, database
+guards for the MVP uniqueness limits and a single action-level access projection. The same
+projection proves that Coach authority never crosses Community scope, Primary Admin has no
+hidden transfer privilege and Official Challenge still requires Central account verification.
+
 ## Boundary
 
-The toolchain, M1 transaction primitive and Sprint 1 Identity exit are implemented. Production OTP/session handling, Central verification workflow, Venue/Community and scoped roles remain in M2. Training scheduling has not started yet.
+The toolchain, M1 transaction primitive, Sprint 1 Identity exit and the Sprint 2 Community read/guard foundation are implemented. Production OTP/session handling, Central verification commands and role-grant lifecycle remain in M2. Training scheduling has not started yet.
 
 ## Verification result
 
@@ -107,12 +114,13 @@ Verified on 2026-09-06:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- thirty-one non-database automated tests pass across Core, DB, API, worker and testkit;
+- thirty-six non-database automated tests pass across Core, DB, API, worker and testkit;
 - five additional PostgreSQL transaction/outbox/notification/Identity scenarios pass through the dedicated database gate;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.7.2 runs on WSL 2 and the PostgreSQL 18 container is healthy;
-- migrations `0001`–`0007`, including the Identity foundation and temporal guard, apply successfully and are safe to run again;
+- migrations `0001`–`0009`, including Identity and Community integrity guards, apply successfully and are safe to run again;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
+- the live Web client reads `Molokh Pilot Community`, its active Membership and the exact `ACCOUNT_NOT_VERIFIED` action denial;
 - the Core specification validator reports 300 transitions, 213 acceptance scenarios, zero open questions and zero errors.

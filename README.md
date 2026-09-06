@@ -9,7 +9,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - registered events: **278**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1 foundation complete; the Sprint 1 Identity vertical slice runs end to end with local auth, PostgreSQL, API and universal client;
+- implementation code: M0/M1 and Sprint 1 Identity complete; Sprint 2 now includes the pilot Venue/Community schema, Membership projection and scoped role guard;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -89,4 +89,4 @@ or production credential is required for this local slice.
 
 ## Next executable action
 
-Complete the pilot Venue/Community, membership and scoped role increment, then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+Complete Central verification and role-grant commands for the seeded pilot Community, then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

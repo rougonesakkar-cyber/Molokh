@@ -15,10 +15,12 @@ import {
   claimInboxEvent,
   createDatabase,
   executeCriticalCommand,
+  ensureLocalPilotCommunity,
   hashCommandRequest,
   markOutboxPublished,
   markNotificationRead,
   projectNotificationBatch,
+  readCommunityContext,
   readIdentityProjection,
   releaseOutboxFailure,
   runMigrations,
@@ -50,6 +52,12 @@ const ids = {
   displayNameOutbox: '0199a1b2-1234-7000-8000-000000000209',
   identityCorrelation: '0199a1b2-1234-7000-8000-000000000210',
   identityRequest: '0199a1b2-1234-7000-8000-000000000211',
+  venue: '0199a1b2-1234-7000-8000-000000000220',
+  venueConfiguration: '0199a1b2-1234-7000-8000-000000000221',
+  community: '0199a1b2-1234-7000-8000-000000000222',
+  communityConfiguration: '0199a1b2-1234-7000-8000-000000000223',
+  membership: '0199a1b2-1234-7000-8000-000000000224',
+  centralActor: '0199a1b2-1234-7000-8000-000000000225',
 } as const;
 
 function command(
@@ -152,6 +160,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await sql`
       truncate table
         test_support.probe_aggregates,
+        community.role_grants,
+        community.community_memberships,
+        community.community_configuration_versions,
+        community.communities,
+        community.venue_configuration_versions,
+        community.venues,
         identity.display_name_audit,
         identity.account_verifications,
         identity.athlete_profiles,
@@ -453,6 +467,67 @@ describePostgres('PostgreSQL critical command transaction', () => {
         new_display_name: 'Номер Один',
       },
     ]);
+
+    const fixture = {
+      venueId: ids.venue,
+      venueConfigurationId: ids.venueConfiguration,
+      communityId: ids.community,
+      communityConfigurationId: ids.communityConfiguration,
+      membershipId: ids.membership,
+      athleteUserId: ids.identityUser,
+      centralActorId: ids.centralActor,
+      legalName: 'Pilot Legal Name',
+      venueDisplayName: 'Pilot Gym',
+      communityName: 'Pilot Community',
+      address: 'Pilot address',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: { phone: '+79990000220' },
+      occurredAt: '2026-09-06T08:00:00.000Z',
+    } as const;
+    await ensureLocalPilotCommunity(database, fixture);
+    await ensureLocalPilotCommunity(database, fixture);
+
+    const communityContext = await readCommunityContext(
+      database,
+      ids.identityUser,
+      ids.community,
+    );
+    expect(communityContext).toMatchObject({
+      venue: { venueId: ids.venue, displayName: 'Pilot Gym' },
+      community: {
+        communityId: ids.community,
+        state: 'ACTIVE',
+        pairCooldownDays: 15,
+        noShowGraceMinutes: 15,
+      },
+      membership: {
+        membershipId: ids.membership,
+        state: 'ACTIVE',
+        competitionEnabled: true,
+      },
+    });
+    expect(communityContext?.access.denials).toContainEqual(
+      expect.objectContaining({
+        capability: 'CREATE_OFFICIAL_CHALLENGE',
+        code: 'ACCOUNT_NOT_VERIFIED',
+      }),
+    );
+    const fixtureCounts = await sql<{
+      readonly venues: string;
+      readonly communities: string;
+      readonly memberships: string;
+    }>`
+      select
+        (select count(*) from community.venues)::text as venues,
+        (select count(*) from community.communities)::text as communities,
+        (select count(*) from community.community_memberships)::text as memberships
+    `.execute(database);
+    expect(fixtureCounts.rows[0]).toEqual({
+      venues: '1',
+      communities: '1',
+      memberships: '1',
+    });
 
     await sql`
       update identity.users set account_state = 'RESTRICTED'

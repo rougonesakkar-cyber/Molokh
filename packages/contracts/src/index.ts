@@ -122,3 +122,139 @@ export const IdentityCommandResponseSchema = Type.Object(
 );
 
 export type IdentityCommandResponse = Static<typeof IdentityCommandResponseSchema>;
+
+const CommunityCapabilitySchema = Type.Union([
+  Type.Literal('VIEW_COMMUNITY'),
+  Type.Literal('REQUEST_MEMBERSHIP'),
+  Type.Literal('CREATE_OFFICIAL_CHALLENGE'),
+  Type.Literal('MANAGE_MEMBERSHIPS'),
+  Type.Literal('MANAGE_VENUE_OPERATIONS'),
+  Type.Literal('RECORD_COMMUNITY_RESULT'),
+  Type.Literal('TRANSFER_PRIMARY_ADMIN'),
+]);
+
+const CommunityDenialCodeSchema = Type.Union([
+  Type.Literal('ACCOUNT_NOT_ACTIVE'),
+  Type.Literal('ACCOUNT_NOT_VERIFIED'),
+  Type.Literal('COMMUNITY_NOT_ACTIVE'),
+  Type.Literal('MEMBERSHIP_ALREADY_EXISTS'),
+  Type.Literal('MEMBERSHIP_NOT_ACTIVE'),
+  Type.Literal('AGE_CONTOUR_MISMATCH'),
+  Type.Literal('MVP_ACTIVE_COMMUNITY_LIMIT'),
+  Type.Literal('ROLE_SCOPE_MISMATCH'),
+  Type.Literal('CENTRAL_ONLY'),
+]);
+
+const ActiveRoleGrantSchema = Type.Object(
+  {
+    role: Type.Union([
+      Type.Literal('PRIMARY_ADMIN'),
+      Type.Literal('GYM_ADMIN'),
+      Type.Literal('COACH'),
+      Type.Literal('CENTRAL_ADMIN'),
+    ]),
+    scopeType: Type.Union([
+      Type.Literal('VENUE'),
+      Type.Literal('COMMUNITY'),
+      Type.Literal('SESSION'),
+      Type.Literal('GLOBAL'),
+    ]),
+    scopeId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+
+export const CommunityContextSchema = Type.Object(
+  {
+    venue: Type.Object(
+      {
+        venueId: Type.String({ format: 'uuid' }),
+        displayName: Type.String(),
+        address: Type.String(),
+        cityCode: Type.String(),
+        timezone: Type.String(),
+        minimumBookingNoticeHours: Type.Integer({ minimum: 8, maximum: 48 }),
+        slotPublishHorizonDays: Type.Integer({ minimum: 1, maximum: 30 }),
+        contactPayload: Type.Record(Type.String(), Type.Unknown()),
+      },
+      { additionalProperties: false },
+    ),
+    community: Type.Object(
+      {
+        communityId: Type.String({ format: 'uuid' }),
+        name: Type.String(),
+        state: Type.Union([
+          Type.Literal('ACTIVE'),
+          Type.Literal('PAUSED'),
+          Type.Literal('CLOSING'),
+          Type.Literal('CLOSED'),
+        ]),
+        pairCooldownDays: Type.Integer({ minimum: 7, maximum: 30 }),
+        noShowGraceMinutes: Type.Integer({ minimum: 5, maximum: 30 }),
+        rulesetRef: Type.String(),
+        rulesetAckMode: Type.Union([
+          Type.Literal('IMPLICIT_ON_ACCEPT'),
+          Type.Literal('EXPLICIT_ACK_REQUIRED'),
+        ]),
+        version: Type.Integer({ minimum: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+    membership: Type.Union([
+      Type.Object(
+        {
+          membershipId: Type.String({ format: 'uuid' }),
+          state: Type.Union([
+            Type.Literal('PENDING'),
+            Type.Literal('ACTIVE'),
+            Type.Literal('UNDER_REVIEW'),
+            Type.Literal('REJECTED'),
+            Type.Literal('LEFT'),
+            Type.Literal('REMOVED'),
+            Type.Literal('ARCHIVED'),
+          ]),
+          ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+          competitionEnabled: Type.Boolean(),
+          joinPath: Type.Union([
+            Type.Literal('QR'),
+            Type.Literal('INVITE'),
+            Type.Literal('SELF_REQUEST'),
+          ]),
+        },
+        { additionalProperties: false },
+      ),
+      Type.Null(),
+    ]),
+    activeRoleGrants: Type.Array(ActiveRoleGrantSchema),
+    access: Type.Object(
+      {
+        capabilities: Type.Array(CommunityCapabilitySchema),
+        denials: Type.Array(
+          Type.Object(
+            {
+              capability: CommunityCapabilitySchema,
+              code: CommunityDenialCodeSchema,
+              messageKey: Type.String(),
+              retryable: Type.Boolean(),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'CommunityContext', additionalProperties: false },
+);
+
+export type CommunityContextContract = Static<typeof CommunityContextSchema>;
+
+export const CommunityContextResponseSchema = Type.Object(
+  {
+    data: CommunityContextSchema,
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'CommunityContextResponse', additionalProperties: false },
+);
+
+export type CommunityContextResponse = Static<typeof CommunityContextResponseSchema>;

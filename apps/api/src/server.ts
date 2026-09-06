@@ -3,6 +3,8 @@ import {
   activateUser,
   changeDisplayName,
   createDatabase,
+  ensureLocalPilotCommunity,
+  readCommunityContext,
   readIdentityProjection,
   runMigrations,
 } from '@molokh/db';
@@ -25,6 +27,8 @@ if (production) {
 }
 
 const localUserId = '0199a1b2-1234-7000-8000-000000000101';
+const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
+const localCommunityId = '0199a1b2-1234-7000-8000-000000000502';
 const localToken = process.env.LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 const localActivation: CommandEnvelope<{
   readonly userId: string;
@@ -72,12 +76,35 @@ if (!existingLocalIdentity) {
     outboxMessageId: '0199a1b2-1234-7000-8000-000000000107',
   });
 }
+await ensureLocalPilotCommunity(database, {
+  venueId: localVenueId,
+  venueConfigurationId: '0199a1b2-1234-7000-8000-000000000503',
+  communityId: localCommunityId,
+  communityConfigurationId: '0199a1b2-1234-7000-8000-000000000504',
+  membershipId: '0199a1b2-1234-7000-8000-000000000505',
+  athleteUserId: localUserId,
+  centralActorId: '0199a1b2-1234-7000-8000-000000000506',
+  legalName: 'ООО Пилотный спортивный зал',
+  venueDisplayName: 'Molokh Pilot Gym',
+  communityName: 'Molokh Pilot Community',
+  address: 'Москва · пилотный адрес',
+  cityCode: 'MOSCOW',
+  timezone: 'Europe/Moscow',
+  contactPayload: { phone: '+79990000501', note: 'Уточните детали у зала' },
+  occurredAt: '2026-09-05T09:00:00.000Z',
+});
+
+const localAuth = new StaticBearerAuthAdapter(localToken, localUserId);
 
 const app = await buildApp({
   logger: true,
   allowedOrigins: ['http://localhost:8081', 'http://127.0.0.1:8081'],
+  community: {
+    auth: localAuth,
+    readContext: (userId) => readCommunityContext(database, userId, localCommunityId),
+  },
   identity: {
-    auth: new StaticBearerAuthAdapter(localToken, localUserId),
+    auth: localAuth,
     readMe: (userId) => readIdentityProjection(database, userId),
     changeDisplayName: (command, ids) => changeDisplayName(database, command, ids),
   },
