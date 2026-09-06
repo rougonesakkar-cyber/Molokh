@@ -9,11 +9,15 @@ import {
 } from '@molokh/contracts';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 
+import { registerRequestContext } from './request-context.js';
+
 export async function buildApp(options: FastifyServerOptions = {}) {
   const app = Fastify({
     logger: options.logger ?? false,
     ...options,
   }).withTypeProvider<TypeBoxTypeProvider>();
+
+  registerRequestContext(app);
 
   await app.register(swagger, {
     openapi: {
@@ -61,4 +65,3 @@ export async function buildApp(options: FastifyServerOptions = {}) {
 
   return app;
 }
-

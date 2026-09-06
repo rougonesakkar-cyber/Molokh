@@ -158,14 +158,15 @@ No estimates are assigned before team capacity is known. Recommended order:
 
 This sprint produces a demonstrable Training slice while establishing the same foundations Competition will use.
 
-### Current implementation progress (2026-09-05)
+### Current implementation progress (2026-09-06)
 
 - Story 1: complete for the local environment; API, Worker, PostgreSQL and universal Expo shell boot successfully.
 - Story 2: complete at the Core/platform layer; command envelope, actor snapshot, expected version, stable request hash and actor-command idempotency scope are implemented.
 - Story 3: complete at the PostgreSQL primitive layer; aggregate mutation, domain event, audit, outbox and saved idempotent response commit atomically. Concurrent replay, changed-payload rejection, stale version, rollback and consumer Inbox deduplication pass real PostgreSQL integration tests.
 - Outbox delivery increment: complete; leased `SKIP LOCKED` claim, bounded retry, crash-safe lease recovery, Graphile job deduplication and Inbox receipt handling are implemented.
 - Timer foundation increment: complete; canonical payload, exact deadline boundary, state/version stale guard, early reschedule and diagnostic-only stale path are implemented. Product handlers register with their owning modules.
-- Next: finish the remaining M1 notification projection and observability seams, then start Story 4.
+- Notification/observability increment: complete; event-to-inbox projection is atomic and duplicate-safe, notification reads enforce recipient ownership, and API request/correlation/causation IDs propagate through response headers and structured logs.
+- M1 exit: complete at the platform layer. Next: start Story 4 and build the Identity/Community prerequisites as the first product-owned slice.
 
 ## 5. Work that needs product/external input later
 

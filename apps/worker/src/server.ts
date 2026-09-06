@@ -5,6 +5,7 @@ import {
   claimOutboxBatch,
   createDatabase,
   markOutboxPublished,
+  projectNotificationBatch,
   outboxRetryDelayMilliseconds,
   releaseOutboxFailure,
 } from '@molokh/db';
@@ -12,6 +13,7 @@ import { run } from 'graphile-worker';
 import pino from 'pino';
 
 import { startOutboxPolling } from './outbox-dispatcher.js';
+import { parseNotificationProjection } from './notification-projection.js';
 import { createTaskList } from './tasks.js';
 
 const connectionString = process.env.DATABASE_URL;
@@ -28,6 +30,20 @@ const taskList = createTaskList({
     throw new Error(`No product timer handler registered for ${payload.commandType}`);
   },
   onOutboxEvent: async (message) => {
+    const notifications = parseNotificationProjection(message);
+    if (notifications) {
+      const result = await projectNotificationBatch(database, message.eventId, notifications);
+      logger.info(
+        {
+          createdCount: result.createdCount,
+          eventId: message.eventId,
+          messageId: message.messageId,
+          replayed: result.replayed,
+        },
+        'notification inbox projection handled',
+      );
+      return;
+    }
     const claimed = await claimInboxEvent(database, `outbox:${message.topic}`, message.eventId);
     if (!claimed) {
       logger.info(

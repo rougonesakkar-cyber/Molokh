@@ -7,6 +7,7 @@
 - mutations are explicit commands, not generic PATCH of state/status;
 - every critical command requires `Idempotency-Key` and `If-Match: <aggregate_version>`;
 - every response includes `request_id` and current aggregate/read-model version;
+- every HTTP response also carries `X-Request-Id` and `X-Correlation-Id`; a valid incoming ID is propagated and an invalid one is replaced;
 - list pagination uses opaque cursor;
 - public/profile payloads never expose private reason/evidence fields.
 

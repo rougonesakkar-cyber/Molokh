@@ -1,9 +1,12 @@
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$ProjectRoot
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $ProjectRoot = Split-Path -Parent $PSScriptRoot
+}
 $specRoot = Join-Path $ProjectRoot 'core-engine-spec'
 $errors = [System.Collections.Generic.List[string]]::new()
 

@@ -9,6 +9,8 @@ import {
   executeCriticalCommand,
   hashCommandRequest,
   markOutboxPublished,
+  markNotificationRead,
+  projectNotificationBatch,
   releaseOutboxFailure,
   runMigrations,
   type CriticalCommandEffect,
@@ -24,6 +26,10 @@ const ids = {
   event: '0199a1b2-1234-7000-8000-000000000006',
   audit: '0199a1b2-1234-7000-8000-000000000007',
   outbox: '0199a1b2-1234-7000-8000-000000000008',
+  notificationOne: '0199a1b2-1234-7000-8000-000000000010',
+  notificationTwo: '0199a1b2-1234-7000-8000-000000000011',
+  recipientOne: '0199a1b2-1234-7000-8000-000000000012',
+  recipientTwo: '0199a1b2-1234-7000-8000-000000000013',
 } as const;
 
 function command(
@@ -126,6 +132,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await sql`
       truncate table
         test_support.probe_aggregates,
+        platform.notifications,
+        platform.notification_preferences,
         platform.outbox_messages,
         platform.idempotency_records,
         platform.inbox_receipts,
@@ -259,5 +267,56 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(
       await claimOutboxBatch(database, { workerId: 'worker-4', batchSize: 10 }),
     ).toEqual([]);
+  });
+
+  it('projects an event into recipient notifications once and marks reads idempotently', async () => {
+    await executeCriticalCommand(database, {
+      command: command(),
+      mutate: (transaction, context) => mutate(transaction, context.nextVersion),
+    });
+
+    const drafts = [
+      {
+        notificationId: ids.notificationOne,
+        recipientUserId: ids.recipientOne,
+        category: 'MANDATORY' as const,
+        renderKey: 'challenge.response_required',
+        actionTarget: { type: 'CHALLENGE', id: ids.aggregate },
+        payload: { responseHours: 48 },
+        deadlineAt: '2026-09-06T20:00:00.000Z',
+      },
+      {
+        notificationId: ids.notificationTwo,
+        recipientUserId: ids.recipientTwo,
+        category: 'SERVICE' as const,
+        renderKey: 'challenge.created',
+        actionTarget: { type: 'CHALLENGE', id: ids.aggregate },
+        payload: {},
+        deadlineAt: null,
+      },
+    ];
+
+    await expect(projectNotificationBatch(database, ids.event, drafts)).resolves.toEqual({
+      replayed: false,
+      createdCount: 2,
+    });
+    await expect(projectNotificationBatch(database, ids.event, drafts)).resolves.toEqual({
+      replayed: true,
+      createdCount: 0,
+    });
+
+    const count = await sql<{ readonly notifications: string }>`
+      select count(*)::text as notifications from platform.notifications
+    `.execute(database);
+    expect(count.rows[0]?.notifications).toBe('2');
+    await expect(
+      markNotificationRead(database, ids.notificationOne, ids.recipientOne),
+    ).resolves.toBe(true);
+    await expect(
+      markNotificationRead(database, ids.notificationOne, ids.recipientOne),
+    ).resolves.toBe(true);
+    await expect(
+      markNotificationRead(database, ids.notificationOne, ids.recipientTwo),
+    ).resolves.toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 # Technical Spike Status
 
-**Date:** 2026-09-05
+**Date:** 2026-09-06
 **Scope:** approved stack baseline, not a product vertical slice.
 
 ## Gates
@@ -17,6 +17,8 @@
 | Critical command transaction | concurrent commit/replay/conflict/rollback plus event/audit/outbox/inbox | Pass |
 | Outbox delivery | concurrent lease, retry and Graphile enqueue/deduplication | Pass |
 | Timer guard foundation | due boundary, early reschedule and diagnostic-only stale path | Pass |
+| Notification projection | atomic event-to-inbox projection, duplicate delivery and read ownership | Pass |
+| Request context | validated request/correlation/causation headers, response propagation and safe error mapping | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
@@ -75,9 +77,11 @@ The critical-command primitive now provides:
 - exact replay, changed-payload rejection, stale-version rejection and Inbox consumer deduplication;
 - leased `SKIP LOCKED` outbox claim, bounded retry and Graphile job-key deduplication;
 - canonical timer payload and deterministic `NOT_DUE`, `STALE` or `DUE` decision;
+- atomic, idempotent in-app notification projection with mandatory/service/social/promotional classes;
+- transport request/correlation/causation context, safe structured completion logs and stable public conflict errors;
 - a dedicated `molokh_test` database gate that never truncates the development database.
 
-Remaining M1 work is notification projection and structured request/trace context. Product-specific timer handlers are added with their owning domain modules.
+The M1 platform foundation is complete. Product-specific timer and notification producers are added with their owning domain modules rather than as platform-only placeholders.
 
 ## Boundary
 
@@ -85,12 +89,12 @@ The toolchain and M1 transaction primitive are implemented. The first Training v
 
 ## Verification result
 
-Verified on 2026-09-04:
+Verified on 2026-09-06:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- eighteen non-database automated tests pass across Core, DB, API, worker and testkit;
-- three additional PostgreSQL transaction/outbox scenarios pass through the dedicated database gate;
+- twenty-two non-database automated tests pass across Core, DB, API, worker and testkit;
+- four additional PostgreSQL transaction/outbox/notification scenarios pass through the dedicated database gate;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;

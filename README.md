@@ -9,7 +9,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - registered events: **278**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
 - open blocking product questions: **0**;
-- implementation code: technical stack and M1 critical-command transaction foundation implemented; product vertical slices not started;
+- implementation code: technical stack and M1 platform transaction/notification/observability foundation implemented; product vertical slices not started;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -68,4 +68,4 @@ See [technical spike status](implementation/TECHNICAL_SPIKE_STATUS.md) for envir
 
 ## Next executable action
 
-Finish the remaining M1 notification projection and observability seams, then implement Identity/Community prerequisites and deliver the ordinary Training vertical slice before the Competition slice. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+Implement Identity/Community prerequisites, then deliver the ordinary Training vertical slice before the Competition slice. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

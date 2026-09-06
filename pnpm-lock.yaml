@@ -32,6 +32,9 @@ importers:
       '@molokh/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@molokh/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       fastify:
         specifier: 5.12.1
         version: 5.12.1
