@@ -1,5 +1,6 @@
 import {
   IdempotencyKeyReusedError,
+  IdentityPermissionDeniedError,
   IdentityValidationError,
   VersionConflictError,
   type ActivateIdentityInput,
@@ -10,6 +11,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   activateUser,
+  approveAccountVerification,
   changeDisplayName,
   claimOutboxBatch,
   claimInboxEvent,
@@ -19,11 +21,13 @@ import {
   hashCommandRequest,
   markOutboxPublished,
   markNotificationRead,
+  listPendingVerifications,
   projectNotificationBatch,
   readCommunityContext,
   readIdentityProjection,
   releaseOutboxFailure,
   runMigrations,
+  startAccountVerification,
   type CriticalCommandEffect,
   type Database,
 } from '../src/index.js';
@@ -58,6 +62,16 @@ const ids = {
   communityConfiguration: '0199a1b2-1234-7000-8000-000000000223',
   membership: '0199a1b2-1234-7000-8000-000000000224',
   centralActor: '0199a1b2-1234-7000-8000-000000000225',
+  centralGrant: '0199a1b2-1234-7000-8000-000000000226',
+  verification: '0199a1b2-1234-7000-8000-000000000230',
+  verificationStartCommand: '0199a1b2-1234-7000-8000-000000000231',
+  verificationStartEvent: '0199a1b2-1234-7000-8000-000000000232',
+  verificationStartAudit: '0199a1b2-1234-7000-8000-000000000233',
+  verificationStartOutbox: '0199a1b2-1234-7000-8000-000000000234',
+  verificationApproveCommand: '0199a1b2-1234-7000-8000-000000000235',
+  verificationApproveEvent: '0199a1b2-1234-7000-8000-000000000236',
+  verificationApproveAudit: '0199a1b2-1234-7000-8000-000000000237',
+  verificationApproveOutbox: '0199a1b2-1234-7000-8000-000000000238',
 } as const;
 
 function command(
@@ -468,12 +482,29 @@ describePostgres('PostgreSQL critical command transaction', () => {
       },
     ]);
 
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${ids.centralActor}::uuid, '+79990000225', '2026-09-05T08:00:00Z',
+        '1990-01-01', 'ADULT', 'Central Operator', 'ACTIVE', 'ru-RU', 1,
+        '2026-09-06T08:00:00Z'
+      )
+    `.execute(database);
+    await sql`
+      insert into identity.athlete_profiles (
+        user_id, primary_sport, secondary_sport, discovery_radius_km
+      ) values (${ids.centralActor}::uuid, 'BOXING', null, 15)
+    `.execute(database);
+
     const fixture = {
       venueId: ids.venue,
       venueConfigurationId: ids.venueConfiguration,
       communityId: ids.community,
       communityConfigurationId: ids.communityConfiguration,
       membershipId: ids.membership,
+      centralGrantId: ids.centralGrant,
       athleteUserId: ids.identityUser,
       centralActorId: ids.centralActor,
       legalName: 'Pilot Legal Name',
@@ -528,6 +559,130 @@ describePostgres('PostgreSQL critical command transaction', () => {
       communities: '1',
       memberships: '1',
     });
+
+    const verificationStart: CommandEnvelope<{
+      readonly userId: string;
+      readonly moderationChecklistVersion: string;
+    }> = {
+      commandId: ids.verificationStartCommand,
+      commandType: 'START_VERIFICATION',
+      idempotencyKey: 'identity-verification-start-1',
+      actor: {
+        type: 'USER',
+        id: ids.identityUser,
+        roles: ['ATHLETE'],
+        scopeIds: [],
+      },
+      aggregateType: 'AccountVerification',
+      aggregateId: ids.verification,
+      expectedVersion: 0,
+      correlationId: ids.identityCorrelation,
+      causationId: null,
+      requestId: ids.identityRequest,
+      source: 'api',
+      payloadVersion: 1,
+      payload: {
+        userId: ids.identityUser,
+        moderationChecklistVersion: 'identity-mvp-v1',
+      },
+    };
+    const verificationStartIds = {
+      eventId: ids.verificationStartEvent,
+      auditId: ids.verificationStartAudit,
+      outboxMessageId: ids.verificationStartOutbox,
+    };
+    const pending = await startAccountVerification(
+      database,
+      verificationStart,
+      verificationStartIds,
+    );
+    const pendingReplay = await startAccountVerification(
+      database,
+      verificationStart,
+      verificationStartIds,
+    );
+    expect(pending.response.accountVerificationState).toBe('PENDING');
+    expect(pendingReplay.replayed).toBe(true);
+    expect(await listPendingVerifications(database, ids.centralActor)).toMatchObject([
+      {
+        verificationId: ids.verification,
+        userId: ids.identityUser,
+        displayName: 'Номер Один',
+        moderationChecklistVersion: 'identity-mvp-v1',
+        version: 1,
+      },
+    ]);
+
+    const verificationApproval: CommandEnvelope<{
+      readonly userId: string;
+      readonly moderationChecklistVersion: string;
+    }> = {
+      commandId: ids.verificationApproveCommand,
+      commandType: 'APPROVE_VERIFICATION',
+      idempotencyKey: 'identity-verification-approve-1',
+      actor: {
+        type: 'USER',
+        id: ids.centralActor,
+        roles: ['CENTRAL_ADMIN'],
+        scopeIds: [],
+      },
+      aggregateType: 'AccountVerification',
+      aggregateId: ids.verification,
+      expectedVersion: 1,
+      correlationId: ids.identityCorrelation,
+      causationId: ids.verificationStartEvent,
+      requestId: ids.identityRequest,
+      source: 'admin',
+      payloadVersion: 1,
+      payload: {
+        userId: ids.identityUser,
+        moderationChecklistVersion: 'identity-mvp-v1',
+      },
+    };
+    await expect(
+      approveAccountVerification(
+        database,
+        {
+          ...verificationApproval,
+          commandId: '0199a1b2-1234-7000-8000-000000000239',
+          idempotencyKey: 'identity-verification-unauthorized',
+          actor: {
+            type: 'USER',
+            id: ids.identityUser,
+            roles: ['ATHLETE'],
+            scopeIds: [],
+          },
+        },
+        {
+          eventId: ids.verificationApproveEvent,
+          auditId: ids.verificationApproveAudit,
+          outboxMessageId: ids.verificationApproveOutbox,
+        },
+      ),
+    ).rejects.toBeInstanceOf(IdentityPermissionDeniedError);
+    const approved = await approveAccountVerification(
+      database,
+      verificationApproval,
+      {
+        eventId: ids.verificationApproveEvent,
+        auditId: ids.verificationApproveAudit,
+        outboxMessageId: ids.verificationApproveOutbox,
+      },
+    );
+    expect(approved.response.accountVerificationState).toBe('VERIFIED');
+    expect(await listPendingVerifications(database, ids.centralActor)).toEqual([]);
+    expect(
+      (await readCommunityContext(database, ids.identityUser, ids.community))?.access
+        .capabilities,
+    ).toContain('CREATE_OFFICIAL_CHALLENGE');
+
+    const verificationEvent = await sql<{ readonly payload: Record<string, unknown> }>`
+      select payload
+      from platform.domain_events
+      where event_id = ${ids.verificationApproveEvent}::uuid
+    `.execute(database);
+    expect(verificationEvent.rows[0]?.payload).not.toHaveProperty('document');
+    expect(verificationEvent.rows[0]?.payload).not.toHaveProperty('evidence');
 
     await sql`
       update identity.users set account_state = 'RESTRICTED'

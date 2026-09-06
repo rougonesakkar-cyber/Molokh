@@ -30,7 +30,7 @@ const capabilityLabels: Record<Capability, string> = {
   USE_DISCOVERY: 'Discovery доступен',
   EDIT_PROFILE: 'Профиль можно изменять',
   BOOK_ORDINARY_TRAINING: 'Обычные тренировки доступны',
-  CREATE_OFFICIAL_CHALLENGE: 'Официальные Challenge доступны',
+  ACCOUNT_VERIFIED: 'Верификация аккаунта пройдена',
 };
 
 const verificationLabels: Record<Identity['accountVerificationState'], string> = {
@@ -69,6 +69,7 @@ export default function IdentityScreen() {
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [startingVerification, setStartingVerification] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadIdentity = useCallback(async () => {
@@ -147,6 +148,28 @@ export default function IdentityScreen() {
     }
   };
 
+  const startVerification = async () => {
+    if (!identity || identity.accountVerificationState !== 'NOT_STARTED') return;
+    setStartingVerification(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/me/verification`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Idempotency-Key': `identity:${identity.userId}:verification:first`,
+        },
+      });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      const result = (await response.json()) as IdentityCommandResponse;
+      setIdentity(result.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось начать верификацию');
+    } finally {
+      setStartingVerification(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
@@ -211,6 +234,31 @@ export default function IdentityScreen() {
                 <Text style={styles.muted}>Основной спорт</Text>
                 <Text style={styles.value}>{identity.primarySport}</Text>
               </View>
+              {identity.accountVerificationState === 'NOT_STARTED' ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={startingVerification}
+                  onPress={() => void startVerification()}
+                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                >
+                  {startingVerification ? (
+                    <ActivityIndicator color="#8b2f22" />
+                  ) : (
+                    <Text style={styles.secondaryButtonText}>Отправить на верификацию</Text>
+                  )}
+                </Pressable>
+              ) : identity.accountVerificationState === 'PENDING' ? (
+                <Text style={styles.hint}>
+                  Заявка в очереди Central. Документы загружать не требуется.
+                </Text>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void loadIdentity()}
+                style={styles.refreshButton}
+              >
+                <Text style={styles.refreshText}>Обновить статус</Text>
+              </Pressable>
             </View>
 
             <View style={styles.card}>
@@ -224,7 +272,7 @@ export default function IdentityScreen() {
               </View>
               {identity.capabilityDenials.map((denial) => (
                 <Text key={denial.capability} style={styles.denial}>
-                  {denial.capability === 'CREATE_OFFICIAL_CHALLENGE'
+                  {denial.capability === 'ACCOUNT_VERIFIED'
                     ? 'Для официального Challenge потребуется верификация Central.'
                     : capabilityLabels[denial.capability]}
                 </Text>
@@ -327,6 +375,18 @@ const styles = StyleSheet.create({
   buttonDisabled: { backgroundColor: '#bbb5ad' },
   buttonPressed: { opacity: 0.85 },
   buttonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
+  secondaryButton: {
+    alignItems: 'center',
+    borderColor: '#8b2f22',
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 50,
+    paddingHorizontal: 18,
+  },
+  secondaryButtonText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
+  refreshButton: { alignSelf: 'flex-start', justifyContent: 'center', minHeight: 48 },
+  refreshText: { color: '#625d55', fontSize: 14, fontWeight: '600' },
   cardTitle: { color: '#171512', fontSize: 18, fontWeight: '700' },
   venueName: { color: '#4c4943', fontSize: 16, fontWeight: '600' },
   row: { alignItems: 'flex-start', flexDirection: 'row', gap: 16, justifyContent: 'space-between' },

@@ -63,7 +63,7 @@ function unauthorized(request: FastifyRequest) {
   };
 }
 
-function contractIdentity(identity: IdentityProjection): IdentityProjectionContract {
+export function contractIdentity(identity: IdentityProjection): IdentityProjectionContract {
   return {
     ...identity,
     capabilities: [...identity.capabilities],

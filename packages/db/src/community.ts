@@ -16,6 +16,7 @@ export interface LocalPilotCommunityFixture {
   readonly communityId: string;
   readonly communityConfigurationId: string;
   readonly membershipId: string;
+  readonly centralGrantId: string;
   readonly athleteUserId: string;
   readonly centralActorId: string;
   readonly legalName: string;
@@ -162,6 +163,16 @@ export async function ensureLocalPilotCommunity(
         'ACTIVE', true, 'QR', ${fixture.occurredAt}::timestamptz,
         ${fixture.centralActorId}::uuid, 1
       ) on conflict (membership_id) do nothing
+    `.execute(transaction);
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${fixture.centralGrantId}::uuid, ${fixture.centralActorId}::uuid,
+        'CENTRAL_ADMIN', 'GLOBAL', null, 'ACTIVE',
+        ${fixture.centralActorId}::uuid, ${fixture.occurredAt}::timestamptz, 1
+      ) on conflict (grant_id) do nothing
     `.execute(transaction);
   });
 }

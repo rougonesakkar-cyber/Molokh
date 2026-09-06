@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   MinimumAgeNotMetError,
+  InvalidIdentityTransitionError,
   activateIdentity,
+  approveVerificationState,
   deriveAgeDivision,
   normalizeDisplayName,
+  normalizeChecklistVersion,
   projectIdentityCapabilities,
+  startVerificationState,
 } from '../src/identity.js';
 
 const now = new Date('2026-09-06T12:00:00.000Z');
@@ -85,11 +89,45 @@ describe('identity rules', () => {
     ]);
     expect(projection.capabilityDenials).toEqual([
       {
-        capability: 'CREATE_OFFICIAL_CHALLENGE',
+        capability: 'ACCOUNT_VERIFIED',
         code: 'ACCOUNT_NOT_VERIFIED',
         messageKey: 'identity.account_not_verified',
         retryable: true,
       },
     ]);
+  });
+
+  it('moves verification only through V-01 and V-02 with an opaque checklist version', () => {
+    expect(normalizeChecklistVersion(' identity-v1 ')).toBe('identity-v1');
+    expect(
+      startVerificationState({
+        currentState: 'NOT_STARTED',
+        accountState: 'ACTIVE',
+        phoneVerified: true,
+      }),
+    ).toBe('PENDING');
+    expect(
+      approveVerificationState({
+        currentState: 'PENDING',
+        accountState: 'ACTIVE',
+        phoneVerified: true,
+        moderationChecksPassed: true,
+      }),
+    ).toBe('VERIFIED');
+    expect(() =>
+      approveVerificationState({
+        currentState: 'VERIFIED',
+        accountState: 'ACTIVE',
+        phoneVerified: true,
+        moderationChecksPassed: true,
+      }),
+    ).toThrow(InvalidIdentityTransitionError);
+    expect(() =>
+      startVerificationState({
+        currentState: 'NOT_STARTED',
+        accountState: 'RESTRICTED',
+        phoneVerified: true,
+      }),
+    ).toThrow(InvalidIdentityTransitionError);
   });
 });

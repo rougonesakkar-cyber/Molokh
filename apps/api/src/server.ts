@@ -1,12 +1,15 @@
 import type { CommandEnvelope } from '@molokh/core';
 import {
   activateUser,
+  approveAccountVerification,
   changeDisplayName,
   createDatabase,
   ensureLocalPilotCommunity,
+  listPendingVerifications,
   readCommunityContext,
   readIdentityProjection,
   runMigrations,
+  startAccountVerification,
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
@@ -29,7 +32,10 @@ if (production) {
 const localUserId = '0199a1b2-1234-7000-8000-000000000101';
 const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
 const localCommunityId = '0199a1b2-1234-7000-8000-000000000502';
+const localCentralUserId = '0199a1b2-1234-7000-8000-000000000506';
 const localToken = process.env.LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
+const localCentralToken =
+  process.env.LOCAL_CENTRAL_AUTH_TOKEN ?? 'molokh-local-central-token';
 const localActivation: CommandEnvelope<{
   readonly userId: string;
   readonly phoneE164: string;
@@ -66,6 +72,32 @@ const localActivation: CommandEnvelope<{
   },
 };
 
+const localCentralActivation: typeof localActivation = {
+  commandId: '0199a1b2-1234-7000-8000-000000000510',
+  commandType: 'ACTIVATE_ACCOUNT',
+  idempotencyKey: 'local-development-central-v1',
+  actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+  aggregateType: 'User',
+  aggregateId: localCentralUserId,
+  expectedVersion: 0,
+  correlationId: '0199a1b2-1234-7000-8000-000000000511',
+  causationId: null,
+  requestId: '0199a1b2-1234-7000-8000-000000000512',
+  source: 'scheduler',
+  payloadVersion: 1,
+  payload: {
+    userId: localCentralUserId,
+    phoneE164: '+79990000506',
+    phoneVerifiedAt: '2026-09-05T09:00:00.000Z',
+    birthDate: '1990-01-01',
+    displayName: 'Central Operator',
+    locale: 'ru-RU',
+    primarySport: 'BOXING',
+    secondarySport: null,
+    discoveryRadiusKm: 15,
+  },
+};
+
 await runMigrations(connectionString);
 const database = createDatabase(connectionString);
 const existingLocalIdentity = await readIdentityProjection(database, localUserId);
@@ -76,12 +108,21 @@ if (!existingLocalIdentity) {
     outboxMessageId: '0199a1b2-1234-7000-8000-000000000107',
   });
 }
+const existingCentralIdentity = await readIdentityProjection(database, localCentralUserId);
+if (!existingCentralIdentity) {
+  await activateUser(database, localCentralActivation, {
+    eventId: '0199a1b2-1234-7000-8000-000000000513',
+    auditId: '0199a1b2-1234-7000-8000-000000000514',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000515',
+  });
+}
 await ensureLocalPilotCommunity(database, {
   venueId: localVenueId,
   venueConfigurationId: '0199a1b2-1234-7000-8000-000000000503',
   communityId: localCommunityId,
   communityConfigurationId: '0199a1b2-1234-7000-8000-000000000504',
   membershipId: '0199a1b2-1234-7000-8000-000000000505',
+  centralGrantId: '0199a1b2-1234-7000-8000-000000000507',
   athleteUserId: localUserId,
   centralActorId: '0199a1b2-1234-7000-8000-000000000506',
   legalName: 'ООО Пилотный спортивный зал',
@@ -95,6 +136,10 @@ await ensureLocalPilotCommunity(database, {
 });
 
 const localAuth = new StaticBearerAuthAdapter(localToken, localUserId);
+const localCentralAuth = new StaticBearerAuthAdapter(
+  localCentralToken,
+  localCentralUserId,
+);
 
 const app = await buildApp({
   logger: true,
@@ -107,6 +152,14 @@ const app = await buildApp({
     auth: localAuth,
     readMe: (userId) => readIdentityProjection(database, userId),
     changeDisplayName: (command, ids) => changeDisplayName(database, command, ids),
+  },
+  verification: {
+    athleteAuth: localAuth,
+    centralAuth: localCentralAuth,
+    start: (command, ids) => startAccountVerification(database, command, ids),
+    approve: (command, ids) => approveAccountVerification(database, command, ids),
+    listPending: (centralUserId) =>
+      listPendingVerifications(database, centralUserId),
   },
 });
 

@@ -35,7 +35,7 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 |---:|---|---|---|
 | 0 | Through 06 Sep | M0 + M1 platform foundation | All current infrastructure gates pass; baseline committed |
 | 1 | 07–13 Sep | User, AthleteProfile, local auth adapter and capability projection | DONE EARLY 06 Sep: seeded User signs in locally, edits profile and sees explicit capability denials |
-| 2 | 14–20 Sep | Venue, Community, Membership, Coach/Admin grants and Central verification | IN PROGRESS EARLY 06 Sep: pilot context and scope guards run; mutation workflows remain |
+| 2 | 14–20 Sep | Venue, Community, Membership, Coach/Admin grants and Central verification | IN PROGRESS EARLY 06 Sep: pilot context and Central verification run; role mutations remain |
 | 3 | 21–27 Sep | Discovery hard gates/order, Like, Skip, Match, Block and suppression timers | Two seeded Athletes reach Match; inbound interest is visible without bypassing Like |
 | 4 | 28 Sep–04 Oct | Personal Chat, structured action cards, edit/archive/report seams | Matched Athletes coordinate through Chat; clients never parse action text |
 | 5 | 05–11 Oct | Slot, GroupOffering, mutual selection and Booking snapshot | Both Athletes choose one real option; no reservation exists before host confirmation |
@@ -97,16 +97,17 @@ Rules protecting the 12-week target:
 
 - Core Engine v1.0: 300 transitions, 278 registered events, 213 acceptance scenarios and zero open blocking questions.
 - Workspace: TypeScript checks and Web production build pass across all packages.
-- Tests: 36 non-database tests plus five additional real PostgreSQL scenarios pass.
-- Database: migrations `0001`–`0009` applied locally; PostgreSQL 18 is healthy.
+- Tests: 38 non-database tests plus five additional real PostgreSQL scenarios pass.
+- Database: migrations `0001`–`0010` applied locally; PostgreSQL 18 is healthy.
 - Product slice: the live universal Web route reads the seeded Athlete and changes an arbitrary display name through a versioned/idempotent API command; replay returns the same event.
 - Community increment: the same route shows the pilot Venue, active Membership, 15-day cooldown and transparent Official Challenge denial; role scope tests cover Coach/Admin/Primary/Central boundaries.
+- Verification increment: Athlete V-01, Central queue and V-02 execute through live HTTP; approval unlocks Official capability and idempotent replay returns the same event.
 - Source control: the foundation is preserved in local Git history; remote protection remains external.
 
 ## 8. Immediate next actions
 
-1. Add the minimal Central account-verification transition and operator queue required for an Official Challenge capability.
-2. Implement idempotent Coach invite/accept and Central Admin/Primary appointment/transfer commands.
-3. Seed deterministic Coach/Admin participants and expose a short operator walkthrough.
-4. Add positive and denied API tests proving exact Venue/Community/Global scopes against PostgreSQL.
-5. Demonstrate the complete Sprint 2 exit, then begin the Discovery hard-gate projection.
+1. Implement idempotent Coach invite/accept and Central Admin/Primary appointment/transfer commands.
+2. Seed deterministic Coach/Admin participants and expose their short operator walkthrough.
+3. Add positive and denied API tests proving exact Venue/Community/Global mutation scopes against PostgreSQL.
+4. Demonstrate the complete Sprint 2 exit.
+5. Begin the Discovery hard-gate projection.

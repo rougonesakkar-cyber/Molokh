@@ -1,13 +1,17 @@
 import {
+  IdentityPermissionDeniedError,
   IdentityValidationError,
+  approveVerificationState,
   activateIdentity,
+  normalizeChecklistVersion,
   normalizeDisplayName,
   projectIdentityCapabilities,
+  startVerificationState,
   type ActivateIdentityInput,
   type IdentityProjection,
   type CommandEnvelope,
 } from '@molokh/core';
-import { type Kysely, sql } from 'kysely';
+import { type Kysely, type Transaction, sql } from 'kysely';
 
 import type { Database } from './index.js';
 import {
@@ -44,6 +48,16 @@ export interface ChangeDisplayNamePayload {
   readonly displayName: string;
 }
 
+export interface StartVerificationPayload {
+  readonly userId: string;
+  readonly moderationChecklistVersion: string;
+}
+
+export interface ApproveVerificationPayload {
+  readonly userId: string;
+  readonly moderationChecklistVersion: string;
+}
+
 export class IdentityNotFoundError extends Error {
   readonly code = 'IDENTITY_NOT_FOUND';
 
@@ -69,7 +83,7 @@ function projectRow(row: IdentityRow): IdentityProjection {
 }
 
 async function selectIdentity(
-  database: Kysely<Database>,
+  database: Kysely<Database> | Transaction<Database>,
   userId: string,
 ): Promise<IdentityRow | null> {
   const result = await sql<IdentityRow>`
@@ -91,6 +105,24 @@ async function selectIdentity(
     where users.user_id = ${userId}::uuid
   `.execute(database);
   return result.rows[0] ?? null;
+}
+
+function withVerificationState(
+  identity: IdentityProjection,
+  accountVerificationState: IdentityProjection['accountVerificationState'],
+): IdentityProjection {
+  return projectIdentityCapabilities({
+    userId: identity.userId,
+    displayName: identity.displayName,
+    ageDivision: identity.ageDivision,
+    accountState: identity.accountState,
+    phoneVerified: identity.phoneVerified,
+    accountVerificationState,
+    primarySport: identity.primarySport,
+    secondarySport: identity.secondarySport,
+    discoveryRadiusKm: identity.discoveryRadiusKm,
+    version: identity.version,
+  });
 }
 
 export async function readIdentityProjection(
@@ -298,4 +330,252 @@ export async function changeDisplayName(
       };
     },
   });
+}
+
+export async function startAccountVerification(
+  database: Kysely<Database>,
+  command: CommandEnvelope<StartVerificationPayload>,
+  ids: IdentityEffectIds,
+): Promise<ExecutedCommand<IdentityProjection>> {
+  if (command.actor.id !== command.payload.userId) throw new IdentityNotFoundError();
+  const checklistVersion = normalizeChecklistVersion(
+    command.payload.moderationChecklistVersion,
+  );
+
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      await sql`
+        select user_id
+        from identity.users
+        where user_id = ${command.payload.userId}::uuid
+        for update
+      `.execute(transaction);
+      const identityRow = await selectIdentity(transaction, command.payload.userId);
+      if (!identityRow) throw new IdentityNotFoundError();
+      const identity = projectRow(identityRow);
+      const currentResult = await sql<{ readonly state: IdentityProjection['accountVerificationState'] }>`
+        select state
+        from identity.account_verifications
+        where user_id = ${command.payload.userId}::uuid and is_current
+        for update
+      `.execute(transaction);
+      const currentState = currentResult.rows[0]?.state ?? 'NOT_STARTED';
+      const nextState = startVerificationState({
+        currentState,
+        accountState: identity.accountState,
+        phoneVerified: identity.phoneVerified,
+      });
+
+      await sql`
+        insert into identity.account_verifications (
+          verification_id, user_id, state, method,
+          moderation_checklist_version, is_current, expires_at, version
+        ) values (
+          ${command.aggregateId}::uuid, ${command.payload.userId}::uuid,
+          ${nextState}, 'CENTRAL_MODERATION', ${checklistVersion}, true, null,
+          ${context.nextVersion}
+        )
+      `.execute(transaction);
+      const response = withVerificationState(identity, nextState);
+
+      return {
+        responseStatus: 201,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'VerificationStarted',
+          schemaVersion: 1,
+          transitionId: 'V-01',
+          payload: {
+            verificationId: command.aggregateId,
+            userId: command.payload.userId,
+            method: 'CENTRAL_MODERATION',
+            moderationChecklistVersion: checklistVersion,
+          },
+          metadata: { policyVersion: 'identity-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'START_VERIFICATION',
+          transitionId: 'V-01',
+          reasonCode: null,
+          beforeState: 'NOT_STARTED',
+          afterState: nextState,
+          metadata: { moderationChecklistVersion: checklistVersion },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'identity.verification.started.v1',
+            payload: {
+              verificationId: command.aggregateId,
+              userId: command.payload.userId,
+              version: context.nextVersion,
+            },
+          },
+        ],
+      };
+    },
+  });
+}
+
+export async function approveAccountVerification(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ApproveVerificationPayload>,
+  ids: IdentityEffectIds,
+): Promise<ExecutedCommand<IdentityProjection>> {
+  if (!command.actor.id) throw new IdentityPermissionDeniedError();
+  const checklistVersion = normalizeChecklistVersion(
+    command.payload.moderationChecklistVersion,
+  );
+
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const centralGrant = await sql<{ readonly allowed: boolean }>`
+        select true as allowed
+        from community.role_grants
+        where user_id = ${command.actor.id}::uuid
+          and role = 'CENTRAL_ADMIN'
+          and scope_type = 'GLOBAL'
+          and scope_id is null
+          and state = 'ACTIVE'
+        limit 1
+      `.execute(transaction);
+      if (!centralGrant.rows[0]?.allowed) throw new IdentityPermissionDeniedError();
+
+      const verificationResult = await sql<{
+        readonly user_id: string;
+        readonly state: IdentityProjection['accountVerificationState'];
+        readonly moderation_checklist_version: string;
+      }>`
+        select user_id, state, moderation_checklist_version
+        from identity.account_verifications
+        where verification_id = ${command.aggregateId}::uuid and is_current
+        for update
+      `.execute(transaction);
+      const verification = verificationResult.rows[0];
+      if (!verification || verification.user_id !== command.payload.userId) {
+        throw new IdentityNotFoundError();
+      }
+      if (verification.moderation_checklist_version !== checklistVersion) {
+        throw new IdentityValidationError('moderationChecklistVersion');
+      }
+      const identityRow = await selectIdentity(transaction, command.payload.userId);
+      if (!identityRow) throw new IdentityNotFoundError();
+      const identity = projectRow(identityRow);
+      const nextState = approveVerificationState({
+        currentState: verification.state,
+        accountState: identity.accountState,
+        phoneVerified: identity.phoneVerified,
+        moderationChecksPassed: true,
+      });
+      await sql`
+        update identity.account_verifications
+        set state = ${nextState},
+            verified_at = ${context.occurredAt.toISOString()}::timestamptz,
+            decided_by = ${command.actor.id}::uuid,
+            decision_reason = 'PROFILE_PHONE_DUPLICATE_CHECKS_PASSED',
+            version = ${context.nextVersion}
+        where verification_id = ${command.aggregateId}::uuid
+      `.execute(transaction);
+      return {
+        responseStatus: 200,
+        response: withVerificationState(identity, nextState),
+        event: {
+          eventId: ids.eventId,
+          eventName: 'AccountVerified',
+          schemaVersion: 1,
+          transitionId: 'V-02',
+          payload: {
+            verificationId: command.aggregateId,
+            userId: command.payload.userId,
+            method: 'CENTRAL_MODERATION',
+            moderationChecklistVersion: checklistVersion,
+          },
+          metadata: { policyVersion: 'identity-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'APPROVE_VERIFICATION',
+          transitionId: 'V-02',
+          reasonCode: 'PROFILE_PHONE_DUPLICATE_CHECKS_PASSED',
+          beforeState: verification.state,
+          afterState: nextState,
+          metadata: { moderationChecklistVersion: checklistVersion },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'identity.account.verified.v1',
+            payload: {
+              verificationId: command.aggregateId,
+              userId: command.payload.userId,
+              version: context.nextVersion,
+            },
+          },
+        ],
+      };
+    },
+  });
+}
+
+export interface PendingVerificationProjection {
+  readonly verificationId: string;
+  readonly userId: string;
+  readonly displayName: string;
+  readonly ageDivision: IdentityProjection['ageDivision'];
+  readonly moderationChecklistVersion: string;
+  readonly createdAt: string;
+  readonly version: number;
+}
+
+export async function listPendingVerifications(
+  database: Kysely<Database>,
+  centralUserId: string,
+): Promise<readonly PendingVerificationProjection[]> {
+  const centralGrant = await sql<{ readonly allowed: boolean }>`
+    select true as allowed
+    from community.role_grants
+    where user_id = ${centralUserId}::uuid
+      and role = 'CENTRAL_ADMIN'
+      and scope_type = 'GLOBAL'
+      and scope_id is null
+      and state = 'ACTIVE'
+    limit 1
+  `.execute(database);
+  if (!centralGrant.rows[0]?.allowed) throw new IdentityPermissionDeniedError();
+
+  const result = await sql<{
+    readonly verification_id: string;
+    readonly user_id: string;
+    readonly display_name: string;
+    readonly age_division: IdentityProjection['ageDivision'];
+    readonly moderation_checklist_version: string;
+    readonly created_at: Date;
+    readonly version: string;
+  }>`
+    select
+      verification.verification_id,
+      verification.user_id,
+      users.display_name,
+      users.age_division,
+      verification.moderation_checklist_version,
+      verification.created_at,
+      verification.version::text as version
+    from identity.account_verifications as verification
+    join identity.users as users on users.user_id = verification.user_id
+    where verification.state = 'PENDING' and verification.is_current
+    order by verification.created_at, verification.verification_id
+  `.execute(database);
+  return result.rows.map((row) => ({
+    verificationId: row.verification_id,
+    userId: row.user_id,
+    displayName: row.display_name,
+    ageDivision: row.age_division,
+    moderationChecklistVersion: row.moderation_checklist_version,
+    createdAt: row.created_at.toISOString(),
+    version: Number(row.version),
+  }));
 }

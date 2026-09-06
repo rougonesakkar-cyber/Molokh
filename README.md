@@ -9,7 +9,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - registered events: **278**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1 and Sprint 1 Identity complete; Sprint 2 now includes the pilot Venue/Community schema, Membership projection and scoped role guard;
+- implementation code: M0/M1 and Sprint 1 Identity complete; Sprint 2 now includes the pilot Community, scoped role guard and no-document Central verification workflow;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -87,6 +87,17 @@ Then open `http://localhost:8081`. The development API creates one deterministic
 Athlete and authenticates the client through a replaceable local bearer adapter. No SMS
 or production credential is required for this local slice.
 
+To exercise Central verification, press **«Отправить на верификацию»** in the client and,
+while the API is running, execute:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\approve-local-verification.ps1
+```
+
+Press **«Обновить статус»** in the client. The account and Community projections will show
+that Official Challenge is available. The local operator uses a separate Central token;
+no document or user file is uploaded or stored.
+
 ## Next executable action
 
-Complete Central verification and role-grant commands for the seeded pilot Community, then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+Complete Coach/Admin/Primary role-grant commands for the seeded pilot Community, then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

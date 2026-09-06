@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import {
   IdempotencyKeyReusedError,
+  IdentityPermissionDeniedError,
   IdentityValidationError,
   InvalidCommandEnvelopeError,
+  InvalidIdentityTransitionError,
   MinimumAgeNotMetError,
   VersionConflictError,
 } from '@molokh/core';
@@ -68,6 +70,18 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
     return {
       statusCode: 422,
       body: { code: error.code, message: 'Identity update is not valid', requestId },
+    };
+  }
+  if (error instanceof InvalidIdentityTransitionError) {
+    return {
+      statusCode: 409,
+      body: { code: error.code, message: 'Identity state no longer allows this action', requestId },
+    };
+  }
+  if (error instanceof IdentityPermissionDeniedError) {
+    return {
+      statusCode: 403,
+      body: { code: error.code, message: 'This action requires Central permission', requestId },
     };
   }
   if (

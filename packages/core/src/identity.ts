@@ -12,7 +12,7 @@ export type IdentityCapability =
   | 'USE_DISCOVERY'
   | 'EDIT_PROFILE'
   | 'BOOK_ORDINARY_TRAINING'
-  | 'CREATE_OFFICIAL_CHALLENGE';
+  | 'ACCOUNT_VERIFIED';
 
 export type IdentityDenialCode =
   | 'ACCOUNT_RESTRICTED'
@@ -82,6 +82,64 @@ export class IdentityValidationError extends Error {
     super(`Identity field ${field} is invalid`);
     this.name = 'IdentityValidationError';
   }
+}
+
+export class InvalidIdentityTransitionError extends Error {
+  readonly code = 'INVALID_STATE_TRANSITION';
+
+  constructor(readonly transitionId: string) {
+    super(`Identity transition ${transitionId} is not allowed from the current state`);
+    this.name = 'InvalidIdentityTransitionError';
+  }
+}
+
+export class IdentityPermissionDeniedError extends Error {
+  readonly code = 'PERMISSION_DENIED';
+
+  constructor() {
+    super('Identity action is not permitted for this actor');
+    this.name = 'IdentityPermissionDeniedError';
+  }
+}
+
+export function normalizeChecklistVersion(value: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(normalized)) {
+    throw new IdentityValidationError('moderationChecklistVersion');
+  }
+  return normalized;
+}
+
+export function startVerificationState(input: {
+  readonly currentState: AccountVerificationState;
+  readonly accountState: AccountState;
+  readonly phoneVerified: boolean;
+}): 'PENDING' {
+  if (
+    input.currentState !== 'NOT_STARTED' ||
+    input.accountState !== 'ACTIVE' ||
+    !input.phoneVerified
+  ) {
+    throw new InvalidIdentityTransitionError('V-01');
+  }
+  return 'PENDING';
+}
+
+export function approveVerificationState(input: {
+  readonly currentState: AccountVerificationState;
+  readonly accountState: AccountState;
+  readonly phoneVerified: boolean;
+  readonly moderationChecksPassed: boolean;
+}): 'VERIFIED' {
+  if (
+    input.currentState !== 'PENDING' ||
+    input.accountState !== 'ACTIVE' ||
+    !input.phoneVerified ||
+    !input.moderationChecksPassed
+  ) {
+    throw new InvalidIdentityTransitionError('V-02');
+  }
+  return 'VERIFIED';
 }
 
 function parseDate(value: string, field: string): Date {
@@ -175,7 +233,7 @@ export function projectIdentityCapabilities(
     'USE_DISCOVERY',
     'EDIT_PROFILE',
     'BOOK_ORDINARY_TRAINING',
-    'CREATE_OFFICIAL_CHALLENGE',
+    'ACCOUNT_VERIFIED',
   ];
   if (input.accountState !== 'ACTIVE') {
     return {
@@ -201,10 +259,10 @@ export function projectIdentityCapabilities(
   }
 
   if (input.phoneVerified && input.accountVerificationState === 'VERIFIED') {
-    capabilities.push('CREATE_OFFICIAL_CHALLENGE');
+    capabilities.push('ACCOUNT_VERIFIED');
   } else {
     capabilityDenials.push({
-      capability: 'CREATE_OFFICIAL_CHALLENGE',
+      capability: 'ACCOUNT_VERIFIED',
       code: input.phoneVerified ? 'ACCOUNT_NOT_VERIFIED' : 'PHONE_NOT_VERIFIED',
       messageKey: input.phoneVerified
         ? 'identity.account_not_verified'

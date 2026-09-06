@@ -18,15 +18,26 @@ import {
   registerIdentityRoutes,
   type IdentityRouteDependencies,
 } from './identity-routes.js';
+import {
+  registerVerificationRoutes,
+  type VerificationRouteDependencies,
+} from './verification-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
   readonly community?: CommunityRouteDependencies;
   readonly identity?: IdentityRouteDependencies;
+  readonly verification?: VerificationRouteDependencies;
 }
 
 export async function buildApp(options: BuildAppOptions = {}) {
-  const { allowedOrigins = [], community, identity, ...serverOptions } = options;
+  const {
+    allowedOrigins = [],
+    community,
+    identity,
+    verification,
+    ...serverOptions
+  } = options;
   const app = Fastify({
     logger: serverOptions.logger ?? false,
     ...serverOptions,
@@ -43,7 +54,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
         'access-control-allow-headers',
         'Authorization, Content-Type, Idempotency-Key, If-Match, X-Request-Id, X-Correlation-Id',
       );
-      void reply.header('access-control-allow-methods', 'GET, PATCH, OPTIONS');
+      void reply.header('access-control-allow-methods', 'GET, POST, PATCH, OPTIONS');
       if (request.method === 'OPTIONS') await reply.status(204).send();
     }
   });
@@ -60,6 +71,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   if (identity) await registerIdentityRoutes(app, identity);
   if (community) await registerCommunityRoutes(app, community);
+  if (verification) await registerVerificationRoutes(app, verification);
 
   app.get(
     '/health/ready',

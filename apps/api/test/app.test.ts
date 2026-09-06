@@ -8,6 +8,8 @@ import type {
   ChangeDisplayNamePayload,
   CommunityContextProjection,
   IdentityEffectIds,
+  ApproveVerificationPayload,
+  StartVerificationPayload,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -33,7 +35,7 @@ const identity: IdentityProjection = {
   capabilities: ['USE_DISCOVERY', 'EDIT_PROFILE', 'BOOK_ORDINARY_TRAINING'],
   capabilityDenials: [
     {
-      capability: 'CREATE_OFFICIAL_CHALLENGE',
+      capability: 'ACCOUNT_VERIFIED',
       code: 'ACCOUNT_NOT_VERIFIED',
       messageKey: 'identity.account_not_verified',
       retryable: true,
@@ -286,5 +288,123 @@ describe('runtime contract', () => {
     });
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/community');
+  });
+
+  it('runs the no-document Athlete-to-Central verification workflow', async () => {
+    const centralUserId = '0199a1b2-1234-7000-8000-000000000601';
+    const centralToken = 'molokh-central-test-token';
+    const pendingIdentity: IdentityProjection = {
+      ...identity,
+      accountVerificationState: 'PENDING',
+    };
+    const verifiedIdentity: IdentityProjection = {
+      ...identity,
+      accountVerificationState: 'VERIFIED',
+      capabilities: [...identity.capabilities, 'ACCOUNT_VERIFIED'],
+      capabilityDenials: [],
+    };
+    const start = vi.fn(async (
+      _command: CommandEnvelope<StartVerificationPayload>,
+      _ids: IdentityEffectIds,
+    ) => ({
+      responseStatus: 201,
+      response: pendingIdentity,
+      eventId: '0199a1b2-1234-7000-8000-000000000602',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const approve = vi.fn(async (
+      _command: CommandEnvelope<ApproveVerificationPayload>,
+      _ids: IdentityEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: verifiedIdentity,
+      eventId: '0199a1b2-1234-7000-8000-000000000603',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const listPending = vi.fn(async () => [
+      {
+        verificationId: '0199a1b2-1234-7000-8000-000000000604',
+        userId,
+        displayName: identity.displayName,
+        ageDivision: identity.ageDivision,
+        moderationChecklistVersion: 'identity-mvp-v1',
+        createdAt: '2026-09-06T09:00:00.000Z',
+        version: 1,
+      },
+    ] as const);
+    const app = await buildApp({
+      verification: {
+        athleteAuth: new StaticBearerAuthAdapter(token, userId),
+        centralAuth: new StaticBearerAuthAdapter(centralToken, centralUserId),
+        start,
+        approve,
+        listPending,
+      },
+    });
+    apps.push(app);
+
+    const started = await app.inject({
+      method: 'POST',
+      url: '/api/v1/me/verification',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'start-verification-test-1',
+      },
+    });
+    expect(started.statusCode).toBe(201);
+    expect(started.json()).toMatchObject({
+      data: { accountVerificationState: 'PENDING' },
+      meta: { replayed: false },
+    });
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'START_VERIFICATION',
+      aggregateType: 'AccountVerification',
+      expectedVersion: 0,
+      payload: {
+        userId,
+        moderationChecklistVersion: 'identity-mvp-v1',
+      },
+    });
+
+    const deniedQueue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/verifications',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(deniedQueue.statusCode).toBe(401);
+    const queue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/verifications',
+      headers: { authorization: `Bearer ${centralToken}` },
+    });
+    expect(queue.statusCode).toBe(200);
+    expect(queue.json().data).toHaveLength(1);
+
+    const approved = await app.inject({
+      method: 'POST',
+      url: '/api/v1/central/verifications/0199a1b2-1234-7000-8000-000000000604/approve',
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'approve-verification-test-1',
+        'if-match': '1',
+      },
+      payload: {
+        userId,
+        moderationChecklistVersion: 'identity-mvp-v1',
+      },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({
+      data: { accountVerificationState: 'VERIFIED' },
+    });
+    expect(approve.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'APPROVE_VERIFICATION',
+      aggregateId: '0199a1b2-1234-7000-8000-000000000604',
+      expectedVersion: 1,
+      source: 'admin',
+      actor: { id: centralUserId, roles: ['CENTRAL_ADMIN'] },
+    });
   });
 });

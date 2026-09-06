@@ -42,7 +42,7 @@ const IdentityCapabilitySchema = Type.Union([
   Type.Literal('USE_DISCOVERY'),
   Type.Literal('EDIT_PROFILE'),
   Type.Literal('BOOK_ORDINARY_TRAINING'),
-  Type.Literal('CREATE_OFFICIAL_CHALLENGE'),
+  Type.Literal('ACCOUNT_VERIFIED'),
 ]);
 
 const IdentityDenialCodeSchema = Type.Union([
@@ -122,6 +122,43 @@ export const IdentityCommandResponseSchema = Type.Object(
 );
 
 export type IdentityCommandResponse = Static<typeof IdentityCommandResponseSchema>;
+
+export const ApproveVerificationBodySchema = Type.Object(
+  {
+    userId: Type.String({ format: 'uuid' }),
+    moderationChecklistVersion: Type.String({ minLength: 1, maxLength: 80 }),
+  },
+  { $id: 'ApproveVerificationBody', additionalProperties: false },
+);
+
+export type ApproveVerificationBody = Static<typeof ApproveVerificationBodySchema>;
+
+export const PendingVerificationSchema = Type.Object(
+  {
+    verificationId: Type.String({ format: 'uuid' }),
+    userId: Type.String({ format: 'uuid' }),
+    displayName: Type.String(),
+    ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+    moderationChecklistVersion: Type.String(),
+    createdAt: Type.String({ format: 'date-time' }),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'PendingVerification', additionalProperties: false },
+);
+
+export type PendingVerification = Static<typeof PendingVerificationSchema>;
+
+export const PendingVerificationListResponseSchema = Type.Object(
+  {
+    data: Type.Array(PendingVerificationSchema),
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'PendingVerificationListResponse', additionalProperties: false },
+);
+
+export type PendingVerificationListResponse = Static<
+  typeof PendingVerificationListResponseSchema
+>;
 
 const CommunityCapabilitySchema = Type.Union([
   Type.Literal('VIEW_COMMUNITY'),
