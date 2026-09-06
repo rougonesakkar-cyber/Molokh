@@ -26,6 +26,7 @@ Run the consistency check:
 4. [Implementation backlog](implementation/IMPLEMENTATION_BACKLOG.md)
 5. [Test strategy](implementation/TEST_STRATEGY.md)
 6. [Technical spike status](implementation/TECHNICAL_SPIKE_STATUS.md)
+7. [Roadmap and sprint plan](implementation/ROADMAP_AND_SPRINT_PLAN.md)
 
 ## Canonical Core pack
 
