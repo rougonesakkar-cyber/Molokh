@@ -10,14 +10,38 @@ import {
 import Fastify, { type FastifyServerOptions } from 'fastify';
 
 import { registerRequestContext } from './request-context.js';
+import {
+  registerIdentityRoutes,
+  type IdentityRouteDependencies,
+} from './identity-routes.js';
 
-export async function buildApp(options: FastifyServerOptions = {}) {
+export interface BuildAppOptions extends FastifyServerOptions {
+  readonly allowedOrigins?: readonly string[];
+  readonly identity?: IdentityRouteDependencies;
+}
+
+export async function buildApp(options: BuildAppOptions = {}) {
+  const { allowedOrigins = [], identity, ...serverOptions } = options;
   const app = Fastify({
-    logger: options.logger ?? false,
-    ...options,
+    logger: serverOptions.logger ?? false,
+    ...serverOptions,
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   registerRequestContext(app);
+
+  app.addHook('onRequest', async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      void reply.header('access-control-allow-origin', origin);
+      void reply.header('vary', 'Origin');
+      void reply.header(
+        'access-control-allow-headers',
+        'Authorization, Content-Type, Idempotency-Key, If-Match, X-Request-Id, X-Correlation-Id',
+      );
+      void reply.header('access-control-allow-methods', 'GET, PATCH, OPTIONS');
+      if (request.method === 'OPTIONS') await reply.status(204).send();
+    }
+  });
 
   await app.register(swagger, {
     openapi: {
@@ -28,6 +52,8 @@ export async function buildApp(options: FastifyServerOptions = {}) {
       },
     },
   });
+
+  if (identity) await registerIdentityRoutes(app, identity);
 
   app.get(
     '/health/ready',

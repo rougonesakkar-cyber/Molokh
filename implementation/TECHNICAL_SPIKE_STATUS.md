@@ -1,7 +1,7 @@
 # Technical Spike Status
 
 **Date:** 2026-09-06
-**Scope:** approved stack baseline, not a product vertical slice.
+**Scope:** approved stack baseline plus the first product-owned Identity vertical slice.
 
 ## Gates
 
@@ -19,6 +19,7 @@
 | Timer guard foundation | due boundary, early reschedule and diagnostic-only stale path | Pass |
 | Notification projection | atomic event-to-inbox projection, duplicate delivery and read ownership | Pass |
 | Request context | validated request/correlation/causation headers, response propagation and safe error mapping | Pass |
+| Identity vertical slice | 14+ activation, arbitrary display name, public capability projection, local auth, API/client path and private audit | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
@@ -37,18 +38,18 @@ Java, Android and Gradle caches are redirected to drive D through user environme
 ## Verified commands
 
 ```powershell
-pnpm install --frozen-lockfile
-pnpm check
-pnpm --filter @molokh/client exec expo install --check
+pnpm.cmd install --frozen-lockfile
+pnpm.cmd check
+pnpm.cmd --filter @molokh/client exec expo install --check
 ./tools/validate-spec.ps1
-pnpm --filter @molokh/client exec expo run:android --no-bundler
+pnpm.cmd --filter @molokh/client exec expo run:android --no-bundler
 docker compose -f infra/compose.yaml up -d postgres
 $env:DATABASE_URL = 'postgres://molokh:local-only-password@localhost:5432/molokh'
-pnpm --filter @molokh/db migrate
-pnpm test:db
+pnpm.cmd --filter @molokh/db migrate
+pnpm.cmd test:db
 ```
 
-The Android command produced and installed `app-debug.apk` as package `app.molokh.mobile`. A runtime smoke-test reached `MainActivity` and rendered the `MOLOKH MVP` screen through Metro.
+The Android command produced and installed `app-debug.apk` as package `app.molokh.mobile`. A runtime smoke-test reached `MainActivity` through Metro. The current universal route now renders the functional Identity screen; its Web path has been re-verified against the live API.
 
 ## Local PostgreSQL gate
 
@@ -61,7 +62,7 @@ docker version
 docker compose -f infra/compose.yaml up -d postgres
 docker compose -f infra/compose.yaml ps
 $env:DATABASE_URL = 'postgres://molokh:local-only-password@localhost:5432/molokh'
-pnpm --filter @molokh/db migrate
+pnpm.cmd --filter @molokh/db migrate
 ```
 
 The remaining external iOS gate starts with `pnpm exec eas login`; no Expo account is currently authenticated on this host.
@@ -83,9 +84,22 @@ The critical-command primitive now provides:
 
 The M1 platform foundation is complete. Product-specific timer and notification producers are added with their owning domain modules rather than as platform-only placeholders.
 
+## Sprint 1 Identity increment
+
+The first product-owned slice now provides:
+
+- a `User` and `AthleteProfile` PostgreSQL model with a database-enforced 14+ activation boundary;
+- an arbitrary public display name with immediate change and Central-only append-only name history;
+- no public exposure of phone number or birth date;
+- explicit capabilities for Discovery, profile editing, ordinary Training and Official Challenge;
+- the accepted rule that a phone-confirmed, not-yet-Central-verified Athlete may use Discovery and ordinary Training but cannot create an Official Challenge;
+- replaceable authentication through a development-only bearer adapter, without coupling Core to SMS;
+- `GET /api/v1/me` and an idempotent, versioned `PATCH /api/v1/me/profile` path;
+- a minimal responsive Expo screen that loads the real projection and changes the display name.
+
 ## Boundary
 
-The toolchain and M1 transaction primitive are implemented. The first Training vertical slice and product-specific Core transitions are not implemented yet.
+The toolchain, M1 transaction primitive and Sprint 1 Identity exit are implemented. Production OTP/session handling, Central verification workflow, Venue/Community and scoped roles remain in M2. Training scheduling has not started yet.
 
 ## Verification result
 
@@ -93,11 +107,12 @@ Verified on 2026-09-06:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- twenty-two non-database automated tests pass across Core, DB, API, worker and testkit;
-- four additional PostgreSQL transaction/outbox/notification scenarios pass through the dedicated database gate;
+- thirty-one non-database automated tests pass across Core, DB, API, worker and testkit;
+- five additional PostgreSQL transaction/outbox/notification/Identity scenarios pass through the dedicated database gate;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.7.2 runs on WSL 2 and the PostgreSQL 18 container is healthy;
-- the foundation migration applies successfully and is safe to run again;
+- migrations `0001`–`0007`, including the Identity foundation and temporal guard, apply successfully and are safe to run again;
+- the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
 - the Core specification validator reports 300 transitions, 213 acceptance scenarios, zero open questions and zero errors.

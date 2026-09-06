@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 import {
   IdempotencyKeyReusedError,
+  IdentityValidationError,
   InvalidCommandEnvelopeError,
+  MinimumAgeNotMetError,
   VersionConflictError,
 } from '@molokh/core';
 import type { ApiError } from '@molokh/contracts';
@@ -54,6 +56,29 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
         message: 'This operation key was already used for different input',
         requestId,
       },
+    };
+  }
+  if (error instanceof MinimumAgeNotMetError) {
+    return {
+      statusCode: 422,
+      body: { code: error.code, message: 'Minimum account age is 14', requestId },
+    };
+  }
+  if (error instanceof IdentityValidationError) {
+    return {
+      statusCode: 422,
+      body: { code: error.code, message: 'Identity update is not valid', requestId },
+    };
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'IDENTITY_NOT_FOUND'
+  ) {
+    return {
+      statusCode: 404,
+      body: { code: 'IDENTITY_NOT_FOUND', message: 'Identity was not found', requestId },
     };
   }
   const hasValidation =

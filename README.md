@@ -9,7 +9,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - registered events: **278**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
 - open blocking product questions: **0**;
-- implementation code: technical stack and M1 platform transaction/notification/observability foundation implemented; product vertical slices not started;
+- implementation code: M0/M1 foundation complete; the Sprint 1 Identity vertical slice runs end to end with local auth, PostgreSQL, API and universal client;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -57,16 +57,36 @@ The PDF/DOCX artifacts predate the current Core v1.0 and must not override the M
 ## Technical workspace
 
 ```powershell
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-pnpm build
+pnpm.cmd install --frozen-lockfile
+pnpm.cmd typecheck
+pnpm.cmd test
+pnpm.cmd build
 ```
 
 The workspace contains one universal Expo client, Fastify API, Graphile Worker seam,
 shared TypeBox contracts, pure Core primitives, PostgreSQL adapter/migrations and testkit.
 See [technical spike status](implementation/TECHNICAL_SPIKE_STATUS.md) for environment gates.
 
+### Run the local Identity slice
+
+Open three PowerShell terminals in the repository root:
+
+```powershell
+docker compose -f infra/compose.yaml up -d --wait postgres
+```
+
+```powershell
+pnpm.cmd dev:api
+```
+
+```powershell
+pnpm.cmd --filter @molokh/client web
+```
+
+Then open `http://localhost:8081`. The development API creates one deterministic local
+Athlete and authenticates the client through a replaceable local bearer adapter. No SMS
+or production credential is required for this local slice.
+
 ## Next executable action
 
-Implement Identity/Community prerequisites, then deliver the ordinary Training vertical slice before the Competition slice. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+Complete the pilot Venue/Community, membership and scoped role increment, then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

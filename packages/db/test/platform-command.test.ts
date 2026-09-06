@@ -1,8 +1,16 @@
-import { IdempotencyKeyReusedError, VersionConflictError, type CommandEnvelope } from '@molokh/core';
+import {
+  IdempotencyKeyReusedError,
+  IdentityValidationError,
+  VersionConflictError,
+  type ActivateIdentityInput,
+  type CommandEnvelope,
+} from '@molokh/core';
 import { sql, type Transaction } from 'kysely';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  activateUser,
+  changeDisplayName,
   claimOutboxBatch,
   claimInboxEvent,
   createDatabase,
@@ -11,6 +19,7 @@ import {
   markOutboxPublished,
   markNotificationRead,
   projectNotificationBatch,
+  readIdentityProjection,
   releaseOutboxFailure,
   runMigrations,
   type CriticalCommandEffect,
@@ -30,6 +39,17 @@ const ids = {
   notificationTwo: '0199a1b2-1234-7000-8000-000000000011',
   recipientOne: '0199a1b2-1234-7000-8000-000000000012',
   recipientTwo: '0199a1b2-1234-7000-8000-000000000013',
+  identityUser: '0199a1b2-1234-7000-8000-000000000201',
+  activationCommand: '0199a1b2-1234-7000-8000-000000000202',
+  activationEvent: '0199a1b2-1234-7000-8000-000000000203',
+  activationAudit: '0199a1b2-1234-7000-8000-000000000204',
+  activationOutbox: '0199a1b2-1234-7000-8000-000000000205',
+  displayNameCommand: '0199a1b2-1234-7000-8000-000000000206',
+  displayNameEvent: '0199a1b2-1234-7000-8000-000000000207',
+  displayNameAudit: '0199a1b2-1234-7000-8000-000000000208',
+  displayNameOutbox: '0199a1b2-1234-7000-8000-000000000209',
+  identityCorrelation: '0199a1b2-1234-7000-8000-000000000210',
+  identityRequest: '0199a1b2-1234-7000-8000-000000000211',
 } as const;
 
 function command(
@@ -132,6 +152,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await sql`
       truncate table
         test_support.probe_aggregates,
+        identity.display_name_audit,
+        identity.account_verifications,
+        identity.athlete_profiles,
+        identity.users,
         platform.notifications,
         platform.notification_preferences,
         platform.outbox_messages,
@@ -318,5 +342,134 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(
       markNotificationRead(database, ids.notificationOne, ids.recipientTwo),
     ).resolves.toBe(false);
+  });
+
+  it('activates an athlete and changes an arbitrary display name exactly once', async () => {
+    const activation: CommandEnvelope<ActivateIdentityInput> = {
+      commandId: ids.activationCommand,
+      commandType: 'ACTIVATE_ACCOUNT',
+      idempotencyKey: 'identity-activation-1',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'User',
+      aggregateId: ids.identityUser,
+      expectedVersion: 0,
+      correlationId: ids.identityCorrelation,
+      causationId: null,
+      requestId: ids.identityRequest,
+      source: 'scheduler',
+      payloadVersion: 1,
+      payload: {
+        userId: ids.identityUser,
+        phoneE164: '+79990000201',
+        phoneVerifiedAt: '2026-09-06T08:00:00.000Z',
+        birthDate: '2000-04-12',
+        displayName: 'Свободный атлет',
+        locale: 'ru-RU',
+        primarySport: 'BOXING',
+        secondarySport: 'RUNNING',
+        discoveryRadiusKm: 15,
+      },
+    };
+    await expect(
+      activateUser(
+        database,
+        { ...activation, aggregateId: ids.aggregate },
+        {
+          eventId: ids.activationEvent,
+          auditId: ids.activationAudit,
+          outboxMessageId: ids.activationOutbox,
+        },
+      ),
+    ).rejects.toBeInstanceOf(IdentityValidationError);
+    const activated = await activateUser(database, activation, {
+      eventId: ids.activationEvent,
+      auditId: ids.activationAudit,
+      outboxMessageId: ids.activationOutbox,
+    });
+
+    expect(activated).toMatchObject({
+      replayed: false,
+      responseStatus: 201,
+      response: {
+        userId: ids.identityUser,
+        displayName: 'Свободный атлет',
+        accountVerificationState: 'NOT_STARTED',
+        version: 1,
+        capabilities: ['USE_DISCOVERY', 'EDIT_PROFILE', 'BOOK_ORDINARY_TRAINING'],
+      },
+    });
+
+    const rename: CommandEnvelope<{ readonly displayName: string }> = {
+      commandId: ids.displayNameCommand,
+      commandType: 'CHANGE_DISPLAY_NAME',
+      idempotencyKey: 'identity-display-name-1',
+      actor: {
+        type: 'USER',
+        id: ids.identityUser,
+        roles: ['ATHLETE'],
+        scopeIds: [],
+      },
+      aggregateType: 'User',
+      aggregateId: ids.identityUser,
+      expectedVersion: 1,
+      correlationId: ids.identityCorrelation,
+      causationId: ids.activationEvent,
+      requestId: ids.identityRequest,
+      source: 'api',
+      payloadVersion: 1,
+      payload: { displayName: 'Номер Один' },
+    };
+    const renameIds = {
+      eventId: ids.displayNameEvent,
+      auditId: ids.displayNameAudit,
+      outboxMessageId: ids.displayNameOutbox,
+    };
+    const first = await changeDisplayName(database, rename, renameIds);
+    const replay = await changeDisplayName(database, rename, renameIds);
+
+    expect(first.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    expect(replay.response).toEqual(first.response);
+    expect(first.response).toMatchObject({
+      displayName: 'Номер Один',
+      accountVerificationState: 'NOT_STARTED',
+      version: 2,
+    });
+    expect(await readIdentityProjection(database, ids.identityUser)).toEqual(first.response);
+    expect(first.response).not.toHaveProperty('phoneE164');
+    expect(first.response).not.toHaveProperty('birthDate');
+
+    const audit = await sql<{
+      readonly previous_display_name: string;
+      readonly new_display_name: string;
+    }>`
+      select previous_display_name, new_display_name
+      from identity.display_name_audit
+      where user_id = ${ids.identityUser}::uuid
+    `.execute(database);
+    expect(audit.rows).toEqual([
+      {
+        previous_display_name: 'Свободный атлет',
+        new_display_name: 'Номер Один',
+      },
+    ]);
+
+    await sql`
+      update identity.users set account_state = 'RESTRICTED'
+      where user_id = ${ids.identityUser}::uuid
+    `.execute(database);
+    await expect(
+      changeDisplayName(
+        database,
+        {
+          ...rename,
+          commandId: '0199a1b2-1234-7000-8000-000000000212',
+          idempotencyKey: 'identity-display-name-restricted',
+          expectedVersion: 2,
+          payload: { displayName: 'Скрытая смена' },
+        },
+        renameIds,
+      ),
+    ).rejects.toBeInstanceOf(IdentityValidationError);
   });
 });

@@ -21,7 +21,7 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 |---|---|---|---|
 | M0 — Workspace | Reproducible monorepo, CI template, local PostgreSQL, universal Expo shell | DONE | API, Worker, DB and Web/Android shell boot locally |
 | M1 — Platform integrity | Atomic commands, event/audit/outbox, timers, notification inbox, request context | DONE | Commit/replay/conflict/rollback and duplicate delivery pass real PostgreSQL tests |
-| M2 — Identity & Community | Athlete profile, verification, pilot Venue, membership and scoped roles | NEXT | Verified Adult joins one Community and cannot bypass role/scope guards |
+| M2 — Identity & Community | Athlete profile, verification, pilot Venue, membership and scoped roles | IN PROGRESS | Verified Adult joins one Community and cannot bypass role/scope guards |
 | M3 — Discovery, Match & Chat | Transparent card ordering, Like/Match, personal chat and structured actions | PLANNED | Two Users can discover, match and coordinate without hidden reliability scoring |
 | M4 — Training slice | Slot choice, mutual agreement, host confirmation, Session and Coach attendance/result path | PLANNED | One end-to-end ordinary training works on the universal client |
 | M5 — Challenge & Status | Challenge eligibility, FIFO, booking, Forfeit, Champion/Contender transfer and cooldown | PLANNED | Concurrent status scenarios remain deterministic and auditable |
@@ -34,7 +34,7 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 | Sprint | Dates | Primary deliverable | Demonstrable exit |
 |---:|---|---|---|
 | 0 | Through 06 Sep | M0 + M1 platform foundation | All current infrastructure gates pass; baseline committed |
-| 1 | 07–13 Sep | User, AthleteProfile, local auth adapter and capability projection | Seeded User signs in locally, edits profile and sees explicit capability denials |
+| 1 | 07–13 Sep | User, AthleteProfile, local auth adapter and capability projection | DONE EARLY 06 Sep: seeded User signs in locally, edits profile and sees explicit capability denials |
 | 2 | 14–20 Sep | Venue, Community, Membership, Coach/Admin grants and Central verification | Verified User joins the pilot Community; scope and role denials are tested |
 | 3 | 21–27 Sep | Discovery hard gates/order, Like, Skip, Match, Block and suppression timers | Two seeded Athletes reach Match; inbound interest is visible without bypassing Like |
 | 4 | 28 Sep–04 Oct | Personal Chat, structured action cards, edit/archive/report seams | Matched Athletes coordinate through Chat; clients never parse action text |
@@ -97,14 +97,15 @@ Rules protecting the 12-week target:
 
 - Core Engine v1.0: 300 transitions, 278 registered events, 213 acceptance scenarios and zero open blocking questions.
 - Workspace: TypeScript checks and Web production build pass across all packages.
-- Tests: 22 non-database tests plus four additional real PostgreSQL scenarios pass.
-- Database: migrations `0001`–`0005` applied locally; PostgreSQL 18 is healthy.
-- Source control: M0/M1 foundation is preserved in three local commits; remote protection remains external.
+- Tests: 31 non-database tests plus five additional real PostgreSQL scenarios pass.
+- Database: migrations `0001`–`0007` applied locally; PostgreSQL 18 is healthy.
+- Product slice: the live universal Web route reads the seeded Athlete and changes an arbitrary display name through a versioned/idempotent API command; replay returns the same event.
+- Source control: the foundation is preserved in local Git history; remote protection remains external.
 
 ## 8. Immediate next actions
 
-1. Define the M2 Identity module boundary and first stable TypeBox contracts.
-2. Add User/AthleteProfile migration with arbitrary display name and 14+ activation guard.
-3. Implement the local authentication adapter without coupling Core to an SMS provider.
-4. Seed one pilot Venue/Community and capability-scoped Coach/Admin/Central grants.
-5. Demonstrate the Sprint 1 exit through API, minimal universal client and automated tests.
+1. Define the pilot Venue/Community/Membership aggregate boundary and stable TypeBox contracts.
+2. Add scoped Coach/Admin/Primary Admin grants and deny cross-Community Challenge authority server-side.
+3. Seed one pilot Venue, one Community and deterministic Athlete/Coach/Admin participants.
+4. Add the minimal Central account-verification transition and operator queue required for an Official Challenge capability.
+5. Demonstrate the Sprint 2 exit through API, minimal universal client/operator path and automated scope tests.

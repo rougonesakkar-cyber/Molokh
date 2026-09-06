@@ -166,7 +166,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - Outbox delivery increment: complete; leased `SKIP LOCKED` claim, bounded retry, crash-safe lease recovery, Graphile job deduplication and Inbox receipt handling are implemented.
 - Timer foundation increment: complete; canonical payload, exact deadline boundary, state/version stale guard, early reschedule and diagnostic-only stale path are implemented. Product handlers register with their owning modules.
 - Notification/observability increment: complete; event-to-inbox projection is atomic and duplicate-safe, notification reads enforce recipient ownership, and API request/correlation/causation IDs propagate through response headers and structured logs.
-- M1 exit: complete at the platform layer. Next: start Story 4 and build the Identity/Community prerequisites as the first product-owned slice.
+- M1 exit: complete at the platform layer.
+- Story 4 Sprint 1 increment: complete. The 14+ User/AthleteProfile activation, arbitrary display name, private name audit, local replaceable auth adapter, public capability projection, typed API and minimal universal client run end to end. Phone-confirmed but Central-unverified Athletes can use Discovery and ordinary Training but receive an explicit Official Challenge denial.
+- Story 4 remaining production work: real OTP and rotating session adapter, Central account verification workflow, avatar malware/scan port and account recovery/duplicate cases. These do not block local Story 5 work.
+- Next: Story 5, with one deterministic pilot Venue/Community, Membership and server-enforced Coach/Admin/Central scope grants.
 
 ## 5. Work that needs product/external input later
 
