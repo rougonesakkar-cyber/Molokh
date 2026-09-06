@@ -3,6 +3,8 @@ import type {
   CommunityContextResponse,
   IdentityCommandResponse,
   MeResponse,
+  PendingCoachInviteListResponse,
+  RoleGrantCommandResponse,
 } from '@molokh/contracts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -25,6 +27,7 @@ type Identity = MeResponse['data'];
 type CommunityContext = CommunityContextResponse['data'];
 type Capability = Identity['capabilities'][number];
 type CommunityDenialCode = CommunityContext['access']['denials'][number]['code'];
+type CoachInvite = PendingCoachInviteListResponse['data'][number];
 
 const capabilityLabels: Record<Capability, string> = {
   USE_DISCOVERY: 'Discovery доступен',
@@ -67,9 +70,11 @@ export default function IdentityScreen() {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [communityContext, setCommunityContext] = useState<CommunityContext | null>(null);
   const [displayName, setDisplayName] = useState('');
+  const [coachInvites, setCoachInvites] = useState<CoachInvite[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [startingVerification, setStartingVerification] = useState(false);
+  const [acceptingCoachGrant, setAcceptingCoachGrant] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadIdentity = useCallback(async () => {
@@ -93,6 +98,15 @@ export default function IdentityScreen() {
         const communityResult = (await communityResponse.json()) as CommunityContextResponse;
         setCommunityContext(communityResult.data);
       }
+      const coachInviteResponse = await fetch(`${apiUrl}/api/v1/me/coach-invites`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!coachInviteResponse.ok) {
+        throw new Error(await errorMessage(coachInviteResponse));
+      }
+      const coachInviteResult =
+        (await coachInviteResponse.json()) as PendingCoachInviteListResponse;
+      setCoachInvites(coachInviteResult.data);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
     } finally {
@@ -167,6 +181,38 @@ export default function IdentityScreen() {
       setError(caught instanceof Error ? caught.message : 'Не удалось начать верификацию');
     } finally {
       setStartingVerification(false);
+    }
+  };
+
+  const acceptCoachRole = async (invite: CoachInvite) => {
+    setAcceptingCoachGrant(invite.grantId);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/me/coach-invites/${invite.grantId}/accept`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': `role:${invite.grantId}:accept:v${invite.version}`,
+            'If-Match': String(invite.version),
+          },
+        },
+      );
+      if (!response.ok) {
+        const message = await errorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as RoleGrantCommandResponse;
+      setCoachInvites((current) =>
+        current.filter((item) => item.grantId !== result.data.grantId),
+      );
+      await loadIdentity();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось принять роль Coach');
+    } finally {
+      setAcceptingCoachGrant(null);
     }
   };
 
@@ -279,6 +325,37 @@ export default function IdentityScreen() {
               ))}
             </View>
 
+            {coachInvites.map((invite) => (
+              <View key={invite.grantId} style={styles.card}>
+                <Text style={styles.cardTitle}>Вас приглашают стать Coach</Text>
+                <Text style={styles.muted}>
+                  Полномочия начнут действовать только после вашего подтверждения.
+                </Text>
+                <Text style={styles.hint}>
+                  Приглашение действительно до{' '}
+                  {invite.expiresAt
+                    ? new Date(invite.expiresAt).toLocaleString('ru-RU')
+                    : 'указанного срока'}.
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={acceptingCoachGrant !== null}
+                  onPress={() => void acceptCoachRole(invite)}
+                  style={({ pressed }) => [
+                    styles.button,
+                    acceptingCoachGrant !== null && styles.buttonDisabled,
+                    pressed && acceptingCoachGrant === null && styles.buttonPressed,
+                  ]}
+                >
+                  {acceptingCoachGrant === invite.grantId ? (
+                    <ActivityIndicator color="#ffffff" />
+                  ) : (
+                    <Text style={styles.buttonText}>Принять роль Coach</Text>
+                  )}
+                </Pressable>
+              </View>
+            ))}
+
             {communityContext ? (
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>{communityContext.community.name}</Text>
@@ -292,6 +369,11 @@ export default function IdentityScreen() {
                   <Text style={styles.muted}>Pair Cooldown</Text>
                   <Text style={styles.value}>{communityContext.community.pairCooldownDays} дней</Text>
                 </View>
+                {communityContext.access.capabilities.includes('RECORD_COMMUNITY_RESULT') ? (
+                  <View style={styles.chip}>
+                    <Text style={styles.chipText}>Роль Coach активна</Text>
+                  </View>
+                ) : null}
                 {communityContext.access.capabilities.includes('CREATE_OFFICIAL_CHALLENGE') ? (
                   <View style={styles.chip}>
                     <Text style={styles.chipText}>Official Challenge доступен</Text>

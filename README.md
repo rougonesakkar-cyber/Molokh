@@ -98,6 +98,19 @@ Press **«Обновить статус»** in the client. The account and Commu
 that Official Challenge is available. The local operator uses a separate Central token;
 no document or user file is uploaded or stored.
 
+To exercise the two-sided Coach authorization, keep the API running and execute:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\activate-local-coach.ps1
+```
+
+Central creates a 72-hour invitation for the deterministic verified Coach account, and
+the script accepts it as that account. Re-running the script is safe and reports the
+already active grant. The API always rechecks actual database roles and never trusts a
+role claimed by the local token or request body.
+
 ## Next executable action
 
-Complete Coach/Admin/Primary role-grant commands for the seeded pilot Community, then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+Complete Central Gym Admin appointment and atomic Primary Admin appointment/transfer,
+then proceed to Discovery/Match. The technology baseline is fixed by the accepted ADR
+set and changes through a new ADR.

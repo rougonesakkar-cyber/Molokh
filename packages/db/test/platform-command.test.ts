@@ -2,6 +2,9 @@ import {
   IdempotencyKeyReusedError,
   IdentityPermissionDeniedError,
   IdentityValidationError,
+  InvalidRoleGrantTransitionError,
+  RoleGrantPermissionDeniedError,
+  RoleGrantValidationError,
   VersionConflictError,
   type ActivateIdentityInput,
   type CommandEnvelope,
@@ -11,6 +14,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   activateUser,
+  acceptCoachInvite,
   approveAccountVerification,
   changeDisplayName,
   claimOutboxBatch,
@@ -22,9 +26,11 @@ import {
   markOutboxPublished,
   markNotificationRead,
   listPendingVerifications,
+  listPendingCoachInvites,
   projectNotificationBatch,
   readCommunityContext,
   readIdentityProjection,
+  inviteCoach,
   releaseOutboxFailure,
   runMigrations,
   startAccountVerification,
@@ -72,6 +78,19 @@ const ids = {
   verificationApproveEvent: '0199a1b2-1234-7000-8000-000000000236',
   verificationApproveAudit: '0199a1b2-1234-7000-8000-000000000237',
   verificationApproveOutbox: '0199a1b2-1234-7000-8000-000000000238',
+  roleCoach: '0199a1b2-1234-7000-8000-000000000240',
+  roleUnverified: '0199a1b2-1234-7000-8000-000000000241',
+  roleGrant: '0199a1b2-1234-7000-8000-000000000242',
+  roleInviteCommand: '0199a1b2-1234-7000-8000-000000000243',
+  roleInviteEvent: '0199a1b2-1234-7000-8000-000000000244',
+  roleInviteAudit: '0199a1b2-1234-7000-8000-000000000245',
+  roleInviteOutbox: '0199a1b2-1234-7000-8000-000000000246',
+  roleInviteNotification: '0199a1b2-1234-7000-8000-000000000259',
+  roleAcceptCommand: '0199a1b2-1234-7000-8000-000000000247',
+  roleAcceptEvent: '0199a1b2-1234-7000-8000-000000000248',
+  roleAcceptAudit: '0199a1b2-1234-7000-8000-000000000249',
+  roleAcceptOutbox: '0199a1b2-1234-7000-8000-000000000250',
+  roleAcceptNotification: '0199a1b2-1234-7000-8000-000000000260',
 } as const;
 
 function command(
@@ -701,5 +720,250 @@ describePostgres('PostgreSQL critical command transaction', () => {
         renameIds,
       ),
     ).rejects.toBeInstanceOf(IdentityValidationError);
+  });
+
+  it('invites and authorizes a verified Community Coach with database-backed scope checks', async () => {
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${ids.centralActor}::uuid, '+79990000225', '2026-09-05T08:00:00Z',
+          '1990-01-01', 'ADULT', 'Central', 'ACTIVE', 'ru-RU', 1, '2026-09-05T08:00:00Z'),
+        (${ids.roleCoach}::uuid, '+79990000240', '2026-09-05T08:00:00Z',
+          '1991-01-01', 'ADULT', 'Coach', 'ACTIVE', 'ru-RU', 1, '2026-09-05T08:00:00Z'),
+        (${ids.roleUnverified}::uuid, '+79990000241', '2026-09-05T08:00:00Z',
+          '1992-01-01', 'ADULT', 'Unverified', 'ACTIVE', 'ru-RU', 1, '2026-09-05T08:00:00Z')
+    `.execute(database);
+    await sql`
+      insert into identity.athlete_profiles (
+        user_id, primary_sport, secondary_sport, discovery_radius_km
+      ) values
+        (${ids.centralActor}::uuid, 'BOXING', null, 15),
+        (${ids.roleCoach}::uuid, 'BOXING', null, 15),
+        (${ids.roleUnverified}::uuid, 'BOXING', null, 15)
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        verified_at, decided_by, decision_reason, is_current, version
+      ) values (
+        '0199a1b2-1234-7000-8000-000000000251'::uuid,
+        ${ids.roleCoach}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1',
+        '2026-09-05T08:30:00Z', ${ids.centralActor}::uuid,
+        'PROFILE_PHONE_DUPLICATE_CHECKS_PASSED', true, 2
+      )
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: ids.venue,
+      venueConfigurationId: ids.venueConfiguration,
+      communityId: ids.community,
+      communityConfigurationId: ids.communityConfiguration,
+      membershipId: ids.membership,
+      centralGrantId: ids.centralGrant,
+      athleteUserId: ids.roleCoach,
+      centralActorId: ids.centralActor,
+      legalName: 'Pilot Legal Name',
+      venueDisplayName: 'Pilot Gym',
+      communityName: 'Pilot Community',
+      address: 'Pilot address',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: { phone: '+79990000220' },
+      occurredAt: '2026-09-06T08:00:00.000Z',
+    });
+
+    const invitation: CommandEnvelope<{
+      readonly userId: string;
+      readonly communityId: string;
+      readonly reasonCode: string;
+      readonly invitationTtlHours: number;
+    }> = {
+      commandId: ids.roleInviteCommand,
+      commandType: 'INVITE_COACH',
+      idempotencyKey: 'role-invite-1',
+      actor: {
+        type: 'USER',
+        id: ids.centralActor,
+        roles: ['CENTRAL_ADMIN'],
+        scopeIds: [ids.community],
+      },
+      aggregateType: 'RoleGrant',
+      aggregateId: ids.roleGrant,
+      expectedVersion: 0,
+      correlationId: ids.identityCorrelation,
+      causationId: null,
+      requestId: ids.identityRequest,
+      source: 'admin',
+      payloadVersion: 1,
+      payload: {
+        userId: ids.roleCoach,
+        communityId: ids.community,
+        reasonCode: 'PILOT_COACH',
+        invitationTtlHours: 72,
+      },
+    };
+    const invitationIds = {
+      eventId: ids.roleInviteEvent,
+      auditId: ids.roleInviteAudit,
+      outboxMessageId: ids.roleInviteOutbox,
+      notificationId: ids.roleInviteNotification,
+    };
+    const invited = await inviteCoach(database, invitation, invitationIds);
+    const replay = await inviteCoach(database, invitation, invitationIds);
+    expect(invited).toMatchObject({
+      replayed: false,
+      responseStatus: 201,
+      response: {
+        grantId: ids.roleGrant,
+        state: 'PENDING',
+        role: 'COACH',
+        scopeId: ids.community,
+        version: 1,
+      },
+    });
+    expect(replay.replayed).toBe(true);
+    expect(await listPendingCoachInvites(database, ids.roleCoach)).toMatchObject([
+      { grantId: ids.roleGrant, state: 'PENDING' },
+    ]);
+    const inviteOutbox = await sql<{
+      readonly topic: string;
+      readonly payload: {
+        readonly notifications: ReadonlyArray<{
+          readonly notificationId: string;
+          readonly recipientUserId: string;
+          readonly renderKey: string;
+        }>;
+      };
+    }>`
+      select topic, payload
+      from platform.outbox_messages
+      where message_id = ${ids.roleInviteOutbox}::uuid
+    `.execute(database);
+    expect(inviteOutbox.rows[0]).toMatchObject({
+      topic: 'notification.in_app.v1',
+      payload: {
+        notifications: [
+          {
+            notificationId: ids.roleInviteNotification,
+            recipientUserId: ids.roleCoach,
+            renderKey: 'community.coach_invited',
+          },
+        ],
+      },
+    });
+
+    await expect(
+      inviteCoach(
+        database,
+        {
+          ...invitation,
+          commandId: '0199a1b2-1234-7000-8000-000000000252',
+          aggregateId: '0199a1b2-1234-7000-8000-000000000253',
+          idempotencyKey: 'role-invite-unscoped',
+          actor: {
+            type: 'USER',
+            id: ids.roleCoach,
+            roles: ['ATHLETE'],
+            scopeIds: [],
+          },
+        },
+        invitationIds,
+      ),
+    ).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+    await expect(
+      inviteCoach(
+        database,
+        {
+          ...invitation,
+          commandId: '0199a1b2-1234-7000-8000-000000000254',
+          aggregateId: '0199a1b2-1234-7000-8000-000000000255',
+          idempotencyKey: 'role-invite-unverified',
+          payload: { ...invitation.payload, userId: ids.roleUnverified },
+        },
+        invitationIds,
+      ),
+    ).rejects.toBeInstanceOf(RoleGrantValidationError);
+
+    const acceptance: CommandEnvelope<{ readonly userId: string }> = {
+      commandId: ids.roleAcceptCommand,
+      commandType: 'ACCEPT_COACH_ROLE',
+      idempotencyKey: 'role-accept-1',
+      actor: {
+        type: 'USER',
+        id: ids.roleCoach,
+        roles: ['ATHLETE'],
+        scopeIds: [],
+      },
+      aggregateType: 'RoleGrant',
+      aggregateId: ids.roleGrant,
+      expectedVersion: 1,
+      correlationId: ids.identityCorrelation,
+      causationId: ids.roleInviteEvent,
+      requestId: ids.identityRequest,
+      source: 'api',
+      payloadVersion: 1,
+      payload: { userId: ids.roleCoach },
+    };
+    await expect(
+      acceptCoachInvite(
+        database,
+        {
+          ...acceptance,
+          commandId: '0199a1b2-1234-7000-8000-000000000256',
+          idempotencyKey: 'role-accept-wrong-user',
+          actor: {
+            type: 'USER',
+            id: ids.centralActor,
+            roles: ['CENTRAL_ADMIN'],
+            scopeIds: [],
+          },
+        },
+        {
+          eventId: ids.roleAcceptEvent,
+          auditId: ids.roleAcceptAudit,
+          outboxMessageId: ids.roleAcceptOutbox,
+          notificationId: ids.roleAcceptNotification,
+        },
+      ),
+    ).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+    const accepted = await acceptCoachInvite(database, acceptance, {
+      eventId: ids.roleAcceptEvent,
+      auditId: ids.roleAcceptAudit,
+      outboxMessageId: ids.roleAcceptOutbox,
+      notificationId: ids.roleAcceptNotification,
+    });
+    expect(accepted.response).toMatchObject({
+      state: 'ACTIVE',
+      authorizedBy: ids.centralActor,
+      version: 2,
+    });
+    expect(accepted.response.authorizedAt).not.toBeNull();
+    expect(accepted.response.expiresAt).toBeNull();
+    expect(await listPendingCoachInvites(database, ids.roleCoach)).toEqual([]);
+    expect(
+      (await readCommunityContext(database, ids.roleCoach, ids.community))?.access
+        .capabilities,
+    ).toContain('RECORD_COMMUNITY_RESULT');
+
+    await expect(
+      inviteCoach(
+        database,
+        {
+          ...invitation,
+          commandId: '0199a1b2-1234-7000-8000-000000000257',
+          aggregateId: '0199a1b2-1234-7000-8000-000000000258',
+          idempotencyKey: 'role-invite-duplicate-active',
+        },
+        invitationIds,
+      ),
+    ).rejects.toBeInstanceOf(InvalidRoleGrantTransitionError);
+
+    const audit = await sql<{ readonly reason_code: string | null }>`
+      select reason_code
+      from platform.audit_events
+      where audit_id = ${ids.roleInviteAudit}::uuid
+    `.execute(database);
+    expect(audit.rows[0]?.reason_code).toBe('PILOT_COACH');
   });
 });

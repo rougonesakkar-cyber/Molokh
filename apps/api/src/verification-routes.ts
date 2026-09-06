@@ -25,7 +25,7 @@ import { Type } from 'typebox';
 import type { AuthAdapter } from './auth.js';
 import { contractIdentity } from './identity-routes.js';
 import { requestContext } from './request-context.js';
-import { newUuidV7 } from './uuid-v7.js';
+import { idempotentResourceId, newUuidV7 } from './uuid-v7.js';
 
 const checklistVersion = 'identity-mvp-v1';
 
@@ -114,11 +114,18 @@ export async function registerVerificationRoutes(
         return;
       }
       const context = requestContext(request);
-      const verificationId = newUuidV7();
+      const idempotencyKey = requiredIdempotencyKey(
+        request.headers['idempotency-key'],
+      );
+      const verificationId = idempotentResourceId(
+        'AccountVerification',
+        authenticated.userId,
+        idempotencyKey,
+      );
       const command: CommandEnvelope<StartVerificationPayload> = {
         commandId: newUuidV7(),
         commandType: 'START_VERIFICATION',
-        idempotencyKey: requiredIdempotencyKey(request.headers['idempotency-key']),
+        idempotencyKey,
         actor: {
           type: 'USER',
           id: authenticated.userId,

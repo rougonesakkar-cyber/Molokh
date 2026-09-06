@@ -7,6 +7,9 @@ import {
   InvalidCommandEnvelopeError,
   InvalidIdentityTransitionError,
   MinimumAgeNotMetError,
+  InvalidRoleGrantTransitionError,
+  RoleGrantPermissionDeniedError,
+  RoleGrantValidationError,
   VersionConflictError,
 } from '@molokh/core';
 import type { ApiError } from '@molokh/contracts';
@@ -84,6 +87,36 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: { code: error.code, message: 'This action requires Central permission', requestId },
     };
   }
+  if (error instanceof InvalidRoleGrantTransitionError) {
+    return {
+      statusCode: 409,
+      body: {
+        code: error.code,
+        message: 'Role grant state no longer allows this action',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof RoleGrantPermissionDeniedError) {
+    return {
+      statusCode: 403,
+      body: {
+        code: error.code,
+        message: 'This action is outside your role scope',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof RoleGrantValidationError) {
+    return {
+      statusCode: 422,
+      body: {
+        code: error.code,
+        message: 'Role grant request is not valid',
+        requestId,
+      },
+    };
+  }
   if (
     typeof error === 'object' &&
     error !== null &&
@@ -95,6 +128,17 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: { code: 'IDENTITY_NOT_FOUND', message: 'Identity was not found', requestId },
     };
   }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ROLE_GRANT_NOT_FOUND'
+  ) {
+    return {
+      statusCode: 404,
+      body: { code: 'ROLE_GRANT_NOT_FOUND', message: 'Role grant was not found', requestId },
+    };
+  }
   const hasValidation =
     typeof error === 'object' &&
     error !== null &&
@@ -104,6 +148,26 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
     return {
       statusCode: 400,
       body: { code: 'INVALID_REQUEST', message: 'Request is invalid', requestId },
+    };
+  }
+  const transportStatus =
+    typeof error === 'object' &&
+    error !== null &&
+    'statusCode' in error &&
+    typeof error.statusCode === 'number'
+      ? error.statusCode
+      : null;
+  if (transportStatus && transportStatus >= 400 && transportStatus < 500) {
+    return {
+      statusCode: transportStatus,
+      body: {
+        code: transportStatus === 415 ? 'UNSUPPORTED_MEDIA_TYPE' : 'INVALID_REQUEST',
+        message:
+          transportStatus === 415
+            ? 'Content-Type is not supported'
+            : 'Request could not be processed',
+        requestId,
+      },
     };
   }
   return {

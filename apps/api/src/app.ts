@@ -22,11 +22,13 @@ import {
   registerVerificationRoutes,
   type VerificationRouteDependencies,
 } from './verification-routes.js';
+import { registerRoleRoutes, type RoleRouteDependencies } from './role-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
   readonly community?: CommunityRouteDependencies;
   readonly identity?: IdentityRouteDependencies;
+  readonly roles?: RoleRouteDependencies;
   readonly verification?: VerificationRouteDependencies;
 }
 
@@ -35,6 +37,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     allowedOrigins = [],
     community,
     identity,
+    roles,
     verification,
     ...serverOptions
   } = options;
@@ -71,6 +74,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   if (identity) await registerIdentityRoutes(app, identity);
   if (community) await registerCommunityRoutes(app, community);
+  if (roles) await registerRoleRoutes(app, roles);
   if (verification) await registerVerificationRoutes(app, verification);
 
   app.get(

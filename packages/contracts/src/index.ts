@@ -295,3 +295,71 @@ export const CommunityContextResponseSchema = Type.Object(
 );
 
 export type CommunityContextResponse = Static<typeof CommunityContextResponseSchema>;
+
+export const CoachInviteBodySchema = Type.Object(
+  {
+    userId: Type.String({ format: 'uuid' }),
+    reasonCode: Type.String({ minLength: 3, maxLength: 80 }),
+  },
+  { $id: 'CoachInviteBody', additionalProperties: false },
+);
+
+export type CoachInviteBody = Static<typeof CoachInviteBodySchema>;
+
+export const RoleGrantProjectionSchema = Type.Object(
+  {
+    grantId: Type.String({ format: 'uuid' }),
+    userId: Type.String({ format: 'uuid' }),
+    role: Type.Union([
+      Type.Literal('PRIMARY_ADMIN'),
+      Type.Literal('GYM_ADMIN'),
+      Type.Literal('COACH'),
+      Type.Literal('CENTRAL_ADMIN'),
+    ]),
+    scopeType: Type.Union([
+      Type.Literal('VENUE'),
+      Type.Literal('COMMUNITY'),
+      Type.Literal('SESSION'),
+      Type.Literal('GLOBAL'),
+    ]),
+    scopeId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    state: Type.Union([
+      Type.Literal('PENDING'),
+      Type.Literal('ACTIVE'),
+      Type.Literal('DECLINED'),
+      Type.Literal('REVOKED'),
+      Type.Literal('EXPIRED'),
+    ]),
+    authorizedBy: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    authorizedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    expiresAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'RoleGrantProjection', additionalProperties: false },
+);
+
+export const RoleGrantCommandResponseSchema = Type.Object(
+  {
+    data: RoleGrantProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }),
+  },
+  { $id: 'RoleGrantCommandResponse', additionalProperties: false },
+);
+
+export type RoleGrantCommandResponse = Static<typeof RoleGrantCommandResponseSchema>;
+
+export const PendingCoachInviteListResponseSchema = Type.Object(
+  {
+    data: Type.Array(RoleGrantProjectionSchema),
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'PendingCoachInviteListResponse', additionalProperties: false },
+);
+
+export type PendingCoachInviteListResponse = Static<
+  typeof PendingCoachInviteListResponseSchema
+>;

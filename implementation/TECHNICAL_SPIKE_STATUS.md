@@ -21,6 +21,7 @@
 | Request context | validated request/correlation/causation headers, response propagation and safe error mapping | Pass |
 | Identity vertical slice | 14+ activation, arbitrary display name, no-document Central verification, public capability projection, API/client path and private audit | Pass |
 | Community scope foundation | pilot Venue/Community/Membership, immutable config ownership, role scope guard and universal client projection | Pass |
+| Coach authorization slice | scoped 72h invite, invitee-only acceptance, audit/in-app notification and role-adaptive client path | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
@@ -74,6 +75,7 @@ The critical-command primitive now provides:
 
 - a validated command envelope with actor/scope snapshot, expected aggregate version and idempotency key;
 - deterministic semantic request hashing without storing the raw idempotency key;
+- deterministic name-based IDs for resources created by retryable HTTP commands;
 - PostgreSQL advisory-lock serialization for duplicate commands and aggregate writes;
 - one transaction for aggregate mutation, domain event, audit, outbox and saved response;
 - exact replay, changed-payload rejection, stale-version rejection and Inbox consumer deduplication;
@@ -110,9 +112,20 @@ version. The decision is idempotent, audited and published through the outbox. N
 table nor event/audit/outbox payloads contain document or evidence fields. A local Central
 script provides the current operator path.
 
+The RG-01/RG-02 Coach workflow is also executable. Central or an active Primary/Gym Admin
+in the owning Venue can invite only an active verified account. The 72-hour invitation has
+no authority until the invitee accepts it. Permission checks read locked database grants,
+the invite relationship is serialized, every administrative reason is audited, and a local
+script demonstrates a safe repeatable operator/invitee walkthrough.
+The universal client renders an actionable pending invitation and shows the active Coach
+capability after acceptance.
+
 ## Boundary
 
-The toolchain, M1 transaction primitive, Sprint 1 Identity exit, Central verification and the Sprint 2 Community read/guard foundation are implemented. Production OTP/session handling and the Coach/Admin/Primary role-grant lifecycle remain in M2. Training scheduling has not started yet.
+The toolchain, M1 transaction primitive, Sprint 1 Identity exit, Central verification,
+Community read/guards and Coach authorization are implemented. Production OTP/session
+handling and the Gym Admin/Primary role-grant lifecycle remain in M2. Training scheduling
+has not started yet.
 
 ## Verification result
 
@@ -120,14 +133,15 @@ Verified on 2026-09-06:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- thirty-eight non-database automated tests pass across Core, DB, API, worker and testkit;
-- five additional PostgreSQL transaction/outbox/notification/Identity scenarios pass through the dedicated database gate;
+- forty-three non-database automated tests pass across Core, DB, API, worker and testkit;
+- six additional PostgreSQL transaction/outbox/notification/Identity/Role scenarios pass through the dedicated database gate;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.7.2 runs on WSL 2 and the PostgreSQL 18 container is healthy;
-- migrations `0001`–`0010`, including Identity, verification and Community integrity guards, apply successfully and are safe to run again;
+- migrations `0001`–`0011`, including Identity, verification, Community and Role integrity guards, apply successfully and are safe to run again;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
 - the live Web client reads `Molokh Pilot Community`, its active Membership and the exact `ACCOUNT_NOT_VERIFIED` action denial;
 - live V-01/V-02 changes that denial to `CREATE_OFFICIAL_CHALLENGE`; exact Central replay returns the original event and no duplicate decision;
+- live RG-01/RG-02 authorizes the seeded verified Coach; HTTP retries return the same resource/event and the Coach projection gains `RECORD_COMMUNITY_RESULT` only after acceptance;
 - the Core specification validator reports 300 transitions, 213 acceptance scenarios, zero open questions and zero errors.

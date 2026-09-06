@@ -1,10 +1,13 @@
 import type { CommandEnvelope } from '@molokh/core';
 import {
   activateUser,
+  acceptCoachInvite,
   approveAccountVerification,
   changeDisplayName,
   createDatabase,
   ensureLocalPilotCommunity,
+  inviteCoach,
+  listPendingCoachInvites,
   listPendingVerifications,
   readCommunityContext,
   readIdentityProjection,
@@ -13,7 +16,10 @@ import {
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
-import { StaticBearerAuthAdapter } from './auth.js';
+import {
+  StaticBearerAuthAdapter,
+  StaticBearerAuthRegistryAdapter,
+} from './auth.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
@@ -33,9 +39,12 @@ const localUserId = '0199a1b2-1234-7000-8000-000000000101';
 const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
 const localCommunityId = '0199a1b2-1234-7000-8000-000000000502';
 const localCentralUserId = '0199a1b2-1234-7000-8000-000000000506';
+const localCoachUserId = '0199a1b2-1234-7000-8000-000000000508';
 const localToken = process.env.LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 const localCentralToken =
   process.env.LOCAL_CENTRAL_AUTH_TOKEN ?? 'molokh-local-central-token';
+const localCoachToken =
+  process.env.LOCAL_COACH_AUTH_TOKEN ?? 'molokh-local-coach-token';
 const localActivation: CommandEnvelope<{
   readonly userId: string;
   readonly phoneE164: string;
@@ -98,6 +107,32 @@ const localCentralActivation: typeof localActivation = {
   },
 };
 
+const localCoachActivation: typeof localActivation = {
+  commandId: '0199a1b2-1234-7000-8000-000000000516',
+  commandType: 'ACTIVATE_ACCOUNT',
+  idempotencyKey: 'local-development-coach-v1',
+  actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+  aggregateType: 'User',
+  aggregateId: localCoachUserId,
+  expectedVersion: 0,
+  correlationId: '0199a1b2-1234-7000-8000-000000000517',
+  causationId: null,
+  requestId: '0199a1b2-1234-7000-8000-000000000518',
+  source: 'scheduler',
+  payloadVersion: 1,
+  payload: {
+    userId: localCoachUserId,
+    phoneE164: '+79990000508',
+    phoneVerifiedAt: '2026-09-05T09:00:00.000Z',
+    birthDate: '1988-06-15',
+    displayName: 'Пилотный тренер',
+    locale: 'ru-RU',
+    primarySport: 'BOXING',
+    secondarySport: null,
+    discoveryRadiusKm: 15,
+  },
+};
+
 await runMigrations(connectionString);
 const database = createDatabase(connectionString);
 const existingLocalIdentity = await readIdentityProjection(database, localUserId);
@@ -114,6 +149,14 @@ if (!existingCentralIdentity) {
     eventId: '0199a1b2-1234-7000-8000-000000000513',
     auditId: '0199a1b2-1234-7000-8000-000000000514',
     outboxMessageId: '0199a1b2-1234-7000-8000-000000000515',
+  });
+}
+const existingCoachIdentity = await readIdentityProjection(database, localCoachUserId);
+if (!existingCoachIdentity) {
+  await activateUser(database, localCoachActivation, {
+    eventId: '0199a1b2-1234-7000-8000-000000000519',
+    auditId: '0199a1b2-1234-7000-8000-000000000520',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000521',
   });
 }
 await ensureLocalPilotCommunity(database, {
@@ -135,7 +178,80 @@ await ensureLocalPilotCommunity(database, {
   occurredAt: '2026-09-05T09:00:00.000Z',
 });
 
-const localAuth = new StaticBearerAuthAdapter(localToken, localUserId);
+const coachVerificationId = '0199a1b2-1234-7000-8000-000000000522';
+const coachIdentity = await readIdentityProjection(database, localCoachUserId);
+if (coachIdentity?.accountVerificationState === 'NOT_STARTED') {
+  await startAccountVerification(
+    database,
+    {
+      commandId: '0199a1b2-1234-7000-8000-000000000523',
+      commandType: 'START_VERIFICATION',
+      idempotencyKey: 'local-development-coach-verification-start-v1',
+      actor: {
+        type: 'USER',
+        id: localCoachUserId,
+        roles: ['ATHLETE'],
+        scopeIds: [],
+      },
+      aggregateType: 'AccountVerification',
+      aggregateId: coachVerificationId,
+      expectedVersion: 0,
+      correlationId: '0199a1b2-1234-7000-8000-000000000524',
+      causationId: null,
+      requestId: '0199a1b2-1234-7000-8000-000000000525',
+      source: 'api',
+      payloadVersion: 1,
+      payload: {
+        userId: localCoachUserId,
+        moderationChecklistVersion: 'identity-mvp-v1',
+      },
+    },
+    {
+      eventId: '0199a1b2-1234-7000-8000-000000000526',
+      auditId: '0199a1b2-1234-7000-8000-000000000527',
+      outboxMessageId: '0199a1b2-1234-7000-8000-000000000528',
+    },
+  );
+}
+const pendingCoachIdentity = await readIdentityProjection(database, localCoachUserId);
+if (pendingCoachIdentity?.accountVerificationState === 'PENDING') {
+  await approveAccountVerification(
+    database,
+    {
+      commandId: '0199a1b2-1234-7000-8000-000000000529',
+      commandType: 'APPROVE_VERIFICATION',
+      idempotencyKey: 'local-development-coach-verification-approve-v1',
+      actor: {
+        type: 'USER',
+        id: localCentralUserId,
+        roles: ['CENTRAL_ADMIN'],
+        scopeIds: [],
+      },
+      aggregateType: 'AccountVerification',
+      aggregateId: coachVerificationId,
+      expectedVersion: 1,
+      correlationId: '0199a1b2-1234-7000-8000-000000000530',
+      causationId: '0199a1b2-1234-7000-8000-000000000526',
+      requestId: '0199a1b2-1234-7000-8000-000000000531',
+      source: 'admin',
+      payloadVersion: 1,
+      payload: {
+        userId: localCoachUserId,
+        moderationChecklistVersion: 'identity-mvp-v1',
+      },
+    },
+    {
+      eventId: '0199a1b2-1234-7000-8000-000000000532',
+      auditId: '0199a1b2-1234-7000-8000-000000000533',
+      outboxMessageId: '0199a1b2-1234-7000-8000-000000000534',
+    },
+  );
+}
+
+const localAuth = new StaticBearerAuthRegistryAdapter([
+  { token: localToken, userId: localUserId },
+  { token: localCoachToken, userId: localCoachUserId },
+]);
 const localCentralAuth = new StaticBearerAuthAdapter(
   localCentralToken,
   localCentralUserId,
@@ -152,6 +268,15 @@ const app = await buildApp({
     auth: localAuth,
     readMe: (userId) => readIdentityProjection(database, userId),
     changeDisplayName: (command, ids) => changeDisplayName(database, command, ids),
+  },
+  roles: {
+    operatorAuth: localCentralAuth,
+    userAuth: localAuth,
+    inviteCoach: (command, ids) => inviteCoach(database, command, ids),
+    acceptCoachInvite: (command, ids) =>
+      acceptCoachInvite(database, command, ids),
+    listPendingCoachInvites: (userId) =>
+      listPendingCoachInvites(database, userId),
   },
   verification: {
     athleteAuth: localAuth,

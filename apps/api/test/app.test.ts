@@ -3,13 +3,17 @@ import {
   VersionConflictError,
   type CommandEnvelope,
   type IdentityProjection,
+  type RoleGrantProjection,
 } from '@molokh/core';
 import type {
   ChangeDisplayNamePayload,
   CommunityContextProjection,
   IdentityEffectIds,
   ApproveVerificationPayload,
+  AcceptCoachInvitePayload,
   StartVerificationPayload,
+  InviteCoachPayload,
+  RoleGrantEffectIds,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -367,6 +371,18 @@ describe('runtime contract', () => {
         moderationChecklistVersion: 'identity-mvp-v1',
       },
     });
+    const startedReplay = await app.inject({
+      method: 'POST',
+      url: '/api/v1/me/verification',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'start-verification-test-1',
+      },
+    });
+    expect(startedReplay.statusCode).toBe(201);
+    expect(start.mock.calls[1]?.[0].aggregateId).toBe(
+      start.mock.calls[0]?.[0].aggregateId,
+    );
 
     const deniedQueue = await app.inject({
       method: 'GET',
@@ -406,5 +422,137 @@ describe('runtime contract', () => {
       source: 'admin',
       actor: { id: centralUserId, roles: ['CENTRAL_ADMIN'] },
     });
+  });
+
+  it('invites a verified Coach and lets only that account accept', async () => {
+    const centralUserId = '0199a1b2-1234-7000-8000-000000000701';
+    const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
+    const communityId = '0199a1b2-1234-7000-8000-000000000703';
+    const grantId = '0199a1b2-1234-7000-8000-000000000704';
+    const centralToken = 'molokh-role-central-test-token';
+    const coachToken = 'molokh-role-coach-test-token';
+    const pending: RoleGrantProjection = {
+      grantId,
+      userId: coachUserId,
+      role: 'COACH',
+      scopeType: 'COMMUNITY',
+      scopeId: communityId,
+      state: 'PENDING',
+      authorizedBy: centralUserId,
+      authorizedAt: null,
+      expiresAt: '2026-09-09T12:00:00.000Z',
+      version: 1,
+    };
+    const active: RoleGrantProjection = {
+      ...pending,
+      state: 'ACTIVE',
+      authorizedAt: '2026-09-06T12:05:00.000Z',
+      expiresAt: null,
+      version: 2,
+    };
+    const inviteCoach = vi.fn(async (
+      _command: CommandEnvelope<InviteCoachPayload>,
+      _ids: RoleGrantEffectIds,
+    ) => ({
+      responseStatus: 201,
+      response: pending,
+      eventId: '0199a1b2-1234-7000-8000-000000000705',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const acceptCoachInvite = vi.fn(async (
+      _command: CommandEnvelope<AcceptCoachInvitePayload>,
+      _ids: RoleGrantEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: active,
+      eventId: '0199a1b2-1234-7000-8000-000000000706',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const app = await buildApp({
+      roles: {
+        operatorAuth: new StaticBearerAuthAdapter(centralToken, centralUserId),
+        userAuth: new StaticBearerAuthAdapter(coachToken, coachUserId),
+        inviteCoach,
+        acceptCoachInvite,
+        listPendingCoachInvites: async () => [pending],
+      },
+    });
+    apps.push(app);
+
+    const denied = await app.inject({
+      method: 'POST',
+      url: `/api/v1/communities/${communityId}/coach-invites`,
+      payload: { userId: coachUserId, reasonCode: 'PILOT_COACH' },
+    });
+    expect(denied.statusCode).toBe(401);
+
+    const inviteRequest = {
+      method: 'POST' as const,
+      url: `/api/v1/communities/${communityId}/coach-invites`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'coach-invite-test-1',
+      },
+      payload: { userId: coachUserId, reasonCode: 'PILOT_COACH' },
+    };
+    const invited = await app.inject(inviteRequest);
+    const invitedReplay = await app.inject(inviteRequest);
+    expect(invited.statusCode).toBe(201);
+    expect(invited.json()).toMatchObject({ data: { state: 'PENDING', role: 'COACH' } });
+    expect(invitedReplay.statusCode).toBe(201);
+    expect(inviteCoach.mock.calls[1]?.[0].aggregateId).toBe(
+      inviteCoach.mock.calls[0]?.[0].aggregateId,
+    );
+    expect(inviteCoach.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'INVITE_COACH',
+      expectedVersion: 0,
+      payload: {
+        userId: coachUserId,
+        communityId,
+        reasonCode: 'PILOT_COACH',
+        invitationTtlHours: 72,
+      },
+    });
+
+    const queue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me/coach-invites',
+      headers: { authorization: `Bearer ${coachToken}` },
+    });
+    expect(queue.statusCode).toBe(200);
+    expect(queue.json().data).toEqual([pending]);
+
+    const accepted = await app.inject({
+      method: 'POST',
+      url: `/api/v1/me/coach-invites/${grantId}/accept`,
+      headers: {
+        authorization: `Bearer ${coachToken}`,
+        'idempotency-key': 'coach-accept-test-1',
+        'if-match': '1',
+      },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ data: { state: 'ACTIVE', version: 2 } });
+    expect(acceptCoachInvite.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'ACCEPT_COACH_ROLE',
+      aggregateId: grantId,
+      expectedVersion: 1,
+      actor: { id: coachUserId },
+      payload: { userId: coachUserId },
+    });
+
+    const unsupported = await app.inject({
+      method: 'POST',
+      url: `/api/v1/me/coach-invites/${grantId}/accept`,
+      headers: {
+        authorization: `Bearer ${coachToken}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      payload: 'unused=true',
+    });
+    expect(unsupported.statusCode).toBe(415);
+    expect(unsupported.json()).toMatchObject({ code: 'UNSUPPORTED_MEDIA_TYPE' });
   });
 });

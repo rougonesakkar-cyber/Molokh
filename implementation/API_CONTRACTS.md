@@ -104,6 +104,9 @@ Chat API returns structured `action_card` objects. Clients never parse human mes
 | GET | `/communities/{id}/competition` | Champion, Contender, active Challenge, public FIFO |
 | POST | `/communities/{id}/memberships` | self-request |
 | POST | `/community-invites/{token}/accept` | QR/invite activation |
+| POST | `/communities/{community_id}/coach-invites` | scoped Admin/Central invites verified Coach |
+| GET | `/me/coach-invites` | invitee reads own pending invitations |
+| POST | `/me/coach-invites/{grant_id}/accept` | invitee activates Coach grant |
 | POST | `/memberships/{id}/approve` | Gym Admin |
 | POST | `/memberships/{id}/reject` | neutral + internal reason |
 | POST | `/memberships/{id}/leave-preview` | exact status/obligation consequence token |
