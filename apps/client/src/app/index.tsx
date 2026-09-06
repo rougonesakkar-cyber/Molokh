@@ -1,6 +1,7 @@
 import type {
   ApiError,
   CommunityContextResponse,
+  DiscoveryCardsResponse,
   IdentityCommandResponse,
   MeResponse,
   PendingCoachInviteListResponse,
@@ -28,6 +29,7 @@ type CommunityContext = CommunityContextResponse['data'];
 type Capability = Identity['capabilities'][number];
 type CommunityDenialCode = CommunityContext['access']['denials'][number]['code'];
 type CoachInvite = PendingCoachInviteListResponse['data'][number];
+type DiscoveryCard = DiscoveryCardsResponse['data'][number];
 
 const capabilityLabels: Record<Capability, string> = {
   USE_DISCOVERY: 'Discovery доступен',
@@ -71,6 +73,8 @@ export default function IdentityScreen() {
   const [communityContext, setCommunityContext] = useState<CommunityContext | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [coachInvites, setCoachInvites] = useState<CoachInvite[]>([]);
+  const [discoveryCards, setDiscoveryCards] = useState<DiscoveryCard[]>([]);
+  const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [startingVerification, setStartingVerification] = useState(false);
@@ -80,6 +84,7 @@ export default function IdentityScreen() {
   const loadIdentity = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setDiscoveryNotice(null);
     try {
       const response = await fetch(`${apiUrl}/api/v1/me`, {
         headers: { Authorization: `Bearer ${localToken}` },
@@ -107,6 +112,19 @@ export default function IdentityScreen() {
       const coachInviteResult =
         (await coachInviteResponse.json()) as PendingCoachInviteListResponse;
       setCoachInvites(coachInviteResult.data);
+      const discoveryResponse = await fetch(`${apiUrl}/api/v1/discovery/cards?limit=20`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (discoveryResponse.status === 403) {
+        setDiscoveryCards([]);
+        setDiscoveryNotice('Discovery откроется после выбора города и домашнего зала.');
+      } else if (!discoveryResponse.ok) {
+        throw new Error(await errorMessage(discoveryResponse));
+      } else {
+        const discoveryResult =
+          (await discoveryResponse.json()) as DiscoveryCardsResponse;
+        setDiscoveryCards(discoveryResult.data);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
     } finally {
@@ -325,6 +343,59 @@ export default function IdentityScreen() {
               ))}
             </View>
 
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Люди для тренировки</Text>
+              <Text style={styles.muted}>
+                Сначала показываем людей внутри вашего радиуса, затем расширяем поиск в пределах города.
+              </Text>
+              {discoveryNotice ? (
+                <Text style={styles.hint}>{discoveryNotice}</Text>
+              ) : discoveryCards.length === 0 ? (
+                <Text style={styles.hint}>Подходящих анкет пока нет.</Text>
+              ) : (
+                discoveryCards.map((candidate) => (
+                  <View
+                    key={candidate.candidateUserId}
+                    style={[
+                      styles.discoveryCard,
+                      candidate.inboundLike && styles.discoveryCardInterested,
+                    ]}
+                  >
+                    <View style={styles.discoveryHeader}>
+                      <View style={styles.avatarPlaceholder}>
+                        <Text style={styles.avatarText}>
+                          {candidate.displayName.slice(0, 1).toLocaleUpperCase('ru-RU')}
+                        </Text>
+                      </View>
+                      <View style={styles.discoveryIdentity}>
+                        <Text style={styles.discoveryName}>{candidate.displayName}</Text>
+                        <Text style={styles.muted}>
+                          {candidate.primarySport}
+                          {candidate.secondarySport ? ` · ${candidate.secondarySport}` : ''}
+                        </Text>
+                      </View>
+                    </View>
+                    {candidate.inboundLike ? (
+                      <View style={styles.interestBadge}>
+                        <Text style={styles.interestText}>Хочет тренироваться с вами</Text>
+                      </View>
+                    ) : null}
+                    <Text style={styles.muted}>{candidate.homeVenue.displayName}</Text>
+                    <Text style={styles.hint}>
+                      {candidate.geographyTier === 'WITHIN_RADIUS'
+                        ? candidate.distanceKm === 0
+                          ? 'Ваш домашний зал'
+                          : `${candidate.distanceKm ?? '—'} км · внутри радиуса`
+                        : 'Расширение поиска в пределах города'}
+                    </Text>
+                    {candidate.experienceText ? (
+                      <Text style={styles.discoveryExperience}>{candidate.experienceText}</Text>
+                    ) : null}
+                  </View>
+                ))
+              )}
+            </View>
+
             {coachInvites.map((invite) => (
               <View key={invite.grantId} style={styles.card}>
                 <Text style={styles.cardTitle}>Вас приглашают стать Coach</Text>
@@ -492,6 +563,36 @@ const styles = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { backgroundColor: '#e8f1e9', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
   chipText: { color: '#285d35', fontSize: 13, fontWeight: '600' },
+  discoveryCard: {
+    backgroundColor: '#faf9f6',
+    borderColor: '#ded9cf',
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 10,
+    padding: 16,
+  },
+  discoveryCardInterested: { borderColor: '#8b2f22', borderWidth: 2 },
+  discoveryHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
+  discoveryIdentity: { flex: 1, gap: 3 },
+  avatarPlaceholder: {
+    alignItems: 'center',
+    backgroundColor: '#e9ddd7',
+    borderRadius: 28,
+    height: 56,
+    justifyContent: 'center',
+    width: 56,
+  },
+  avatarText: { color: '#8b2f22', fontSize: 22, fontWeight: '800' },
+  discoveryName: { color: '#171512', fontSize: 17, fontWeight: '700' },
+  discoveryExperience: { color: '#4c4943', fontSize: 14, lineHeight: 20 },
+  interestBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#f4dfda',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  interestText: { color: '#7a261b', fontSize: 13, fontWeight: '700' },
   denial: { color: '#8b2f22', fontSize: 14, lineHeight: 20 },
   errorCard: {
     backgroundColor: '#fff0ed',

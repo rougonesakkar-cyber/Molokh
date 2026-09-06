@@ -22,7 +22,7 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 | M0 — Workspace | Reproducible monorepo, CI template, local PostgreSQL, universal Expo shell | DONE | API, Worker, DB and Web/Android shell boot locally |
 | M1 — Platform integrity | Atomic commands, event/audit/outbox, timers, notification inbox, request context | DONE | Commit/replay/conflict/rollback and duplicate delivery pass real PostgreSQL tests |
 | M2 — Identity & Community | Athlete profile, verification, pilot Venue, membership and scoped roles | IN PROGRESS | Verified Adult joins one Community and cannot bypass role/scope guards |
-| M3 — Discovery, Match & Chat | Transparent card ordering, Like/Match, personal chat and structured actions | PLANNED | Two Users can discover, match and coordinate without hidden reliability scoring |
+| M3 — Discovery, Match & Chat | Transparent card ordering, Like/Match, personal chat and structured actions | IN PROGRESS | Two Users can discover, match and coordinate without hidden reliability scoring |
 | M4 — Training slice | Slot choice, mutual agreement, host confirmation, Session and Coach attendance/result path | PLANNED | One end-to-end ordinary training works on the universal client |
 | M5 — Challenge & Status | Challenge eligibility, FIFO, booking, Forfeit, Champion/Contender transfer and cooldown | PLANNED | Concurrent status scenarios remain deterministic and auditable |
 | M6 — Appeal & Governance | Provisional result, 48-hour Appeal, waiver, reversal/annul/repeat and Central queues | PLANNED | A disputed result changes outcome without deleting history |
@@ -36,7 +36,7 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 | 0 | Through 06 Sep | M0 + M1 platform foundation | All current infrastructure gates pass; baseline committed |
 | 1 | 07–13 Sep | User, AthleteProfile, local auth adapter and capability projection | DONE EARLY 06 Sep: seeded User signs in locally, edits profile and sees explicit capability denials |
 | 2 | 14–20 Sep | Venue, Community, Membership, Coach/Admin grants and Central verification | DONE EARLY 06 Sep for the local pilot: scoped Coach/Gym Admin and atomic Primary lifecycle run end to end |
-| 3 | 21–27 Sep | Discovery hard gates/order, Like, Skip, Match, Block and suppression timers | Two seeded Athletes reach Match; inbound interest is visible without bypassing Like |
+| 3 | 21–27 Sep | Discovery hard gates/order, Like, Skip, Match, Block and suppression timers | IN PROGRESS EARLY 06 Sep: hard gates, deterministic ordering and first client card run; mutations remain |
 | 4 | 28 Sep–04 Oct | Personal Chat, structured action cards, edit/archive/report seams | Matched Athletes coordinate through Chat; clients never parse action text |
 | 5 | 05–11 Oct | Slot, GroupOffering, mutual selection and Booking snapshot | Both Athletes choose one real option; no reservation exists before host confirmation |
 | 6 | 12–18 Oct | Atomic host confirmation, Coach replacement, Session, attendance and Training stats | Racing bookings have one winner; Coach completes an ordinary Session end to end |
@@ -97,19 +97,20 @@ Rules protecting the 12-week target:
 
 - Core Engine v1.0: 300 transitions, 278 registered events, 213 acceptance scenarios and zero open blocking questions.
 - Workspace: TypeScript checks and Web production build pass across all packages.
-- Tests: 45 non-database tests plus six additional real PostgreSQL scenarios pass.
-- Database: migrations `0001`–`0012` applied locally; PostgreSQL 18 is healthy.
+- Tests: 48 non-database tests plus seven additional real PostgreSQL scenarios pass.
+- Database: migrations `0001`–`0013` applied locally; PostgreSQL 18 is healthy.
 - Product slice: the live universal Web route reads the seeded Athlete and changes an arbitrary display name through a versioned/idempotent API command; replay returns the same event.
 - Community increment: the same route shows the pilot Venue, active Membership, 15-day cooldown and transparent Official Challenge denial; role scope tests cover Coach/Admin/Primary/Central boundaries.
 - Verification increment: Athlete V-01, Central queue and V-02 execute through live HTTP; approval unlocks Official capability and idempotent replay returns the same event.
 - Coach increment: Central RG-01 and invitee RG-02 execute through live HTTP; duplicate creation returns the same resource/event and authority appears only after acceptance.
 - Admin increment: Central RG-08/RG-09/RG-10 execute through live HTTP; transfer is versioned and atomic, replay returns the same event, and exactly one active Primary remains while both ordinary Gym Admin grants survive.
+- Discovery increment: one versioned rank policy enforces radius-first city expansion, visible inbound-interest priority, soft sport overlap and stable tie-breaks; the live client receives a second seeded Athlete without a hidden reliability score.
 - Source control: the foundation is preserved in local Git history; remote protection remains external.
 
 ## 8. Immediate next actions
 
-1. Implement the Discovery hard-gate projection and transparent radius/city tier ordering.
-2. Seed a second deterministic Athlete with complementary preferences.
-3. Add Like and Skip commands with inbound-interest visibility and 15-day suppression.
-4. Create Match atomically on mutual Like and expose the first two-user client journey.
-5. Add Block/Unmatch preservation tests before beginning Chat.
+1. Add Like and Skip commands with inbound-interest visibility and 15-day suppression.
+2. Add the 30-day Like expiry timer payload and stale guard.
+3. Create Match atomically on mutual Like and expose the first two-user client journey.
+4. Add Block/Unmatch preservation tests before beginning Chat.
+5. Keep the client action surface to Like/Skip; no separate inbound list or name search.

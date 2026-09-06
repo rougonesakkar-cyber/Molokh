@@ -8,10 +8,12 @@ import {
   changePrimaryAdmin,
   createDatabase,
   ensureLocalPilotCommunity,
+  ensureLocalDiscoveryProfiles,
   inviteCoach,
   listPendingCoachInvites,
   listPendingVerifications,
   readCommunityContext,
+  readDiscoveryCards,
   readIdentityProjection,
   readVenueRoleSummary,
   runMigrations,
@@ -44,6 +46,7 @@ const localCommunityId = '0199a1b2-1234-7000-8000-000000000502';
 const localCentralUserId = '0199a1b2-1234-7000-8000-000000000506';
 const localCoachUserId = '0199a1b2-1234-7000-8000-000000000508';
 const localAdminUserId = '0199a1b2-1234-7000-8000-000000000509';
+const localDiscoveryUserId = '0199a1b2-1234-7000-8000-000000000554';
 const localToken = process.env.LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 const localCentralToken =
   process.env.LOCAL_CENTRAL_AUTH_TOKEN ?? 'molokh-local-central-token';
@@ -51,6 +54,8 @@ const localCoachToken =
   process.env.LOCAL_COACH_AUTH_TOKEN ?? 'molokh-local-coach-token';
 const localAdminToken =
   process.env.LOCAL_ADMIN_AUTH_TOKEN ?? 'molokh-local-admin-token';
+const localDiscoveryToken =
+  process.env.LOCAL_DISCOVERY_AUTH_TOKEN ?? 'molokh-local-discovery-token';
 const localActivation: CommandEnvelope<{
   readonly userId: string;
   readonly phoneE164: string;
@@ -165,6 +170,32 @@ const localAdminActivation: typeof localActivation = {
   },
 };
 
+const localDiscoveryActivation: typeof localActivation = {
+  commandId: '0199a1b2-1234-7000-8000-000000000555',
+  commandType: 'ACTIVATE_ACCOUNT',
+  idempotencyKey: 'local-development-discovery-athlete-v1',
+  actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+  aggregateType: 'User',
+  aggregateId: localDiscoveryUserId,
+  expectedVersion: 0,
+  correlationId: '0199a1b2-1234-7000-8000-000000000556',
+  causationId: null,
+  requestId: '0199a1b2-1234-7000-8000-000000000557',
+  source: 'scheduler',
+  payloadVersion: 1,
+  payload: {
+    userId: localDiscoveryUserId,
+    phoneE164: '+79990000554',
+    phoneVerifiedAt: '2026-09-05T09:00:00.000Z',
+    birthDate: '1997-11-08',
+    displayName: 'Марина Ринг',
+    locale: 'ru-RU',
+    primarySport: 'BOXING',
+    secondarySport: 'FUNCTIONAL_TRAINING',
+    discoveryRadiusKm: 15,
+  },
+};
+
 await runMigrations(connectionString);
 const database = createDatabase(connectionString);
 const existingLocalIdentity = await readIdentityProjection(database, localUserId);
@@ -199,6 +230,17 @@ if (!existingAdminIdentity) {
     outboxMessageId: '0199a1b2-1234-7000-8000-000000000540',
   });
 }
+const existingDiscoveryIdentity = await readIdentityProjection(
+  database,
+  localDiscoveryUserId,
+);
+if (!existingDiscoveryIdentity) {
+  await activateUser(database, localDiscoveryActivation, {
+    eventId: '0199a1b2-1234-7000-8000-000000000558',
+    auditId: '0199a1b2-1234-7000-8000-000000000559',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000560',
+  });
+}
 await ensureLocalPilotCommunity(database, {
   venueId: localVenueId,
   venueConfigurationId: '0199a1b2-1234-7000-8000-000000000503',
@@ -217,6 +259,16 @@ await ensureLocalPilotCommunity(database, {
   contactPayload: { phone: '+79990000501', note: 'Уточните детали у зала' },
   occurredAt: '2026-09-05T09:00:00.000Z',
 });
+await ensureLocalDiscoveryProfiles(database, localVenueId, [
+  {
+    userId: localUserId,
+    experienceText: 'Ищу партнёра для регулярных тренировок по боксу.',
+  },
+  {
+    userId: localDiscoveryUserId,
+    experienceText: 'Бокс и функциональные тренировки в спокойном темпе.',
+  },
+]);
 
 interface LocalVerificationFixture {
   readonly userId: string;
@@ -363,6 +415,7 @@ const localAuth = new StaticBearerAuthRegistryAdapter([
   { token: localToken, userId: localUserId },
   { token: localCoachToken, userId: localCoachUserId },
   { token: localAdminToken, userId: localAdminUserId },
+  { token: localDiscoveryToken, userId: localDiscoveryUserId },
 ]);
 const localCentralAuth = new StaticBearerAuthAdapter(
   localCentralToken,
@@ -375,6 +428,10 @@ const app = await buildApp({
   community: {
     auth: localAuth,
     readContext: (userId) => readCommunityContext(database, userId, localCommunityId),
+  },
+  discovery: {
+    auth: localAuth,
+    readCards: (userId, limit) => readDiscoveryCards(database, userId, limit),
   },
   identity: {
     auth: localAuth,

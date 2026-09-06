@@ -100,6 +100,65 @@ export const MeResponseSchema = Type.Object(
 
 export type MeResponse = Static<typeof MeResponseSchema>;
 
+const DiscoveryRankingReasonSchema = Type.Union([
+  Type.Literal('WITHIN_RADIUS'),
+  Type.Literal('CITY_EXPANSION'),
+  Type.Literal('INBOUND_INTEREST'),
+  Type.Literal('PRIMARY_SPORT_OVERLAP'),
+  Type.Literal('SECONDARY_SPORT_OVERLAP'),
+]);
+
+export const DiscoveryCardSchema = Type.Object(
+  {
+    candidateUserId: Type.String({ format: 'uuid' }),
+    displayName: Type.String({ minLength: 1, maxLength: 80 }),
+    avatarAssetId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+    primarySport: Type.String(),
+    secondarySport: Type.Union([Type.String(), Type.Null()]),
+    experienceText: Type.Union([Type.String(), Type.Null()]),
+    homeVenue: Type.Object(
+      {
+        venueId: Type.String({ format: 'uuid' }),
+        displayName: Type.String(),
+      },
+      { additionalProperties: false },
+    ),
+    geographyTier: Type.Union([
+      Type.Literal('WITHIN_RADIUS'),
+      Type.Literal('CITY_EXPANSION'),
+    ]),
+    inboundLike: Type.Boolean(),
+    sportOverlap: Type.Union([
+      Type.Literal('PRIMARY'),
+      Type.Literal('SECONDARY'),
+      Type.Literal('NONE'),
+    ]),
+    distanceKm: Type.Union([Type.Number({ minimum: 0 }), Type.Null()]),
+    rankingConfigVersion: Type.Literal('discovery-mvp-v1'),
+    rankingReasons: Type.Array(DiscoveryRankingReasonSchema),
+  },
+  { $id: 'DiscoveryCard', additionalProperties: false },
+);
+
+export type DiscoveryCard = Static<typeof DiscoveryCardSchema>;
+
+export const DiscoveryCardsResponseSchema = Type.Object(
+  {
+    data: Type.Array(DiscoveryCardSchema),
+    meta: Type.Object(
+      {
+        requestId: Type.String({ format: 'uuid' }),
+        rankingConfigVersion: Type.Literal('discovery-mvp-v1'),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'DiscoveryCardsResponse', additionalProperties: false },
+);
+
+export type DiscoveryCardsResponse = Static<typeof DiscoveryCardsResponseSchema>;
+
 export const ChangeDisplayNameBodySchema = Type.Object(
   {
     displayName: Type.String({ minLength: 1, maxLength: 80 }),

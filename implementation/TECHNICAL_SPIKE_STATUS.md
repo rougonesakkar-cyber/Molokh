@@ -23,6 +23,7 @@
 | Community scope foundation | pilot Venue/Community/Membership, immutable config ownership, role scope guard and universal client projection | Pass |
 | Coach authorization slice | scoped 72h invite, invitee-only acceptance, audit/in-app notification and role-adaptive client path | Pass |
 | Venue Admin role lifecycle | verified Gym Admin appointment plus serialized first/transfer Primary command and local operator path | Pass |
+| Discovery read slice | hard gates, radius-first deterministic order, typed API and universal-client candidate card | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
@@ -128,13 +129,21 @@ grant and preserves the ordinary Gym Admin role. The unique partial index is the
 database guard against two active Primary grants. The universal client exposes role-derived
 capabilities, and a repeatable local script restores the deterministic pilot Admin as Primary.
 
+The first M3 read slice projects Discovery directly from canonical Identity/Social data for
+the single-Venue pilot. Pure Core owns hard-gate and lexicographic order rules. The radius
+tier is exhausted before city expansion; inbound interest and sport overlap are explicit
+signals, while recent activity/response buckets remain neutral until canonical inputs exist.
+There is no composite reliability score. The API omits private rank buckets and returns only
+the visible reasons plus `discovery-mvp-v1`, so the order is reproducible and inspectable.
+
 ## Boundary
 
 The toolchain, M1 transaction primitive, Sprint 1 Identity exit, Central verification,
 Community read/guards and the local Coach/Gym Admin/Primary role lifecycle are implemented.
 Production OTP/session handling, account recovery and duplicate-account cases remain M2
 hardening. They do not block beginning the local Discovery/Match slice. Training scheduling
-has not started yet.
+has not started yet. Discovery read and ordering are implemented; Like/Skip/Match mutations
+are the next M3 increment.
 
 ## Verification result
 
@@ -142,16 +151,17 @@ Verified on 2026-09-06:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- forty-five non-database automated tests pass across Core, DB, API, worker and testkit;
-- six additional PostgreSQL transaction/outbox/notification/Identity/Role scenarios pass through the dedicated database gate;
+- forty-eight non-database automated tests pass across Core, DB, API, worker and testkit;
+- seven additional PostgreSQL transaction/outbox/notification/Identity/Role/Discovery scenarios pass through the dedicated database gate;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.7.2 runs on WSL 2 and the PostgreSQL 18 container is healthy;
-- migrations `0001`–`0012`, including Identity, verification, Community and Role integrity guards, apply successfully and are safe to run again;
+- migrations `0001`–`0013`, including Identity, Community, Role and Social integrity guards, apply successfully and are safe to run again;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
 - the live Web client reads `Molokh Pilot Community`, its active Membership and the exact `ACCOUNT_NOT_VERIFIED` action denial;
 - live V-01/V-02 changes that denial to `CREATE_OFFICIAL_CHALLENGE`; exact Central replay returns the original event and no duplicate decision;
 - live RG-01/RG-02 authorizes the seeded verified Coach; HTTP retries return the same resource/event and the Coach projection gains `RECORD_COMMUNITY_RESULT` only after acceptance;
 - live RG-08/RG-09/RG-10 appoints two Gym Admins, transfers Primary with one active-grant invariant, replays the exact event and restores the deterministic pilot Admin as Primary;
+- live `GET /api/v1/discovery/cards` returns the second seeded Athlete with `WITHIN_RADIUS`, zero-distance Home Venue context, primary-sport overlap and ranking config `discovery-mvp-v1`;
 - the Core specification validator reports 300 transitions, 213 acceptance scenarios, zero open questions and zero errors.

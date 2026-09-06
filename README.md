@@ -9,7 +9,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - registered events: **278**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, Sprint 1 Identity and the local Sprint 2 Community/role slice are complete; production authentication and account cases remain M2 hardening;
+- implementation code: M0/M1, Sprint 1 Identity and the local Sprint 2 Community/role slice are complete; M3 has begun with the transparent Discovery read path;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -84,8 +84,8 @@ pnpm.cmd --filter @molokh/client web
 ```
 
 Then open `http://localhost:8081`. The development API creates one deterministic local
-Athlete and authenticates the client through a replaceable local bearer adapter. No SMS
-or production credential is required for this local slice.
+Athlete plus a second Discovery candidate and authenticates the client through a replaceable
+local bearer adapter. No SMS or production credential is required for this local slice.
 
 To exercise Central verification, press **«Отправить на верификацию»** in the client and,
 while the API is running, execute:
@@ -127,6 +127,6 @@ pnpm.cmd --filter @molokh/client web
 
 ## Next executable action
 
-Begin the Discovery hard-gate projection and deterministic card ordering, then add the
-Like/Skip/Match commands. The technology baseline is fixed by the accepted ADR set and
-changes through a new ADR.
+Add the idempotent Like/Skip commands, atomically create Match on mutual Like and connect
+those actions to the existing Discovery cards. The technology baseline is fixed by the
+accepted ADR set and changes through a new ADR.

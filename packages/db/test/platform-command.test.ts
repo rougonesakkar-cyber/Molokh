@@ -31,6 +31,7 @@ import {
   listPendingCoachInvites,
   projectNotificationBatch,
   readCommunityContext,
+  readDiscoveryCards,
   readIdentityProjection,
   readVenueRoleSummary,
   inviteCoach,
@@ -200,6 +201,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await sql`
       truncate table
         test_support.probe_aggregates,
+        social.discovery_pair_suppressions,
+        social.blocks,
+        social.matches,
+        social.likes,
         community.role_grants,
         community.community_memberships,
         community.community_configuration_versions,
@@ -1171,6 +1176,137 @@ describePostgres('PostgreSQL critical command transaction', () => {
         expect.objectContaining({ userId: ids.roleUnverified, role: 'GYM_ADMIN' }),
         expect.objectContaining({ userId: ids.roleCoach, role: 'PRIMARY_ADMIN' }),
       ]),
+    });
+  });
+
+  it('projects only eligible Discovery cards with visible deterministic rank reasons', async () => {
+    const viewerId = testId(400);
+    const eligibleId = testId(401);
+    const youthId = testId(402);
+    const blockedId = testId(403);
+    const suppressedId = testId(404);
+    const matchedId = testId(405);
+    const pausedId = testId(406);
+    const centralId = testId(407);
+    const venueId = testId(408);
+    const userValues = [
+      [viewerId, '+79991000400', '1994-01-01', 'ADULT', 'Viewer', false],
+      [eligibleId, '+79991000401', '1995-01-01', 'ADULT', 'Visible Candidate', false],
+      [youthId, '+79991000402', '2010-01-01', 'YOUTH', 'Youth Candidate', false],
+      [blockedId, '+79991000403', '1993-01-01', 'ADULT', 'Blocked Candidate', false],
+      [suppressedId, '+79991000404', '1992-01-01', 'ADULT', 'Suppressed Candidate', false],
+      [matchedId, '+79991000405', '1991-01-01', 'ADULT', 'Matched Candidate', false],
+      [pausedId, '+79991000406', '1990-01-01', 'ADULT', 'Paused Candidate', true],
+      [centralId, '+79991000407', '1989-01-01', 'ADULT', 'Central', false],
+    ] as const;
+    for (const [userId, phone, birthDate, ageDivision, displayName, paused] of userValues) {
+      await sql`
+        insert into identity.users (
+          user_id, phone_e164, phone_verified_at, birth_date, age_division,
+          display_name, account_state, discovery_paused, locale, version, activated_at
+        ) values (
+          ${userId}::uuid, ${phone}, '2026-09-01T09:00:00Z', ${birthDate}::date,
+          ${ageDivision}, ${displayName}, 'ACTIVE', ${paused}, 'ru-RU', 1,
+          '2026-09-01T09:00:00Z'
+        )
+      `.execute(database);
+    }
+    for (const [userId, primarySport, secondarySport] of [
+      [viewerId, 'BOXING', null],
+      [eligibleId, 'BOXING', 'FUNCTIONAL_TRAINING'],
+      [youthId, 'BOXING', null],
+      [blockedId, 'BOXING', null],
+      [suppressedId, 'RUNNING', null],
+      [matchedId, 'BOXING', null],
+      [pausedId, 'BOXING', null],
+    ] as const) {
+      await sql`
+        insert into identity.athlete_profiles (
+          user_id, primary_sport, secondary_sport, home_venue_id,
+          discovery_radius_km, experience_text
+        ) values (
+          ${userId}::uuid, ${primarySport}, ${secondarySport}, ${venueId}::uuid,
+          15, 'Test experience'
+        )
+      `.execute(database);
+    }
+    await ensureLocalPilotCommunity(database, {
+      venueId,
+      venueConfigurationId: testId(409),
+      communityId: testId(410),
+      communityConfigurationId: testId(411),
+      membershipId: testId(412),
+      centralGrantId: testId(413),
+      athleteUserId: viewerId,
+      centralActorId: centralId,
+      legalName: 'Discovery test venue',
+      venueDisplayName: 'Discovery Gym',
+      communityName: 'Discovery Community',
+      address: 'Moscow',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: {},
+      occurredAt: '2026-09-01T09:00:00.000Z',
+    });
+    await sql`
+      insert into social.likes (
+        like_id, from_user_id, to_user_id, state, source,
+        created_at, expires_at, version
+      ) values (
+        ${testId(414)}::uuid, ${eligibleId}::uuid, ${viewerId}::uuid,
+        'ACTIVE', 'DISCOVERY', '2026-09-01T09:00:00Z',
+        '2026-10-01T09:00:00Z', 1
+      )
+    `.execute(database);
+    await sql`
+      insert into social.blocks (
+        block_id, blocker_user_id, blocked_user_id, state, created_at, version
+      ) values (
+        ${testId(415)}::uuid, ${viewerId}::uuid, ${blockedId}::uuid,
+        'ACTIVE', '2026-09-01T09:00:00Z', 1
+      )
+    `.execute(database);
+    await sql`
+      insert into social.discovery_pair_suppressions (
+        suppression_id, pair_low_id, pair_high_id, reason, state,
+        started_at, until_at, version
+      ) values (
+        ${testId(416)}::uuid, least(${viewerId}::uuid, ${suppressedId}::uuid),
+        greatest(${viewerId}::uuid, ${suppressedId}::uuid), 'SKIP', 'ACTIVE',
+        '2026-09-01T09:00:00Z', '2026-09-16T09:00:00Z', 1
+      )
+    `.execute(database);
+    await sql`
+      insert into social.matches (
+        match_id, pair_low_id, pair_high_id, state, chat_id,
+        last_activity_at, version
+      ) values (
+        ${testId(417)}::uuid, least(${viewerId}::uuid, ${matchedId}::uuid),
+        greatest(${viewerId}::uuid, ${matchedId}::uuid), 'ARCHIVED',
+        ${testId(418)}::uuid, '2026-09-01T09:00:00Z', 1
+      )
+    `.execute(database);
+
+    const cards = await readDiscoveryCards(
+      database,
+      viewerId,
+      20,
+      new Date('2026-09-06T09:00:00.000Z'),
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      candidateUserId: eligibleId,
+      displayName: 'Visible Candidate',
+      geographyTier: 'WITHIN_RADIUS',
+      inboundLike: true,
+      sportOverlap: 'PRIMARY',
+      distanceKm: 0,
+      rankingConfigVersion: 'discovery-mvp-v1',
+      rankingReasons: [
+        'WITHIN_RADIUS',
+        'INBOUND_INTEREST',
+        'PRIMARY_SPORT_OVERLAP',
+      ],
     });
   });
 });

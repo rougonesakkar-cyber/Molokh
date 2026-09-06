@@ -139,6 +139,21 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: { code: 'ROLE_GRANT_NOT_FOUND', message: 'Role grant was not found', requestId },
     };
   }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'DISCOVERY_UNAVAILABLE'
+  ) {
+    return {
+      statusCode: 403,
+      body: {
+        code: 'DISCOVERY_UNAVAILABLE',
+        message: 'Discovery is unavailable for the current profile state',
+        requestId,
+      },
+    };
+  }
   const hasValidation =
     typeof error === 'object' &&
     error !== null &&

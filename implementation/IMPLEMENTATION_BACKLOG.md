@@ -174,6 +174,8 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
 - Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
 - Story 5 remaining: no local pilot blocker. Production authentication, account recovery and duplicate-account cases remain separate M2 hardening; the next vertical slice is Discovery/Match.
+- M3 Discovery read increment: complete. A versioned, lexicographic ranking policy exhausts the selected radius before city expansion, highlights inbound interest inside each geography tier, treats sport as a soft signal and uses a stable ID tie-break. PostgreSQL source tables and hard gates exclude self, inactive/paused accounts, cross-age candidates, Block, active suppression and active/archived Match without computing a reliability score. The API and universal client render the second deterministic Athlete.
+- M3 next increment: Like/Skip commands, 30-day Like expiry, 15-day suppression and atomic mutual-Like Match creation.
 
 ## 5. Work that needs product/external input later
 

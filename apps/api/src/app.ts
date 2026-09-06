@@ -13,6 +13,10 @@ import {
   registerCommunityRoutes,
   type CommunityRouteDependencies,
 } from './community-routes.js';
+import {
+  registerDiscoveryRoutes,
+  type DiscoveryRouteDependencies,
+} from './discovery-routes.js';
 import { registerRequestContext } from './request-context.js';
 import {
   registerIdentityRoutes,
@@ -27,6 +31,7 @@ import { registerRoleRoutes, type RoleRouteDependencies } from './role-routes.js
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
   readonly community?: CommunityRouteDependencies;
+  readonly discovery?: DiscoveryRouteDependencies;
   readonly identity?: IdentityRouteDependencies;
   readonly roles?: RoleRouteDependencies;
   readonly verification?: VerificationRouteDependencies;
@@ -36,6 +41,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const {
     allowedOrigins = [],
     community,
+    discovery,
     identity,
     roles,
     verification,
@@ -74,6 +80,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   if (identity) await registerIdentityRoutes(app, identity);
   if (community) await registerCommunityRoutes(app, community);
+  if (discovery) await registerDiscoveryRoutes(app, discovery);
   if (roles) await registerRoleRoutes(app, roles);
   if (verification) await registerVerificationRoutes(app, verification);
 

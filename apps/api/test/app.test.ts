@@ -8,6 +8,7 @@ import {
 import type {
   ChangeDisplayNamePayload,
   CommunityContextProjection,
+  DiscoveryCardProjection,
   IdentityEffectIds,
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
@@ -296,6 +297,77 @@ describe('runtime contract', () => {
     });
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/community');
+  });
+
+  it('returns transparent Discovery cards without exposing private rank buckets', async () => {
+    const cards: DiscoveryCardProjection[] = [
+      {
+        candidateUserId: '0199a1b2-1234-7000-8000-000000000404',
+        displayName: 'Марина Ринг',
+        avatarAssetId: null,
+        ageDivision: 'ADULT',
+        primarySport: 'BOXING',
+        secondarySport: 'FUNCTIONAL_TRAINING',
+        experienceText: 'Бокс и функциональные тренировки.',
+        homeVenue: {
+          venueId: '0199a1b2-1234-7000-8000-000000000401',
+          displayName: 'Pilot Gym',
+        },
+        geographyTier: 'WITHIN_RADIUS',
+        inboundLike: true,
+        sportOverlap: 'PRIMARY',
+        distanceKm: 0,
+        recentActivityBucket: 0,
+        responseSpeedBucket: 0,
+        rankingConfigVersion: 'discovery-mvp-v1',
+        rankingReasons: [
+          'WITHIN_RADIUS',
+          'INBOUND_INTEREST',
+          'PRIMARY_SPORT_OVERLAP',
+        ],
+      },
+    ];
+    const readCards = vi.fn(async () => cards);
+    const app = await buildApp({
+      discovery: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readCards,
+      },
+    });
+    apps.push(app);
+
+    const unauthorized = await app.inject({
+      method: 'GET',
+      url: '/api/v1/discovery/cards',
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/discovery/cards?limit=12',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(readCards).toHaveBeenCalledWith(userId, 12);
+    expect(response.json()).toMatchObject({
+      data: [
+        {
+          displayName: 'Марина Ринг',
+          geographyTier: 'WITHIN_RADIUS',
+          inboundLike: true,
+          rankingReasons: [
+            'WITHIN_RADIUS',
+            'INBOUND_INTEREST',
+            'PRIMARY_SPORT_OVERLAP',
+          ],
+        },
+      ],
+      meta: { rankingConfigVersion: 'discovery-mvp-v1' },
+    });
+    expect(response.json().data[0]).not.toHaveProperty('recentActivityBucket');
+    expect(response.json().data[0]).not.toHaveProperty('responseSpeedBucket');
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty('/api/v1/discovery/cards');
   });
 
   it('runs the no-document Athlete-to-Central verification workflow', async () => {

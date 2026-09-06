@@ -80,7 +80,7 @@ Sensitive-action hold is represented in `/me.capability_denials[]`; trusted old 
 
 | Method | Path | Command/query |
 |---|---|---|
-| GET | `/discovery/cards` | tiered city/radius projection |
+| GET | `/discovery/cards` | radius-first city projection with visible inbound-interest/ranking reasons and config version |
 | POST | `/discovery/{user_id}/like` | Like from Discovery only |
 | POST | `/discovery/{user_id}/skip` | remove inbound Like/suppress pair |
 | GET | `/matches` | active/archived list |
