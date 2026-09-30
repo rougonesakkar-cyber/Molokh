@@ -50,6 +50,7 @@ Critical constraints:
 - `chat_messages`
 - `chat_message_revisions`
 - `chat_message_user_visibility`
+- `chat_message_reports`
 
 Critical constraints:
 
@@ -83,9 +84,11 @@ Critical constraints:
 - `group_plans`
 - `bookings`
 - `booking_commercial_snapshots`
+- `booking_official_conversions`
 - `booking_conversion_confirmations`
 - `booking_training_retention_confirmations`
 - `booking_coach_replacements`
+- `booking_host_rejections`
 - `resource_calendar_claims`
 
 Critical constraints:
@@ -95,6 +98,7 @@ Critical constraints:
 - exclusion constraint for overlapping active Coach ranges;
 - optional Venue resource exclusion;
 - commercial snapshot immutable after mutual selection;
+- one live Official conversion per Booking and one immutable decision per required role;
 - Booking/Session Coach assignment updated in one transaction.
 
 Example exclusion shape:
@@ -105,6 +109,121 @@ exclude using gist (
   tstzrange(start_at, end_at, '[)') with &&
 ) where (state in ('PUBLISHED', 'BOOKED'));
 ```
+
+Migration `0016_scheduling_publication.sql` implements `slots`, `group_offerings`, the active
+Coach exclusion, publication indexes and structured commercial/contact fields. Migrations
+`0017`–`0018` add pair-owned Booking intent, informational GroupPlan, one-live-intent indexes
+and database guards for immutable commercial/offering snapshots. Migration
+`0019_booking_confirmation_session.sql` adds ordinary Sessions; host confirmation claims the
+Slot and creates exactly one Session in the same transaction. `0020_session_lifecycle.sql`
+aligns it with the formal state machine: it starts as `SCHEDULED`, receives
+`window_opened_at` from a versioned server timer, and only then becomes `READY_FOR_COACH`.
+That migration also adds immutable-per-Athlete Attendance facts and separate actual start/end
+timestamps. `0021_backfill_session_window_timers.sql` schedules timers for Sessions confirmed
+before the lifecycle increment was deployed.
+
+`0022_coach_replacement_and_no_fault_cancellation.sql` adds append-only Booking and Session
+Coach assignment history plus explicit cancellation actor/reason timestamps. Replacement keeps
+Venue, time and the immutable commercial snapshot unchanged while updating the booked Slot and
+Session in one transaction. External or replacement-rejection cancellation keeps all lineage,
+but removes the Slot from active capacity and creates no attendance/statistics.
+
+`0028_gym_admin_schedule_mutations.sql` stores one immutable, reasoned host rejection per
+Booking. Future Slot and GroupOffering edits/withdrawals continue to use the aggregate version,
+domain-event, audit and outbox transaction; active pair intent is checked under the locked
+schedule aggregate before a mutation can commit.
+
+`0029_appeal_participation_and_sla.sql` stores immutable response, withdrawal and SLA-extension
+facts. The original Appeal deadlines remain source facts; projections expose the extension as the
+effective due date. One `(Appeal,responder)` response, one withdrawal and one reasoned 24h/48h
+extension are database-enforced for the pilot.
+
+`0023_competition_challenge_foundation.sql` creates the first Competition contour and direct
+optional Challenge persistence: immutable ruleset snapshots and acknowledgments, one live
+Challenge per pair, one globally active accepted obligation per Athlete, append-only optional
+decline quiet periods and the pair-cooldown seam used by later Result processing.
+
+`0024_official_challenge_booking_link.sql` adds explicit nullable Challenge lineage to Booking
+and Session. Database checks require `TRAINING` rows to have no Challenge and
+`OFFICIAL_CHALLENGE` rows to have one; an index permits only one active Slot request per
+Challenge while retaining rejected/expired Booking history.
+
+`0025_official_session_competitive_snapshot.sql` creates the one-per-Session immutable
+competitive snapshot. It records both planned and scheduled-boundary effective stakes together
+with status holders/version, frozen rules/config references, Venue, Coach, pair and logical time.
+The snapshot is created at `READY_FOR_COACH`, referenced by actual Start/End events and cannot be
+updated or deleted.
+
+`0026_result_appeal_status_foundation.sql` adds one Result per Challenge cycle, immutable source
+facts, Appeal/waiver records, append-only provisional status transitions and append-only
+finalization proofs. It also links decisive Results to pair Cooldown, locks Competition status
+while the 48-hour Appeal window is open and indexes both the finalization timer and Central queue.
+
+`0027_central_appeal_decisions.sql` adds independent review start metadata, immutable Appeal
+decisions and immutable status-transition compensations. Source Result fields remain protected;
+`UPHOLD` appends finalization proof, while reverse/annul/repeat append an exact from/to status
+record tied to the decision. Cooldown invalidation and a repeated Challenge cycle remain ordinary
+transactional projections rather than history rewrites.
+
+`0028_gym_admin_schedule_mutations.sql` and `0029_appeal_participation_and_sla.sql` add reasoned
+schedule mutation history plus append-only Appeal responses, withdrawal and one-time visible SLA
+extension. `0030_missing_result_review.sql` adds one structured review per Challenge/Session,
+append-only Athlete statements and one append-only Venue confirmation. Assignment and resolution
+shape checks prevent Central from becoming a Result author and constrain the independent Coach to
+  the evidence-derived outcome.
+
+`0031_final_result_integrity_case.sql` adds the exceptional post-Final contour: immutable
+IntegrityCase source facts, one live case per Result, an independent reviewer assignment,
+append-only decisions and append-only status compensation with deterministic replay hash. A
+Competition carries at most one active integrity hold. Challenge obligations gain an explicit
+cycle number so an eligible post-Final repeat creates a new cycle without deleting the released
+history of the previous one.
+
+`0032_status_queue_foundation.sql` aligns the Competition phase vocabulary with the canonical
+state machine and creates `challenge_queue_entries`. A partial unique index permits only one live
+intent per Athlete/target, while the partial FIFO index fixes ordering to immutable server
+`submitted_at` plus `queue_entry_id`. Direct intents have no hidden expiry; terminal withdrawal is
+explicit and retains its audit/event history.
+
+`0033_genesis_mutual_response.sql` adds append-only per-candidate GENESIS decisions with one
+decision per Challenge/User and exact linkage back to the FIFO entry. `0034_genesis_booking_without_match.sql`
+allows an accepted official Booking to originate from the Challenge service Chat without fabricating
+a Discovery Match; ordinary training Bookings still require their real Match lineage.
+
+`0035_booking_match_or_challenge_guard.sql` makes that lineage invariant explicit: every Booking
+must reference either a real Match or an Official Challenge. `0036_administrative_forfeit_context.sql`
+permits a mandatory-response Forfeit Result and its status transition without inventing a Session,
+competitive snapshot, Venue, Coach or recorder; Session-origin Results retain all of those required
+facts. Both forms remain immutable, appealable and auditable.
+
+`0037_voluntary_status_release.sql` adds the two-step Champion/Contender status-only release.
+The PREVIEWED row freezes the current holders, status version, exact ST-09/ST-10/ST-14 consequence
+and a SHA-256 confirmation-token hash. CONFIRMED is terminal and immutable. The transactional
+command changes only the Competition projection, retains ACTIVE Membership, creates no Result,
+loss or Cooldown, and converts waiting direct entries to GENESIS candidates without changing
+their FIFO identity or submission time.
+
+`0038_genesis_single_candidate_window.sql` adds a nullable solo-window timestamp to a WAITING
+GENESIS queue entry and rejects every incompatible state/kind shape. The Worker records the
+window through a versioned queue event, publishes an exact three-day timer and clears it whenever
+the entry pairs or closes. The due command locks the Competition and queue, requires exactly one
+still-valid candidate and applies `GenesisWithoutOpponent` or `SuccessionWithoutOpponent` without
+creating a Result, loss or Cooldown.
+
+`0039_booking_official_conversion.sql` adds the canonical Training-to-Official conversion and
+its immutable Athlete/Coach decisions. Direct requests have an exact capped deadline;
+Contender-bearing requests link one `PREBOOKED_CONVERSION` QueueEntry and remain ordinary until
+strict-head activation. Terminal decline/expiry/invalidation preserves the source Training,
+whereas the final required acceptance atomically links the existing Booking and Session to a new
+BOOKED Challenge. The migration is checksum-managed and passes the live PostgreSQL gate.
+
+`0040_booking_solo_continuation.sql` adds the one-hour, two-party decision after an Athlete
+withdraws from a not-yet-started ordinary Training. The cancelling Athlete receives no loss,
+Forfeit, Cooldown or statistic. The remaining Athlete and assigned Coach each decide once;
+both accepts preserve the same resources as `CONFIRMED_SOLO`, while decline or expiry closes the
+Booking and Session and releases the Slot atomically. A live Training-to-Official conversion is
+invalidated before the solo decision opens. All branches are versioned, audited and covered by
+real PostgreSQL scenarios.
 
 ### session
 
@@ -127,14 +246,17 @@ Critical constraints:
 
 - `competitions`
 - `challenge_queue_entries`
+- `genesis_candidate_responses`
 - `challenges`
 - `challenge_participant_obligations`
 - `challenge_reschedules`
 - `ruleset_snapshots`
-- `ruleset_acknowledgments`
+- `challenge_ruleset_acknowledgments`
 - `competition_events`
 - `status_tenures`
 - `pair_cooldowns`
+- `status_transitions`
+- `status_transition_finalizations`
 - `voluntary_status_releases`
 - `process_holds`
 
@@ -154,8 +276,8 @@ FIFO index:
 ```sql
 create index queue_fifo_idx
   on competition.challenge_queue_entries
-  (competition_id, target_status, submitted_at, id)
-  where state in ('WAITING', 'RECONFIRMATION_REQUIRED', 'PAIRED_PENDING_ACCEPTANCE');
+  (competition_id, target_status, submitted_at, queue_entry_id)
+  where state in ('WAITING', 'RECONFIRMATION_REQUIRED', 'PAIRED_PENDING_ACCEPTANCE', 'ACTIVATED');
 ```
 
 `submitted_at` and `id` never change when an allowed migration/reconfirmation preserves position.
@@ -170,7 +292,11 @@ create index queue_fifo_idx
 - `appeal_waivers`
 - `technical_correction_requests`
 - `missing_result_reviews`
+- `missing_result_statements`
+- `missing_result_venue_confirmations`
 - `integrity_cases`
+- `integrity_decisions`
+- `integrity_status_compensations`
 
 Critical constraints:
 
@@ -179,7 +305,13 @@ Critical constraints:
 - one Appeal history per Result/appellant;
 - waiver unique per Result/User;
 - one open IntegrityCase per Final Result;
-- correction uses ResultDecision, never update of source Result.
+- Integrity evidence/source facts, decision and status compensation are append-only;
+- correction uses IntegrityDecision plus deterministic replay, never update of source Result;
+- one Competition integrity hold points to the case currently under review;
+- one MissingResultReview per Challenge and Session;
+- Athlete statements and Venue confirmations are append-only and unique per role-owned source;
+- review source facts are immutable; resolution and the resulting Challenge/Result transition
+  commit in one transaction.
 
 ### governance
 

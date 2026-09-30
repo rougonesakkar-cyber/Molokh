@@ -64,7 +64,7 @@ PostgreSQL-backed jobs предпочтительнее отдельного Red
 
 Первый vertical slice:
 
-`User → Community → Discovery → Match → Chat → Slot → Booking → READY_FOR_COACH → Coach Start → Attendance → Training completion`
+`User → Community → Discovery → Match → Chat → Slot → Booking → SCHEDULED → READY_FOR_COACH → Coach Start/first Attendance → Attendance → Training completion`
 
 Второй vertical slice добавляет:
 

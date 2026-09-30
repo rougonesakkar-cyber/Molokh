@@ -22,10 +22,10 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 | M0 — Workspace | Reproducible monorepo, CI template, local PostgreSQL, universal Expo shell | DONE | API, Worker, DB and Web/Android shell boot locally |
 | M1 — Platform integrity | Atomic commands, event/audit/outbox, timers, notification inbox, request context | DONE | Commit/replay/conflict/rollback and duplicate delivery pass real PostgreSQL tests |
 | M2 — Identity & Community | Athlete profile, verification, pilot Venue, membership and scoped roles | IN PROGRESS | Verified Adult joins one Community and cannot bypass role/scope guards |
-| M3 — Discovery, Match & Chat | Transparent card ordering, Like/Match, personal chat and structured actions | IN PROGRESS | Two Users can discover, match and coordinate without hidden reliability scoring |
-| M4 — Training slice | Slot choice, mutual agreement, host confirmation, Session and Coach attendance/result path | PLANNED | One end-to-end ordinary training works on the universal client |
-| M5 — Challenge & Status | Challenge eligibility, FIFO, booking, Forfeit, Champion/Contender transfer and cooldown | PLANNED | Concurrent status scenarios remain deterministic and auditable |
-| M6 — Appeal & Governance | Provisional result, 48-hour Appeal, waiver, reversal/annul/repeat and Central queues | PLANNED | A disputed result changes outcome without deleting history |
+| M3 — Discovery, Match & Chat | Transparent card ordering, Like/Match, personal chat and structured actions | DONE | Two Users can discover, match and coordinate without hidden reliability scoring |
+| M4 — Training slice | Slot choice, mutual agreement, host confirmation, Session, Coach attendance and no-fault operations | COMPLETE | One end-to-end ordinary training works on the universal client |
+| M5 — Challenge & Status | Challenge eligibility, FIFO, booking, Forfeit, Champion/Contender transfer and cooldown | IN PROGRESS | Concurrent status scenarios remain deterministic and auditable |
+| M6 — Appeal & Governance | Provisional result, 48-hour Appeal, waiver, reversal/annul/repeat and Central queues | IN PROGRESS | A disputed result changes outcome without deleting history |
 | M7 — Lifecycle P0 | Youth boundary, account/community lifecycle and platform-incident compensation | PLANNED | Lifecycle P0 scenarios have no age/status/obligation leakage |
 | M8 — Pilot hardening | Security, accessibility, failure recovery, backups, runbooks and Venue onboarding | PLANNED | Closed pilot can run with documented support and rollback paths |
 
@@ -36,13 +36,13 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 | 0 | Through 06 Sep | M0 + M1 platform foundation | All current infrastructure gates pass; baseline committed |
 | 1 | 07–13 Sep | User, AthleteProfile, local auth adapter and capability projection | DONE EARLY 06 Sep: seeded User signs in locally, edits profile and sees explicit capability denials |
 | 2 | 14–20 Sep | Venue, Community, Membership, Coach/Admin grants and Central verification | DONE EARLY 06 Sep for the local pilot: scoped Coach/Gym Admin and atomic Primary lifecycle run end to end |
-| 3 | 21–27 Sep | Discovery hard gates/order, Like, Skip, Match, Block and suppression timers | IN PROGRESS EARLY 06 Sep: hard gates, deterministic ordering and first client card run; mutations remain |
-| 4 | 28 Sep–04 Oct | Personal Chat, structured action cards, edit/archive/report seams | Matched Athletes coordinate through Chat; clients never parse action text |
-| 5 | 05–11 Oct | Slot, GroupOffering, mutual selection and Booking snapshot | Both Athletes choose one real option; no reservation exists before host confirmation |
+| 3 | 21–27 Sep | Discovery hard gates/order, Like, Skip, Match, Block and suppression timers | DONE EARLY 07 Sep: read/mutations, both expiry timers, atomic Match/Chat, Block/Unmatch preservation and Unblock semantics pass through the universal client and PostgreSQL |
+| 4 | 28 Sep–04 Oct | Personal Chat, structured action cards, edit/archive/report seams | DONE EARLY 07 Sep: participant-only Chat, revisions, local deletion, Report freeze and typed action cards pass through API/client/PostgreSQL |
+| 5 | 05–11 Oct | Slot, GroupOffering, mutual selection and Booking snapshot | DONE EARLY 08 Sep: both Athlete intents, immutable snapshot, Venue/Coach notifications and guarded expiry pass end to end |
 | 6 | 12–18 Oct | Atomic host confirmation, Coach replacement, Session, attendance and Training stats | Racing bookings have one winner; Coach completes an ordinary Session end to end |
 | 7 | 19–25 Oct | Challenge eligibility, response policies, FIFO and scheduling/reschedule rules | Allowed Challenge reaches confirmed Session; forbidden title paths are denied |
-| 8 | 26 Oct–01 Nov | Result, provisional status, Champion/Contender transfer, Forfeit and cooldown | Status moves immediately and deterministically; affected Users are temporarily locked |
-| 9 | 02–08 Nov | Appeal, waiver, reversal/annul/repeat and Central review queue | 48-hour Appeal can compensate status while preserving the original journal |
+| 8 | 26 Oct–01 Nov | Result, provisional status, Champion/Contender transfer, Forfeit and cooldown | DONE EARLY 09 Sep in code: atomic Result/status/Cooldown and temporary lock pass static gates |
+| 9 | 02–08 Nov | Appeal, waiver, reversal/annul/repeat and Central review queue | IN PROGRESS EARLY 09 Sep: submission, waiver and 48h finalization complete; Central compensation remains |
 | 10 | 09–15 Nov | Youth/lifecycle P0, Community pause/closure and incident compensation | All lifecycle P0 scenarios pass with explicit Central handling |
 | 11 | 16–22 Nov | Pilot hardening, accessibility, recovery, monitoring and projection rebuild | Production-like rehearsal passes; pilot runbook and rollback are usable |
 | Buffer | 23–29 Nov | Defect reserve and pilot Venue onboarding | No unresolved P0 defect; Coach/Admin/Central walkthrough completed |
@@ -97,20 +97,37 @@ Rules protecting the 12-week target:
 
 - Core Engine v1.0: 300 transitions, 278 registered events, 213 acceptance scenarios and zero open blocking questions.
 - Workspace: TypeScript checks and Web production build pass across all packages.
-- Tests: 48 non-database tests plus seven additional real PostgreSQL scenarios pass.
-- Database: migrations `0001`–`0013` applied locally; PostgreSQL 18 is healthy.
+- Tests: 164 non-database tests and 27 real PostgreSQL scenarios pass, including social concurrency, Chat revision/report invariants, the single-winner Booking confirmation race, atomic Challenge→Booking→Session lineage, status FIFO, Training conversion and Training cancellation/solo continuation.
+- Database: PostgreSQL 18 is healthy and checksum-verified migrations `0001`–`0040` pass. The recovered Docker runtime reused the existing database volume; no project file or database data was reset.
 - Product slice: the live universal Web route reads the seeded Athlete and changes an arbitrary display name through a versioned/idempotent API command; replay returns the same event.
 - Community increment: the same route shows the pilot Venue, active Membership, 15-day cooldown and transparent Official Challenge denial; role scope tests cover Coach/Admin/Primary/Central boundaries.
 - Verification increment: Athlete V-01, Central queue and V-02 execute through live HTTP; approval unlocks Official capability and idempotent replay returns the same event.
 - Coach increment: Central RG-01 and invitee RG-02 execute through live HTTP; duplicate creation returns the same resource/event and authority appears only after acceptance.
 - Admin increment: Central RG-08/RG-09/RG-10 execute through live HTTP; transfer is versioned and atomic, replay returns the same event, and exactly one active Primary remains while both ordinary Gym Admin grants survive.
 - Discovery increment: one versioned rank policy enforces radius-first city expansion, visible inbound-interest priority, soft sport overlap and stable tie-breaks; the live client receives a second seeded Athlete without a hidden reliability score.
+- Social increment: Like/Skip are versioned and idempotent; pair locking makes mutual Like create exactly one Match and personal Chat; 30-day Like and 15-day suppression timers are state/version guarded; the universal client exposes only the two simple Discovery actions.
+- Social safety increment: Unmatch closes the personal Chat and suppresses rediscovery for 15 days; Block is directed, closes the personal contact and withdraws a pending Like; accepted obligations/status paths are never removed, and Unblock does not reactivate an old Match.
+- Chat increment: Match emits `ChatOpened`; only participants can read/send, personal edits append revisions for 15 minutes, delete-for-self is local visibility, Report snapshots all revisions and freezes further edits, and typed action cards remain system-owned. The Expo client exposes this on a dedicated `/chat` route.
+- Scheduling publication increment: Admin/Coach Slot and Admin GroupOffering commands are idempotent and audited; active Coach ranges cannot overlap, worker timers expire cards at start, and an active Match Chat shows connected-Venue options without claiming reservation, payment or group capacity. The live pilot returned one Slot and one GroupOffering over real HTTP.
+- Scheduling mutual-intent increment: either Athlete proposes a Slot or GroupOffering from Chat; the peer alone completes mutual selection, the personal price/terms snapshot freezes at B-02, the Slot remains `PUBLISHED`, and GroupPlan only notifies the responsible Venue Admin. Versioned timers close stale selection/host/group states, and in-app notifications target the peer, Coach or Venue without controlling deadlines.
+- Scheduling host-confirmation increment: Coach/Admin sees pending requests in Community; one transaction claims the Slot, creates a `SCHEDULED` Session and notifies both Athletes. The database race test proves that one Slot cannot create two Sessions.
+- Gym Admin mutation increment: future Slot/GroupOffering records can be edited or reason-withdrawn only before pair intent; reasoned host rejection notifies both Athletes and returns an Official Challenge to scheduling without resetting its obligation.
+- Session lifecycle increment: the server opens `READY_FOR_COACH` at scheduled time; Coach owns actual Start, Attendance and End; completed Training count is derived only from ended `PRESENT/LATE` facts.
+- Coach replacement/no-fault increment: Admin may assign only a free authorized replacement before actual start; Slot and Session change atomically, immutable terms remain frozen, assignment revisions are append-only, and Athlete rejection or external failure closes all resources with no penalty/statistics.
+- Direct optional Challenge increment: active Match, verification, competitive Membership, pair matrix, Block/cooldown/quiet and unanswered limits are server-enforced; a ruleset snapshot and service Chat are created atomically. Recipient acceptance creates two globally unique active obligations, decline creates a 48-hour pair quiet period, withdrawal is no-fault, and a state/version-guarded Worker timer expires unanswered invitations after 48 hours.
+- Official Booking increment: accepted Challenge, Booking and Session now have explicit database lineage. Slot selection commits `CH-08`, Venue/Coach confirmation atomically commits `CH-10` and creates one `OFFICIAL_CHALLENGE` Session, while expiry/conflict commits `CH-09` and keeps the original obligation/deadline.
+- Official Session lifecycle increment: the scheduled boundary creates the immutable roles/stake/config snapshot without claiming attendance. Actual Coach Start/first Attendance commits `CH-13`; End commits `CH-14` and publishes the 2h/12h/24h Result-reminder schedule.
+- Result/status increment: Coach records one immutable Official Result; PostgreSQL applies provisional status and Cooldown in the same transaction, exposes a 48-hour Appeal deadline, and finalizes through either complete waiver or a versioned Worker timer. Web/iOS/Android Expo exports and the full static quality gate pass.
+- Central Appeal increment: an independent reviewer takes a FIFO Appeal and atomically upholds, reverses, annuls or orders a repeat. Append-only decision/compensation records preserve source Result history; status, Cooldown, obligations and repeat scheduling update in the same command.
+- Missing Result increment: 2h/12h/24h stale-safe timers, private Athlete statements, Venue confirmation, Central coordination and constrained independent-Coach Result now pass Core/API/client/Worker/PostgreSQL gates.
+- Final Result IntegrityCase increment: evidence-scoped independent Central review, neutral public marker, Competition hold, immutable decision and deterministic status replay pass Core/API/client/PostgreSQL gates.
+- Status Queue foundation, GENESIS response, direct activation, holder reconfirmation, voluntary status release and vacancy succession: explicit intent, immutable server-time FIFO, atomic first-two pairing, three-day single-candidate promotion, strict direct-head activation, 72-hour mandatory response, appealable refusal/timeout Forfeit, 24-hour holder-change reconfirmation and two-step no-loss status release pass code and PostgreSQL gates. Confirmed-Training conversion now passes strict prebooked FIFO activation, three-party confirmation and no-fault fallback. Training withdrawal additionally opens a one-hour remaining-Athlete/Coach solo decision and never creates a loss, Forfeit or Cooldown. Acceptance traceability is 86/213 (`80/195 P0`).
 - Source control: the foundation is preserved in local Git history; remote protection remains external.
 
 ## 8. Immediate next actions
 
-1. Add Like and Skip commands with inbound-interest visibility and 15-day suppression.
-2. Add the 30-day Like expiry timer payload and stale guard.
-3. Create Match atomically on mutual Like and expose the first two-user client journey.
-4. Add Block/Unmatch preservation tests before beginning Chat.
-5. Keep the client action surface to Like/Skip; no separate inbound list or name search.
+1. Perform the two-account Web walkthrough for GENESIS/direct mandatory Challenge, Training conversion, Training cancellation/solo and the accepted Slot flow.
+2. Complete event-driven eligibility-loss reconciliation for an active Training conversion.
+3. Perform the role-switch Web walkthrough for Gym Admin, Appeal, Missing Result and IntegrityCase paths.
+4. Implement the remaining M7 account/Community lifecycle and platform-incident compensation contours.
+5. Continue to keep payment, group capacity and automatic alternatives outside Molokh MVP.

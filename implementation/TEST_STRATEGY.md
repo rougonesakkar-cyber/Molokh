@@ -73,6 +73,7 @@ Boundaries to test at `t-1ms`, `t`, `t+1ms`:
 - Slot selection and minimum booking notice;
 - scheduling + extension;
 - Session window, operational/no-show grace and actual Coach start;
+- equivalent Coach replacement at the operational-grace boundary and Athlete no-fault opt-out;
 - Appeal/waiver;
 - birthday Youth→Adult;
 - phone-change hold;
@@ -99,6 +100,11 @@ Privacy snapshots assert that public/member/participant/Coach/Admin/Central view
 
 `ACCEPTANCE_SCENARIOS.md` is the release catalogue. Tag each automated test with exact `AC-###`.
 
+Run `pnpm coverage:acceptance` to validate those tags and generate
+`tmp/acceptance-coverage.md`. The generated `MAPPED` status means that a scenario
+is traceable to at least one executable test; it does not claim complete coverage
+at every required test layer.
+
 - P0: required before MVP release;
 - P1: required before broad rollout unless explicitly accepted for pilot;
 - P2: schema/feature-flag contract only.
@@ -122,6 +128,9 @@ Golden component states for each action card:
 - BLOCK service-only mode;
 - provisional/review marker;
 - READY_FOR_COACH vs actual Session;
+- Admin replacement options, immutable terms copy and Athlete no-fault cancellation action;
+- direct Official Challenge availability, initiator/recipient actions, no-loss terminal copy and accepted scheduling deadline;
+- accepted Challenge Slot selection, visible Official purpose, Venue/Coach confirmation and linked Session;
 - offline/reconnect/refetch;
 - duplicate tap/idempotent response.
 
@@ -142,6 +151,20 @@ In staging/CI simulate:
 - stale mobile client submits prior version.
 
 Business state must remain deterministic and recoverable.
+
+Official Session lifecycle integration additionally proves that the scheduled boundary creates
+one immutable competitive snapshot without actual attendance, actual Start creates `CH-13` once,
+End creates `CH-14` once, and the resulting Challenge stays `RESULT_PENDING` until a separate
+authorized Coach Result command. Ordinary Training remains statistically and competitively
+isolated from this path.
+
+Result integration additionally proves that one authorized Coach write creates exactly one
+Result and Cooldown, transfers Contender from the immutable Session snapshot, exposes the change
+as provisional and rejects a second Result. The real PostgreSQL path now also submits Appeal,
+assigns an independent Central reviewer, reverses the winner, restores the corrected Contender,
+unlocks the Competition and preserves both the source transition and compensation record.
+Worker tests prove that recorded/waiver timer payloads are accepted only for `FINALIZE_RESULT`;
+the common timer processor rejects stale state/version snapshots before executing a mutation.
 
 ## 11. Release gates
 

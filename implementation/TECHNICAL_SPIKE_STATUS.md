@@ -1,7 +1,7 @@
 # Technical Spike Status
 
-**Date:** 2026-09-06
-**Scope:** approved stack baseline plus the first product-owned Identity vertical slice.
+**Date:** 2026-09-30
+**Scope:** stack baseline through transparent FIFO, Training conversion and no-fault Training-to-solo continuation.
 
 ## Gates
 
@@ -24,6 +24,23 @@
 | Coach authorization slice | scoped 72h invite, invitee-only acceptance, audit/in-app notification and role-adaptive client path | Pass |
 | Venue Admin role lifecycle | verified Gym Admin appointment plus serialized first/transfer Primary command and local operator path | Pass |
 | Discovery read slice | hard gates, radius-first deterministic order, typed API and universal-client candidate card | Pass |
+| Discovery mutation slice | idempotent Like/Skip, expiry timers, atomic Match/Chat and Block/Unmatch preservation | Pass in Core/API/client and real PostgreSQL |
+| Personal Chat slice | participant-only history/send, append-only edits, local visibility, Report freeze and typed system actions | Pass in Core/API/client and real PostgreSQL |
+| Scheduling publication slice | role-scoped Slot/GroupOffering publish, overlap guard, expiry timers and active-Match Chat cards | Pass in Core/API/client/worker and real PostgreSQL |
+| API edge baseline | official CORS/Helmet/rate-limit plugins, DB-backed readiness and secret log redaction | Pass |
+| Migration integrity | SHA-256 drift detection for every applied migration | Pass |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 86/213 mapped (`80/195 P0`) as implementation grows |
+| Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
+| Final Result integrity | evidence-scoped Central review, Competition hold, immutable decision and deterministic status replay | Pass in Core/API/client and real PostgreSQL |
+| Status queue foundation | explicit GENESIS/status intent, server-time FIFO, member/outsider projection and no-loss withdrawal | Pass in Core/API/client and real PostgreSQL |
+| GENESIS mutual response | atomic first-two pairing, 48h versioned timer, no-fault survivor FIFO return, two-accept obligation and service-Chat scheduling handoff | Pass in Core/API/client/worker and real PostgreSQL |
+| Direct-status FIFO activation | strict valid head, current-holder binding, 72h mandatory response, 48h reminder, accepted obligations and appealable refusal/timeout Forfeit | Pass in Core/API/client/worker and real PostgreSQL |
+| Holder-change reconfirmation | final-transition reconciliation, preserved FIFO key, 24h versioned timer, manual reconfirm/exit and no-loss expiry | Pass in Core/API/client/worker and real PostgreSQL |
+| Voluntary status release | two-step 15m token/version confirmation, ST-09/ST-10/ST-14 projection, preserved Membership/FIFO and no Result/loss/Cooldown | Pass in Core/API/client and real PostgreSQL |
+| Vacancy succession | Worker revalidation, atomic first-two pairing, visible three-day solo deadline and stale-safe C-03/C-08 promotion | Pass in Core/client/worker and real PostgreSQL |
+| Training conversion | ordinary/Contender conversion, strict FIFO, three-party confirmation and no-fault fallback | Pass in Core/API/client/worker and real PostgreSQL |
+| Training cancellation/solo | Athlete no-fault withdrawal, two-party one-hour decision, solo conversion or atomic resource release | Pass in Core/API/client/worker and real PostgreSQL |
+| Dependency severity gate | CI rejects high/critical production advisories; production audit reports zero high/critical and six moderate advisories | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
@@ -34,8 +51,8 @@
 - Eclipse Temurin JDK 17.0.20.1 at `D:\DevTools\Java\jdk-17.0.20.1+1`.
 - Android SDK at `D:\DevTools\Android\Sdk`: API 36, Build Tools 36.0.0, NDK 27.1.12297006, CMake 3.22.1, Platform Tools 37.0.1 and Emulator 37.1.11.
 - Hardware-accelerated `medium_phone` API 36 AVD under `D:\DevTools\Android\User`; WHPX acceleration passes.
-- Expo 57.0.20, Expo Router 57.0.19, Expo development client and EAS CLI 23.2.0.
-- WSL 2.7.12, Docker Desktop 29.7.2 and Docker Compose 5.5.0. Docker is installed at `D:\DevTools\Docker\Desktop`, with WSL data configured under `D:\DevTools\Docker\WSL`.
+- Expo 57.0.26, Expo Router 57.0.24, Expo Constants 57.0.20, Expo development client and EAS CLI 23.2.0.
+- WSL 2.7.12, Docker Engine 29.8.1 and Docker Compose 5.5.1. Docker is installed at `D:\DevTools\Docker\Desktop`, with WSL data configured under `D:\DevTools\Docker\WSL`.
 
 Java, Android and Gradle caches are redirected to drive D through user environment variables. The pnpm workspace uses `nodeLinker: hoisted`, the layout recommended for React Native and required here to keep Windows CMake/Ninja paths below their limit.
 
@@ -57,7 +74,12 @@ The Android command produced and installed `app-debug.apk` as package `app.molok
 
 ## Local PostgreSQL gate
 
-WSL 2 and Docker Engine are active. The PostgreSQL 18 container reaches `healthy`, and migration `0001_platform_foundation.sql` applies successfully. The compose volume is mounted at PostgreSQL 18's version-aware data root, `/var/lib/postgresql`.
+The PostgreSQL 18 gate and compose volume at the version-aware `/var/lib/postgresql` data root are
+healthy. Migrations through `0040` and all 27 database integration scenarios pass. On 30 September,
+Docker Desktop again encountered an inaccessible `Docker\run\sailor-ingest.sock`; with Docker
+stopped, only the transient `Docker\run` directory was moved to the recoverable
+`run-quarantine-20260930-202046` path before a clean restart. No project file, WSL data, image or
+PostgreSQL volume was reset or modified by the recovery.
 
 Use these commands to start or re-check the local database:
 
@@ -136,32 +158,54 @@ signals, while recent activity/response buckets remain neutral until canonical i
 There is no composite reliability score. The API omits private rank buckets and returns only
 the visible reasons plus `discovery-mvp-v1`, so the order is reproducible and inspectable.
 
+The first M3 mutation slice now owns the social write path. Like and Skip require a visible
+Discovery pair plus idempotency and create event/audit/outbox records. A normalized pair lock
+serializes opposing Likes; mutual interest updates both Likes and creates exactly one live
+Match plus one personal Chat in the same PostgreSQL transaction. Like and suppression timers
+carry state/version stale guards. The universal client keeps the action surface to two buttons,
+shows inbound interest directly on the card and adds a Match section only after mutual intent.
+
 ## Boundary
 
-The toolchain, M1 transaction primitive, Sprint 1 Identity exit, Central verification,
-Community read/guards and the local Coach/Gym Admin/Primary role lifecycle are implemented.
-Production OTP/session handling, account recovery and duplicate-account cases remain M2
-hardening. They do not block beginning the local Discovery/Match slice. Training scheduling
-has not started yet. Discovery read and ordering are implemented; Like/Skip/Match mutations
-are the next M3 increment.
+The toolchain, platform transaction primitive, Identity/Community/roles, Discovery/Match/Chat,
+ordinary Training and direct optional Official Challenge through Coach Result are implemented for
+the local pilot. Appeal submission/waiver, non-blocking opponent/Coach responses, appellant
+withdrawal, visible one-time SLA extension, Central assignment and reasoned
+uphold/reverse/annul/repeat decisions are executable. The 2h/12h/24h MissingResultReview path,
+private statements, Venue confirmation and constrained independent-Coach Result are executable.
+Final Result IntegrityCase is executable with an independent Central reviewer, neutral public
+marker and deterministic status compensation. Explicit GENESIS/status intent, the active-member
+FIFO projection, no-loss withdrawal and strict direct-head activation against the current
+Contender are executable. A mandatory refusal or timeout is represented by an appealable
+administrative Forfeit without inventing a Session. Final holder changes move waiting entries into
+a visible 24-hour reconfirmation without changing their FIFO keys. Production OTP/session handling,
+recovery/duplicate cases, status-only release and later lifecycle hardening remain.
 
 ## Verification result
 
-Verified on 2026-09-06:
+Verified on 2026-09-30:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- forty-eight non-database automated tests pass across Core, DB, API, worker and testkit;
-- seven additional PostgreSQL transaction/outbox/notification/Identity/Role/Discovery scenarios pass through the dedicated database gate;
+- 164 non-database automated tests pass across Core, DB, API, worker and testkit;
+- the current PostgreSQL gate passes all 27 integration scenarios, including MissingResultReview, Appeal, IntegrityCase compensation, direct mandatory status activation/Forfeit, holder-change reconfirmation/expiry, vacancy succession, Training conversion and Training cancellation/solo continuation;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
-- Expo produces a static Web export for `/`, `/_sitemap` and `/+not-found`;
+- Expo produces a static Web export for `/chat`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
-- Docker Engine 29.7.2 runs on WSL 2 and the PostgreSQL 18 container is healthy;
-- migrations `0001`–`0013`, including Identity, Community, Role and Social integrity guards, apply successfully and are safe to run again;
+- Docker Engine 29.8.1 and PostgreSQL 18 are healthy after moving only the inaccessible transient host runtime-socket directory into quarantine; no project, WSL disk or Docker data volume was reset;
+- migrations `0001`–`0040`, including Training-to-Official conversion and Training solo continuation, apply successfully with checksum verification;
+- the live universal client renders the empty GENESIS state, submits a position-1 status intent and withdraws it without loss; the queue immediately returns to empty and no browser error is produced by the flow;
+- the live Worker revalidates a fresh GENESIS intent, records the exact three-day single-candidate deadline, projects its mandatory notification and makes the pending timer stale after a no-loss withdrawal; the visible queue returns to empty;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
 - the live Web client reads `Molokh Pilot Community`, its active Membership and the exact `ACCOUNT_NOT_VERIFIED` action denial;
 - live V-01/V-02 changes that denial to `CREATE_OFFICIAL_CHALLENGE`; exact Central replay returns the original event and no duplicate decision;
 - live RG-01/RG-02 authorizes the seeded verified Coach; HTTP retries return the same resource/event and the Coach projection gains `RECORD_COMMUNITY_RESULT` only after acceptance;
 - live RG-08/RG-09/RG-10 appoints two Gym Admins, transfers Primary with one active-grant invariant, replays the exact event and restores the deterministic pilot Admin as Primary;
 - live `GET /api/v1/discovery/cards` returns the second seeded Athlete with `WITHIN_RADIUS`, zero-distance Home Venue context, primary-sport overlap and ranking config `discovery-mvp-v1`;
+- live Scheduling HTTP commands publish one future Slot and one GroupOffering, and the authenticated Match Chat returns both with `NO_RESERVATION_BEFORE_HOST_CONFIRMATION`;
+- live two-identity commands produce `HOST_CONFIRMATION_PENDING` with two Athlete selections and an immutable `1500.00 RUB` snapshot while the Slot remains `PUBLISHED`; the GroupPlan reaches `NOTIFIED` with `capacityReserved=false`;
+- live Coach confirmation changes the Booking to `CONFIRMED_PAIR`, claims the Slot exactly once and creates a `SCHEDULED` Session shown in the active Match Chat;
+- a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
+- the generated acceptance matrix maps 86 scenarios (`80/195 P0`) and distinguishes traceability from complete coverage;
+- Expo dependency compatibility passes at 57.0.26/57.0.24, and the production dependency gate reports no high or critical advisories;
 - the Core specification validator reports 300 transitions, 213 acceptance scenarios, zero open questions and zero errors.

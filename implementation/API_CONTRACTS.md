@@ -69,7 +69,8 @@ HTTP mapping:
 | POST | `/auth/refresh` | rotate session |
 | POST | `/auth/logout` | revoke current session |
 | GET | `/me` | User/profile/capabilities/active processes |
-| PATCH | `/me/profile` | display name/avatar/sports/preferences; never accepts state/status |
+| PATCH | `/me/profile` | display name; never accepts state/status |
+| PATCH | `/me/sports` | primary and optional secondary sport; versioned critical command |
 | POST | `/me/recovery-cases` | account recovery/phone change request |
 | POST | `/me/export-requests` | privacy export |
 | POST | `/me/account-closure` | two-step closure preview/confirm token flow |
@@ -87,13 +88,20 @@ Sensitive-action hold is represented in `/me.capability_denials[]`; trusted old 
 | DELETE | `/matches/{match_id}` | Unmatch orchestration |
 | POST | `/users/{user_id}/block` | directed Block |
 | DELETE | `/users/{user_id}/block` | revoke Block, never restore old Match automatically |
+| GET | `/me/blocks` | active directed Blocks owned by the authenticated User |
 | GET | `/chats/{chat_id}/messages` | cursor history with local visibility |
-| POST | `/chats/{chat_id}/messages` | personal text or permitted action payload |
+| POST | `/chats/{chat_id}/messages` | participant personal text; structured actions are internal/system-owned |
 | PATCH | `/messages/{message_id}` | sender personal edit ≤15m, append revision |
 | DELETE | `/messages/{message_id}/visibility` | delete for self |
-| POST | `/messages/{message_id}/reports` | freeze revisions and open Case |
+| POST | `/messages/{message_id}/reports` | snapshot all revisions, freeze edits and enqueue Central moderation |
 
-Chat API returns structured `action_card` objects. Clients never parse human message text to infer an action.
+Chat history identifies the authenticated viewer in response metadata so ownership controls never
+depend on client route parameters. Chat API returns versioned structured action objects; clients
+never parse human message text to infer an action, and Users cannot forge system action cards.
+
+Unmatch and Block responses explicitly confirm preservation of accepted Official obligations and
+status FIFO/mandatory paths. Unmatch adds a 15-day pair suppression; Block remains effective until
+the blocker revokes it. Neither endpoint cascades from Match to Challenge or Booking records.
 
 ## 6. Community and roles
 
@@ -120,72 +128,178 @@ Chat API returns structured `action_card` objects. Clients never parse human mes
 
 | Method | Path | Command/query |
 |---|---|---|
-| GET | `/slots` | eligible Slots for Match/Challenge context |
-| POST | `/slots` | Coach/Admin publish |
-| PATCH | `/slots/{id}` | editable only under Slot guards |
+| GET | `/chats/{chat_id}/training-options` | active-Match participant sees eligible connected-Venue Slots and GroupOfferings |
+| GET | `/venues/{venue_id}/admin-dashboard` | scoped Venue Admin reads Venue settings, authorized Coaches, future schedule, pending host confirmations and informational GroupPlan interest |
+| POST | `/venues/{venue_id}/slots` | own authorized Coach or Venue Admin publishes; timer expires at start |
+| POST | `/venues/{venue_id}/group-offerings` | Venue Admin publishes manual schedule/contact snapshot; timer expires at start |
+| PATCH | `/slots/{id}` | Venue Admin edits a future published Slot only before pair intent begins |
+| POST | `/slots/{id}/withdraw` | Venue Admin withdraws an unused future Slot with a reason |
+| PATCH | `/group-offerings/{id}` | Venue Admin edits a future published GroupOffering before pair interest begins |
+| POST | `/group-offerings/{id}/withdraw` | Venue Admin withdraws an unused future GroupOffering with a reason |
 | POST | `/bookings` | first Athlete selects Slot |
 | POST | `/bookings/{id}/select-same` | other Athlete mutual selection |
+| GET | `/me/host-confirmations` | assigned Coach or Venue Admin confirmation queue |
 | POST | `/bookings/{id}/change-selection` | selecting Athlete |
 | POST | `/bookings/{id}/withdraw` | pre-host-confirm no-fault |
 | POST | `/bookings/{id}/host-confirm` | atomic resource claim |
 | POST | `/bookings/{id}/host-reject` | reason required |
-| POST | `/bookings/{id}/replace-coach` | equivalent pre-actual-start replacement |
-| POST | `/bookings/{id}/coach-replacement-reschedule` | Athlete external no-fault choice |
-| GET | `/group-offerings` | manual Venue schedule cards |
 | POST | `/group-plans` | propose from Match |
 | POST | `/group-plans/{id}/confirm` | mutual confirmation/notification |
 
-Booking projection includes immutable commercial snapshot, selected Slot, who must act, exact deadline and alternatives. It never claims Molokh payment/capacity responsibility.
+The Chat options query returns
+`reservation_policy=NO_RESERVATION_BEFORE_HOST_CONFIRMATION`, the active pair intent and the
+published alternatives. `POST /bookings` records the first Athlete selection; only the peer may
+call `select-same`, which freezes the immutable commercial snapshot and asks the host without
+claiming the Slot. Group cards always include freshness, Venue contact and a capacity disclaimer;
+mutual GroupPlan confirmation notifies the Venue but creates no Booking, Session or statistics.
+The Venue Admin dashboard keeps that distinction explicit: pending personal requests are actionable,
+while group interest is informational and never implies a reservation or available capacity.
+Host confirmation locks the Slot, changes the Booking to `CONFIRMED_PAIR` and creates exactly
+one `SCHEDULED` Session in the same transaction. A versioned server timer changes it to
+`READY_FOR_COACH` at `scheduled_start_at` without asserting attendance. If another pair won the Slot race, the
+losing Booking receives an explicit resource-conflict rejection and no Session is created.
+An explicit host rejection stores its reason, notifies both Athletes and leaves an ordinary Slot
+available. For an Official Challenge it atomically returns the Challenge from `BOOKING_PENDING`
+to `ACCEPTED_UNSCHEDULED` without resetting its scheduling deadline or obligations. Schedule
+edit/withdraw commands are optimistic-versioned and fail once a Booking or GroupPlan intent is
+active, so already-seen terms cannot be changed silently.
+When `POST /bookings` carries an accepted `challengeId`, the Booking purpose is
+`OFFICIAL_CHALLENGE`; Challenge transition `CH-08` commits with the Booking. Final host
+confirmation rechecks Challenge eligibility and obligations, creates a Session carrying the same
+`challengeId`, and commits `CH-10` to `BOOKED`. Expiry or resource rejection commits `CH-09`
+and preserves the original scheduling deadline and participant obligations.
+
+For the linked Official Session, the scheduled timer creates the immutable competitive snapshot
+before returning `READY_FOR_COACH`. `POST /sessions/{id}/start` or the first valid Attendance then
+commits Session actual start and Challenge `CH-13 → IN_SESSION` in one transaction. End commits
+the Session/Booking/Slot completion facts together with `CH-14 → RESULT_PENDING`; its outbox
+contains deterministic 2h/12h/24h Result reminder deadlines. These transitions do not apply to
+ordinary Training Sessions.
 
 ## 8. Official Challenge and FIFO
 
 | Method | Path | Command/query |
 |---|---|---|
-| POST | `/challenges` | allowed direct optional Challenge |
-| POST | `/challenges/{id}/accept` | recipient or final required GENESIS party |
-| POST | `/challenges/{id}/decline` | policy-specific consequence |
-| POST | `/challenges/{id}/withdraw` | pre-accept initiator |
+| GET | `/chats/{chatId}/challenge` | current/latest pair Challenge plus create availability |
+| POST | `/challenges` | implemented direct optional OPEN/NONE Challenge from active Match |
+| POST | `/challenges/{id}/accept` | implemented optional or mandatory recipient acceptance and atomic participant obligations |
+| POST | `/challenges/{id}/decline` | optional: no-loss decline/48-hour pair quiet; mandatory: appealable administrative Forfeit |
+| POST | `/challenges/{id}/withdraw` | implemented pre-accept initiator withdrawal, including no-fault direct-status withdrawal |
 | POST | `/challenges/{id}/reschedules` | actor/reason; server assigns fault/count |
 | POST | `/challenges/{id}/capacity-extension` | system/Central path only |
-| POST | `/competitions/{id}/queue-entries` | explicit status/GENESIS intent |
-| DELETE | `/queue-entries/{id}` | withdraw; re-entry gets new FIFO key |
-| POST | `/queue-entries/{id}/reconfirm` | holder-change 24h action |
-| GET | `/competitions/{id}/queue` | member/outsider filtered projection |
-| POST | `/status-releases/preview` | status-only release consequence |
-| POST | `/status-releases/confirm` | consume token, no active obligation |
+| GET | `/me/competition` | implemented member/outsider-filtered status and FIFO projection |
+| POST | `/competitions/{id}/queue-entries` | implemented explicit status/GENESIS intent |
+| POST | `/queue-entries/{id}/withdraw` | implemented versioned no-loss withdrawal; re-entry gets new FIFO key |
+| POST | `/genesis-challenges/{id}/accept` | implemented per-participant GENESIS acceptance; second acceptance creates both obligations |
+| POST | `/genesis-challenges/{id}/decline` | implemented no-loss decline; counterpart returns at the unchanged FIFO key |
+| POST | `/queue-entries/{id}/reconfirm` | implemented holder-change 24h action preserving the original FIFO key |
+| GET | `/competitions/{id}/queue` | future administrative/public-by-id alias of the filtered projection |
+| POST | `/status-releases/preview` | implemented status-only consequence snapshot; returns a 15-minute confirmation token |
+| POST | `/status-releases/{id}/confirm` | implemented token/version-bound confirmation; Membership stays active and no Result/loss/Cooldown is created |
 
-Challenge create/accept responses include frozen ruleset/version, acknowledgment proof, response policy, stakes preview and consequence copy key.
+The implemented direct slice returns the frozen ruleset reference/mode, response policy, stake,
+deadlines, state/version and viewer role. Its accepted state is linked through Booking to one
+confirmed `OFFICIAL_CHALLENGE` Session without a second UI mode. Acknowledgment proofs remain
+server-side append-only records. The first status slice now exposes the canonical holder cards,
+active status Challenge summary, FIFO rows and the viewer's mutual GENESIS action. GENESIS pairing,
+response expiry and accepted service-Chat scheduling are implemented. The strict direct-status
+head now activates only against the still-current Contender when the status slot is free. It creates
+a 72-hour `MANDATORY` Challenge; acceptance reuses the Official scheduling flow, while refusal or
+timeout creates an appealable administrative Forfeit without a fictitious Session. After a final
+holder change, waiting direct entries are rebound through a 24-hour reconfirmation command/timer;
+the original FIFO key is preserved and silence or explicit exit closes without loss.
+Each visible queue row now includes `singleCandidateDeadlineAt`. It is non-null only while that
+entry is the sole valid GENESIS candidate in an open vacancy. The Worker pairs a later second
+candidate atomically or promotes the unchanged single candidate at the exact three-day boundary;
+the timer is ignored when state/version changed.
+Champion/Contender release now uses a separate two-step resource rather than overloading Result.
+Preview freezes the holder/status version and exact succession or vacancy consequence; confirm
+fails if that snapshot changed, the token expired, an accepted obligation exists or a blocking
+status Challenge is live. Waiting direct entries are converted to GENESIS candidates without
+changing their FIFO ID or timestamp.
 
 ## 9. Session, Attendance and Result
 
 | Method | Path | Command/query |
 |---|---|---|
 | GET | `/sessions/{id}` | plan, READY/actual state, assignment, actions |
+| GET | `/me/sessions` | Athlete/Coach/Gym Admin list plus derived completed Training count |
+| POST | `/sessions/{id}/official-conversion` | either Athlete proposes conversion of confirmed Training; requester acceptance is recorded |
+| POST | `/booking-official-conversions/{id}/decision` | required peer Athlete or assigned Coach accepts/declines with aggregate `If-Match` |
 | POST | `/sessions/{id}/start` | Coach confirms actual start |
 | POST | `/sessions/{id}/attendance` | Coach; first record may atomically start READY Session |
 | POST | `/sessions/{id}/end` | Coach/fallback policy after actual start |
-| POST | `/sessions/{id}/operational-failure` | Coach/Admin/Central evidence path |
-| POST | `/sessions/{id}/results` | assigned Coach, one effective Result |
+| POST | `/sessions/{id}/replace-coach` | Gym Admin assigns an equivalent authorized Coach before actual start |
+| POST | `/sessions/{id}/cancel-after-coach-replacement` | either Athlete rejects the replacement; external no-fault cancellation |
+| POST | `/sessions/{id}/fail-external` | Gym Admin/Central closes a pre-start operational failure no-fault |
+| GET | `/results/{id}` | Athlete/Coach/scoped Admin Result projection and currently allowed Appeal action |
+| POST | `/challenges/{id}/result` | assigned non-participant Coach, one effective Result after ended Official Session |
 | POST | `/results/{id}/metadata-revisions` | recording Coach ≤24h |
 | POST | `/results/{id}/technical-corrections` | governed correction request |
 
-`scheduled_start_at`, `window_opened_at` and `actual_start_at` are separate fields. A READY Session never contributes Training stats.
+`scheduled_start_at`, `window_opened_at` and `actual_start_at` are separate fields. A READY Session never contributes Training stats. For the closed-pilot MVP, Coach records both Athlete facts before manual End; only `PRESENT/LATE` on an `ENDED` Training Session contributes to the count. Equivalent replacement changes Session and booked Slot assignment atomically while preserving the original commercial snapshot. It is append-only audited and exposes a pre-start Athlete opt-out; both that opt-out and a Venue/Coach operational failure close Booking, Session and Slot with `EXTERNAL` fault and no Athlete penalty.
+
+The Training conversion projection exposes its public state, exact deadline, required viewer role,
+recorded decisions and FIFO position where applicable. A direct conversion temporarily marks the
+Booking `OFFICIAL_CONVERSION_PENDING`; a Contender-bearing pair stays ordinary while its
+`PREBOOKED_CONVERSION` waits in the same transparent FIFO. Only the final third acceptance commits
+the linked BOOKED Challenge and changes Booking/Session purpose. Decline, deadline, failed guard or
+source start restores/preserves Training without a Result, loss or Cooldown.
 
 ## 10. Appeal, Safety and evidence
 
 | Method | Path | Command/query |
 |---|---|---|
-| POST | `/results/{id}/appeals` | eligible Athlete ≤48h |
-| POST | `/results/{id}/appeal-waivers` | irreversible eligible actor action |
-| POST | `/appeals/{id}/withdraw` | no refiling |
-| POST | `/appeals/{id}/responses` | non-blocking opponent/Coach response |
+| POST | `/results/{id}/appeal` | implemented eligible Athlete action ≤48h |
+| POST | `/results/{id}/waive-appeal` | implemented irreversible eligible actor action |
+| GET | `/results/{id}/appeal` | implemented participant/Coach/Central projection with allowed next action |
+| GET | `/central/appeals` | implemented permission-protected FIFO Central work queue |
+| POST | `/central/appeals/{id}/start-review` | implemented independent Central reviewer assignment |
+| POST | `/central/appeals/{id}/decision` | implemented reasoned `UPHOLD`, `REVERSE`, `ANNUL` or `REPEAT` |
+| POST | `/appeals/{id}/withdraw` | implemented appellant-only withdrawal; no refiling |
+| POST | `/appeals/{id}/responses` | implemented one non-blocking response per opponent/Coach |
+| POST | `/central/appeals/{id}/extend-sla` | implemented one reasoned 24h/48h extension by assigned reviewer |
 | POST | `/reports` | scoped REPORT or Safety cancellation |
 | POST | `/cases/{id}/evidence-upload-intents` | obtain private upload target after limits |
 | POST | `/cases/{id}/evidence-attachments/{id}/complete` | submit for scan |
-| POST | `/integrity-cases` | Central-only Final Result exceptional case |
-| POST | `/integrity-cases/{id}/decision` | uphold/correct/annul/repeat |
+| GET | `/me/integrity-cases` | participant/original-Coach neutral history; private evidence omitted |
+| GET | `/central/integrity-cases` | permission-protected open Central queue with private evidence |
+| GET | `/integrity-cases/{id}` | role-filtered case projection |
+| POST | `/central/integrity-cases` | implemented Central-only Final Result exceptional case; source Result `If-Match` |
+| POST | `/central/integrity-cases/{id}/start-review` | implemented independent reviewer assignment and Competition hold |
+| POST | `/central/integrity-cases/{id}/decision` | implemented uphold/correct/annul/repeat plus deterministic replay |
 
 Evidence API accepts only Appeal/Safety allowlisted media. There is no Result attachment endpoint.
+
+The implemented Result command commits Result, `CH-15`, provisional status, status lock,
+Cooldown, domain events, audit and outbox atomically. `WIN_A/WIN_B` refer to the immutable ordered
+Session pair; `NO_SHOW` must agree with Coach-recorded Attendance, while `FORFEIT`, `NO_SHOW` and
+`NO_CONTEST` require a reason and comment. The 48-hour finalizer uses expected state/version, so a
+submitted Appeal or later waiver makes the older timer stale instead of overwriting new state.
+Central decision commands use the Appeal version and one database transaction. They append an
+immutable decision, finalize or compensate the provisional status journal, invalidate Cooldown
+for annul/repeat, release obligations for terminal outcomes, or increment `cycle_no` and open a
+new 14-day scheduling window for repeat. The original Result outcome columns are never updated;
+the read projection returns the effective winner plus the neutral Central reason.
+
+The implemented Missing Result surface is deliberately role-owned:
+
+- `GET /me/missing-result-reviews` returns only Athlete, original/assigned Coach or Venue-owned work;
+- `POST /missing-result-reviews/{id}/statements` appends one private Athlete statement;
+- `POST /missing-result-reviews/{id}/venue-confirmation` appends the Venue attendance fact;
+- `GET /central/missing-result-reviews` is the operational Central queue;
+- Central may start review, assign a non-conflicted Coach with a constrained outcome, or order a
+  no-fault repeat; Central cannot call the Result command as an outcome author;
+- the assigned Coach uses the ordinary `POST /challenges/{id}/result` command, which verifies the
+  constraint and resolves the review atomically.
+
+The Final Result integrity contour is separate from ordinary Appeal. Only `FRAUD`,
+`SYSTEM_ERROR` and `IDENTITY_ERROR` may open a case, with a private evidence reference and a
+72-hour review SLA. Starting review sets one Competition integrity hold. Decision appends an
+immutable record and SHA-256 replay hash; it never updates the recorded outcome/winner columns.
+Correction, annulment and repeat replay the status journal from the source transition, append an
+exact compensation and release the hold atomically. Participants and the original Coach receive
+only the neutral category, state and effective outcome; Central-only reason/evidence remain private.
 
 ## 11. Central operations
 

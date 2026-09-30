@@ -39,6 +39,8 @@ jobs:
         run: corepack enable
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Reject high or critical production advisories
+        run: pnpm audit:prod
       - name: Verify code and database integration
         run: pnpm check
       - name: Verify the canonical Core specification

@@ -6,6 +6,8 @@ apps/client/ios/
 dist/
 coverage/
 tmp/
+artifacts/
+apps/client/artifacts/
 *.tsbuildinfo
 .env
 .env.*
