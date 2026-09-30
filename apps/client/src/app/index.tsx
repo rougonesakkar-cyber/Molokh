@@ -1,16 +1,42 @@
 import type {
-  ApiError,
+  AppealCommandResponse,
+  AppealDetailResponse,
+  AppealQueueResponse,
+  BlockedUsersResponse,
+  BookingOfficialConversionCommandResponse,
+  BookingSoloContinuationCommandResponse,
   CommunityContextResponse,
+  CompetitionStatusResponse,
+  DiscoveryActionResponse,
   DiscoveryCardsResponse,
+  GroupOfferingCommandResponse,
+  GenesisResponseCommandResponse,
+  HostConfirmationCommandResponse,
+  HostConfirmationQueueResponse,
+  HostRejectionCommandResponse,
   IdentityCommandResponse,
+  IntegrityCaseListResponse,
   MeResponse,
+  MatchesResponse,
+  MissingResultReviewListResponse,
+  MySessionsResponse,
   PendingCoachInviteListResponse,
+  RecordSessionResultBody,
+  ResultCommandResponse,
+  ResultResponse,
   RoleGrantCommandResponse,
+  SocialRelationshipCommandResponse,
+  SessionCommandResponse,
+  ScheduleMutationReasonBody,
+  SlotCommandResponse,
+  StatusQueueEntryCommandResponse,
+  StatusReleaseCommandResponse,
+  VenueAdminDashboardResponse,
 } from '@molokh/contracts';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type Href, useRouter } from 'expo-router';
 import {
   ActivityIndicator,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,16 +46,252 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-const defaultApiUrl = Platform.OS === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000';
-const apiUrl = (process.env.EXPO_PUBLIC_API_URL ?? defaultApiUrl).replace(/\/$/, '');
-const localToken = process.env.EXPO_PUBLIC_LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
+import {
+  DiscoverySection,
+  type DiscoveryAction,
+} from '../features/discovery/DiscoverySection';
+import { MissingResultReviewSection } from '../features/missing-result/MissingResultReviewSection';
+import { IntegrityCaseSection } from '../features/integrity-case/IntegrityCaseSection';
+import { StatusQueueSection } from '../features/status-queue/StatusQueueSection';
+import {
+  apiErrorMessage,
+  apiUrl,
+  localTestAccounts,
+  localToken,
+  setLocalToken,
+  type LocalTestAccount,
+} from '../lib/api';
+import { sportLabel, sportOptions } from '../lib/sports';
 
 type Identity = MeResponse['data'];
 type CommunityContext = CommunityContextResponse['data'];
+type CompetitionStatus = CompetitionStatusResponse['data'];
+type StatusReleasePreview = StatusReleaseCommandResponse['data'];
 type Capability = Identity['capabilities'][number];
 type CommunityDenialCode = CommunityContext['access']['denials'][number]['code'];
 type CoachInvite = PendingCoachInviteListResponse['data'][number];
+type HostConfirmation = HostConfirmationQueueResponse['data'][number];
+type Session = MySessionsResponse['data']['sessions'][number];
+type AttendanceStatus = Session['attendance'][number]['status'];
+type OfficialResult = ResultResponse['data'];
+type CentralAppeal = AppealQueueResponse['data'][number];
+type AppealDetail = AppealDetailResponse['data'];
+type ResultOutcomeCode = RecordSessionResultBody['outcomeCode'];
 type DiscoveryCard = DiscoveryCardsResponse['data'][number];
+type Match = MatchesResponse['data'][number];
+type BlockedUser = BlockedUsersResponse['data'][number];
+type MissingResultReview = MissingResultReviewListResponse['data'][number];
+type IntegrityCase = IntegrityCaseListResponse['data'][number];
+type VenueAdminDashboard = VenueAdminDashboardResponse['data'];
+type MainSection = 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
+type AdminPublicationKind = 'SLOT' | 'GROUP';
+type AdminDurationMinutes = 60 | 90;
+type ScheduleReasonCode = ScheduleMutationReasonBody['reasonCode'];
+
+interface EditingAdminSchedule {
+  readonly id: string;
+  readonly kind: AdminPublicationKind;
+  readonly version: number;
+}
+
+interface PendingScheduleWithdrawal extends EditingAdminSchedule {
+  readonly label: string;
+}
+type SessionAction =
+  | 'replace-coach'
+  | 'cancel-after-coach-replacement'
+  | 'fail-external'
+  | 'cancel-training-participation';
+
+interface PendingSessionAction {
+  readonly action: SessionAction;
+  readonly body: Record<string, unknown>;
+  readonly confirmLabel: string;
+  readonly description: string;
+  readonly operationSuffix: string;
+  readonly sessionId: string;
+  readonly title: string;
+  readonly tone: 'neutral' | 'danger';
+}
+
+const appealDecisionOptions: ReadonlyArray<{
+  readonly decision: NonNullable<CentralAppeal['decision']>;
+  readonly label: string;
+  readonly consequence: string;
+}> = [
+  { decision: 'UPHOLD', label: 'Подтвердить', consequence: 'Исход и статус станут финальными.' },
+  { decision: 'REVERSE', label: 'Сменить победителя', consequence: 'Победитель и статус будут пересчитаны.' },
+  { decision: 'ANNUL', label: 'Аннулировать', consequence: 'Исход и cooldown отменятся, прежний статус вернётся.' },
+  { decision: 'REPEAT', label: 'Назначить повтор', consequence: 'Статус вернётся, участники снова выберут слот.' },
+];
+
+const scheduleReasonOptions: ReadonlyArray<{
+  readonly code: ScheduleReasonCode;
+  readonly label: string;
+}> = [
+  { code: 'COACH_UNAVAILABLE', label: 'Coach недоступен' },
+  { code: 'VENUE_UNAVAILABLE', label: 'Зал недоступен' },
+  { code: 'SCHEDULE_CHANGED', label: 'Расписание изменилось' },
+  { code: 'OTHER', label: 'Другая причина' },
+];
+
+const mainSections: ReadonlyArray<{
+  readonly id: MainSection;
+  readonly label: string;
+  readonly title: string;
+  readonly lead: string;
+}> = [
+  {
+    id: 'DISCOVERY',
+    label: 'Discovery',
+    title: 'Найдите партнёра',
+    lead: 'Выберите человека, с которым хотите потренироваться. Общение откроется после взаимного интереса.',
+  },
+  {
+    id: 'PROFILE',
+    label: 'Профиль',
+    title: 'Ваш профиль',
+    lead: 'Управляйте именем и смотрите текущие состояния аккаунта.',
+  },
+  {
+    id: 'COMMUNITY',
+    label: 'Community',
+    title: 'Ваше Community',
+    lead: 'Зал, Membership и доступ к официальным Challenge.',
+  },
+];
+
+const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<MainSection, {
+  readonly label: string;
+  readonly title: string;
+  readonly lead: string;
+}>>>>> = {
+  Coach: {
+    COMMUNITY: {
+      label: 'Сессии',
+      title: 'Рабочие сессии',
+      lead: 'Начинайте тренировки, отмечайте присутствие и подтверждайте результат.',
+    },
+    PROFILE: {
+      label: 'Профиль',
+      title: 'Профиль тренера',
+      lead: 'Проверьте данные аккаунта и полномочия Coach.',
+    },
+  },
+  'Gym Admin': {
+    COMMUNITY: {
+      label: 'Заявки',
+      title: 'Управление залом',
+      lead: 'Подтверждайте бронирования и управляйте назначенными сессиями.',
+    },
+    PROFILE: {
+      label: 'Профиль',
+      title: 'Профиль администратора',
+      lead: 'Проверьте данные аккаунта и полномочия Gym Admin.',
+    },
+  },
+  Central: {
+    COMMUNITY: {
+      label: 'Обращения',
+      title: 'Центральное рассмотрение',
+      lead: 'Рассматривайте Appeal прозрачно и фиксируйте обоснование каждого решения.',
+    },
+  },
+};
+
+function sectionsForRole(role: string) {
+  const availableIds: readonly MainSection[] = role === 'Athlete'
+    ? ['DISCOVERY', 'PROFILE', 'COMMUNITY']
+    : role === 'Central'
+      ? ['COMMUNITY']
+      : ['COMMUNITY', 'PROFILE'];
+  const overrides = operationalSectionCopy[role];
+  return availableIds
+    .map((id) => mainSections.find((section) => section.id === id)!)
+    .map((section) => ({ ...section, ...overrides?.[section.id] }));
+}
+
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString('ru-RU', {
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+}
+
+function venueDateTimeToIso(
+  dateText: string,
+  timeText: string,
+  timeZone: string,
+): string | null {
+  const dateMatch = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(dateText.trim());
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(timeText.trim());
+  if (!dateMatch || !timeMatch) return null;
+  const day = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const year = Number(dateMatch[3]);
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  if (year < 2020 || month < 1 || month > 12 || day < 1 || day > 31
+    || hour > 23 || minute > 59) return null;
+  const desiredUtc = Date.UTC(year, month - 1, day, hour, minute);
+  const desiredDate = new Date(desiredUtc);
+  if (desiredDate.getUTCFullYear() !== year || desiredDate.getUTCMonth() !== month - 1
+    || desiredDate.getUTCDate() !== day) return null;
+
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit', hour: '2-digit', hourCycle: 'h23', minute: '2-digit',
+    month: '2-digit', second: '2-digit', timeZone, year: 'numeric',
+  });
+  const partsAt = (epochMs: number) => {
+    const parts = Object.fromEntries(
+      formatter.formatToParts(new Date(epochMs))
+        .filter((part) => part.type !== 'literal')
+        .map((part) => [part.type, Number(part.value)]),
+    );
+    return {
+      day: parts.day, hour: parts.hour, minute: parts.minute,
+      month: parts.month, second: parts.second, year: parts.year,
+    };
+  };
+  try {
+    const first = partsAt(desiredUtc);
+    let candidate = desiredUtc - (
+      Date.UTC(first.year!, first.month! - 1, first.day!, first.hour!, first.minute!, first.second!)
+      - desiredUtc
+    );
+    const second = partsAt(candidate);
+    candidate += desiredUtc - Date.UTC(
+      second.year!, second.month! - 1, second.day!, second.hour!, second.minute!, second.second!,
+    );
+    const resolved = partsAt(candidate);
+    if (resolved.year !== year || resolved.month !== month || resolved.day !== day
+      || resolved.hour !== hour || resolved.minute !== minute) return null;
+    return new Date(candidate).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function isoToVenueDateTime(value: string, timeZone: string): {
+  readonly date: string;
+  readonly time: string;
+} {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('ru-RU', {
+      day: '2-digit', hour: '2-digit', hourCycle: 'h23', minute: '2-digit',
+      month: '2-digit', timeZone, year: 'numeric',
+    }).formatToParts(new Date(value))
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+  return {
+    date: `${parts.day}.${parts.month}.${parts.year}`,
+    time: `${parts.hour}:${parts.minute}`,
+  };
+}
 
 const capabilityLabels: Record<Capability, string> = {
   USE_DISCOVERY: 'Discovery доступен',
@@ -47,6 +309,35 @@ const verificationLabels: Record<Identity['accountVerificationState'], string> =
   REVOKED: 'Отозвана',
 };
 
+const accountStateLabels: Record<Identity['accountState'], string> = {
+  ACTIVE: 'Активен',
+  RESTRICTED: 'Ограничен',
+  CLOSED: 'Закрыт',
+};
+
+const sessionStateLabels: Record<Session['state'], string> = {
+  SCHEDULED: 'Запланирована',
+  READY_FOR_COACH: 'Ожидает Coach',
+  IN_PROGRESS: 'Идёт сейчас',
+  ENDED: 'Завершена',
+  CANCELLED: 'Отменена',
+};
+
+const attendanceLabels: Record<AttendanceStatus, string> = {
+  PRESENT: 'Присутствовал',
+  LATE: 'Опоздал',
+  NO_SHOW: 'Не пришёл',
+};
+
+const resultStateLabels: Record<OfficialResult['state'], string> = {
+  RECORDED: 'Предварительный результат',
+  UNDER_APPEAL: 'Рассматривается Appeal',
+  FINAL: 'Финальный результат',
+  REVERSED: 'Результат исправлен решением Central',
+  ANNULLED: 'Результат аннулирован',
+  REPEAT_ORDERED: 'Назначена повторная Session',
+};
+
 const officialDenialLabels: Record<CommunityDenialCode, string> = {
   ACCOUNT_NOT_ACTIVE: 'Аккаунт временно не может участвовать в Official Challenge.',
   ACCOUNT_NOT_VERIFIED: 'Official Challenge откроется после верификации аккаунта Central.',
@@ -59,26 +350,95 @@ const officialDenialLabels: Record<CommunityDenialCode, string> = {
   CENTRAL_ONLY: 'Действие доступно только Central.',
 };
 
-async function errorMessage(response: Response): Promise<string> {
-  try {
-    const error = (await response.json()) as ApiError;
-    return error.message;
-  } catch {
-    return `API вернул ошибку ${response.status}`;
-  }
-}
-
 export default function IdentityScreen() {
+  const router = useRouter();
+  const scrollRef = useRef<ScrollView | null>(null);
+  const [activeSection, setActiveSection] = useState<MainSection>(() =>
+    localTestAccounts.find((account) => account.token === localToken)?.startSection
+      ?? 'DISCOVERY');
+  const [activeTestToken, setActiveTestToken] = useState(localToken);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [communityContext, setCommunityContext] = useState<CommunityContext | null>(null);
+  const [competitionStatus, setCompetitionStatus] = useState<CompetitionStatus | null>(null);
+  const [statusReleasePreview, setStatusReleasePreview] =
+    useState<StatusReleasePreview | null>(null);
   const [displayName, setDisplayName] = useState('');
+  const [primarySport, setPrimarySport] = useState('BOXING');
+  const [secondarySport, setSecondarySport] = useState<string | null>(null);
   const [coachInvites, setCoachInvites] = useState<CoachInvite[]>([]);
+  const [hostConfirmations, setHostConfirmations] = useState<HostConfirmation[]>([]);
+  const [venueAdminDashboard, setVenueAdminDashboard] =
+    useState<VenueAdminDashboard | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [resultsById, setResultsById] = useState<Record<string, OfficialResult>>({});
+  const [appealsByResultId, setAppealsByResultId] = useState<Record<string, AppealDetail>>({});
+  const [completedTrainingCount, setCompletedTrainingCount] = useState(0);
   const [discoveryCards, setDiscoveryCards] = useState<DiscoveryCard[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([]);
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
+  const [actingCandidateId, setActingCandidateId] = useState<string | null>(null);
+  const [actingDiscoveryAction, setActingDiscoveryAction] =
+    useState<DiscoveryAction | null>(null);
+  const discoveryActionKeys = useRef(new Map<string, string>());
+  const relationshipActionKeys = useRef(new Map<string, string>());
+  const hostConfirmationKeys = useRef(new Map<string, string>());
+  const adminPublicationKeys = useRef(new Map<string, string>());
+  const sessionActionKeys = useRef(new Map<string, string>());
+  const resultActionKeys = useRef(new Map<string, string>());
+  const statusQueueActionKeys = useRef(new Map<string, string>());
+  const [actingRelationshipId, setActingRelationshipId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingSports, setSavingSports] = useState(false);
   const [startingVerification, setStartingVerification] = useState(false);
   const [acceptingCoachGrant, setAcceptingCoachGrant] = useState<string | null>(null);
+  const [confirmingBookingId, setConfirmingBookingId] = useState<string | null>(null);
+  const [hostRejectionDraftId, setHostRejectionDraftId] = useState<string | null>(null);
+  const [hostRejectionReasonCode, setHostRejectionReasonCode] =
+    useState<ScheduleReasonCode>('COACH_UNAVAILABLE');
+  const [hostRejectionNote, setHostRejectionNote] = useState('');
+  const [actingSessionKey, setActingSessionKey] = useState<string | null>(null);
+  const [pendingSessionAction, setPendingSessionAction] =
+    useState<PendingSessionAction | null>(null);
+  const [actingResultKey, setActingResultKey] = useState<string | null>(null);
+  const [appealDraftResultId, setAppealDraftResultId] = useState<string | null>(null);
+  const [appealStatement, setAppealStatement] = useState('');
+  const [appealResponseStatement, setAppealResponseStatement] = useState('');
+  const [pendingAppealWithdrawalId, setPendingAppealWithdrawalId] = useState<string | null>(null);
+  const [centralAppeals, setCentralAppeals] = useState<CentralAppeal[]>([]);
+  const [missingResultReviews, setMissingResultReviews] = useState<MissingResultReview[]>([]);
+  const [integrityCases, setIntegrityCases] = useState<IntegrityCase[]>([]);
+  const [actingCentralAppealId, setActingCentralAppealId] = useState<string | null>(null);
+  const [centralDecisionAppealId, setCentralDecisionAppealId] = useState<string | null>(null);
+  const [centralDecisionReason, setCentralDecisionReason] = useState('');
+  const [hostNotice, setHostNotice] = useState<string | null>(null);
+  const [adminPublicationKind, setAdminPublicationKind] =
+    useState<AdminPublicationKind>('SLOT');
+  const [adminCoachId, setAdminCoachId] = useState('');
+  const [adminScheduleDate, setAdminScheduleDate] = useState('');
+  const [adminScheduleTime, setAdminScheduleTime] = useState('');
+  const [adminDurationMinutes, setAdminDurationMinutes] =
+    useState<AdminDurationMinutes>(60);
+  const [adminPriceAmount, setAdminPriceAmount] = useState('');
+  const [adminGroupClassLabel, setAdminGroupClassLabel] = useState('');
+  const [adminGroupSportCode, setAdminGroupSportCode] = useState('BOXING');
+  const [adminGroupCoachName, setAdminGroupCoachName] = useState('');
+  const [adminGroupPriceText, setAdminGroupPriceText] = useState('');
+  const [publishingSchedule, setPublishingSchedule] = useState(false);
+  const [editingAdminSchedule, setEditingAdminSchedule] =
+    useState<EditingAdminSchedule | null>(null);
+  const [pendingScheduleWithdrawal, setPendingScheduleWithdrawal] =
+    useState<PendingScheduleWithdrawal | null>(null);
+  const [scheduleWithdrawalReasonCode, setScheduleWithdrawalReasonCode] =
+    useState<ScheduleReasonCode>('SCHEDULE_CHANGED');
+  const [scheduleWithdrawalNote, setScheduleWithdrawalNote] = useState('');
+  const [withdrawingScheduleId, setWithdrawingScheduleId] = useState<string | null>(null);
+  const [scheduleNotice, setScheduleNotice] = useState<string | null>(null);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+  const [statusQueueNotice, setStatusQueueNotice] = useState<string | null>(null);
+  const [actingStatusQueue, setActingStatusQueue] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadIdentity = useCallback(async () => {
@@ -89,29 +449,130 @@ export default function IdentityScreen() {
       const response = await fetch(`${apiUrl}/api/v1/me`, {
         headers: { Authorization: `Bearer ${localToken}` },
       });
-      if (!response.ok) throw new Error(await errorMessage(response));
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
       const result = (await response.json()) as MeResponse;
       setIdentity(result.data);
       setDisplayName(result.data.displayName);
+      setPrimarySport(result.data.primarySport);
+      setSecondarySport(result.data.secondarySport);
       const communityResponse = await fetch(`${apiUrl}/api/v1/me/community`, {
         headers: { Authorization: `Bearer ${localToken}` },
       });
+      let loadedCommunity: CommunityContext | null = null;
       if (communityResponse.status === 404) {
         setCommunityContext(null);
       } else {
-        if (!communityResponse.ok) throw new Error(await errorMessage(communityResponse));
+        if (!communityResponse.ok) throw new Error(await apiErrorMessage(communityResponse));
         const communityResult = (await communityResponse.json()) as CommunityContextResponse;
+        loadedCommunity = communityResult.data;
         setCommunityContext(communityResult.data);
+      }
+      const competitionResponse = await fetch(`${apiUrl}/api/v1/me/competition`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (competitionResponse.status === 404) {
+        setCompetitionStatus(null);
+      } else {
+        if (!competitionResponse.ok) throw new Error(await apiErrorMessage(competitionResponse));
+        const competitionResult = (await competitionResponse.json()) as CompetitionStatusResponse;
+        setCompetitionStatus(competitionResult.data);
+      }
+      const currentAccount = localTestAccounts.find((account) => account.token === localToken);
+      if (currentAccount?.role === 'Gym Admin' && loadedCommunity) {
+        const dashboardResponse = await fetch(
+          `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/admin-dashboard`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (!dashboardResponse.ok) {
+          throw new Error(await apiErrorMessage(dashboardResponse));
+        }
+        const dashboardResult =
+          (await dashboardResponse.json()) as VenueAdminDashboardResponse;
+        setVenueAdminDashboard(dashboardResult.data);
+        setAdminCoachId((current) =>
+          dashboardResult.data.coaches.some((coach) => coach.userId === current)
+            ? current
+            : dashboardResult.data.coaches[0]?.userId ?? '');
+      } else {
+        setVenueAdminDashboard(null);
       }
       const coachInviteResponse = await fetch(`${apiUrl}/api/v1/me/coach-invites`, {
         headers: { Authorization: `Bearer ${localToken}` },
       });
       if (!coachInviteResponse.ok) {
-        throw new Error(await errorMessage(coachInviteResponse));
+        throw new Error(await apiErrorMessage(coachInviteResponse));
       }
       const coachInviteResult =
         (await coachInviteResponse.json()) as PendingCoachInviteListResponse;
       setCoachInvites(coachInviteResult.data);
+      const hostConfirmationsResponse = await fetch(
+        `${apiUrl}/api/v1/me/host-confirmations`,
+        { headers: { Authorization: `Bearer ${localToken}` } },
+      );
+      if (!hostConfirmationsResponse.ok) {
+        throw new Error(await apiErrorMessage(hostConfirmationsResponse));
+      }
+      const hostConfirmationsResult =
+        (await hostConfirmationsResponse.json()) as HostConfirmationQueueResponse;
+      setHostConfirmations(hostConfirmationsResult.data);
+      const sessionsResponse = await fetch(`${apiUrl}/api/v1/me/sessions`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!sessionsResponse.ok) {
+        throw new Error(await apiErrorMessage(sessionsResponse));
+      }
+      const sessionsResult = (await sessionsResponse.json()) as MySessionsResponse;
+      setSessions(sessionsResult.data.sessions);
+      setCompletedTrainingCount(sessionsResult.data.completedTrainingCount);
+      const missingResultResponse = await fetch(
+        currentAccount?.role === 'Central'
+          ? `${apiUrl}/api/v1/central/missing-result-reviews`
+          : `${apiUrl}/api/v1/me/missing-result-reviews`,
+        { headers: { Authorization: `Bearer ${localToken}` } },
+      );
+      if (!missingResultResponse.ok) {
+        throw new Error(await apiErrorMessage(missingResultResponse));
+      }
+      const missingResultData = (await missingResultResponse.json()) as MissingResultReviewListResponse;
+      setMissingResultReviews(missingResultData.data);
+      const integrityCasesResponse = await fetch(
+        currentAccount?.role === 'Central'
+          ? `${apiUrl}/api/v1/central/integrity-cases`
+          : `${apiUrl}/api/v1/me/integrity-cases`,
+        { headers: { Authorization: `Bearer ${localToken}` } },
+      );
+      if (!integrityCasesResponse.ok) {
+        throw new Error(await apiErrorMessage(integrityCasesResponse));
+      }
+      const integrityCasesResult =
+        (await integrityCasesResponse.json()) as IntegrityCaseListResponse;
+      setIntegrityCases(integrityCasesResult.data);
+      const officialResults = await Promise.all(
+        sessionsResult.data.sessions
+          .filter((session) => session.resultId !== null)
+          .map(async (session) => {
+            const resultResponse = await fetch(`${apiUrl}/api/v1/results/${session.resultId}`, {
+              headers: { Authorization: `Bearer ${localToken}` },
+            });
+            if (!resultResponse.ok) throw new Error(await apiErrorMessage(resultResponse));
+            return ((await resultResponse.json()) as ResultResponse).data;
+          }),
+      );
+      setResultsById(Object.fromEntries(officialResults.map((result) => [result.resultId, result])));
+      const appealDetails = await Promise.all(
+        officialResults.filter((result) => result.state === 'UNDER_APPEAL').map(async (result) => {
+          const appealResponse = await fetch(`${apiUrl}/api/v1/results/${result.resultId}/appeal`, {
+            headers: { Authorization: `Bearer ${localToken}` },
+          });
+          if (appealResponse.status === 404) return null;
+          if (!appealResponse.ok) throw new Error(await apiErrorMessage(appealResponse));
+          return ((await appealResponse.json()) as AppealDetailResponse).data;
+        }),
+      );
+      setAppealsByResultId(Object.fromEntries(
+        appealDetails.filter((appeal): appeal is AppealDetail => appeal !== null)
+          .map((appeal) => [appeal.resultId, appeal]),
+      ));
       const discoveryResponse = await fetch(`${apiUrl}/api/v1/discovery/cards?limit=20`, {
         headers: { Authorization: `Bearer ${localToken}` },
       });
@@ -119,11 +580,33 @@ export default function IdentityScreen() {
         setDiscoveryCards([]);
         setDiscoveryNotice('Discovery откроется после выбора города и домашнего зала.');
       } else if (!discoveryResponse.ok) {
-        throw new Error(await errorMessage(discoveryResponse));
+        throw new Error(await apiErrorMessage(discoveryResponse));
       } else {
         const discoveryResult =
           (await discoveryResponse.json()) as DiscoveryCardsResponse;
         setDiscoveryCards(discoveryResult.data);
+      }
+      const matchesResponse = await fetch(`${apiUrl}/api/v1/matches`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!matchesResponse.ok) throw new Error(await apiErrorMessage(matchesResponse));
+      const matchesResult = (await matchesResponse.json()) as MatchesResponse;
+      setMatches(matchesResult.data);
+      const blocksResponse = await fetch(`${apiUrl}/api/v1/me/blocks`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!blocksResponse.ok) throw new Error(await apiErrorMessage(blocksResponse));
+      const blocksResult = (await blocksResponse.json()) as BlockedUsersResponse;
+      setBlockedUsers(blocksResult.data);
+      if (currentAccount?.role === 'Central') {
+        const appealsResponse = await fetch(`${apiUrl}/api/v1/central/appeals`, {
+          headers: { Authorization: `Bearer ${localToken}` },
+        });
+        if (!appealsResponse.ok) throw new Error(await apiErrorMessage(appealsResponse));
+        const appealsResult = (await appealsResponse.json()) as AppealQueueResponse;
+        setCentralAppeals(appealsResult.data);
+      } else {
+        setCentralAppeals([]);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
@@ -149,6 +632,31 @@ export default function IdentityScreen() {
       !saving,
     [identity, normalizedName, saving],
   );
+  const canSaveSports =
+    identity !== null &&
+    !savingSports &&
+    primarySport.length > 0 &&
+    primarySport !== secondarySport &&
+    (primarySport !== identity.primarySport || secondarySport !== identity.secondarySport);
+  const canPublishAdminSchedule =
+    venueAdminDashboard !== null &&
+    !publishingSchedule &&
+    /^\d{2}\.\d{2}\.\d{4}$/.test(adminScheduleDate.trim()) &&
+    /^\d{2}:\d{2}$/.test(adminScheduleTime.trim()) &&
+    (adminPublicationKind === 'SLOT'
+      ? adminCoachId.length > 0
+      : adminGroupClassLabel.trim().length > 0);
+  const activeTestAccount =
+    localTestAccounts.find((account) => account.token === activeTestToken) ??
+    localTestAccounts[0]!;
+  const visibleSections = sectionsForRole(activeTestAccount.role);
+  const activeSectionCopy =
+    visibleSections.find((section) => section.id === activeSection) ?? visibleSections[0]!;
+
+  const openSection = (section: MainSection) => {
+    setActiveSection(section);
+    scrollRef.current?.scrollTo({ animated: false, y: 0 });
+  };
 
   const saveDisplayName = async () => {
     if (!identity || !canSave) return;
@@ -166,7 +674,7 @@ export default function IdentityScreen() {
         body: JSON.stringify({ displayName: normalizedName }),
       });
       if (!response.ok) {
-        const message = await errorMessage(response);
+        const message = await apiErrorMessage(response);
         if (response.status === 409) await loadIdentity();
         throw new Error(message);
       }
@@ -177,6 +685,962 @@ export default function IdentityScreen() {
       setError(caught instanceof Error ? caught.message : 'Не удалось сохранить имя');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveSports = async () => {
+    if (!identity || !canSaveSports) return;
+    setSavingSports(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/me/sports`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': `identity:${identity.userId}:sports:${primarySport}:${secondarySport ?? 'NONE'}:v${identity.version}`,
+          'If-Match': String(identity.version),
+        },
+        body: JSON.stringify({ primarySport, secondarySport }),
+      });
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as IdentityCommandResponse;
+      setIdentity(result.data);
+      setPrimarySport(result.data.primarySport);
+      setSecondarySport(result.data.secondarySport);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось сохранить виды спорта');
+    } finally {
+      setSavingSports(false);
+    }
+  };
+
+  const switchLocalAccount = (account: LocalTestAccount) => {
+    if (account.token === activeTestToken) {
+      setAccountMenuOpen(false);
+      return;
+    }
+    setLocalToken(account.token);
+    setActiveTestToken(account.token);
+    setAccountMenuOpen(false);
+    openSection(account.startSection);
+    setIdentity(null);
+    setCommunityContext(null);
+    setCompetitionStatus(null);
+    setStatusReleasePreview(null);
+    setCoachInvites([]);
+    setHostConfirmations([]);
+    setVenueAdminDashboard(null);
+    setSessions([]);
+    setResultsById({});
+    setCompletedTrainingCount(0);
+    setDiscoveryCards([]);
+    setMatches([]);
+    setBlockedUsers([]);
+    setDiscoveryNotice(null);
+    setHostNotice(null);
+    setScheduleNotice(null);
+    setAdminCoachId('');
+    setAdminScheduleDate('');
+    setAdminScheduleTime('');
+    setAdminPriceAmount('');
+    setAdminGroupClassLabel('');
+    setAdminGroupCoachName('');
+    setAdminGroupPriceText('');
+    setEditingAdminSchedule(null);
+    setPendingScheduleWithdrawal(null);
+    setScheduleWithdrawalNote('');
+    setWithdrawingScheduleId(null);
+    setHostRejectionDraftId(null);
+    setHostRejectionNote('');
+    setSessionNotice(null);
+    setStatusQueueNotice(null);
+    setActingStatusQueue(false);
+    setPendingSessionAction(null);
+    setAppealDraftResultId(null);
+    setAppealStatement('');
+    setAppealResponseStatement('');
+    setPendingAppealWithdrawalId(null);
+    setAppealsByResultId({});
+    setCentralAppeals([]);
+    setMissingResultReviews([]);
+    setIntegrityCases([]);
+    setActingCentralAppealId(null);
+    setCentralDecisionAppealId(null);
+    setCentralDecisionReason('');
+    void loadIdentity();
+  };
+
+  const publishAdminSchedule = async () => {
+    if (!venueAdminDashboard || publishingSchedule) return;
+    const startAt = venueDateTimeToIso(
+      adminScheduleDate,
+      adminScheduleTime,
+      venueAdminDashboard.venue.timezone,
+    );
+    if (!startAt) {
+      setError('Проверьте дату и время: формат ДД.ММ.ГГГГ и ЧЧ:ММ.');
+      return;
+    }
+    const startTime = new Date(startAt).getTime();
+    const horizonTime = Date.now()
+      + venueAdminDashboard.venue.slotPublishHorizonDays * 24 * 60 * 60 * 1000;
+    if (startTime <= Date.now()) {
+      setError('Выберите будущую дату и время.');
+      return;
+    }
+    if (startTime > horizonTime) {
+      setError(
+        `Этот зал публикует расписание не более чем на ${venueAdminDashboard.venue.slotPublishHorizonDays} дней вперёд.`,
+      );
+      return;
+    }
+    const normalizedPrice = adminPriceAmount.trim().replace(',', '.');
+    if (adminPublicationKind === 'SLOT'
+      && (!adminCoachId || (normalizedPrice.length > 0
+        && !/^(?:0|[1-9]\d{0,6})(?:\.\d{1,2})?$/.test(normalizedPrice)))) {
+      setError(!adminCoachId
+        ? 'Выберите Coach для персонального слота.'
+        : 'Укажите стоимость числом, например 1500 или 1500,50.');
+      return;
+    }
+    const classLabel = adminGroupClassLabel.trim();
+    if (adminPublicationKind === 'GROUP' && classLabel.length === 0) {
+      setError('Укажите название групповой тренировки.');
+      return;
+    }
+
+    const endAt = new Date(startTime + adminDurationMinutes * 60 * 1000).toISOString();
+    const signature = [
+      editingAdminSchedule ? 'update' : 'publish',
+      adminPublicationKind,
+      editingAdminSchedule?.id ?? venueAdminDashboard.venue.venueId,
+      editingAdminSchedule?.version ?? 0,
+      startAt, endAt,
+      adminPublicationKind === 'SLOT' ? adminCoachId : adminGroupSportCode,
+      adminPublicationKind === 'SLOT' ? normalizedPrice : classLabel,
+    ].join(':');
+    const idempotencyKey = adminPublicationKeys.current.get(signature)
+      ?? `venue-publication:${Date.now().toString(36)}`;
+    adminPublicationKeys.current.set(signature, idempotencyKey);
+    setPublishingSchedule(true);
+    setScheduleNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        editingAdminSchedule
+          ? `${apiUrl}/api/v1/${adminPublicationKind === 'SLOT'
+            ? `slots/${editingAdminSchedule.id}`
+            : `group-offerings/${editingAdminSchedule.id}`}`
+          : `${apiUrl}/api/v1/venues/${venueAdminDashboard.venue.venueId}/${
+            adminPublicationKind === 'SLOT' ? 'slots' : 'group-offerings'
+          }`,
+        {
+          method: editingAdminSchedule ? 'PATCH' : 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(editingAdminSchedule?.version ?? 0),
+          },
+          body: JSON.stringify(adminPublicationKind === 'SLOT'
+            ? {
+                coachUserId: adminCoachId,
+                startAt,
+                endAt,
+                priceAmount: normalizedPrice || null,
+                priceCurrency: normalizedPrice ? 'RUB' : null,
+                priceText: normalizedPrice ? 'Оплата напрямую залу' : null,
+                cancellationTermsText: 'Уточните условия у зала',
+              }
+            : {
+                sportCode: adminGroupSportCode,
+                classLabel,
+                startAt,
+                endAt,
+                coachDisplayName: adminGroupCoachName.trim() || null,
+                priceText: adminGroupPriceText.trim() || null,
+                externalInfoUrl: null,
+              }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      if (adminPublicationKind === 'SLOT') {
+        const result = (await response.json()) as SlotCommandResponse;
+        setVenueAdminDashboard((current) => current ? {
+          ...current,
+          slots: [...current.slots.filter((slot) => slot.slotId !== result.data.slotId), result.data]
+            .sort((left, right) => left.startAt.localeCompare(right.startAt)),
+        } : current);
+        setAdminPriceAmount('');
+        setScheduleNotice(editingAdminSchedule
+          ? 'Персональный слот обновлён. Пары в Chat уже видят новые условия.'
+          : 'Персональный слот опубликован и уже доступен парам в Chat.');
+      } else {
+        const result = (await response.json()) as GroupOfferingCommandResponse;
+        setVenueAdminDashboard((current) => current ? {
+          ...current,
+          groupOfferings: [
+            ...current.groupOfferings.filter(
+              (offering) => offering.groupOfferingId !== result.data.groupOfferingId,
+            ),
+            result.data,
+          ].sort((left, right) => left.startAt.localeCompare(right.startAt)),
+        } : current);
+        setAdminGroupClassLabel('');
+        setAdminGroupCoachName('');
+        setAdminGroupPriceText('');
+        setScheduleNotice(editingAdminSchedule
+          ? 'Групповая тренировка обновлена.'
+          : 'Групповая тренировка опубликована. Это предложение без автоматической брони места.');
+      }
+      setEditingAdminSchedule(null);
+      adminPublicationKeys.current.delete(signature);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось сохранить расписание');
+    } finally {
+      setPublishingSchedule(false);
+    }
+  };
+
+  const startEditingSlot = (slot: VenueAdminDashboard['slots'][number]) => {
+    if (!venueAdminDashboard) return;
+    const local = isoToVenueDateTime(slot.startAt, venueAdminDashboard.venue.timezone);
+    const duration = Math.round(
+      (new Date(slot.endAt).getTime() - new Date(slot.startAt).getTime()) / 60_000,
+    );
+    setAdminPublicationKind('SLOT');
+    setAdminCoachId(slot.coachUserId);
+    setAdminScheduleDate(local.date);
+    setAdminScheduleTime(local.time);
+    setAdminDurationMinutes(duration === 90 ? 90 : 60);
+    setAdminPriceAmount(slot.priceAmount ?? '');
+    setEditingAdminSchedule({ id: slot.slotId, kind: 'SLOT', version: slot.version });
+    setPendingScheduleWithdrawal(null);
+    setScheduleNotice('Редактируете персональный слот. Сохраните или отмените изменения.');
+    setError(null);
+  };
+
+  const startEditingGroupOffering = (
+    offering: VenueAdminDashboard['groupOfferings'][number],
+  ) => {
+    if (!venueAdminDashboard) return;
+    const local = isoToVenueDateTime(
+      offering.startAt,
+      venueAdminDashboard.venue.timezone,
+    );
+    const duration = Math.round(
+      (new Date(offering.endAt).getTime() - new Date(offering.startAt).getTime()) / 60_000,
+    );
+    setAdminPublicationKind('GROUP');
+    setAdminScheduleDate(local.date);
+    setAdminScheduleTime(local.time);
+    setAdminDurationMinutes(duration === 90 ? 90 : 60);
+    setAdminGroupClassLabel(offering.classLabel);
+    setAdminGroupSportCode(offering.sportCode);
+    setAdminGroupCoachName(offering.coachDisplayName ?? '');
+    setAdminGroupPriceText(offering.priceText ?? '');
+    setEditingAdminSchedule({
+      id: offering.groupOfferingId,
+      kind: 'GROUP',
+      version: offering.version,
+    });
+    setPendingScheduleWithdrawal(null);
+    setScheduleNotice('Редактируете групповую тренировку. Сохраните или отмените изменения.');
+    setError(null);
+  };
+
+  const cancelEditingAdminSchedule = () => {
+    setEditingAdminSchedule(null);
+    setAdminScheduleDate('');
+    setAdminScheduleTime('');
+    setAdminPriceAmount('');
+    setAdminGroupClassLabel('');
+    setAdminGroupCoachName('');
+    setAdminGroupPriceText('');
+    setScheduleNotice(null);
+    setError(null);
+  };
+
+  const withdrawAdminSchedule = async () => {
+    if (!pendingScheduleWithdrawal || withdrawingScheduleId !== null) return;
+    const pending = pendingScheduleWithdrawal;
+    const operation = `schedule-withdraw:${pending.kind}:${pending.id}:v${pending.version}`;
+    const idempotencyKey = adminPublicationKeys.current.get(operation)
+      ?? `venue-publication:${operation}`;
+    adminPublicationKeys.current.set(operation, idempotencyKey);
+    setWithdrawingScheduleId(pending.id);
+    setScheduleNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/${pending.kind === 'SLOT'
+          ? `slots/${pending.id}`
+          : `group-offerings/${pending.id}`}/withdraw`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(pending.version),
+          },
+          body: JSON.stringify({
+            reasonCode: scheduleWithdrawalReasonCode,
+            reasonNote: scheduleWithdrawalNote.trim() || null,
+          }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      if (pending.kind === 'SLOT') {
+        const result = (await response.json()) as SlotCommandResponse;
+        setVenueAdminDashboard((current) => current ? {
+          ...current,
+          slots: current.slots.filter((slot) => slot.slotId !== result.data.slotId),
+        } : current);
+      } else {
+        const result = (await response.json()) as GroupOfferingCommandResponse;
+        setVenueAdminDashboard((current) => current ? {
+          ...current,
+          groupOfferings: current.groupOfferings.filter(
+            (offering) => offering.groupOfferingId !== result.data.groupOfferingId,
+          ),
+        } : current);
+      }
+      adminPublicationKeys.current.delete(operation);
+      setPendingScheduleWithdrawal(null);
+      setScheduleWithdrawalNote('');
+      setScheduleNotice(`«${pending.label}» снято с публикации.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось снять публикацию');
+    } finally {
+      setWithdrawingScheduleId(null);
+    }
+  };
+
+  const confirmHostBooking = async (item: HostConfirmation) => {
+    if (confirmingBookingId !== null) return;
+    const booking = item.booking;
+    const operation = `host-confirm:${booking.bookingId}:v${booking.version}`;
+    const idempotencyKey =
+      hostConfirmationKeys.current.get(operation) ??
+      `host-confirm:${booking.bookingId}:v${booking.version}`;
+    hostConfirmationKeys.current.set(operation, idempotencyKey);
+    setConfirmingBookingId(booking.bookingId);
+    setHostNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/bookings/${booking.bookingId}/host-confirm`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(booking.version),
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as HostConfirmationCommandResponse;
+      hostConfirmationKeys.current.delete(operation);
+      setHostConfirmations((current) =>
+        current.filter((candidate) => candidate.booking.bookingId !== booking.bookingId),
+      );
+      setVenueAdminDashboard((current) => current ? {
+        ...current,
+        hostConfirmations: current.hostConfirmations.filter(
+          (candidate) => candidate.booking.bookingId !== booking.bookingId,
+        ),
+        slots: result.data.outcome === 'CONFIRMED'
+          ? current.slots.filter((slot) => slot.slotId !== booking.slotId)
+          : current.slots,
+      } : current);
+      setHostNotice(
+        result.data.outcome === 'CONFIRMED'
+          ? booking.purpose === 'OFFICIAL_CHALLENGE'
+            ? 'Official Challenge подтверждён. Official Session создана и видна обоим спортсменам.'
+            : 'Тренировка подтверждена. Session создана и видна обоим спортсменам.'
+          : 'Этот слот уже заняла другая пара. Спортсмены получили уведомление.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось подтвердить тренировку');
+    } finally {
+      setConfirmingBookingId(null);
+    }
+  };
+
+  const rejectHostBooking = async (item: HostConfirmation) => {
+    if (confirmingBookingId !== null) return;
+    const booking = item.booking;
+    const operation = `host-reject:${booking.bookingId}:v${booking.version}`;
+    const idempotencyKey = hostConfirmationKeys.current.get(operation) ?? operation;
+    hostConfirmationKeys.current.set(operation, idempotencyKey);
+    setConfirmingBookingId(booking.bookingId);
+    setHostNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/bookings/${booking.bookingId}/host-reject`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(booking.version),
+          },
+          body: JSON.stringify({
+            reasonCode: hostRejectionReasonCode,
+            reasonNote: hostRejectionNote.trim() || null,
+          }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      await response.json() as HostRejectionCommandResponse;
+      hostConfirmationKeys.current.delete(operation);
+      setHostConfirmations((current) =>
+        current.filter((candidate) => candidate.booking.bookingId !== booking.bookingId),
+      );
+      setVenueAdminDashboard((current) => current ? {
+        ...current,
+        hostConfirmations: current.hostConfirmations.filter(
+          (candidate) => candidate.booking.bookingId !== booking.bookingId,
+        ),
+      } : current);
+      setHostRejectionDraftId(null);
+      setHostRejectionNote('');
+      setHostNotice(booking.purpose === 'OFFICIAL_CHALLENGE'
+        ? 'Заявка отклонена с причиной. Challenge возвращён участникам для выбора другого слота.'
+        : 'Заявка отклонена с причиной. Спортсмены получили уведомление.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отклонить заявку');
+    } finally {
+      setConfirmingBookingId(null);
+    }
+  };
+
+  const runSessionAction = async (
+    session: Session,
+    action:
+      | 'start'
+      | 'attendance'
+      | 'end'
+      | 'replace-coach'
+      | 'cancel-after-coach-replacement'
+      | 'fail-external',
+    body: Record<string, unknown>,
+    operationSuffix: string,
+  ) => {
+    if (actingSessionKey !== null) return;
+    const operation = `${session.sessionId}:${action}:${operationSuffix}:v${session.version}`;
+    const idempotencyKey =
+      sessionActionKeys.current.get(operation) ?? `session:${operation}`;
+    sessionActionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/sessions/${session.sessionId}/${action}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(session.version),
+          },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as SessionCommandResponse;
+      sessionActionKeys.current.delete(operation);
+      setSessions((current) =>
+        current.map((item) =>
+          item.sessionId === result.data.sessionId ? result.data : item,
+        ),
+      );
+      setSessionNotice(
+        action === 'start'
+          ? 'Session начата Coach. Спортсменам не требуется Check-in.'
+          : action === 'attendance'
+            ? 'Посещение зафиксировано Coach.'
+            : action === 'end'
+              ? 'Тренировка завершена. Статистика обновлена только для присутствовавших.'
+              : action === 'replace-coach'
+                ? 'Coach заменён без изменения времени, зала и условий. Спортсмены уведомлены.'
+                : action === 'cancel-after-coach-replacement'
+                  ? 'Session отменена без штрафа и без влияния на статистику.'
+                  : 'Зал отменил Session по внешней причине. Для спортсменов нет штрафа.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось обновить Session');
+    } finally {
+      setActingSessionKey(null);
+    }
+  };
+
+  const recordAttendance = (
+    session: Session,
+    athleteUserId: string,
+    status: AttendanceStatus,
+  ) => runSessionAction(
+    session,
+    'attendance',
+    {
+      athleteUserId,
+      status,
+      ...(status === 'NO_SHOW'
+        ? { comment: 'Отсутствие спортсмена не позволило провести тренировку.' }
+        : {}),
+    },
+    `${athleteUserId}:${status}`,
+  );
+
+  const requestOfficialConversion = async (session: Session) => {
+    if (actingSessionKey !== null) return;
+    const operation = `${session.sessionId}:official-conversion:request:v${session.version}`;
+    const idempotencyKey = sessionActionKeys.current.get(operation)
+      ?? `booking-conversion:${operation}`;
+    sessionActionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/sessions/${session.sessionId}/official-conversion`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': '0',
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as BookingOfficialConversionCommandResponse;
+      sessionActionKeys.current.delete(operation);
+      await loadIdentity();
+      setSessionNotice(result.data.state === 'WAITING_FIFO'
+        ? `Заявка поставлена в прозрачную очередь${result.data.queuePosition
+          ? `, позиция ${result.data.queuePosition}` : ''}. Тренировка пока остаётся обычной.`
+        : 'Запрос отправлен. Нужны подтверждения второго спортсмена и Coach.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось запросить Official Challenge');
+    } finally {
+      setActingSessionKey(null);
+    }
+  };
+
+  const decideOfficialConversion = async (
+    session: Session,
+    decision: 'ACCEPT' | 'DECLINE',
+  ) => {
+    const conversion = session.officialConversion;
+    if (!conversion || actingSessionKey !== null) return;
+    const operation = `${conversion.conversionId}:conversion:${decision}:v${conversion.version}`;
+    const idempotencyKey = sessionActionKeys.current.get(operation)
+      ?? `booking-conversion:${operation}`;
+    sessionActionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/booking-official-conversions/${conversion.conversionId}/decision`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(conversion.version),
+          },
+          body: JSON.stringify({ decision }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as BookingOfficialConversionCommandResponse;
+      sessionActionKeys.current.delete(operation);
+      await loadIdentity();
+      setSessionNotice(result.data.state === 'CONVERTED'
+        ? 'Все подтвердили. Тренировка стала Official Challenge; время и Coach сохранены.'
+        : result.data.state === 'DECLINED'
+          ? 'Конверсия отклонена без штрафа. Исходная тренировка сохранена.'
+          : 'Ваше подтверждение принято. Ожидаем остальных участников.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось ответить на запрос');
+    } finally {
+      setActingSessionKey(null);
+    }
+  };
+
+  const cancelTrainingParticipation = async (session: Session) => {
+    if (actingSessionKey !== null) return;
+    const operation = `${session.sessionId}:cancel-training-participation:v${session.version}`;
+    const idempotencyKey = sessionActionKeys.current.get(operation)
+      ?? `booking-solo:${operation}`;
+    sessionActionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/sessions/${session.sessionId}/cancel-training-participation`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': '0',
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as BookingSoloContinuationCommandResponse;
+      sessionActionKeys.current.delete(operation);
+      await loadIdentity();
+      setSessionNotice(
+        `Вы отменили своё участие без поражения. До ${formatDateTime(result.data.deadlineAt)} `
+        + 'оставшийся спортсмен и Coach могут подтвердить соло-тренировку.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отменить участие');
+    } finally {
+      setActingSessionKey(null);
+    }
+  };
+
+  const decideSoloContinuation = async (
+    session: Session,
+    decision: 'ACCEPT' | 'DECLINE',
+  ) => {
+    const continuation = session.soloContinuation;
+    if (!continuation || actingSessionKey !== null) return;
+    const operation = `${continuation.continuationId}:solo:${decision}:v${continuation.version}`;
+    const idempotencyKey = sessionActionKeys.current.get(operation)
+      ?? `booking-solo:${operation}`;
+    sessionActionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/booking-solo-continuations/${continuation.continuationId}/decision`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(continuation.version),
+          },
+          body: JSON.stringify({ decision }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as BookingSoloContinuationCommandResponse;
+      sessionActionKeys.current.delete(operation);
+      await loadIdentity();
+      setSessionNotice(result.data.state === 'CONFIRMED'
+        ? 'Оставшийся спортсмен и Coach подтвердили соло-тренировку. Время и слот сохранены.'
+        : result.data.state === 'DECLINED'
+          ? 'Соло-тренировка отклонена. Session отменена без штрафов и спортивных последствий.'
+          : 'Ваш ответ принят. Ожидаем второе подтверждение.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось ответить на соло-запрос');
+    } finally {
+      setActingSessionKey(null);
+    }
+  };
+
+  const recordOfficialResult = async (
+    session: Session,
+    outcomeCode: ResultOutcomeCode,
+    winnerUserId: string | null = null,
+  ) => {
+    if (!session.challengeId || !session.challengeVersion || actingResultKey !== null) return;
+    const operation = `record:${session.challengeId}:${outcomeCode}:${winnerUserId ?? 'NONE'}:v${session.challengeVersion}`;
+    const idempotencyKey = resultActionKeys.current.get(operation) ?? `result:${operation}`;
+    resultActionKeys.current.set(operation, idempotencyKey);
+    setActingResultKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    const explanationRequired = ['NO_SHOW', 'NO_CONTEST', 'FORFEIT'].includes(outcomeCode);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/challenges/${session.challengeId}/result`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': String(session.challengeVersion),
+        },
+        body: JSON.stringify({
+          sessionId: session.sessionId, outcomeCode, winnerUserId,
+          ...(explanationRequired
+            ? {
+                reasonCode: outcomeCode === 'NO_SHOW' ? 'ATTENDANCE_NO_SHOW' : 'COACH_NO_CONTEST',
+                comment: outcomeCode === 'NO_SHOW'
+                  ? 'Неявка зафиксирована Coach в Session.'
+                  : 'Coach завершил Session без засчитываемого результата.',
+              }
+            : {}),
+        }),
+      });
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as ResultCommandResponse;
+      resultActionKeys.current.delete(operation);
+      setResultsById((current) => ({ ...current, [result.data.resultId]: result.data }));
+      setSessions((current) => current.map((item) => item.sessionId === session.sessionId
+        ? {
+            ...item, resultId: result.data.resultId, challengeState: 'RESULT_RECORDED',
+            challengeVersion: (item.challengeVersion ?? 0) + 1,
+          }
+        : item));
+      setSessionNotice('Coach подтвердил результат. Он уже виден, но остаётся предварительным 48 часов.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось подтвердить результат');
+    } finally {
+      setActingResultKey(null);
+    }
+  };
+
+  const runResultAction = async (
+    result: OfficialResult,
+    action: 'appeal' | 'waive-appeal',
+  ) => {
+    if (actingResultKey !== null) return;
+    const statement = appealStatement.trim();
+    if (action === 'appeal' && statement.length === 0) return;
+    const operation = `${action}:${result.resultId}:v${result.version}`;
+    const idempotencyKey = resultActionKeys.current.get(operation) ?? `result:${operation}`;
+    resultActionKeys.current.set(operation, idempotencyKey);
+    setActingResultKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/results/${result.resultId}/${action}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': String(result.version),
+        },
+        body: JSON.stringify(action === 'appeal'
+          ? { reasonCode: 'RESULT_DISPUTED', statement }
+          : {}),
+      });
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const updated = (await response.json()) as ResultCommandResponse;
+      resultActionKeys.current.delete(operation);
+      setResultsById((current) => ({ ...current, [updated.data.resultId]: updated.data }));
+      if (action === 'appeal') {
+        const appealResponse = await fetch(`${apiUrl}/api/v1/results/${updated.data.resultId}/appeal`, {
+          headers: { Authorization: `Bearer ${localToken}` },
+        });
+        if (!appealResponse.ok) throw new Error(await apiErrorMessage(appealResponse));
+        const detail = ((await appealResponse.json()) as AppealDetailResponse).data;
+        setAppealsByResultId((current) => ({ ...current, [detail.resultId]: detail }));
+      }
+      setSessions((current) => current.map((item) => item.resultId === updated.data.resultId
+        ? {
+            ...item,
+            challengeState: updated.data.state === 'FINAL'
+              ? 'COMPLETED'
+              : updated.data.state === 'UNDER_APPEAL'
+                ? 'UNDER_APPEAL'
+                : 'RESULT_RECORDED',
+            challengeVersion: (item.challengeVersion ?? 0)
+              + (updated.data.state === 'FINAL' || updated.data.state === 'UNDER_APPEAL' ? 1 : 0),
+          }
+        : item));
+      setAppealDraftResultId(null);
+      setAppealStatement('');
+      setSessionNotice(action === 'appeal'
+        ? 'Appeal отправлен Central. Рассмотрение продолжается, спортивный статус остаётся заблокирован.'
+        : updated.data.state === 'FINAL'
+          ? 'Результат финализирован досрочно, ограничения сняты.'
+          : 'Отказ от Appeal сохранён. Финализация произойдёт после решения второго участника или окончания окна.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось обновить Result');
+    } finally {
+      setActingResultKey(null);
+    }
+  };
+
+  const runCentralAppealAction = async (
+    appeal: CentralAppeal,
+    decision: NonNullable<CentralAppeal['decision']> | null,
+  ) => {
+    if (actingCentralAppealId !== null) return;
+    const reason = centralDecisionReason.trim();
+    if (decision !== null && reason.length === 0) return;
+    const action = decision === null ? 'start-review' : 'decision';
+    const operation = `central-appeal:${action}:${appeal.appealId}:v${appeal.version}:${decision ?? 'START'}`;
+    const idempotencyKey = resultActionKeys.current.get(operation) ?? operation;
+    resultActionKeys.current.set(operation, idempotencyKey);
+    setActingCentralAppealId(appeal.appealId);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/central/appeals/${appeal.appealId}/${action}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(appeal.version),
+          },
+          body: JSON.stringify(decision === null ? {} : { decision, reason }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const updated = (await response.json()) as AppealCommandResponse;
+      resultActionKeys.current.delete(operation);
+      if (decision === null) {
+        setCentralAppeals((current) => current.map((item) =>
+          item.appealId === updated.data.appealId ? updated.data : item));
+        setCentralDecisionAppealId(updated.data.appealId);
+        setSessionNotice('Appeal взят в работу. Решение и его последствие будут записаны в историю.');
+      } else {
+        setCentralAppeals((current) => current.filter((item) => item.appealId !== updated.data.appealId));
+        setCentralDecisionAppealId(null);
+        setCentralDecisionReason('');
+        setSessionNotice(decision === 'UPHOLD'
+          ? 'Исход подтверждён, статус разблокирован.'
+          : decision === 'REVERSE'
+            ? 'Победитель исправлен, спортивный статус пересчитан.'
+            : decision === 'ANNUL'
+              ? 'Результат аннулирован, прежний статус восстановлен.'
+              : 'Назначена повторная Session; участники снова выбирают слот.');
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось обновить Appeal');
+    } finally {
+      setActingCentralAppealId(null);
+    }
+  };
+
+  const runAppealParticipantAction = async (
+    appeal: AppealDetail,
+    action: 'response' | 'withdraw',
+  ) => {
+    if (actingResultKey !== null) return;
+    const statement = appealResponseStatement.trim();
+    if (action === 'response' && statement.length === 0) return;
+    const operation = `appeal:${action}:${appeal.appealId}:v${appeal.version}`;
+    const idempotencyKey = resultActionKeys.current.get(operation) ?? operation;
+    resultActionKeys.current.set(operation, idempotencyKey);
+    setActingResultKey(operation);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/appeals/${appeal.appealId}/${action === 'response' ? 'responses' : 'withdraw'}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(appeal.version),
+          },
+          body: JSON.stringify(action === 'response' ? { statement } : {}),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const updated = (await response.json()) as AppealCommandResponse;
+      resultActionKeys.current.delete(operation);
+      setAppealsByResultId((current) => ({ ...current, [updated.data.resultId]: updated.data }));
+      setAppealResponseStatement('');
+      setPendingAppealWithdrawalId(null);
+      setSessionNotice(action === 'response'
+        ? 'Ответ добавлен к Appeal. Central продолжает рассмотрение без ожидания остальных сторон.'
+        : 'Appeal отозван. Повторно подать его по этому результату нельзя.');
+      if (action === 'withdraw') await loadIdentity();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось обновить Appeal');
+    } finally {
+      setActingResultKey(null);
+    }
+  };
+
+  const extendCentralAppealSla = async (appeal: CentralAppeal, durationHours: 24 | 48) => {
+    const reason = centralDecisionReason.trim();
+    if (actingCentralAppealId !== null || reason.length === 0) return;
+    const operation = `central-appeal:extend:${appeal.appealId}:v${appeal.version}:${durationHours}`;
+    const idempotencyKey = resultActionKeys.current.get(operation) ?? operation;
+    resultActionKeys.current.set(operation, idempotencyKey);
+    setActingCentralAppealId(appeal.appealId);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/central/appeals/${appeal.appealId}/extend-sla`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': String(appeal.version),
+        },
+        body: JSON.stringify({ durationHours, reason }),
+      });
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const updated = (await response.json()) as AppealCommandResponse;
+      resultActionKeys.current.delete(operation);
+      setCentralAppeals((current) => current.map((item) =>
+        item.appealId === updated.data.appealId ? updated.data : item));
+      setCentralDecisionReason('');
+      setSessionNotice(`SLA Appeal продлён на ${durationHours} ч. Причина видна всем сторонам.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось продлить SLA Appeal');
+    } finally {
+      setActingCentralAppealId(null);
     }
   };
 
@@ -192,7 +1656,7 @@ export default function IdentityScreen() {
           'Idempotency-Key': `identity:${identity.userId}:verification:first`,
         },
       });
-      if (!response.ok) throw new Error(await errorMessage(response));
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
       const result = (await response.json()) as IdentityCommandResponse;
       setIdentity(result.data);
     } catch (caught) {
@@ -218,7 +1682,7 @@ export default function IdentityScreen() {
         },
       );
       if (!response.ok) {
-        const message = await errorMessage(response);
+        const message = await apiErrorMessage(response);
         if (response.status === 409) await loadIdentity();
         throw new Error(message);
       }
@@ -234,14 +1698,500 @@ export default function IdentityScreen() {
     }
   };
 
+  const actOnDiscovery = async (
+    candidate: DiscoveryCard,
+    action: DiscoveryAction,
+  ) => {
+    if (actingCandidateId !== null) return;
+    const operation = `${action}:${candidate.candidateUserId}`;
+    const existingKey = discoveryActionKeys.current.get(operation);
+    const idempotencyKey =
+      existingKey ??
+      `discovery:${identity?.userId ?? 'unknown'}:${operation}:${Date.now().toString(36)}`;
+    discoveryActionKeys.current.set(operation, idempotencyKey);
+    setActingCandidateId(candidate.candidateUserId);
+    setActingDiscoveryAction(action);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/discovery/${candidate.candidateUserId}/${action}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': '0',
+          },
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as DiscoveryActionResponse;
+      discoveryActionKeys.current.delete(operation);
+      setDiscoveryCards((current) =>
+        current.filter((item) => item.candidateUserId !== candidate.candidateUserId),
+      );
+      const createdMatch = result.data.match;
+      if (result.data.action === 'MATCHED' && createdMatch) {
+        setMatches((current) => [
+          createdMatch,
+          ...current.filter((item) => item.matchId !== createdMatch.matchId),
+        ]);
+        setDiscoveryNotice(
+          `У вас Match с ${candidate.displayName}. Теперь можно выбрать тренировку вместе.`,
+        );
+      } else if (result.data.action === 'LIKED') {
+        setDiscoveryNotice(
+          `${candidate.displayName} увидит ваш интерес в своей ленте.`,
+        );
+      } else {
+        setDiscoveryNotice('Анкета скрыта на 15 дней.');
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось выполнить действие');
+    } finally {
+      setActingCandidateId(null);
+      setActingDiscoveryAction(null);
+    }
+  };
+
+  const endMatch = async (match: Match, action: 'unmatch' | 'block') => {
+    if (actingRelationshipId !== null) return;
+    const operation = `${action}:${match.matchId}:v${match.version}`;
+    const existingKey = relationshipActionKeys.current.get(operation);
+    const idempotencyKey =
+      existingKey ??
+      `social:${identity?.userId ?? 'unknown'}:${operation}:${Date.now().toString(36)}`;
+    relationshipActionKeys.current.set(operation, idempotencyKey);
+    setActingRelationshipId(match.matchId);
+    setError(null);
+    try {
+      const response = await fetch(
+        action === 'unmatch'
+          ? `${apiUrl}/api/v1/matches/${match.matchId}`
+          : `${apiUrl}/api/v1/users/${match.counterpartUserId}/block`,
+        {
+          method: action === 'unmatch' ? 'DELETE' : 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': action === 'unmatch' ? String(match.version) : '0',
+          },
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as SocialRelationshipCommandResponse;
+      relationshipActionKeys.current.delete(operation);
+      setMatches((current) => current.filter((item) => item.matchId !== match.matchId));
+      if (result.data.action === 'BLOCKED') {
+        const createdBlock = result.data.block;
+        setBlockedUsers((current) => [
+          createdBlock,
+          ...current.filter((item) => item.blockId !== createdBlock.blockId),
+        ]);
+        setDiscoveryNotice(
+          'Пользователь заблокирован. Личный контакт закрыт, спортивные обязательства сохранены.',
+        );
+      } else {
+        setDiscoveryNotice(
+          'Match завершён, чат закрыт. Вы не будете видеть друг друга в Discovery 15 дней.',
+        );
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось изменить Match');
+    } finally {
+      setActingRelationshipId(null);
+    }
+  };
+
+  const unblock = async (blocked: BlockedUser) => {
+    if (actingRelationshipId !== null) return;
+    const operation = `unblock:${blocked.blockId}:v${blocked.version}`;
+    const existingKey = relationshipActionKeys.current.get(operation);
+    const idempotencyKey =
+      existingKey ??
+      `social:${identity?.userId ?? 'unknown'}:${operation}:${Date.now().toString(36)}`;
+    relationshipActionKeys.current.set(operation, idempotencyKey);
+    setActingRelationshipId(blocked.blockId);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/users/${blocked.blockedUserId}/block`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': String(blocked.version),
+        },
+      });
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as SocialRelationshipCommandResponse;
+      relationshipActionKeys.current.delete(operation);
+      if (result.data.action === 'UNBLOCKED') {
+        const revokedBlockId = result.data.block.blockId;
+        setBlockedUsers((current) =>
+          current.filter((item) => item.blockId !== revokedBlockId),
+        );
+        setDiscoveryNotice(
+          'Блокировка снята. Старый Match не восстановлен — новый контакт начинается только через Discovery.',
+        );
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось снять блокировку');
+    } finally {
+      setActingRelationshipId(null);
+    }
+  };
+
+  const refreshCompetitionStatus = async (): Promise<void> => {
+    const response = await fetch(`${apiUrl}/api/v1/me/competition`, {
+      headers: { Authorization: `Bearer ${localToken}` },
+    });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const result = (await response.json()) as CompetitionStatusResponse;
+    setCompetitionStatus(result.data);
+  };
+
+  const joinStatusQueue = async () => {
+    if (!competitionStatus || actingStatusQueue) return;
+    const operation = `join:${competitionStatus.competitionId}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `status-queue:${operation}:${Date.now().toString(36)}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingStatusQueue(true);
+    setStatusQueueNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/competitions/${competitionStatus.competitionId}/queue-entries`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': '0',
+          },
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await refreshCompetitionStatus();
+        throw new Error(message);
+      }
+      await response.json() as StatusQueueEntryCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      await refreshCompetitionStatus();
+      setStatusQueueNotice('Заявка добавлена. Ваше место определяется только прозрачным FIFO.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось вступить в очередь');
+    } finally {
+      setActingStatusQueue(false);
+    }
+  };
+
+  const withdrawStatusQueue = async (entry: CompetitionStatus['queue'][number]) => {
+    if (actingStatusQueue) return;
+    const operation = `withdraw:${entry.queueEntryId}:v${entry.version}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `status-queue:${operation}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingStatusQueue(true);
+    setStatusQueueNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/queue-entries/${entry.queueEntryId}/withdraw`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(entry.version),
+          },
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await refreshCompetitionStatus();
+        throw new Error(message);
+      }
+      await response.json() as StatusQueueEntryCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      await refreshCompetitionStatus();
+      setStatusQueueNotice('Заявка отозвана без поражения. При новом входе будет создано новое место.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось покинуть очередь');
+    } finally {
+      setActingStatusQueue(false);
+    }
+  };
+
+  const reconfirmStatusQueue = async (entry: CompetitionStatus['queue'][number]) => {
+    if (actingStatusQueue) return;
+    const operation = `reconfirm:${entry.queueEntryId}:v${entry.version}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `status-queue:${operation}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingStatusQueue(true);
+    setStatusQueueNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/queue-entries/${entry.queueEntryId}/reconfirm`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(entry.version),
+          },
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await refreshCompetitionStatus();
+        throw new Error(message);
+      }
+      await response.json() as StatusQueueEntryCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      await refreshCompetitionStatus();
+      setStatusQueueNotice('Готовность подтверждена. Исходное FIFO-место сохранено.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось подтвердить готовность');
+    } finally {
+      setActingStatusQueue(false);
+    }
+  };
+
+  const respondToGenesis = async (decision: 'ACCEPT' | 'DECLINE') => {
+    const genesis = competitionStatus?.viewerGenesisAction;
+    if (!genesis || actingStatusQueue) return;
+    const action = decision === 'ACCEPT' ? 'accept' : 'decline';
+    const operation = `genesis:${action}:${genesis.challengeId}:v${genesis.version}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `status-queue:${operation}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingStatusQueue(true);
+    setStatusQueueNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/genesis-challenges/${genesis.challengeId}/${action}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(genesis.version),
+          },
+          body: JSON.stringify({ explicitRulesetAcknowledged: true }),
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await refreshCompetitionStatus();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as GenesisResponseCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      await refreshCompetitionStatus();
+      setStatusQueueNotice(
+        decision === 'DECLINE'
+          ? 'Вы вышли из этой GENESIS-пары без поражения. Соперник сохранил исходное FIFO-место.'
+          : result.data.state === 'ACCEPTED_UNSCHEDULED'
+            ? 'Взаимное подтверждение получено. Откройте чат и выберите слот.'
+            : 'Готовность сохранена. Ждём ответ второго участника.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось сохранить ответ GENESIS');
+    } finally {
+      setActingStatusQueue(false);
+    }
+  };
+
+  const previewStatusRelease = async () => {
+    if (!competitionStatus || actingStatusQueue) return;
+    const operation = `release-preview:${competitionStatus.competitionId}:v${competitionStatus.statusVersion}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `status-release:${operation}:${Date.now().toString(36)}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingStatusQueue(true);
+    setStatusQueueNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/status-releases/preview`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': '0',
+        },
+        body: JSON.stringify({ competitionId: competitionStatus.competitionId }),
+      });
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await refreshCompetitionStatus();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as StatusReleaseCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      setStatusReleasePreview(result.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось подготовить освобождение статуса');
+    } finally {
+      setActingStatusQueue(false);
+    }
+  };
+
+  const confirmStatusRelease = async () => {
+    if (!statusReleasePreview?.confirmationToken || actingStatusQueue) return;
+    const operation = `release-confirm:${statusReleasePreview.releaseId}:v${statusReleasePreview.version}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `status-release:${operation}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingStatusQueue(true);
+    setStatusQueueNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/status-releases/${statusReleasePreview.releaseId}/confirm`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(statusReleasePreview.version),
+          },
+          body: JSON.stringify({ confirmationToken: statusReleasePreview.confirmationToken }),
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) {
+          setStatusReleasePreview(null);
+          await refreshCompetitionStatus();
+        }
+        throw new Error(message);
+      }
+      const result = (await response.json()) as StatusReleaseCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      setStatusReleasePreview(null);
+      await refreshCompetitionStatus();
+      setStatusQueueNotice(
+        result.data.consequence === 'CHAMPION_SUCCESSION'
+          ? 'Статус №1 передан Претенденту. Membership сохранён.'
+          : 'Спортивный статус освобождён. Membership сохранён, поражение не создано.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось освободить статус');
+    } finally {
+      setActingStatusQueue(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.eyebrow}>MOLOKH · IDENTITY</Text>
-        <Text style={styles.title}>Профиль пользователя</Text>
-        <Text style={styles.lead}>
-          Первый рабочий вертикальный срез MVP: аккаунт, публичные возможности и свободное имя.
-        </Text>
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Text style={styles.eyebrow}>MOLOKH</Text>
+        {__DEV__ ? (
+          <View style={styles.testAccountPanel}>
+            <View style={styles.testAccountHeader}>
+              <View style={styles.testAccountIdentity}>
+                <Text style={styles.testAccountLabel}>Тестовый аккаунт</Text>
+                <Text style={styles.testAccountName}>
+                  {identity?.displayName ?? activeTestAccount.label} · {activeTestAccount.role}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: accountMenuOpen }}
+                onPress={() => setAccountMenuOpen((current) => !current)}
+                style={({ pressed }) => [styles.testAccountButton, pressed && styles.buttonPressed]}
+              >
+                <Text style={styles.testAccountButtonText}>
+                  {accountMenuOpen ? 'Закрыть' : 'Сменить'}
+                </Text>
+              </Pressable>
+            </View>
+            {accountMenuOpen ? (
+              <>
+                <Text style={styles.hint}>
+                  Для проверки Match поставьте Like от одного Athlete, переключитесь на второго и ответьте взаимным Like.
+                </Text>
+                <View style={styles.testAccountList}>
+                  {localTestAccounts.map((account) => {
+                    const selected = account.token === activeTestToken;
+                    return (
+                      <Pressable
+                        key={account.id}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        onPress={() => switchLocalAccount(account)}
+                        style={({ pressed }) => [
+                          styles.testAccountOption,
+                          selected && styles.testAccountOptionSelected,
+                          pressed && styles.buttonPressed,
+                        ]}
+                      >
+                        <Text style={styles.testAccountOptionName}>{account.label}</Text>
+                        <Text style={styles.testAccountOptionRole}>{account.role}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
+          </View>
+        ) : null}
+        {visibleSections.length > 1 ? (
+          <View accessibilityRole="tablist" style={styles.mainNavigation}>
+            {visibleSections.map((section) => {
+              const selected = section.id === activeSection;
+              return (
+                <Pressable
+                  key={section.id}
+                  aria-selected={selected}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected }}
+                  onPress={() => openSection(section.id)}
+                  style={({ pressed }) => [
+                    styles.mainNavigationItem,
+                    selected && styles.mainNavigationItemSelected,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.mainNavigationText,
+                      selected && styles.mainNavigationTextSelected,
+                    ]}
+                  >
+                    {section.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
+        <Text accessibilityRole="header" style={styles.title}>{activeSectionCopy.title}</Text>
+        <Text style={styles.lead}>{activeSectionCopy.lead}</Text>
 
         {loading ? (
           <View style={styles.stateCard}>
@@ -250,242 +2200,2004 @@ export default function IdentityScreen() {
           </View>
         ) : identity ? (
           <>
-            <View style={styles.card}>
-              <Text style={styles.label}>Отображаемое имя</Text>
-              <TextInput
-                accessibilityLabel="Отображаемое имя"
-                autoCapitalize="words"
-                maxLength={80}
-                onChangeText={setDisplayName}
-                placeholder="Как вас называть"
-                style={styles.input}
-                value={displayName}
+            {activeSection === 'DISCOVERY' ? (
+              <DiscoverySection
+                actingAction={actingDiscoveryAction}
+                actingCandidateId={actingCandidateId}
+                actingRelationshipId={actingRelationshipId}
+                blockedUsers={blockedUsers}
+                cards={discoveryCards}
+                matches={matches}
+                notice={discoveryNotice}
+                onAction={(candidate, action) => void actOnDiscovery(candidate, action)}
+                onBlock={(match) => void endMatch(match, 'block')}
+                onOpenChat={(match) =>
+                  router.push(({
+                    pathname: '/chat',
+                    params: {
+                      chatId: match.chatId,
+                      counterpart: match.counterpartDisplayName,
+                    },
+                  } as unknown) as Href)
+                }
+                onRefresh={() => void loadIdentity()}
+                onUnblock={(blocked) => void unblock(blocked)}
+                onUnmatch={(match) => void endMatch(match, 'unmatch')}
               />
-              <Text style={styles.hint}>Имя меняется сразу. История доступна только Central.</Text>
-              <Pressable
-                accessibilityRole="button"
-                disabled={!canSave}
-                onPress={() => void saveDisplayName()}
-                style={({ pressed }) => [
-                  styles.button,
-                  !canSave && styles.buttonDisabled,
-                  pressed && canSave && styles.buttonPressed,
-                ]}
-              >
-                {saving ? (
-                  <ActivityIndicator color="#ffffff" />
-                ) : (
-                  <Text style={styles.buttonText}>Сохранить имя</Text>
-                )}
-              </Pressable>
-            </View>
+            ) : null}
 
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Статус аккаунта</Text>
-              <View style={styles.row}>
-                <Text style={styles.muted}>Возрастной контур</Text>
-                <Text style={styles.value}>{identity.ageDivision === 'ADULT' ? '18+' : '14–17'}</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={styles.muted}>Телефон</Text>
-                <Text style={styles.value}>{identity.phoneVerified ? 'Подтверждён' : 'Не подтверждён'}</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={styles.muted}>Верификация</Text>
-                <Text style={styles.value}>{verificationLabels[identity.accountVerificationState]}</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={styles.muted}>Основной спорт</Text>
-                <Text style={styles.value}>{identity.primarySport}</Text>
-              </View>
-              {identity.accountVerificationState === 'NOT_STARTED' ? (
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={startingVerification}
-                  onPress={() => void startVerification()}
-                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
-                >
-                  {startingVerification ? (
-                    <ActivityIndicator color="#8b2f22" />
-                  ) : (
-                    <Text style={styles.secondaryButtonText}>Отправить на верификацию</Text>
-                  )}
-                </Pressable>
-              ) : identity.accountVerificationState === 'PENDING' ? (
-                <Text style={styles.hint}>
-                  Заявка в очереди Central. Документы загружать не требуется.
-                </Text>
-              ) : null}
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => void loadIdentity()}
-                style={styles.refreshButton}
-              >
-                <Text style={styles.refreshText}>Обновить статус</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Что уже доступно</Text>
-              <View style={styles.chips}>
-                {identity.capabilities.map((capability) => (
-                  <View key={capability} style={styles.chip}>
-                    <Text style={styles.chipText}>{capabilityLabels[capability]}</Text>
-                  </View>
-                ))}
-              </View>
-              {identity.capabilityDenials.map((denial) => (
-                <Text key={denial.capability} style={styles.denial}>
-                  {denial.capability === 'ACCOUNT_VERIFIED'
-                    ? 'Для официального Challenge потребуется верификация Central.'
-                    : capabilityLabels[denial.capability]}
-                </Text>
-              ))}
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Люди для тренировки</Text>
-              <Text style={styles.muted}>
-                Сначала показываем людей внутри вашего радиуса, затем расширяем поиск в пределах города.
-              </Text>
-              {discoveryNotice ? (
-                <Text style={styles.hint}>{discoveryNotice}</Text>
-              ) : discoveryCards.length === 0 ? (
-                <Text style={styles.hint}>Подходящих анкет пока нет.</Text>
-              ) : (
-                discoveryCards.map((candidate) => (
-                  <View
-                    key={candidate.candidateUserId}
-                    style={[
-                      styles.discoveryCard,
-                      candidate.inboundLike && styles.discoveryCardInterested,
+            {activeSection === 'PROFILE' ? (
+              <>
+                <View style={styles.card}>
+                  <Text style={styles.label}>Отображаемое имя</Text>
+                  <TextInput
+                    accessibilityLabel="Отображаемое имя"
+                    autoCapitalize="words"
+                    maxLength={80}
+                    onChangeText={setDisplayName}
+                    placeholder="Как вас называть"
+                    style={styles.input}
+                    value={displayName}
+                  />
+                  <Text style={styles.hint}>Имя меняется сразу. История доступна только Central.</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !canSave }}
+                    disabled={!canSave}
+                    onPress={() => void saveDisplayName()}
+                    style={({ pressed }) => [
+                      styles.button,
+                      !canSave && styles.buttonDisabled,
+                      pressed && canSave && styles.buttonPressed,
                     ]}
                   >
-                    <View style={styles.discoveryHeader}>
-                      <View style={styles.avatarPlaceholder}>
-                        <Text style={styles.avatarText}>
-                          {candidate.displayName.slice(0, 1).toLocaleUpperCase('ru-RU')}
-                        </Text>
+                    {saving ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <Text style={styles.buttonText}>Сохранить имя</Text>
+                    )}
+                  </Pressable>
+                </View>
+
+                <View style={styles.card}>
+                  <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>Виды спорта</Text>
+                  <Text style={styles.hint}>
+                    Основной спорт влияет на приоритет анкет в Discovery. Дополнительный помогает находить больше пересечений.
+                  </Text>
+                  <Text style={styles.label}>Основной спорт</Text>
+                  <View accessibilityRole="radiogroup" style={styles.sportOptions}>
+                    {sportOptions.map((option) => {
+                      const checked = primarySport === option.code;
+                      return (
+                        <Pressable
+                          key={`primary-${option.code}`}
+                          aria-checked={checked}
+                          accessibilityRole="radio"
+                          accessibilityState={{ checked }}
+                          onPress={() => {
+                            setPrimarySport(option.code);
+                            if (secondarySport === option.code) setSecondarySport(null);
+                          }}
+                          style={({ pressed }) => [
+                            styles.sportOption,
+                            checked && styles.sportOptionSelected,
+                            pressed && styles.buttonPressed,
+                          ]}
+                        >
+                          <Text style={[styles.sportOptionText, checked && styles.sportOptionTextSelected]}>
+                            {option.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Text style={styles.label}>Дополнительный спорт</Text>
+                  <View accessibilityRole="radiogroup" style={styles.sportOptions}>
+                    <Pressable
+                      aria-checked={secondarySport === null}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: secondarySport === null }}
+                      onPress={() => setSecondarySport(null)}
+                      style={({ pressed }) => [
+                        styles.sportOption,
+                        secondarySport === null && styles.sportOptionSelected,
+                        pressed && styles.buttonPressed,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.sportOptionText,
+                          secondarySport === null && styles.sportOptionTextSelected,
+                        ]}
+                      >
+                        Не выбран
+                      </Text>
+                    </Pressable>
+                    {sportOptions
+                      .filter((option) => option.code !== primarySport)
+                      .map((option) => {
+                        const checked = secondarySport === option.code;
+                        return (
+                          <Pressable
+                            key={`secondary-${option.code}`}
+                            aria-checked={checked}
+                            accessibilityRole="radio"
+                            accessibilityState={{ checked }}
+                            onPress={() => setSecondarySport(option.code)}
+                            style={({ pressed }) => [
+                              styles.sportOption,
+                              checked && styles.sportOptionSelected,
+                              pressed && styles.buttonPressed,
+                            ]}
+                          >
+                            <Text style={[styles.sportOptionText, checked && styles.sportOptionTextSelected]}>
+                              {option.label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                  </View>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !canSaveSports }}
+                    disabled={!canSaveSports}
+                    onPress={() => void saveSports()}
+                    style={({ pressed }) => [
+                      styles.button,
+                      !canSaveSports && styles.buttonDisabled,
+                      pressed && canSaveSports && styles.buttonPressed,
+                    ]}
+                  >
+                    {savingSports ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <Text style={styles.buttonText}>Сохранить виды спорта</Text>
+                    )}
+                  </Pressable>
+                </View>
+
+                <View style={styles.card}>
+                  <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>Статус аккаунта</Text>
+                  <Text style={styles.hint}>
+                    Статус аккаунта меняется системой и Central. Спортивные статусы меняются только через подтверждённые результаты в Community.
+                  </Text>
+                  <View style={styles.row}>
+                    <Text style={styles.muted}>Аккаунт</Text>
+                    <Text style={styles.value}>{accountStateLabels[identity.accountState]}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.muted}>Возрастной контур</Text>
+                    <Text style={styles.value}>{identity.ageDivision === 'ADULT' ? '18+' : '14–17'}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.muted}>Телефон</Text>
+                    <Text style={styles.value}>{identity.phoneVerified ? 'Подтверждён' : 'Не подтверждён'}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.muted}>Верификация</Text>
+                    <Text style={styles.value}>{verificationLabels[identity.accountVerificationState]}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.muted}>Завершённые тренировки</Text>
+                    <Text style={styles.value}>{completedTrainingCount}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.muted}>Основной спорт</Text>
+                    <Text style={styles.value}>{sportLabel(identity.primarySport)}</Text>
+                  </View>
+                  {identity.secondarySport ? (
+                    <View style={styles.row}>
+                      <Text style={styles.muted}>Дополнительный спорт</Text>
+                      <Text style={styles.value}>{sportLabel(identity.secondarySport)}</Text>
+                    </View>
+                  ) : null}
+                  {identity.accountVerificationState === 'NOT_STARTED' ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: startingVerification }}
+                      disabled={startingVerification}
+                      onPress={() => void startVerification()}
+                      style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                    >
+                      {startingVerification ? (
+                        <ActivityIndicator color="#8b2f22" />
+                      ) : (
+                        <Text style={styles.secondaryButtonText}>Отправить на верификацию</Text>
+                      )}
+                    </Pressable>
+                  ) : identity.accountVerificationState === 'PENDING' ? (
+                    <Text style={styles.hint}>
+                      Заявка в очереди Central. Документы загружать не требуется.
+                    </Text>
+                  ) : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void loadIdentity()}
+                    style={styles.refreshButton}
+                  >
+                    <Text style={styles.refreshText}>Проверить обновления</Text>
+                  </Pressable>
+                </View>
+
+                <View style={styles.card}>
+                  <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>Возможности аккаунта</Text>
+                  <Text style={styles.hint}>
+                    Это информация о доступе, а не кнопки. Возможности обновляются автоматически при изменении состояния аккаунта.
+                  </Text>
+                  <View style={styles.capabilityList}>
+                    {identity.capabilities.map((capability) => (
+                      <View key={capability} style={styles.capabilityRow}>
+                        <Text style={styles.capabilityText}>{capabilityLabels[capability]}</Text>
+                        <Text style={styles.capabilityState}>Доступно</Text>
                       </View>
-                      <View style={styles.discoveryIdentity}>
-                        <Text style={styles.discoveryName}>{candidate.displayName}</Text>
-                        <Text style={styles.muted}>
-                          {candidate.primarySport}
-                          {candidate.secondarySport ? ` · ${candidate.secondarySport}` : ''}
-                        </Text>
+                    ))}
+                  </View>
+                  {identity.capabilityDenials.map((denial) => (
+                    <Text key={denial.capability} style={styles.denial}>
+                      {denial.capability === 'ACCOUNT_VERIFIED'
+                        ? 'Для официального Challenge потребуется верификация Central.'
+                        : capabilityLabels[denial.capability]}
+                    </Text>
+                  ))}
+                </View>
+              </>
+            ) : null}
+
+            {activeSection === 'COMMUNITY' ? (
+              <>
+                {activeTestAccount.role === 'Athlete' && competitionStatus ? (
+                  <StatusQueueSection
+                    competition={competitionStatus}
+                    acting={actingStatusQueue}
+                    notice={statusQueueNotice}
+                    releasePreview={statusReleasePreview}
+                    onJoin={() => void joinStatusQueue()}
+                    onReconfirm={(entry) => void reconfirmStatusQueue(entry)}
+                    onWithdraw={(entry) => void withdrawStatusQueue(entry)}
+                    onGenesisResponse={(decision) => void respondToGenesis(decision)}
+                    onPreviewRelease={() => void previewStatusRelease()}
+                    onConfirmRelease={() => void confirmStatusRelease()}
+                    onCancelRelease={() => setStatusReleasePreview(null)}
+                    onOpenActiveChallenge={() => {
+                      const active = competitionStatus.activeChallenge;
+                      if (!active?.viewerIsParticipant) return;
+                      const counterpart = competitionStatus.viewerStatus === 'CONTENDER'
+                        ? active.initiatorDisplayName
+                        : active.recipientDisplayName;
+                      router.push(({
+                        pathname: '/chat',
+                        params: { chatId: active.serviceChatId, counterpart },
+                      } as unknown) as Href);
+                    }}
+                    onOpenGenesisChat={() => {
+                      const genesis = competitionStatus.viewerGenesisAction;
+                      if (!genesis) return;
+                      router.push(({
+                        pathname: '/chat',
+                        params: {
+                          chatId: genesis.serviceChatId,
+                          counterpart: genesis.opponentDisplayName,
+                        },
+                      } as unknown) as Href);
+                    }}
+                  />
+                ) : null}
+                {activeTestAccount.role === 'Central' ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      Appeals Central
+                    </Text>
+                    <Text style={styles.hint}>
+                      Источник Result остаётся неизменным. Решение создаёт отдельную запись и автоматически пересчитывает спортивные последствия.
+                    </Text>
+                    {centralAppeals.length === 0 ? (
+                      <Text style={styles.muted}>Открытых Appeal сейчас нет.</Text>
+                    ) : centralAppeals.map((appeal) => {
+                      const acting = actingCentralAppealId === appeal.appealId;
+                      const decisive = appeal.recordedWinnerUserId !== null;
+                      return (
+                        <View key={appeal.appealId} style={styles.hostConfirmationCard}>
+                          <View style={styles.row}>
+                            <Text style={styles.venueName}>{appeal.appellantDisplayName}</Text>
+                            <Text style={styles.sessionState}>
+                              {appeal.state === 'SUBMITTED' ? 'Новый Appeal' : 'На рассмотрении'}
+                            </Text>
+                          </View>
+                          <Text style={styles.muted}>{appeal.reasonCode}</Text>
+                          <Text style={styles.value}>{appeal.statement}</Text>
+                          {appeal.responses.map((item) => (
+                            <View key={item.responseId} style={styles.attendanceCard}>
+                              <Text style={styles.label}>
+                                {item.responderRole === 'COACH' ? 'Coach' : 'Оппонент'} · {item.responderDisplayName}
+                              </Text>
+                              <Text style={styles.value}>{item.statement}</Text>
+                              <Text style={styles.hint}>{formatDateTime(item.submittedAt)}</Text>
+                            </View>
+                          ))}
+                          <Text style={styles.hint}>
+                            SLA: {formatDateTime(appeal.slaDueAt)}
+                          </Text>
+                          {appeal.slaExtension ? (
+                            <Text style={styles.hint}>
+                              Продлено на {appeal.slaExtension.durationHours} ч: {appeal.slaExtension.reason}
+                            </Text>
+                          ) : null}
+                          {appeal.viewerCanStartReview ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityState={{ disabled: actingCentralAppealId !== null }}
+                              disabled={actingCentralAppealId !== null}
+                              onPress={() => void runCentralAppealAction(appeal, null)}
+                              style={({ pressed }) => [
+                                styles.button,
+                                actingCentralAppealId !== null && styles.buttonDisabled,
+                                pressed && actingCentralAppealId === null && styles.buttonPressed,
+                              ]}
+                            >
+                              {acting ? <ActivityIndicator color="#ffffff" />
+                                : <Text style={styles.buttonText}>Взять в рассмотрение</Text>}
+                            </Pressable>
+                          ) : null}
+                          {appeal.viewerCanDecide ? (
+                            <View style={styles.attendanceList}>
+                              <TextInput
+                                accessibilityLabel="Обоснование решения Central"
+                                maxLength={2000}
+                                multiline
+                                onChangeText={(value) => {
+                                  setCentralDecisionAppealId(appeal.appealId);
+                                  setCentralDecisionReason(value);
+                                }}
+                                placeholder="Нейтрально опишите проверенные факты и основание решения"
+                                style={[styles.input, styles.appealInput]}
+                                value={centralDecisionAppealId === appeal.appealId ? centralDecisionReason : ''}
+                              />
+                              {appeal.viewerCanExtendSla ? (
+                                <View style={styles.formRow}>
+                                  {([24, 48] as const).map((hours) => (
+                                    <Pressable
+                                      key={hours}
+                                      accessibilityRole="button"
+                                      disabled={actingCentralAppealId !== null
+                                        || centralDecisionAppealId !== appeal.appealId
+                                        || centralDecisionReason.trim().length === 0}
+                                      onPress={() => void extendCentralAppealSla(appeal, hours)}
+                                      style={({ pressed }) => [
+                                        styles.secondaryButton,
+                                        (actingCentralAppealId !== null
+                                          || centralDecisionAppealId !== appeal.appealId
+                                          || centralDecisionReason.trim().length === 0) && styles.buttonDisabled,
+                                        pressed && styles.buttonPressed,
+                                      ]}
+                                    >
+                                      <Text style={styles.secondaryButtonText}>Продлить SLA +{hours} ч</Text>
+                                    </Pressable>
+                                  ))}
+                                </View>
+                              ) : null}
+                              {appealDecisionOptions.map((option) => {
+                                const invalidReverse = option.decision === 'REVERSE' && !decisive;
+                                const disabled = actingCentralAppealId !== null
+                                  || centralDecisionAppealId !== appeal.appealId
+                                  || centralDecisionReason.trim().length === 0
+                                  || invalidReverse;
+                                return (
+                                  <Pressable
+                                    key={option.decision}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled }}
+                                    disabled={disabled}
+                                    onPress={() => void runCentralAppealAction(appeal, option.decision)}
+                                    style={({ pressed }) => [
+                                      option.decision === 'UPHOLD' ? styles.secondaryButton : styles.dangerButton,
+                                      disabled && styles.buttonDisabled,
+                                      pressed && !disabled && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={option.decision === 'UPHOLD'
+                                      ? styles.secondaryButtonText : styles.dangerButtonText}>
+                                      {option.label}
+                                    </Text>
+                                    <Text style={styles.hint}>{invalidReverse
+                                      ? 'Для ничьей/NO_CONTEST используйте аннулирование или повтор.'
+                                      : option.consequence}</Text>
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                          ) : null}
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : null}
+
+                <MissingResultReviewSection
+                  reviews={missingResultReviews}
+                  token={activeTestToken}
+                  onUpdated={(updated) => {
+                    setMissingResultReviews((current) => current.map((item) =>
+                      item.reviewId === updated.reviewId ? updated : item));
+                    void loadIdentity();
+                  }}
+                />
+
+                <IntegrityCaseSection
+                  cases={integrityCases}
+                  central={activeTestAccount.role === 'Central'}
+                  token={activeTestToken}
+                  onUpdated={(updated) => {
+                    setIntegrityCases((current) => current.some((item) =>
+                      item.caseId === updated.caseId)
+                      ? current.map((item) => item.caseId === updated.caseId ? updated : item)
+                      : [updated, ...current]);
+                    void loadIdentity();
+                  }}
+                />
+
+                {coachInvites.map((invite) => (
+                  <View key={invite.grantId} style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>Вас приглашают стать Coach</Text>
+                    <Text style={styles.muted}>
+                      Полномочия начнут действовать только после вашего подтверждения.
+                    </Text>
+                    <Text style={styles.hint}>
+                      Приглашение действительно до{' '}
+                      {invite.expiresAt
+                        ? formatDateTime(invite.expiresAt)
+                        : 'указанного срока'}.
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: acceptingCoachGrant !== null }}
+                      disabled={acceptingCoachGrant !== null}
+                      onPress={() => void acceptCoachRole(invite)}
+                      style={({ pressed }) => [
+                        styles.button,
+                        acceptingCoachGrant !== null && styles.buttonDisabled,
+                        pressed && acceptingCoachGrant === null && styles.buttonPressed,
+                      ]}
+                    >
+                      {acceptingCoachGrant === invite.grantId ? (
+                        <ActivityIndicator color="#ffffff" />
+                      ) : (
+                        <Text style={styles.buttonText}>Принять роль Coach</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                ))}
+
+                {activeTestAccount.role === 'Gym Admin' && venueAdminDashboard ? (
+                  <>
+                    <View style={styles.card}>
+                      <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                        {venueAdminDashboard.venue.displayName}
+                      </Text>
+                      <Text style={styles.hint}>
+                        Часовой пояс: {venueAdminDashboard.venue.timezone}. Публикация доступна
+                        на {venueAdminDashboard.venue.slotPublishHorizonDays} дней вперёд.
+                      </Text>
+                      <View style={styles.adminMetrics}>
+                        <View style={styles.adminMetric}>
+                          <Text style={styles.adminMetricValue}>
+                            {venueAdminDashboard.hostConfirmations.length}
+                          </Text>
+                          <Text style={styles.adminMetricLabel}>Ждут решения</Text>
+                        </View>
+                        <View style={styles.adminMetric}>
+                          <Text style={styles.adminMetricValue}>
+                            {venueAdminDashboard.slots.length}
+                          </Text>
+                          <Text style={styles.adminMetricLabel}>Свободные слоты</Text>
+                        </View>
+                        <View style={styles.adminMetric}>
+                          <Text style={styles.adminMetricValue}>
+                            {venueAdminDashboard.groupInterests.length}
+                          </Text>
+                          <Text style={styles.adminMetricLabel}>Интерес к группам</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.label}>Авторизованные Coach</Text>
+                      <View style={styles.chips}>
+                        {venueAdminDashboard.coaches.map((coach) => (
+                          <View key={coach.userId} style={styles.chip}>
+                            <Text style={styles.chipText}>{coach.displayName}</Text>
+                          </View>
+                        ))}
                       </View>
                     </View>
-                    {candidate.inboundLike ? (
-                      <View style={styles.interestBadge}>
-                        <Text style={styles.interestText}>Хочет тренироваться с вами</Text>
+
+                    <View style={styles.card}>
+                      <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                        {editingAdminSchedule
+                          ? 'Изменить публикацию'
+                          : 'Добавить в расписание'}
+                      </Text>
+                      <Text style={styles.hint}>
+                        Дата и время указываются в часовом поясе зала: {venueAdminDashboard.venue.timezone}.
+                      </Text>
+                      <View style={styles.publicationKindTabs}>
+                        {([
+                          ['SLOT', 'Персональная'],
+                          ['GROUP', 'Групповая'],
+                        ] as const).map(([kind, label]) => {
+                          const selected = adminPublicationKind === kind;
+                          return (
+                            <Pressable
+                              key={kind}
+                              accessibilityRole="button"
+                              accessibilityState={{
+                                disabled: editingAdminSchedule !== null,
+                                selected,
+                              }}
+                              disabled={editingAdminSchedule !== null}
+                              onPress={() => {
+                                setAdminPublicationKind(kind);
+                                setScheduleNotice(null);
+                                setError(null);
+                              }}
+                              style={({ pressed }) => [
+                                styles.publicationKindTab,
+                                selected && styles.publicationKindTabSelected,
+                                editingAdminSchedule !== null && !selected && styles.buttonDisabled,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={[
+                                styles.publicationKindTabText,
+                                selected && styles.publicationKindTabTextSelected,
+                              ]}>
+                                {label}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
                       </View>
-                    ) : null}
-                    <Text style={styles.muted}>{candidate.homeVenue.displayName}</Text>
-                    <Text style={styles.hint}>
-                      {candidate.geographyTier === 'WITHIN_RADIUS'
-                        ? candidate.distanceKm === 0
-                          ? 'Ваш домашний зал'
-                          : `${candidate.distanceKm ?? '—'} км · внутри радиуса`
-                        : 'Расширение поиска в пределах города'}
+
+                      <View style={styles.formRow}>
+                        <View style={styles.formField}>
+                          <Text style={styles.label}>Дата</Text>
+                          <TextInput
+                            accessibilityLabel="Дата тренировки"
+                            keyboardType="numbers-and-punctuation"
+                            maxLength={10}
+                            onChangeText={setAdminScheduleDate}
+                            placeholder="ДД.ММ.ГГГГ"
+                            style={styles.input}
+                            value={adminScheduleDate}
+                          />
+                        </View>
+                        <View style={styles.formField}>
+                          <Text style={styles.label}>Начало</Text>
+                          <TextInput
+                            accessibilityLabel="Время начала тренировки"
+                            keyboardType="numbers-and-punctuation"
+                            maxLength={5}
+                            onChangeText={setAdminScheduleTime}
+                            placeholder="18:00"
+                            style={styles.input}
+                            value={adminScheduleTime}
+                          />
+                        </View>
+                      </View>
+                      <Text style={styles.label}>Длительность</Text>
+                      <View style={styles.chips}>
+                        {([60, 90] as const).map((minutes) => {
+                          const selected = adminDurationMinutes === minutes;
+                          return (
+                            <Pressable
+                              key={minutes}
+                              accessibilityRole="button"
+                              accessibilityState={{ selected }}
+                              onPress={() => setAdminDurationMinutes(minutes)}
+                              style={({ pressed }) => [
+                                styles.choiceChip,
+                                selected && styles.choiceChipSelected,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={[
+                                styles.choiceChipText,
+                                selected && styles.choiceChipTextSelected,
+                              ]}>
+                                {minutes} мин
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+
+                      {adminPublicationKind === 'SLOT' ? (
+                        <>
+                          <Text style={styles.label}>Coach</Text>
+                          {venueAdminDashboard.coaches.length === 0 ? (
+                            <Text style={styles.denial}>
+                              Сначала авторизуйте хотя бы одного Coach в Community.
+                            </Text>
+                          ) : (
+                            <View style={styles.chips}>
+                              {venueAdminDashboard.coaches.map((coach) => {
+                                const selected = adminCoachId === coach.userId;
+                                return (
+                                  <Pressable
+                                    key={coach.userId}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected }}
+                                    onPress={() => setAdminCoachId(coach.userId)}
+                                    style={({ pressed }) => [
+                                      styles.choiceChip,
+                                      selected && styles.choiceChipSelected,
+                                      pressed && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={[
+                                      styles.choiceChipText,
+                                      selected && styles.choiceChipTextSelected,
+                                    ]}>
+                                      {coach.displayName}
+                                    </Text>
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                          )}
+                          <Text style={styles.label}>Стоимость, RUB · необязательно</Text>
+                          <TextInput
+                            accessibilityLabel="Стоимость персональной тренировки"
+                            keyboardType="decimal-pad"
+                            maxLength={10}
+                            onChangeText={setAdminPriceAmount}
+                            placeholder="1500"
+                            style={styles.input}
+                            value={adminPriceAmount}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.label}>Название</Text>
+                          <TextInput
+                            accessibilityLabel="Название групповой тренировки"
+                            maxLength={120}
+                            onChangeText={setAdminGroupClassLabel}
+                            placeholder="Открытая группа по боксу"
+                            style={styles.input}
+                            value={adminGroupClassLabel}
+                          />
+                          <Text style={styles.label}>Вид спорта</Text>
+                          <View style={styles.sportOptions}>
+                            {sportOptions.map((sport) => {
+                              const selected = adminGroupSportCode === sport.code;
+                              return (
+                                <Pressable
+                                  key={sport.code}
+                                  accessibilityRole="button"
+                                  accessibilityState={{ selected }}
+                                  onPress={() => setAdminGroupSportCode(sport.code)}
+                                  style={({ pressed }) => [
+                                    styles.choiceChip,
+                                    selected && styles.choiceChipSelected,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={[
+                                    styles.choiceChipText,
+                                    selected && styles.choiceChipTextSelected,
+                                  ]}>
+                                    {sport.label}
+                                  </Text>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                          <Text style={styles.label}>Coach · необязательно</Text>
+                          <TextInput
+                            accessibilityLabel="Coach групповой тренировки"
+                            maxLength={120}
+                            onChangeText={setAdminGroupCoachName}
+                            placeholder="Имя Coach"
+                            style={styles.input}
+                            value={adminGroupCoachName}
+                          />
+                          <Text style={styles.label}>Стоимость или условия · необязательно</Text>
+                          <TextInput
+                            accessibilityLabel="Условия групповой тренировки"
+                            maxLength={240}
+                            onChangeText={setAdminGroupPriceText}
+                            placeholder="Стоимость уточните у зала"
+                            style={styles.input}
+                            value={adminGroupPriceText}
+                          />
+                        </>
+                      )}
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: !canPublishAdminSchedule }}
+                        disabled={!canPublishAdminSchedule}
+                        onPress={() => void publishAdminSchedule()}
+                        style={({ pressed }) => [
+                          styles.button,
+                          !canPublishAdminSchedule && styles.buttonDisabled,
+                          pressed && canPublishAdminSchedule && styles.buttonPressed,
+                        ]}
+                      >
+                        {publishingSchedule ? (
+                          <ActivityIndicator color="#ffffff" />
+                        ) : (
+                          <Text style={styles.buttonText}>
+                            {editingAdminSchedule ? 'Сохранить изменения' : 'Опубликовать'}
+                          </Text>
+                        )}
+                      </Pressable>
+                      {editingAdminSchedule ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          disabled={publishingSchedule}
+                          onPress={cancelEditingAdminSchedule}
+                          style={({ pressed }) => [
+                            styles.secondaryButton,
+                            pressed && styles.buttonPressed,
+                          ]}
+                        >
+                          <Text style={styles.secondaryButtonText}>Отменить редактирование</Text>
+                        </Pressable>
+                      ) : null}
+                      {scheduleNotice ? (
+                        <View accessibilityLiveRegion="polite" style={styles.successCard}>
+                          <Text style={styles.successText}>{scheduleNotice}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                        Опубликованное расписание
+                      </Text>
+                      <Text style={styles.hint}>
+                        Будущие предложения зала, которые уже видят спортсмены в Chat.
+                      </Text>
+                      {venueAdminDashboard.slots.map((slot) => (
+                        <View key={slot.slotId} style={styles.adminScheduleItem}>
+                          <Text style={styles.sessionState}>Персональная</Text>
+                          <Text style={styles.venueName}>{formatDateTime(slot.startAt)}</Text>
+                          <Text style={styles.hint}>Coach: {slot.coachDisplayName}</Text>
+                          <Text style={styles.hint}>
+                            {slot.priceAmount && slot.priceCurrency
+                              ? `${slot.priceAmount} ${slot.priceCurrency}`
+                              : slot.priceText ?? 'Стоимость не указана'}
+                          </Text>
+                          <View style={styles.confirmationActions}>
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={publishingSchedule || withdrawingScheduleId !== null}
+                              onPress={() => startEditingSlot(slot)}
+                              style={({ pressed }) => [
+                                styles.compactSecondaryButton,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.secondaryButtonText}>Изменить</Text>
+                            </Pressable>
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={publishingSchedule || withdrawingScheduleId !== null}
+                              onPress={() => {
+                                setPendingScheduleWithdrawal({
+                                  id: slot.slotId,
+                                  kind: 'SLOT',
+                                  label: `${formatDateTime(slot.startAt)}, ${slot.coachDisplayName}`,
+                                  version: slot.version,
+                                });
+                                setEditingAdminSchedule(null);
+                                setScheduleWithdrawalNote('');
+                              }}
+                              style={({ pressed }) => [
+                                styles.compactDangerButton,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.dangerButtonText}>Снять</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      ))}
+                      {venueAdminDashboard.groupOfferings.map((offering) => (
+                        <View key={offering.groupOfferingId} style={styles.adminScheduleItem}>
+                          <Text style={styles.groupState}>Групповая</Text>
+                          <Text style={styles.venueName}>{offering.classLabel}</Text>
+                          <Text style={styles.muted}>{formatDateTime(offering.startAt)}</Text>
+                          {offering.coachDisplayName ? (
+                            <Text style={styles.hint}>Coach: {offering.coachDisplayName}</Text>
+                          ) : null}
+                          <View style={styles.confirmationActions}>
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={publishingSchedule || withdrawingScheduleId !== null}
+                              onPress={() => startEditingGroupOffering(offering)}
+                              style={({ pressed }) => [
+                                styles.compactSecondaryButton,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.secondaryButtonText}>Изменить</Text>
+                            </Pressable>
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={publishingSchedule || withdrawingScheduleId !== null}
+                              onPress={() => {
+                                setPendingScheduleWithdrawal({
+                                  id: offering.groupOfferingId,
+                                  kind: 'GROUP',
+                                  label: offering.classLabel,
+                                  version: offering.version,
+                                });
+                                setEditingAdminSchedule(null);
+                                setScheduleWithdrawalNote('');
+                              }}
+                              style={({ pressed }) => [
+                                styles.compactDangerButton,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.dangerButtonText}>Снять</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      ))}
+                      {venueAdminDashboard.slots.length === 0
+                        && venueAdminDashboard.groupOfferings.length === 0 ? (
+                          <Text style={styles.muted}>Будущих публикаций пока нет.</Text>
+                        ) : null}
+                      {pendingScheduleWithdrawal ? (
+                        <View style={[styles.sessionConfirmation, styles.sessionConfirmationDanger]}>
+                          <Text style={styles.confirmationTitle}>Снять публикацию?</Text>
+                          <Text style={styles.confirmationDescription}>
+                            {pendingScheduleWithdrawal.label}. Уже начатые заявки нельзя скрыто
+                            изменить: система остановит действие и покажет конфликт.
+                          </Text>
+                          <Text style={styles.label}>Причина</Text>
+                          <View style={styles.chips}>
+                            {scheduleReasonOptions.map((option) => {
+                              const selected = scheduleWithdrawalReasonCode === option.code;
+                              return (
+                                <Pressable
+                                  key={option.code}
+                                  accessibilityRole="button"
+                                  accessibilityState={{ selected }}
+                                  onPress={() => setScheduleWithdrawalReasonCode(option.code)}
+                                  style={({ pressed }) => [
+                                    styles.choiceChip,
+                                    selected && styles.choiceChipSelected,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={[
+                                    styles.choiceChipText,
+                                    selected && styles.choiceChipTextSelected,
+                                  ]}>{option.label}</Text>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                          <TextInput
+                            accessibilityLabel="Комментарий к снятию публикации"
+                            maxLength={500}
+                            onChangeText={setScheduleWithdrawalNote}
+                            placeholder="Комментарий · необязательно"
+                            style={styles.input}
+                            value={scheduleWithdrawalNote}
+                          />
+                          <View style={styles.confirmationActions}>
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={withdrawingScheduleId !== null}
+                              onPress={() => setPendingScheduleWithdrawal(null)}
+                              style={({ pressed }) => [
+                                styles.confirmationCancelButton,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.secondaryButtonText}>Оставить</Text>
+                            </Pressable>
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={withdrawingScheduleId !== null}
+                              onPress={() => void withdrawAdminSchedule()}
+                              style={({ pressed }) => [
+                                styles.dangerButton,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              {withdrawingScheduleId ? (
+                                <ActivityIndicator color="#9a3023" />
+                              ) : (
+                                <Text style={styles.dangerButtonText}>Снять публикацию</Text>
+                              )}
+                            </Pressable>
+                          </View>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                        Интерес к групповым тренировкам
+                      </Text>
+                      <Text style={styles.hint}>
+                        Это уведомление, а не бронь. Спортсмены сами уточняют свободные места у зала.
+                      </Text>
+                      {venueAdminDashboard.groupInterests.length === 0 ? (
+                        <Text style={styles.muted}>Новых уведомлений нет.</Text>
+                      ) : venueAdminDashboard.groupInterests.map((interest) => (
+                        <View key={interest.groupPlanId} style={styles.adminScheduleItem}>
+                          <Text style={styles.venueName}>{interest.classLabel}</Text>
+                          <Text style={styles.muted}>{formatDateTime(interest.startAt)}</Text>
+                          <Text style={styles.hint}>
+                            {interest.athleteDisplayNames.join(' + ')}
+                          </Text>
+                          <Text style={styles.hint}>
+                            Уведомление получено {formatDateTime(interest.notifiedAt)}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </>
+                ) : null}
+
+                {hostConfirmations.length > 0 ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      Ожидают подтверждения
                     </Text>
-                    {candidate.experienceText ? (
-                      <Text style={styles.discoveryExperience}>{candidate.experienceText}</Text>
+                    <Text style={styles.hint}>
+                      Одна кнопка подтверждает зал и создаёт Session. До этого слот никому не принадлежит.
+                    </Text>
+                    {hostConfirmations.map((item) => {
+                      const snapshot = item.booking.commercialTermsSnapshot;
+                      if (!snapshot) return null;
+                      const confirming = confirmingBookingId === item.booking.bookingId;
+                      return (
+                        <View key={item.booking.bookingId} style={styles.hostConfirmationCard}>
+                          <Text style={styles.sessionState}>
+                            {item.booking.purpose === 'OFFICIAL_CHALLENGE'
+                              ? 'Official Challenge'
+                              : 'Персональная тренировка'}
+                          </Text>
+                          <Text style={styles.venueName}>
+                            {item.athleteDisplayNames.join(' + ')}
+                          </Text>
+                          <Text style={styles.muted}>
+                            {formatDateTime(snapshot.startAt)} · {snapshot.venueDisplayName}
+                          </Text>
+                          <Text style={styles.hint}>Тренер: {snapshot.coachDisplayName}</Text>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: confirmingBookingId !== null }}
+                            disabled={confirmingBookingId !== null}
+                            onPress={() => void confirmHostBooking(item)}
+                            style={({ pressed }) => [
+                              styles.button,
+                              confirmingBookingId !== null && styles.buttonDisabled,
+                              pressed && confirmingBookingId === null && styles.buttonPressed,
+                            ]}
+                          >
+                            {confirming ? (
+                              <ActivityIndicator color="#ffffff" />
+                            ) : (
+                              <Text style={styles.buttonText}>Подтвердить тренировку</Text>
+                            )}
+                          </Pressable>
+                          {hostRejectionDraftId === item.booking.bookingId ? (
+                            <View style={[styles.sessionConfirmation, styles.sessionConfirmationDanger]}>
+                              <Text style={styles.confirmationTitle}>Почему зал отказывает?</Text>
+                              <Text style={styles.confirmationDescription}>
+                                Причину увидят оба спортсмена. Слот останется опубликованным,
+                                если вы не снимете его отдельно.
+                              </Text>
+                              <View style={styles.chips}>
+                                {scheduleReasonOptions.map((option) => {
+                                  const selected = hostRejectionReasonCode === option.code;
+                                  return (
+                                    <Pressable
+                                      key={option.code}
+                                      accessibilityRole="button"
+                                      accessibilityState={{ selected }}
+                                      onPress={() => setHostRejectionReasonCode(option.code)}
+                                      style={({ pressed }) => [
+                                        styles.choiceChip,
+                                        selected && styles.choiceChipSelected,
+                                        pressed && styles.buttonPressed,
+                                      ]}
+                                    >
+                                      <Text style={[
+                                        styles.choiceChipText,
+                                        selected && styles.choiceChipTextSelected,
+                                      ]}>{option.label}</Text>
+                                    </Pressable>
+                                  );
+                                })}
+                              </View>
+                              <TextInput
+                                accessibilityLabel="Комментарий к отказу зала"
+                                maxLength={500}
+                                onChangeText={setHostRejectionNote}
+                                placeholder="Комментарий · необязательно"
+                                style={styles.input}
+                                value={hostRejectionNote}
+                              />
+                              <View style={styles.confirmationActions}>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  disabled={confirmingBookingId !== null}
+                                  onPress={() => {
+                                    setHostRejectionDraftId(null);
+                                    setHostRejectionNote('');
+                                  }}
+                                  style={({ pressed }) => [
+                                    styles.confirmationCancelButton,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.secondaryButtonText}>Вернуться</Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  disabled={confirmingBookingId !== null}
+                                  onPress={() => void rejectHostBooking(item)}
+                                  style={({ pressed }) => [
+                                    styles.dangerButton,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  {confirming ? (
+                                    <ActivityIndicator color="#9a3023" />
+                                  ) : (
+                                    <Text style={styles.dangerButtonText}>Подтвердить отказ</Text>
+                                  )}
+                                </Pressable>
+                              </View>
+                            </View>
+                          ) : (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityState={{ disabled: confirmingBookingId !== null }}
+                              disabled={confirmingBookingId !== null}
+                              onPress={() => {
+                                setHostRejectionDraftId(item.booking.bookingId);
+                                setHostRejectionNote('');
+                              }}
+                              style={({ pressed }) => [
+                                styles.dangerButton,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.dangerButtonText}>Отказать с причиной</Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : null}
+
+                {hostNotice ? (
+                  <View accessibilityLiveRegion="polite" style={styles.successCard}>
+                    <Text style={styles.successText}>{hostNotice}</Text>
+                  </View>
+                ) : null}
+
+                {sessionNotice ? (
+                  <View accessibilityLiveRegion="polite" style={styles.successCard}>
+                    <Text style={styles.successText}>{sessionNotice}</Text>
+                  </View>
+                ) : null}
+
+                {sessions.length > 0 ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      {activeTestAccount.role === 'Coach'
+                        ? 'Сессии Coach'
+                        : activeTestAccount.role === 'Gym Admin'
+                          ? 'Сессии зала'
+                          : 'Мои сессии'}
+                    </Text>
+                    <Text style={styles.hint}>
+                      Время в расписании не считается посещением. Фактическое начало и присутствие фиксирует Coach.
+                    </Text>
+                    {sessions.slice(0, 10).map((session) => {
+                      const actionPending = actingSessionKey?.startsWith(session.sessionId) ?? false;
+                      const sessionActionBlocked = actingSessionKey !== null
+                        || pendingSessionAction !== null;
+                      const noShowAvailableAt = new Date(session.scheduledStartAt).getTime()
+                        + session.noShowGraceMinutes * 60 * 1_000;
+                      const officialResult = session.resultId
+                        ? resultsById[session.resultId] ?? null
+                        : null;
+                      const appealDetail = session.resultId
+                        ? appealsByResultId[session.resultId] ?? null
+                        : null;
+                      const noShowUserIds = session.attendance
+                        .filter((item) => item.status === 'NO_SHOW')
+                        .map((item) => item.athleteUserId);
+                      const missingResultReview = missingResultReviews.find(
+                        (review) => review.sessionId === session.sessionId,
+                      ) ?? null;
+                      return (
+                        <View key={session.sessionId} style={styles.hostConfirmationCard}>
+                          <View style={styles.row}>
+                            <Text style={styles.venueName}>
+                              {session.activeAthleteDisplayNames.join(' + ')}
+                            </Text>
+                            <Text style={styles.sessionState}>{sessionStateLabels[session.state]}</Text>
+                          </View>
+                          <Text style={styles.muted}>
+                            {formatDateTime(session.scheduledStartAt)} · {session.venueDisplayName}
+                          </Text>
+                          <Text style={styles.hint}>Coach: {session.coachDisplayName}</Text>
+                          {session.purpose === 'OFFICIAL_CHALLENGE' ? (
+                            <Text style={styles.sessionState}>Official Challenge</Text>
+                          ) : null}
+                          {session.viewerCanRequestOfficialConversion ? (
+                            <View style={styles.attendanceList}>
+                              <Text style={styles.hint}>
+                                Можно провести эту уже подтверждённую тренировку как Official Challenge.
+                                Время, зал и Coach не изменятся.
+                              </Text>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityState={{ disabled: sessionActionBlocked }}
+                                disabled={sessionActionBlocked}
+                                onPress={() => void requestOfficialConversion(session)}
+                                style={({ pressed }) => [
+                                  styles.secondaryButton,
+                                  sessionActionBlocked && styles.buttonDisabled,
+                                  pressed && !sessionActionBlocked && styles.buttonPressed,
+                                ]}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Предложить Official Challenge
+                                </Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
+                          {session.officialConversion?.state === 'WAITING_FIFO' ? (
+                            <View style={styles.attendanceCard}>
+                              <Text style={styles.label}>Ожидает очередь за статус</Text>
+                              <Text style={styles.hint}>
+                                Позиция: {session.officialConversion.queuePosition ?? 'уточняется'}.
+                                До активации Session остаётся обычной тренировкой.
+                              </Text>
+                            </View>
+                          ) : null}
+                          {session.officialConversion?.state === 'PENDING_CONFIRMATION' ? (
+                            <View style={styles.attendanceCard}>
+                              <Text style={styles.label}>Подтверждение Official Challenge</Text>
+                              <Text style={styles.hint}>
+                                Подтвердили {session.officialConversion.confirmations.filter(
+                                  (item) => item.decision === 'ACCEPT',
+                                ).length} из 3
+                                {session.officialConversion.confirmationDeadlineAt
+                                  ? ` · до ${formatDateTime(session.officialConversion.confirmationDeadlineAt)}`
+                                  : ''}.
+                              </Text>
+                              {session.officialConversion.viewerHasDecided ? (
+                                <Text style={styles.hint}>Ваш ответ уже записан.</Text>
+                              ) : null}
+                              {session.officialConversion.viewerCanConfirm ? (
+                                <View style={styles.attendanceActions}>
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled: sessionActionBlocked }}
+                                    disabled={sessionActionBlocked}
+                                    onPress={() => void decideOfficialConversion(session, 'ACCEPT')}
+                                    style={({ pressed }) => [
+                                      styles.button,
+                                      sessionActionBlocked && styles.buttonDisabled,
+                                      pressed && !sessionActionBlocked && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={styles.buttonText}>Подтвердить</Text>
+                                  </Pressable>
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled: sessionActionBlocked }}
+                                    disabled={sessionActionBlocked}
+                                    onPress={() => void decideOfficialConversion(session, 'DECLINE')}
+                                    style={({ pressed }) => [
+                                      styles.secondaryButton,
+                                      sessionActionBlocked && styles.buttonDisabled,
+                                      pressed && !sessionActionBlocked && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={styles.secondaryButtonText}>Оставить тренировкой</Text>
+                                  </Pressable>
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
+                          {session.viewerCanCancelTraining ? (
+                            <View style={styles.attendanceList}>
+                              <Text style={styles.hint}>
+                                Не сможете прийти? Отмена обычной тренировки не создаёт поражение,
+                                cooldown или запись в статистике. Оставшийся спортсмен и Coach
+                                получат до одного часа на решение о соло-тренировке.
+                              </Text>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityState={{ disabled: sessionActionBlocked }}
+                                disabled={sessionActionBlocked}
+                                onPress={() => setPendingSessionAction({
+                                  action: 'cancel-training-participation',
+                                  body: {},
+                                  confirmLabel: 'Отменить моё участие',
+                                  description: 'Ваше участие будет отменено без поражения и штрафа. Слот временно сохранится: оставшийся спортсмен и Coach смогут продолжить как соло-тренировку, только если оба подтвердят вовремя.',
+                                  operationSuffix: 'athlete-cancelled-training',
+                                  sessionId: session.sessionId,
+                                  title: 'Вы точно не сможете прийти?',
+                                  tone: 'neutral',
+                                })}
+                                style={({ pressed }) => [
+                                  styles.secondaryButton,
+                                  sessionActionBlocked && styles.buttonDisabled,
+                                  pressed && !sessionActionBlocked && styles.buttonPressed,
+                                ]}
+                              >
+                                <Text style={styles.secondaryButtonText}>Я не смогу прийти</Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
+                          {session.soloContinuation?.state === 'PENDING' ? (
+                            <View style={styles.attendanceCard}>
+                              <Text style={styles.label}>Решение о соло-тренировке</Text>
+                              <Text style={styles.hint}>
+                                Один спортсмен отменил участие без штрафа. Для сохранения времени
+                                нужны два подтверждения: оставшегося спортсмена и Coach. Уже принято{' '}
+                                {session.soloContinuation.confirmations.filter(
+                                  (item) => item.decision === 'ACCEPT',
+                                ).length} из 2 · до {formatDateTime(session.soloContinuation.deadlineAt)}.
+                              </Text>
+                              {session.soloContinuation.viewerHasDecided ? (
+                                <Text style={styles.hint}>Ваш ответ уже записан.</Text>
+                              ) : null}
+                              {session.soloContinuation.viewerCanConfirm ? (
+                                <View style={styles.attendanceActions}>
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled: sessionActionBlocked }}
+                                    disabled={sessionActionBlocked}
+                                    onPress={() => void decideSoloContinuation(session, 'ACCEPT')}
+                                    style={({ pressed }) => [
+                                      styles.button,
+                                      sessionActionBlocked && styles.buttonDisabled,
+                                      pressed && !sessionActionBlocked && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={styles.buttonText}>Продолжить соло</Text>
+                                  </Pressable>
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled: sessionActionBlocked }}
+                                    disabled={sessionActionBlocked}
+                                    onPress={() => void decideSoloContinuation(session, 'DECLINE')}
+                                    style={({ pressed }) => [
+                                      styles.secondaryButton,
+                                      sessionActionBlocked && styles.buttonDisabled,
+                                      pressed && !sessionActionBlocked && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={styles.secondaryButtonText}>Отменить Session</Text>
+                                  </Pressable>
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
+                          {session.soloContinuation?.state === 'CONFIRMED' ? (
+                            <View style={styles.attendanceCard}>
+                              <Text style={styles.label}>Соло-тренировка подтверждена</Text>
+                              <Text style={styles.hint}>
+                                Оставшийся спортсмен и Coach подтвердили продолжение. Время и слот сохранены.
+                              </Text>
+                            </View>
+                          ) : null}
+                          {session.latestCoachReplacementAt ? (
+                            <Text style={styles.hint}>
+                              Coach заменён залом. Время, место и стоимость не изменились.
+                            </Text>
+                          ) : null}
+                          {session.viewerCanAdminister
+                            && (session.state === 'SCHEDULED' || session.state === 'READY_FOR_COACH') ? (
+                              <View style={styles.attendanceList}>
+                                {session.replacementCoachOptions.length > 0 ? (
+                                  <>
+                                    <Text style={styles.hint}>Доступная равноценная замена:</Text>
+                                    {session.replacementCoachOptions.map((candidate) => (
+                                      <Pressable
+                                        key={candidate.userId}
+                                        accessibilityRole="button"
+                                        accessibilityState={{ disabled: sessionActionBlocked }}
+                                        disabled={sessionActionBlocked}
+                                        onPress={() => setPendingSessionAction({
+                                          action: 'replace-coach',
+                                          body: { replacementCoachUserId: candidate.userId },
+                                          confirmLabel: 'Назначить Coach',
+                                          description: `Назначить ${candidate.displayName}? Время, зал и условия Session не изменятся. Оба спортсмена получат уведомление.`,
+                                          operationSuffix: candidate.userId,
+                                          sessionId: session.sessionId,
+                                          title: 'Подтвердите замену Coach',
+                                          tone: 'neutral',
+                                        })}
+                                        style={({ pressed }) => [
+                                          styles.secondaryButton,
+                                          sessionActionBlocked && styles.buttonDisabled,
+                                          pressed && !sessionActionBlocked && styles.buttonPressed,
+                                        ]}
+                                      >
+                                        <Text style={styles.secondaryButtonText}>
+                                          Назначить: {candidate.displayName}
+                                        </Text>
+                                      </Pressable>
+                                    ))}
+                                  </>
+                                ) : (
+                                  <Text style={styles.hint}>Свободной равноценной замены Coach нет.</Text>
+                                )}
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityState={{ disabled: sessionActionBlocked }}
+                                  disabled={sessionActionBlocked}
+                                  onPress={() => setPendingSessionAction({
+                                    action: 'fail-external',
+                                    body: { reasonCode: 'OTHER_EXTERNAL' },
+                                    confirmLabel: 'Отменить Session',
+                                    description: 'Session будет отменена по внешней причине. У спортсменов не будет поражения, штрафа или записи в статистике.',
+                                    operationSuffix: 'other-external',
+                                    sessionId: session.sessionId,
+                                    title: 'Зал точно не может провести Session?',
+                                    tone: 'danger',
+                                  })}
+                                  style={({ pressed }) => [
+                                    styles.dangerButton,
+                                    sessionActionBlocked && styles.buttonDisabled,
+                                    pressed && !sessionActionBlocked && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.dangerButtonText}>
+                                    Зал не может провести Session
+                                  </Text>
+                                </Pressable>
+                              </View>
+                            ) : null}
+                          {session.viewerCanRequestNoFaultReschedule ? (
+                            <View style={styles.attendanceList}>
+                              <Text style={styles.hint}>
+                                Если новый Coach вам не подходит, можно отменить без поражения и штрафа.
+                              </Text>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityState={{ disabled: sessionActionBlocked }}
+                                disabled={sessionActionBlocked}
+                                onPress={() => setPendingSessionAction({
+                                  action: 'cancel-after-coach-replacement',
+                                  body: {},
+                                  confirmLabel: 'Отказаться от замены',
+                                  description: 'Session будет отменена без поражения и штрафа. Подтверждённое время освободится.',
+                                  operationSuffix: 'athlete-rejected-replacement',
+                                  sessionId: session.sessionId,
+                                  title: 'Новый Coach не подходит?',
+                                  tone: 'neutral',
+                                })}
+                                style={({ pressed }) => [
+                                  styles.secondaryButton,
+                                  sessionActionBlocked && styles.buttonDisabled,
+                                  pressed && !sessionActionBlocked && styles.buttonPressed,
+                                ]}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Новый Coach не подходит
+                                </Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
+                          {pendingSessionAction?.sessionId === session.sessionId ? (
+                            <View accessibilityLiveRegion="polite" style={[
+                              styles.sessionConfirmation,
+                              pendingSessionAction.tone === 'danger'
+                                && styles.sessionConfirmationDanger,
+                            ]}>
+                              <Text style={styles.confirmationTitle}>
+                                {pendingSessionAction.title}
+                              </Text>
+                              <Text style={styles.confirmationDescription}>
+                                {pendingSessionAction.description}
+                              </Text>
+                              <View style={styles.confirmationActions}>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => setPendingSessionAction(null)}
+                                  style={({ pressed }) => [
+                                    styles.confirmationCancelButton,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.secondaryButtonText}>Вернуться</Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => {
+                                    const pending = pendingSessionAction;
+                                    setPendingSessionAction(null);
+                                    if (pending.action === 'cancel-training-participation') {
+                                      void cancelTrainingParticipation(session);
+                                    } else {
+                                      void runSessionAction(
+                                        session,
+                                        pending.action,
+                                        pending.body,
+                                        pending.operationSuffix,
+                                      );
+                                    }
+                                  }}
+                                  style={({ pressed }) => [
+                                    pendingSessionAction.tone === 'danger'
+                                      ? styles.confirmationDangerButton
+                                      : styles.confirmationPrimaryButton,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.confirmationButtonText}>
+                                    {pendingSessionAction.confirmLabel}
+                                  </Text>
+                                </Pressable>
+                              </View>
+                            </View>
+                          ) : null}
+                          {session.state === 'SCHEDULED' ? (
+                            <Text style={styles.hint}>
+                              Окно Coach откроется автоматически в назначенное время.
+                            </Text>
+                          ) : null}
+                          {session.state === 'READY_FOR_COACH' && session.viewerCanManage ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityState={{ disabled: sessionActionBlocked }}
+                              disabled={sessionActionBlocked}
+                              onPress={() => void runSessionAction(session, 'start', {}, 'explicit')}
+                              style={({ pressed }) => [
+                                styles.button,
+                                sessionActionBlocked && styles.buttonDisabled,
+                                pressed && !sessionActionBlocked && styles.buttonPressed,
+                              ]}
+                            >
+                              {actionPending ? (
+                                <ActivityIndicator color="#ffffff" />
+                              ) : (
+                                <Text style={styles.buttonText}>Начать Session</Text>
+                              )}
+                            </Pressable>
+                          ) : null}
+                          {session.state === 'IN_PROGRESS' || session.state === 'ENDED' ? (
+                            <View style={styles.attendanceList}>
+                              {session.activeAthleteUserIds.map((athleteUserId, index) => {
+                                const recorded = session.attendance.find(
+                                  (item) => item.athleteUserId === athleteUserId,
+                                );
+                                const canMarkNoShow = Date.now() >= noShowAvailableAt;
+                                return (
+                                  <View key={athleteUserId} style={styles.attendanceCard}>
+                                    <View style={styles.row}>
+                                      <Text style={styles.value}>
+                                        {session.activeAthleteDisplayNames[index]}
+                                      </Text>
+                                      <Text style={recorded ? styles.capabilityState : styles.muted}>
+                                        {recorded ? attendanceLabels[recorded.status] : 'Не отмечен'}
+                                      </Text>
+                                    </View>
+                                    {!recorded && session.state === 'IN_PROGRESS' && session.viewerCanManage ? (
+                                      <View style={styles.attendanceActions}>
+                                        {(['PRESENT', 'LATE', 'NO_SHOW'] as const).map((status) => {
+                                          const disabled =
+                                            actingSessionKey !== null ||
+                                            (status === 'NO_SHOW' && !canMarkNoShow);
+                                          return (
+                                            <Pressable
+                                              key={status}
+                                              accessibilityRole="button"
+                                              accessibilityState={{ disabled }}
+                                              disabled={disabled}
+                                              onPress={() => void recordAttendance(session, athleteUserId, status)}
+                                              style={({ pressed }) => [
+                                                styles.attendanceButton,
+                                                disabled && styles.buttonDisabled,
+                                                pressed && !disabled && styles.buttonPressed,
+                                              ]}
+                                            >
+                                              <Text style={styles.attendanceButtonText}>
+                                                {status === 'PRESENT'
+                                                  ? 'Пришёл'
+                                                  : status === 'LATE'
+                                                    ? 'Опоздал'
+                                                    : 'Не пришёл'}
+                                              </Text>
+                                            </Pressable>
+                                          );
+                                        })}
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          ) : null}
+                          {session.state === 'IN_PROGRESS' && session.viewerCanManage ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityState={{
+                                disabled: actingSessionKey !== null
+                                  || session.attendance.length !== session.activeAthleteUserIds.length,
+                              }}
+                              disabled={actingSessionKey !== null
+                                || session.attendance.length !== session.activeAthleteUserIds.length}
+                              onPress={() => void runSessionAction(session, 'end', {}, 'complete')}
+                              style={({ pressed }) => [
+                                styles.button,
+                                (actingSessionKey !== null
+                                  || session.attendance.length !== session.activeAthleteUserIds.length)
+                                  && styles.buttonDisabled,
+                                pressed && actingSessionKey === null
+                                  && session.attendance.length === session.activeAthleteUserIds.length
+                                  && styles.buttonPressed,
+                              ]}
+                            >
+                              {actionPending ? (
+                                <ActivityIndicator color="#ffffff" />
+                              ) : (
+                                <Text style={styles.buttonText}>
+                                  {session.purpose === 'OFFICIAL_CHALLENGE'
+                                    ? 'Завершить Official Session'
+                                    : 'Завершить тренировку'}
+                                </Text>
+                              )}
+                            </Pressable>
+                          ) : null}
+                          {session.state === 'ENDED'
+                            && session.purpose === 'OFFICIAL_CHALLENGE'
+                            && session.viewerCanRecordResult
+                            && session.challengeState === 'RESULT_PENDING'
+                            && officialResult === null ? (
+                              <View style={styles.attendanceCard}>
+                                <Text style={styles.label}>Подтвердить официальный результат</Text>
+                                <Text style={styles.hint}>
+                                  {missingResultReview?.viewerCanRecordConstrainedResult
+                                    ? 'Central назначил вас независимым Coach. Доступен только исход, подтверждённый собранными фактами.'
+                                    : 'Результат сразу станет виден обоим спортсменам. Appeal доступен 48 часов.'}
+                                </Text>
+                                <View style={styles.attendanceActions}>
+                                  {missingResultReview?.viewerCanRecordConstrainedResult
+                                    && missingResultReview.allowedOutcomeCode ? (
+                                    <Pressable
+                                      accessibilityRole="button"
+                                      accessibilityState={{ disabled: actingResultKey !== null }}
+                                      disabled={actingResultKey !== null}
+                                      onPress={() => void recordOfficialResult(
+                                        session,
+                                        missingResultReview.allowedOutcomeCode!,
+                                        missingResultReview.allowedWinnerUserId,
+                                      )}
+                                      style={({ pressed }) => [
+                                        styles.attendanceButton,
+                                        actingResultKey !== null && styles.buttonDisabled,
+                                        pressed && actingResultKey === null && styles.buttonPressed,
+                                      ]}
+                                    >
+                                      <Text style={styles.attendanceButtonText}>
+                                        {missingResultReview.allowedOutcomeCode === 'WIN_A'
+                                          ? `Подтвердить победу: ${session.athleteDisplayNames[0]}`
+                                          : missingResultReview.allowedOutcomeCode === 'WIN_B'
+                                            ? `Подтвердить победу: ${session.athleteDisplayNames[1]}`
+                                            : missingResultReview.allowedOutcomeCode === 'DRAW'
+                                              ? 'Подтвердить ничью'
+                                              : 'Подтвердить NO CONTEST'}
+                                      </Text>
+                                    </Pressable>
+                                  ) : noShowUserIds.length === 2 ? (
+                                    <Pressable
+                                      accessibilityRole="button"
+                                      accessibilityState={{ disabled: actingResultKey !== null }}
+                                      disabled={actingResultKey !== null}
+                                      onPress={() => void recordOfficialResult(session, 'NO_CONTEST')}
+                                      style={({ pressed }) => [
+                                        styles.attendanceButton,
+                                        actingResultKey !== null && styles.buttonDisabled,
+                                        pressed && actingResultKey === null && styles.buttonPressed,
+                                      ]}
+                                    >
+                                      <Text style={styles.attendanceButtonText}>Оба не явились</Text>
+                                    </Pressable>
+                                  ) : noShowUserIds.length === 1 ? (
+                                    <Pressable
+                                      accessibilityRole="button"
+                                      accessibilityState={{ disabled: actingResultKey !== null }}
+                                      disabled={actingResultKey !== null}
+                                      onPress={() => void recordOfficialResult(
+                                        session,
+                                        'NO_SHOW',
+                                        session.athleteUserIds.find((id) => id !== noShowUserIds[0]) ?? null,
+                                      )}
+                                      style={({ pressed }) => [
+                                        styles.attendanceButton,
+                                        actingResultKey !== null && styles.buttonDisabled,
+                                        pressed && actingResultKey === null && styles.buttonPressed,
+                                      ]}
+                                    >
+                                      <Text style={styles.attendanceButtonText}>Подтвердить неявку</Text>
+                                    </Pressable>
+                                  ) : (
+                                    <>
+                                      {session.athleteDisplayNames.map((name, index) => (
+                                        <Pressable
+                                          key={session.athleteUserIds[index]}
+                                          accessibilityRole="button"
+                                          accessibilityState={{ disabled: actingResultKey !== null }}
+                                          disabled={actingResultKey !== null}
+                                          onPress={() => void recordOfficialResult(
+                                            session,
+                                            index === 0 ? 'WIN_A' : 'WIN_B',
+                                          )}
+                                          style={({ pressed }) => [
+                                            styles.attendanceButton,
+                                            actingResultKey !== null && styles.buttonDisabled,
+                                            pressed && actingResultKey === null && styles.buttonPressed,
+                                          ]}
+                                        >
+                                          <Text style={styles.attendanceButtonText}>Победил: {name}</Text>
+                                        </Pressable>
+                                      ))}
+                                      <Pressable
+                                        accessibilityRole="button"
+                                        accessibilityState={{ disabled: actingResultKey !== null }}
+                                        disabled={actingResultKey !== null}
+                                        onPress={() => void recordOfficialResult(session, 'DRAW')}
+                                        style={({ pressed }) => [
+                                          styles.attendanceButton,
+                                          actingResultKey !== null && styles.buttonDisabled,
+                                          pressed && actingResultKey === null && styles.buttonPressed,
+                                        ]}
+                                      >
+                                        <Text style={styles.attendanceButtonText}>Ничья</Text>
+                                      </Pressable>
+                                      <Pressable
+                                        accessibilityRole="button"
+                                        accessibilityState={{ disabled: actingResultKey !== null }}
+                                        disabled={actingResultKey !== null}
+                                        onPress={() => void recordOfficialResult(session, 'NO_CONTEST')}
+                                        style={({ pressed }) => [
+                                          styles.attendanceButton,
+                                          actingResultKey !== null && styles.buttonDisabled,
+                                          pressed && actingResultKey === null && styles.buttonPressed,
+                                        ]}
+                                      >
+                                        <Text style={styles.attendanceButtonText}>Без результата</Text>
+                                      </Pressable>
+                                    </>
+                                  )}
+                                </View>
+                              </View>
+                            ) : null}
+                          {officialResult ? (
+                            <View style={styles.attendanceCard}>
+                              <View style={styles.row}>
+                                <Text style={styles.label}>Official Result</Text>
+                                <Text style={styles.sessionState}>
+                                  {resultStateLabels[officialResult.state]}
+                                </Text>
+                              </View>
+                              <Text style={styles.value}>
+                                {officialResult.winnerDisplayName
+                                  ? `Победитель: ${officialResult.winnerDisplayName}`
+                                  : officialResult.outcomeCode === 'DRAW'
+                                    ? 'Ничья'
+                                    : 'Без засчитываемого результата'}
+                              </Text>
+                              <Text selectable style={styles.hint}>
+                                Result ID: {officialResult.resultId} · версия {officialResult.version}
+                              </Text>
+                              {officialResult.decision && officialResult.decisionReason ? (
+                                <Text style={styles.hint}>
+                                  Решение Central: {officialResult.decisionReason}
+                                </Text>
+                              ) : null}
+                              {officialResult.integrityReviewState ? (
+                                <View style={styles.attendanceCard}>
+                                  <Text style={styles.label}>Независимая проверка Final Result</Text>
+                                  <Text style={styles.value}>
+                                    {officialResult.integrityReviewState === 'OPEN'
+                                      ? 'Проверка открыта Central'
+                                      : officialResult.integrityReviewState === 'UNDER_REVIEW'
+                                        ? 'Проверка идёт; статусные действия временно ограничены'
+                                        : officialResult.integrityReviewState === 'DECIDED_UPHELD'
+                                          ? 'Результат подтверждён'
+                                          : officialResult.integrityReviewState === 'DECIDED_CORRECTED'
+                                            ? 'Исправленный результат применён'
+                                            : 'Результат аннулирован'}
+                                  </Text>
+                                  <Text style={styles.hint}>
+                                    Категория: {officialResult.integrityReviewCategory === 'FRAUD'
+                                      ? 'проверка достоверности'
+                                      : officialResult.integrityReviewCategory === 'IDENTITY_ERROR'
+                                        ? 'проверка личности участника'
+                                        : 'проверка системной ошибки'}.
+                                    Внутренние материалы доступны только Central.
+                                  </Text>
+                                </View>
+                              ) : null}
+                              {officialResult.statusTransitionType !== 'NONE' ? (
+                                <Text style={styles.hint}>
+                                  Статус Community уже обновлён предварительно и защищён от других статусных Challenge.
+                                </Text>
+                              ) : null}
+                              {officialResult.state === 'RECORDED' ? (
+                                <Text style={styles.hint}>
+                                  Appeal до {formatDateTime(officialResult.appealDeadlineAt)}.
+                                </Text>
+                              ) : null}
+                              {appealDetail ? (
+                                <View style={styles.attendanceList}>
+                                  <Text style={styles.label}>
+                                    Appeal · {appealDetail.state === 'SUBMITTED'
+                                      ? 'ожидает Central' : 'на рассмотрении'}
+                                  </Text>
+                                  <Text style={styles.value}>{appealDetail.statement}</Text>
+                                  <Text style={styles.hint}>
+                                    Ответ можно добавить до {formatDateTime(appealDetail.responseDeadlineAt)}.
+                                    Решение Central — до {formatDateTime(appealDetail.slaDueAt)}.
+                                  </Text>
+                                  {appealDetail.responses.map((item) => (
+                                    <View key={item.responseId} style={styles.attendanceCard}>
+                                      <Text style={styles.label}>
+                                        {item.responderRole === 'COACH' ? 'Coach' : 'Оппонент'} · {item.responderDisplayName}
+                                      </Text>
+                                      <Text style={styles.value}>{item.statement}</Text>
+                                    </View>
+                                  ))}
+                                  {appealDetail.slaExtension ? (
+                                    <Text style={styles.hint}>
+                                      Central продлил срок на {appealDetail.slaExtension.durationHours} ч.
+                                      Причина: {appealDetail.slaExtension.reason}
+                                    </Text>
+                                  ) : null}
+                                  {appealDetail.viewerCanRespond ? (
+                                    <>
+                                      <TextInput
+                                        accessibilityLabel="Ответ на Appeal"
+                                        maxLength={2000}
+                                        multiline
+                                        onChangeText={setAppealResponseStatement}
+                                        placeholder="Добавьте факты для Central"
+                                        style={[styles.input, styles.appealInput]}
+                                        value={appealResponseStatement}
+                                      />
+                                      <Pressable
+                                        accessibilityRole="button"
+                                        disabled={actingResultKey !== null
+                                          || appealResponseStatement.trim().length === 0}
+                                        onPress={() => void runAppealParticipantAction(appealDetail, 'response')}
+                                        style={({ pressed }) => [
+                                          styles.secondaryButton,
+                                          (actingResultKey !== null
+                                            || appealResponseStatement.trim().length === 0) && styles.buttonDisabled,
+                                          pressed && styles.buttonPressed,
+                                        ]}
+                                      >
+                                        <Text style={styles.secondaryButtonText}>Добавить ответ</Text>
+                                      </Pressable>
+                                    </>
+                                  ) : null}
+                                  {appealDetail.viewerCanWithdraw ? (
+                                    pendingAppealWithdrawalId === appealDetail.appealId ? (
+                                      <View style={styles.attendanceCard}>
+                                        <Text style={styles.hint}>
+                                          После отзыва повторно подать Appeal по этому Result нельзя.
+                                        </Text>
+                                        <Pressable
+                                          accessibilityRole="button"
+                                          disabled={actingResultKey !== null}
+                                          onPress={() => void runAppealParticipantAction(appealDetail, 'withdraw')}
+                                          style={({ pressed }) => [
+                                            styles.dangerButton,
+                                            actingResultKey !== null && styles.buttonDisabled,
+                                            pressed && styles.buttonPressed,
+                                          ]}
+                                        >
+                                          <Text style={styles.dangerButtonText}>Подтвердить отзыв Appeal</Text>
+                                        </Pressable>
+                                      </View>
+                                    ) : (
+                                      <Pressable
+                                        accessibilityRole="button"
+                                        onPress={() => setPendingAppealWithdrawalId(appealDetail.appealId)}
+                                        style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+                                      >
+                                        <Text style={styles.dangerButtonText}>Отозвать Appeal</Text>
+                                      </Pressable>
+                                    )
+                                  ) : null}
+                                </View>
+                              ) : null}
+                              {officialResult.viewerCanAppeal ? (
+                                <>
+                                  {appealDraftResultId === officialResult.resultId ? (
+                                    <View style={styles.attendanceList}>
+                                      <TextInput
+                                        accessibilityLabel="Причина Appeal"
+                                        multiline
+                                        onChangeText={setAppealStatement}
+                                        placeholder="Кратко опишите, с чем вы не согласны"
+                                        style={[styles.input, styles.appealInput]}
+                                        value={appealStatement}
+                                      />
+                                      <Pressable
+                                        accessibilityRole="button"
+                                        accessibilityState={{
+                                          disabled: actingResultKey !== null || appealStatement.trim().length === 0,
+                                        }}
+                                        disabled={actingResultKey !== null || appealStatement.trim().length === 0}
+                                        onPress={() => void runResultAction(officialResult, 'appeal')}
+                                        style={({ pressed }) => [
+                                          styles.dangerButton,
+                                          (actingResultKey !== null || appealStatement.trim().length === 0)
+                                            && styles.buttonDisabled,
+                                          pressed && actingResultKey === null
+                                            && appealStatement.trim().length > 0 && styles.buttonPressed,
+                                        ]}
+                                      >
+                                        <Text style={styles.dangerButtonText}>Отправить Appeal в Central</Text>
+                                      </Pressable>
+                                    </View>
+                                  ) : (
+                                    <Pressable
+                                      accessibilityRole="button"
+                                      onPress={() => {
+                                        setAppealDraftResultId(officialResult.resultId);
+                                        setAppealStatement('');
+                                      }}
+                                      style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+                                    >
+                                      <Text style={styles.dangerButtonText}>Не согласен — подать Appeal</Text>
+                                    </Pressable>
+                                  )}
+                                </>
+                              ) : null}
+                              {officialResult.viewerCanWaiveAppeal ? (
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityState={{ disabled: actingResultKey !== null }}
+                                  disabled={actingResultKey !== null}
+                                  onPress={() => void runResultAction(officialResult, 'waive-appeal')}
+                                  style={({ pressed }) => [
+                                    styles.secondaryButton,
+                                    actingResultKey !== null && styles.buttonDisabled,
+                                    pressed && actingResultKey === null && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.secondaryButtonText}>
+                                    Согласен с результатом — разблокироваться
+                                  </Text>
+                                </Pressable>
+                              ) : null}
+                            </View>
+                          ) : session.resultId ? (
+                            <Text style={styles.hint}>Загружаем официальный Result…</Text>
+                          ) : null}
+                          {session.state === 'ENDED' ? (
+                            <Text style={styles.hint}>
+                              {session.purpose === 'OFFICIAL_CHALLENGE'
+                                ? 'Session завершена. Теперь Coach должен подтвердить официальный результат.'
+                                : 'В статистику вошли только спортсмены со статусом «Присутствовал» или «Опоздал».'}
+                            </Text>
+                          ) : null}
+                          {session.state === 'CANCELLED' ? (
+                            <Text style={styles.hint}>
+                              Session закрыта без статистики и спортивных последствий.
+                            </Text>
+                          ) : null}
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : null}
+
+                {communityContext ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      {activeTestAccount.role === 'Central'
+                        ? 'Контекст пилотного Community'
+                        : communityContext.community.name}
+                    </Text>
+                    <Text style={styles.venueName}>{communityContext.venue.displayName}</Text>
+                    <Text style={styles.muted}>{communityContext.venue.address}</Text>
+                    <View style={styles.row}>
+                      <Text style={styles.muted}>Membership</Text>
+                      <Text style={styles.value}>{communityContext.membership?.state ?? 'Нет'}</Text>
+                    </View>
+                    <View style={styles.row}>
+                      <Text style={styles.muted}>Pair Cooldown</Text>
+                      <Text style={styles.value}>{communityContext.community.pairCooldownDays} дней</Text>
+                    </View>
+                    <View style={styles.capabilityList}>
+                      {communityContext.activeRoleGrants.some(
+                        (grant) =>
+                          grant.role === 'COACH' &&
+                          grant.scopeType === 'COMMUNITY' &&
+                          grant.scopeId === communityContext.community.communityId,
+                      ) ? (
+                        <View style={styles.capabilityRow}>
+                          <Text style={styles.capabilityText}>Роль Coach</Text>
+                          <Text style={styles.capabilityState}>Активна</Text>
+                        </View>
+                      ) : null}
+                      {communityContext.activeRoleGrants.some(
+                        (grant) =>
+                          grant.role === 'GYM_ADMIN' &&
+                          grant.scopeType === 'VENUE' &&
+                          grant.scopeId === communityContext.venue.venueId,
+                      ) ? (
+                        <View style={styles.capabilityRow}>
+                          <Text style={styles.capabilityText}>Роль Gym Admin</Text>
+                          <Text style={styles.capabilityState}>Активна</Text>
+                        </View>
+                      ) : null}
+                      {communityContext.access.capabilities.includes('RECORD_COMMUNITY_RESULT') ? (
+                        <View style={styles.capabilityRow}>
+                          <Text style={styles.capabilityText}>Подтверждение результатов</Text>
+                          <Text style={styles.capabilityState}>Разрешено</Text>
+                        </View>
+                      ) : null}
+                      {communityContext.activeRoleGrants.some(
+                        (grant) =>
+                          grant.role === 'PRIMARY_ADMIN' &&
+                          grant.scopeType === 'VENUE' &&
+                          grant.scopeId === communityContext.venue.venueId,
+                      ) ? (
+                        <View style={styles.capabilityRow}>
+                          <Text style={styles.capabilityText}>Primary Admin</Text>
+                          <Text style={styles.capabilityState}>Активен</Text>
+                        </View>
+                      ) : null}
+                      {activeTestAccount.role === 'Athlete'
+                        && communityContext.access.capabilities.includes('CREATE_OFFICIAL_CHALLENGE') ? (
+                        <View style={styles.capabilityRow}>
+                          <Text style={styles.capabilityText}>Official Challenge</Text>
+                          <Text style={styles.capabilityState}>Доступен</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    {activeTestAccount.role === 'Athlete'
+                      && !communityContext.access.capabilities.includes('CREATE_OFFICIAL_CHALLENGE') ? (
+                      <Text style={styles.denial}>
+                        {officialChallengeDenial
+                          ? officialDenialLabels[officialChallengeDenial.code]
+                          : 'Official Challenge сейчас недоступен.'}
+                      </Text>
                     ) : null}
-                  </View>
-                ))
-              )}
-            </View>
-
-            {coachInvites.map((invite) => (
-              <View key={invite.grantId} style={styles.card}>
-                <Text style={styles.cardTitle}>Вас приглашают стать Coach</Text>
-                <Text style={styles.muted}>
-                  Полномочия начнут действовать только после вашего подтверждения.
-                </Text>
-                <Text style={styles.hint}>
-                  Приглашение действительно до{' '}
-                  {invite.expiresAt
-                    ? new Date(invite.expiresAt).toLocaleString('ru-RU')
-                    : 'указанного срока'}.
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={acceptingCoachGrant !== null}
-                  onPress={() => void acceptCoachRole(invite)}
-                  style={({ pressed }) => [
-                    styles.button,
-                    acceptingCoachGrant !== null && styles.buttonDisabled,
-                    pressed && acceptingCoachGrant === null && styles.buttonPressed,
-                  ]}
-                >
-                  {acceptingCoachGrant === invite.grantId ? (
-                    <ActivityIndicator color="#ffffff" />
-                  ) : (
-                    <Text style={styles.buttonText}>Принять роль Coach</Text>
-                  )}
-                </Pressable>
-              </View>
-            ))}
-
-            {communityContext ? (
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>{communityContext.community.name}</Text>
-                <Text style={styles.venueName}>{communityContext.venue.displayName}</Text>
-                <Text style={styles.muted}>{communityContext.venue.address}</Text>
-                <View style={styles.row}>
-                  <Text style={styles.muted}>Membership</Text>
-                  <Text style={styles.value}>{communityContext.membership?.state ?? 'Нет'}</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={styles.muted}>Pair Cooldown</Text>
-                  <Text style={styles.value}>{communityContext.community.pairCooldownDays} дней</Text>
-                </View>
-                {communityContext.access.capabilities.includes('RECORD_COMMUNITY_RESULT') ? (
-                  <View style={styles.chip}>
-                    <Text style={styles.chipText}>Роль Coach активна</Text>
-                  </View>
-                ) : null}
-                {communityContext.access.capabilities.includes('MANAGE_VENUE_OPERATIONS') ? (
-                  <View style={styles.chip}>
-                    <Text style={styles.chipText}>Роль Gym Admin активна</Text>
-                  </View>
-                ) : null}
-                {communityContext.activeRoleGrants.some(
-                  (grant) =>
-                    grant.role === 'PRIMARY_ADMIN' &&
-                    grant.scopeType === 'VENUE' &&
-                    grant.scopeId === communityContext.venue.venueId,
-                ) ? (
-                  <View style={styles.chip}>
-                    <Text style={styles.chipText}>Primary Admin этого зала</Text>
-                  </View>
-                ) : null}
-                {communityContext.access.capabilities.includes('CREATE_OFFICIAL_CHALLENGE') ? (
-                  <View style={styles.chip}>
-                    <Text style={styles.chipText}>Official Challenge доступен</Text>
                   </View>
                 ) : (
-                  <Text style={styles.denial}>
-                    {officialChallengeDenial
-                      ? officialDenialLabels[officialChallengeDenial.code]
-                      : 'Official Challenge сейчас недоступен.'}
-                  </Text>
+                  <View style={styles.stateCard}>
+                    <Text style={styles.muted}>Активное Community пока не подключено.</Text>
+                  </View>
                 )}
-              </View>
+              </>
             ) : null}
           </>
         ) : null}
 
         {error ? (
           <View style={styles.errorCard}>
-            <Text style={styles.errorText}>{error}</Text>
+            <Text accessibilityLiveRegion="assertive" style={styles.errorText}>{error}</Text>
             <Pressable accessibilityRole="button" onPress={() => void loadIdentity()} style={styles.retryButton}>
               <Text style={styles.retryText}>Повторить</Text>
             </Pressable>
           </View>
         ) : null}
 
-        <Text style={styles.footer}>API: {apiUrl}</Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -495,6 +4207,7 @@ const styles = StyleSheet.create({
   safeArea: { backgroundColor: '#f6f4ef', flex: 1 },
   container: {
     alignSelf: 'center',
+    boxSizing: 'border-box',
     gap: 18,
     maxWidth: 680,
     paddingHorizontal: 20,
@@ -502,6 +4215,61 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   eyebrow: { color: '#8b2f22', fontSize: 13, fontWeight: '700', letterSpacing: 2 },
+  testAccountPanel: {
+    backgroundColor: '#fff7e6',
+    borderColor: '#dfc994',
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 12,
+    padding: 14,
+  },
+  testAccountHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
+  testAccountIdentity: { flex: 1, gap: 3 },
+  testAccountLabel: { color: '#806218', fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
+  testAccountName: { color: '#3f310c', fontSize: 15, fontWeight: '700' },
+  testAccountButton: {
+    alignItems: 'center',
+    borderColor: '#8b2f22',
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 14,
+  },
+  testAccountButtonText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
+  testAccountList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  testAccountOption: {
+    backgroundColor: '#ffffff',
+    borderColor: '#ded9cf',
+    borderRadius: 10,
+    borderWidth: 1,
+    flexBasis: '48%',
+    flexGrow: 1,
+    gap: 3,
+    minHeight: 54,
+    padding: 10,
+  },
+  testAccountOptionSelected: { borderColor: '#8b2f22', borderWidth: 2 },
+  testAccountOptionName: { color: '#171512', fontSize: 13, fontWeight: '700' },
+  testAccountOptionRole: { color: '#777168', fontSize: 12 },
+  mainNavigation: {
+    backgroundColor: '#e9e5dd',
+    borderRadius: 14,
+    flexDirection: 'row',
+    gap: 4,
+    padding: 4,
+  },
+  mainNavigationItem: {
+    alignItems: 'center',
+    borderRadius: 10,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 8,
+  },
+  mainNavigationItemSelected: { backgroundColor: '#8b2f22' },
+  mainNavigationText: { color: '#625d55', fontSize: 14, fontWeight: '700' },
+  mainNavigationTextSelected: { color: '#ffffff' },
   title: { color: '#171512', fontSize: 36, fontWeight: '800', letterSpacing: -1, lineHeight: 42 },
   lead: { color: '#4c4943', fontSize: 17, lineHeight: 25 },
   card: {
@@ -519,6 +4287,161 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 28,
   },
+  hostConfirmationCard: {
+    backgroundColor: '#faf9f6',
+    borderColor: '#ded9cf',
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 10,
+    padding: 16,
+  },
+  adminMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  adminMetric: {
+    backgroundColor: '#faf9f6',
+    borderColor: '#ded9cf',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexBasis: '30%',
+    flexGrow: 1,
+    gap: 3,
+    minWidth: 120,
+    padding: 12,
+  },
+  adminMetricValue: { color: '#8b2f22', fontSize: 24, fontWeight: '800' },
+  adminMetricLabel: { color: '#625d55', fontSize: 12, lineHeight: 17 },
+  publicationKindTabs: {
+    backgroundColor: '#e9e5dd',
+    borderRadius: 12,
+    flexDirection: 'row',
+    gap: 4,
+    padding: 4,
+  },
+  publicationKindTab: {
+    alignItems: 'center',
+    borderRadius: 9,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 8,
+  },
+  publicationKindTabSelected: { backgroundColor: '#ffffff' },
+  publicationKindTabText: { color: '#625d55', fontSize: 13, fontWeight: '700' },
+  publicationKindTabTextSelected: { color: '#8b2f22' },
+  formRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  formField: { flexBasis: '46%', flexGrow: 1, gap: 7, minWidth: 150 },
+  choiceChip: {
+    alignItems: 'center',
+    borderColor: '#c9c3b9',
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 13,
+  },
+  choiceChipSelected: { backgroundColor: '#8b2f22', borderColor: '#8b2f22' },
+  choiceChipText: { color: '#625d55', fontSize: 13, fontWeight: '700' },
+  choiceChipTextSelected: { color: '#ffffff' },
+  adminScheduleItem: {
+    backgroundColor: '#faf9f6',
+    borderColor: '#ded9cf',
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 6,
+    padding: 14,
+  },
+  groupState: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#e8f1e9',
+    borderRadius: 999,
+    color: '#285d35',
+    fontSize: 12,
+    fontWeight: '700',
+    overflow: 'hidden',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  successCard: {
+    backgroundColor: '#eef7ef',
+    borderColor: '#b8d6bc',
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 16,
+  },
+  successText: { color: '#285d35', fontSize: 14, lineHeight: 20 },
+  sessionState: {
+    backgroundColor: '#e8f1e9',
+    borderRadius: 999,
+    color: '#285d35',
+    fontSize: 12,
+    fontWeight: '700',
+    overflow: 'hidden',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  attendanceList: { gap: 8 },
+  sessionConfirmation: {
+    backgroundColor: '#fff7e6',
+    borderColor: '#dfc994',
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 10,
+    padding: 14,
+  },
+  sessionConfirmationDanger: {
+    backgroundColor: '#fff3f1',
+    borderColor: '#b84838',
+  },
+  confirmationTitle: { color: '#171512', fontSize: 15, fontWeight: '800' },
+  confirmationDescription: { color: '#625d55', fontSize: 13, lineHeight: 19 },
+  confirmationActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  confirmationCancelButton: {
+    alignItems: 'center',
+    borderColor: '#8b2f22',
+    borderRadius: 10,
+    borderWidth: 1,
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 14,
+  },
+  confirmationPrimaryButton: {
+    alignItems: 'center',
+    backgroundColor: '#8b2f22',
+    borderRadius: 10,
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 14,
+  },
+  confirmationDangerButton: {
+    alignItems: 'center',
+    backgroundColor: '#9a3023',
+    borderRadius: 10,
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 14,
+  },
+  confirmationButtonText: { color: '#ffffff', fontSize: 14, fontWeight: '800' },
+  attendanceCard: {
+    backgroundColor: '#ffffff',
+    borderColor: '#e5e0d7',
+    borderRadius: 10,
+    borderWidth: 1,
+    gap: 8,
+    padding: 10,
+  },
+  attendanceActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  attendanceButton: {
+    alignItems: 'center',
+    backgroundColor: '#8b2f22',
+    borderRadius: 9,
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 10,
+  },
+  attendanceButtonText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
   label: { color: '#171512', fontSize: 14, fontWeight: '700' },
   input: {
     backgroundColor: '#faf9f6',
@@ -531,6 +4454,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
+  appealInput: { minHeight: 96, textAlignVertical: 'top' },
   hint: { color: '#777168', fontSize: 13, lineHeight: 19 },
   button: {
     alignItems: 'center',
@@ -553,8 +4477,49 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
   },
   secondaryButtonText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
-  refreshButton: { alignSelf: 'flex-start', justifyContent: 'center', minHeight: 48 },
-  refreshText: { color: '#625d55', fontSize: 14, fontWeight: '600' },
+  compactSecondaryButton: {
+    alignItems: 'center',
+    borderColor: '#8b2f22',
+    borderRadius: 10,
+    borderWidth: 1,
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 12,
+  },
+  dangerButton: {
+    alignItems: 'center',
+    backgroundColor: '#fff3f1',
+    borderColor: '#b84838',
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 50,
+    paddingHorizontal: 18,
+  },
+  dangerButtonText: { color: '#9a3023', fontSize: 15, fontWeight: '700' },
+  compactDangerButton: {
+    alignItems: 'center',
+    backgroundColor: '#fff3f1',
+    borderColor: '#b84838',
+    borderRadius: 10,
+    borderWidth: 1,
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 12,
+  },
+  refreshButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderColor: '#8b2f22',
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 14,
+  },
+  refreshText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
   cardTitle: { color: '#171512', fontSize: 18, fontWeight: '700' },
   venueName: { color: '#4c4943', fontSize: 16, fontWeight: '600' },
   row: { alignItems: 'flex-start', flexDirection: 'row', gap: 16, justifyContent: 'space-between' },
@@ -563,6 +4528,33 @@ const styles = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { backgroundColor: '#e8f1e9', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
   chipText: { color: '#285d35', fontSize: 13, fontWeight: '600' },
+  capabilityList: { gap: 8 },
+  capabilityRow: {
+    alignItems: 'center',
+    backgroundColor: '#faf9f6',
+    borderRadius: 10,
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  capabilityText: { color: '#4c4943', flex: 1, fontSize: 14 },
+  capabilityState: { color: '#285d35', fontSize: 13, fontWeight: '700' },
+  sportOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  sportOption: {
+    alignItems: 'center',
+    borderColor: '#c9c3b9',
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 12,
+  },
+  sportOptionSelected: { backgroundColor: '#8b2f22', borderColor: '#8b2f22' },
+  sportOptionText: { color: '#625d55', fontSize: 13, fontWeight: '600' },
+  sportOptionTextSelected: { color: '#ffffff' },
   discoveryCard: {
     backgroundColor: '#faf9f6',
     borderColor: '#ded9cf',
@@ -605,5 +4597,4 @@ const styles = StyleSheet.create({
   errorText: { color: '#7a261b', fontSize: 14, lineHeight: 20 },
   retryButton: { alignSelf: 'flex-start', justifyContent: 'center', minHeight: 48, paddingHorizontal: 4 },
   retryText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
-  footer: { color: '#8c867e', fontSize: 12, textAlign: 'center' },
 });
