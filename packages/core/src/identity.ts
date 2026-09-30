@@ -66,6 +66,11 @@ export interface ActivatedIdentity {
   readonly discoveryRadiusKm: number;
 }
 
+export interface SportPreferences {
+  readonly primarySport: string;
+  readonly secondarySport: string | null;
+}
+
 export class MinimumAgeNotMetError extends Error {
   readonly code = 'MINIMUM_AGE_NOT_MET';
 
@@ -181,6 +186,21 @@ function assertSportCode(value: string, field: string): void {
   }
 }
 
+export function normalizeSportPreferences(
+  input: SportPreferences,
+): SportPreferences {
+  const primarySport = input.primarySport.trim().toUpperCase();
+  const secondarySport = input.secondarySport?.trim().toUpperCase() || null;
+  assertSportCode(primarySport, 'primarySport');
+  if (secondarySport !== null) {
+    assertSportCode(secondarySport, 'secondarySport');
+    if (secondarySport === primarySport) {
+      throw new IdentityValidationError('secondarySport');
+    }
+  }
+  return { primarySport, secondarySport };
+}
+
 export function activateIdentity(input: ActivateIdentityInput, at: Date): ActivatedIdentity {
   if (!/^\+[1-9]\d{7,14}$/.test(input.phoneE164)) {
     throw new IdentityValidationError('phoneE164');
@@ -192,10 +212,7 @@ export function activateIdentity(input: ActivateIdentityInput, at: Date): Activa
   if (!/^[a-z]{2}(?:-[A-Z]{2})?$/.test(input.locale)) {
     throw new IdentityValidationError('locale');
   }
-  assertSportCode(input.primarySport, 'primarySport');
-  if (input.secondarySport !== null) {
-    assertSportCode(input.secondarySport, 'secondarySport');
-  }
+  const sports = normalizeSportPreferences(input);
   if (!Number.isSafeInteger(input.discoveryRadiusKm) || input.discoveryRadiusKm < 1) {
     throw new IdentityValidationError('discoveryRadiusKm');
   }
@@ -207,8 +224,8 @@ export function activateIdentity(input: ActivateIdentityInput, at: Date): Activa
     phoneVerifiedAt: phoneVerifiedAt.toISOString(),
     birthDate: input.birthDate,
     locale: input.locale,
-    primarySport: input.primarySport,
-    secondarySport: input.secondarySport,
+    primarySport: sports.primarySport,
+    secondarySport: sports.secondarySport,
     discoveryRadiusKm: input.discoveryRadiusKm,
   };
 }

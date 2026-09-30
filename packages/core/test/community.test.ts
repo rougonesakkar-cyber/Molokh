@@ -87,7 +87,7 @@ describe('community access projection', () => {
     }
   });
 
-  it('keeps Primary transfer Central-only and blocks a second competitive Community request', () => {
+  it('[AC-016] keeps Primary transfer Central-only and blocks a second competitive Community request', () => {
     const central = projectCommunityAccess({
       ...base,
       activeRoleGrants: [{ role: 'CENTRAL_ADMIN', scopeType: 'GLOBAL', scopeId: null }],

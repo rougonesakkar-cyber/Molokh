@@ -5,6 +5,7 @@ import {
   activateIdentity,
   normalizeChecklistVersion,
   normalizeDisplayName,
+  normalizeSportPreferences,
   projectIdentityCapabilities,
   startVerificationState,
   type ActivateIdentityInput,
@@ -46,6 +47,11 @@ interface IdentityRow {
 
 export interface ChangeDisplayNamePayload {
   readonly displayName: string;
+}
+
+export interface ChangeSportsPayload {
+  readonly primarySport: string;
+  readonly secondarySport: string | null;
 }
 
 export interface StartVerificationPayload {
@@ -325,6 +331,113 @@ export async function changeDisplayName(
             messageId: ids.outboxMessageId,
             topic: 'identity.display_name.changed.v1',
             payload: { userId: current.user_id, version: context.nextVersion },
+          },
+        ],
+      };
+    },
+  });
+}
+
+export async function changeSports(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ChangeSportsPayload>,
+  ids: IdentityEffectIds,
+): Promise<ExecutedCommand<IdentityProjection>> {
+  if (command.actor.id !== command.aggregateId) {
+    throw new IdentityNotFoundError();
+  }
+  const sports = normalizeSportPreferences(command.payload);
+
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const currentResult = await sql<IdentityRow>`
+        select
+          users.user_id,
+          users.display_name,
+          users.age_division,
+          users.account_state,
+          (users.phone_verified_at is not null) as phone_verified,
+          coalesce(verification.state, 'NOT_STARTED') as verification_state,
+          profile.primary_sport,
+          profile.secondary_sport,
+          profile.discovery_radius_km,
+          users.version::text as version
+        from identity.users as users
+        join identity.athlete_profiles as profile on profile.user_id = users.user_id
+        left join identity.account_verifications as verification
+          on verification.user_id = users.user_id and verification.is_current
+        where users.user_id = ${command.aggregateId}::uuid
+        for update of users, profile
+      `.execute(transaction);
+      const current = currentResult.rows[0];
+      if (!current) throw new IdentityNotFoundError();
+      if (current.account_state !== 'ACTIVE') {
+        throw new IdentityValidationError('accountState');
+      }
+      if (
+        current.primary_sport === sports.primarySport &&
+        current.secondary_sport === sports.secondarySport
+      ) {
+        throw new IdentityValidationError('sports');
+      }
+
+      await sql`
+        update identity.athlete_profiles
+        set primary_sport = ${sports.primarySport},
+            secondary_sport = ${sports.secondarySport},
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where user_id = ${command.aggregateId}::uuid
+      `.execute(transaction);
+      await sql`
+        update identity.users
+        set version = ${context.nextVersion},
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where user_id = ${command.aggregateId}::uuid
+      `.execute(transaction);
+
+      const response = projectIdentityCapabilities({
+        userId: current.user_id,
+        displayName: current.display_name,
+        ageDivision: current.age_division,
+        accountState: current.account_state,
+        phoneVerified: current.phone_verified,
+        accountVerificationState: current.verification_state,
+        primarySport: sports.primarySport,
+        secondarySport: sports.secondarySport,
+        discoveryRadiusKm: current.discovery_radius_km,
+        version: context.nextVersion,
+      });
+
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'SportPreferencesChanged',
+          schemaVersion: 1,
+          transitionId: null,
+          payload: { userId: current.user_id, ...sports },
+          metadata: { policyVersion: 'identity-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'CHANGE_SPORTS',
+          transitionId: null,
+          reasonCode: null,
+          beforeState: current.account_state,
+          afterState: current.account_state,
+          metadata: {
+            previousPrimarySport: current.primary_sport,
+            previousSecondarySport: current.secondary_sport,
+            ...sports,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'identity.sports.changed.v1',
+            payload: { userId: current.user_id, version: context.nextVersion, ...sports },
           },
         ],
       };

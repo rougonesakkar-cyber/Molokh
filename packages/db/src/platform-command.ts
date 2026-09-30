@@ -21,6 +21,12 @@ export interface DomainEventDraft {
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
+export interface RelatedDomainEventDraft extends DomainEventDraft {
+  readonly aggregateType: string;
+  readonly aggregateId: string;
+  readonly aggregateVersion: number;
+}
+
 export interface AuditDraft {
   readonly auditId: string;
   readonly action: string;
@@ -35,12 +41,14 @@ export interface OutboxDraft {
   readonly messageId: string;
   readonly topic: string;
   readonly payload: unknown;
+  readonly sourceEventId?: string;
 }
 
 export interface CriticalCommandEffect<TResponse> {
   readonly responseStatus: number;
   readonly response: TResponse;
   readonly event: DomainEventDraft;
+  readonly relatedEvents?: readonly RelatedDomainEventDraft[];
   readonly audit: AuditDraft;
   readonly outbox: readonly OutboxDraft[];
 }
@@ -135,6 +143,27 @@ function assertEffect<TResponse>(effect: CriticalCommandEffect<TResponse>): void
   if (!Number.isSafeInteger(effect.event.schemaVersion) || effect.event.schemaVersion < 1) {
     throw new RangeError('Domain event schema version must be a positive safe integer');
   }
+  const eventIds = new Set([effect.event.eventId]);
+  for (const related of effect.relatedEvents ?? []) {
+    if (
+      related.eventId.trim().length === 0 ||
+      related.eventName.trim().length === 0 ||
+      related.aggregateType.trim().length === 0 ||
+      related.aggregateId.trim().length === 0
+    ) {
+      throw new TypeError('Related domain event identity is required');
+    }
+    if (
+      !Number.isSafeInteger(related.schemaVersion) ||
+      related.schemaVersion < 1 ||
+      !Number.isSafeInteger(related.aggregateVersion) ||
+      related.aggregateVersion < 1
+    ) {
+      throw new RangeError('Related domain event versions must be positive safe integers');
+    }
+    if (eventIds.has(related.eventId)) throw new TypeError('Domain event IDs must be unique');
+    eventIds.add(related.eventId);
+  }
   if (effect.audit.auditId.trim().length === 0 || effect.audit.action.trim().length === 0) {
     throw new TypeError('Audit identity and action are required');
   }
@@ -145,11 +174,18 @@ function assertEffect<TResponse>(effect: CriticalCommandEffect<TResponse>): void
     if (message.messageId.trim().length === 0 || message.topic.trim().length === 0) {
       throw new TypeError('Outbox message identity and topic are required');
     }
+    if (message.sourceEventId && !eventIds.has(message.sourceEventId)) {
+      throw new TypeError('Outbox source event must belong to the command effect');
+    }
   }
 
   canonicalize(effect.response);
   canonicalize(effect.event.payload);
   canonicalize(effect.event.metadata);
+  for (const related of effect.relatedEvents ?? []) {
+    canonicalize(related.payload);
+    canonicalize(related.metadata);
+  }
   canonicalize(effect.audit.metadata);
   for (const message of effect.outbox) canonicalize(message.payload);
 }
@@ -242,6 +278,35 @@ export async function executeCriticalCommand<TPayload, TResponse>(
       )
     `.execute(transaction);
 
+    for (const related of effect.relatedEvents ?? []) {
+      const relatedMetadata = {
+        ...related.metadata,
+        commandId: command.commandId,
+        payloadVersion: command.payloadVersion,
+        requestId: command.requestId,
+        source: command.source,
+      };
+      await sql`
+        insert into platform.domain_events (
+          event_id, event_name, event_version, aggregate_type, aggregate_id,
+          aggregate_version, transition_id, correlation_id, causation_id,
+          actor_id, actor_type, actor_roles, actor_scope_ids, occurred_at,
+          idempotency_key_hash, payload, metadata
+        ) values (
+          ${related.eventId}::uuid, ${related.eventName}, ${related.schemaVersion},
+          ${related.aggregateType}, ${related.aggregateId}::uuid,
+          ${related.aggregateVersion}, ${related.transitionId},
+          ${command.correlationId}::uuid, ${effect.event.eventId}::uuid,
+          ${command.actor.id}::uuid, ${command.actor.type},
+          ${JSON.stringify(command.actor.roles)}::jsonb,
+          ${[...command.actor.scopeIds]}::uuid[],
+          ${occurredAt.toISOString()}::timestamptz, ${idempotencyKeyHash},
+          ${JSON.stringify(related.payload)}::jsonb,
+          ${JSON.stringify(relatedMetadata)}::jsonb
+        )
+      `.execute(transaction);
+    }
+
     await sql`
       insert into platform.audit_events (
         audit_id, action, actor_id, actor_type, actor_roles, actor_scope_ids,
@@ -261,10 +326,11 @@ export async function executeCriticalCommand<TPayload, TResponse>(
     `.execute(transaction);
 
     for (const message of effect.outbox) {
+      const sourceEventId = message.sourceEventId ?? effect.event.eventId;
       await sql`
         insert into platform.outbox_messages (message_id, topic, event_id, payload)
         values (
-          ${message.messageId}::uuid, ${message.topic}, ${effect.event.eventId}::uuid,
+          ${message.messageId}::uuid, ${message.topic}, ${sourceEventId}::uuid,
           ${JSON.stringify(message.payload)}::jsonb
         )
       `.execute(transaction);

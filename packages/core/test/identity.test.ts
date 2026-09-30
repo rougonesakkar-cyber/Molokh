@@ -7,6 +7,7 @@ import {
   approveVerificationState,
   deriveAgeDivision,
   normalizeDisplayName,
+  normalizeSportPreferences,
   normalizeChecklistVersion,
   projectIdentityCapabilities,
   startVerificationState,
@@ -15,7 +16,7 @@ import {
 const now = new Date('2026-09-06T12:00:00.000Z');
 
 describe('identity rules', () => {
-  it('rejects activation below 14 and separates Youth from Adult at date boundaries', () => {
+  it('[AC-001] rejects activation below 14 and separates Youth from Adult at date boundaries', () => {
     expect(() => deriveAgeDivision('2013-09-07', now)).toThrow(MinimumAgeNotMetError);
     expect(deriveAgeDivision('2012-09-06', now)).toBe('YOUTH');
     expect(deriveAgeDivision('2008-09-06', now)).toBe('ADULT');
@@ -24,6 +25,18 @@ describe('identity rules', () => {
   it('accepts arbitrary non-empty display names without legal-name semantics', () => {
     expect(normalizeDisplayName('  Номер Один 🥊  ')).toBe('Номер Один 🥊');
     expect(() => normalizeDisplayName('   ')).toThrow('displayName');
+  });
+
+  it('normalizes distinct primary and secondary sports', () => {
+    expect(
+      normalizeSportPreferences({
+        primarySport: ' boxing ',
+        secondarySport: ' running ',
+      }),
+    ).toEqual({ primarySport: 'BOXING', secondarySport: 'RUNNING' });
+    expect(() =>
+      normalizeSportPreferences({ primarySport: 'BOXING', secondarySport: 'BOXING' }),
+    ).toThrow('secondarySport');
   });
 
   it('validates and normalizes activation input', () => {
@@ -68,7 +81,7 @@ describe('identity rules', () => {
     ).toThrow('phoneVerifiedAt');
   });
 
-  it('allows Social and ordinary Training before Central verification', () => {
+  it('[AC-003] allows Social and ordinary Training before Central verification', () => {
     const projection = projectIdentityCapabilities({
       userId: '0199a1b2-1234-7000-8000-000000000101',
       displayName: 'Athlete',

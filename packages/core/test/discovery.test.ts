@@ -48,7 +48,7 @@ describe('Discovery hard gates and transparent ordering', () => {
     });
   });
 
-  it('exhausts radius before city expansion and uses stable visible signals', () => {
+  it('[AC-012] exhausts radius before city expansion and uses stable visible signals', () => {
     const candidates: DiscoveryRankSignals[] = [
       {
         candidateUserId: 'outside-inbound',

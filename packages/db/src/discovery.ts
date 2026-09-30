@@ -78,6 +78,7 @@ interface DiscoveryCandidateRow {
   readonly effective_block: boolean;
   readonly pair_suppressed: boolean;
   readonly existing_match: boolean;
+  readonly outbound_like: boolean;
 }
 
 function radians(value: number): number {
@@ -166,7 +167,7 @@ export async function readDiscoveryCards(
   database: Kysely<Database>,
   viewerUserId: string,
   limit = 20,
-  now = new Date(),
+  _now = new Date(),
 ): Promise<readonly DiscoveryCardProjection[]> {
   const normalizedLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
   const viewerResult = await sql<DiscoveryViewerRow>`
@@ -217,8 +218,13 @@ export async function readDiscoveryCards(
         where inbound.from_user_id = candidate.user_id
           and inbound.to_user_id = ${viewerUserId}::uuid
           and inbound.state = 'ACTIVE'
-          and inbound.expires_at > ${now.toISOString()}::timestamptz
       ) as inbound_like,
+      exists (
+        select 1 from social.likes as outbound
+        where outbound.from_user_id = ${viewerUserId}::uuid
+          and outbound.to_user_id = candidate.user_id
+          and outbound.state = 'ACTIVE'
+      ) as outbound_like,
       exists (
         select 1 from social.blocks as block
         where block.state = 'ACTIVE'
@@ -232,7 +238,6 @@ export async function readDiscoveryCards(
         where suppression.pair_low_id = least(${viewerUserId}::uuid, candidate.user_id)
           and suppression.pair_high_id = greatest(${viewerUserId}::uuid, candidate.user_id)
           and suppression.state = 'ACTIVE'
-          and suppression.until_at > ${now.toISOString()}::timestamptz
       ) as pair_suppressed,
       exists (
         select 1 from social.matches as matched
@@ -262,7 +267,7 @@ export async function readDiscoveryCards(
       pairSuppressed: candidate.pair_suppressed,
       existingMatchState: candidate.existing_match ? 'ACTIVE' : null,
     });
-    if (!gate.eligible) continue;
+    if (!gate.eligible || candidate.outbound_like) continue;
     const distance = distanceKm(viewer, candidate);
     const geographyTier: DiscoveryGeographyTier =
       distance !== null && distance <= viewer.discovery_radius_km

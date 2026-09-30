@@ -19,10 +19,24 @@ export async function probeDatabase(database: Kysely<Database>): Promise<boolean
 }
 
 export * from './migrations.js';
+export * from './appeal.js';
+export * from './booking-conversion.js';
+export * from './solo-continuation.js';
+export * from './chat.js';
+export * from './challenge.js';
 export * from './community.js';
 export * from './discovery.js';
 export * from './identity.js';
+export * from './integrity-case.js';
+export * from './missing-result.js';
 export * from './notifications.js';
 export * from './outbox.js';
+export * from './pair-intent.js';
 export * from './platform-command.js';
 export * from './role-grants.js';
+export * from './result.js';
+export * from './scheduling.js';
+export * from './session.js';
+export * from './social.js';
+export * from './status-queue.js';
+export * from './status-release.js';
