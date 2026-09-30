@@ -25,6 +25,7 @@ import {
   approveAccountVerification,
   decideBookingOfficialConversion,
   decideBookingSoloContinuation,
+  invalidateActiveBookingOfficialConversion,
   changeDisplayName,
   changeSports,
   changePrimaryAdmin,
@@ -55,6 +56,7 @@ import {
   readBookingOfficialConversionForSession,
   readBookingSoloContinuationForSession,
   readBookingOfficialConversionActivationCandidate,
+  readInvalidActiveBookingOfficialConversionCandidate,
   readCompetitionStatus,
   readStatusQueueActivationCandidate,
   readStatusQueueReconciliationCandidates,
@@ -171,6 +173,7 @@ import {
   type DecideBookingSoloContinuationPayload,
   type ExpireBookingOfficialConversionPayload,
   type ExpireBookingSoloContinuationPayload,
+  type InvalidateActiveBookingOfficialConversionPayload,
   type ExpireGroupPlanPayload,
   type ExpireBookingIntentPayload,
   type ProposeGroupPlanPayload,
@@ -4239,17 +4242,27 @@ describePostgres('PostgreSQL critical command transaction', () => {
       where user_id = ${fixture.coach}::uuid and role = 'COACH'
         and scope_type = 'COMMUNITY' and scope_id = ${fixture.community}::uuid
     `.execute(database);
-    const closed = await decideBookingOfficialConversion(
+    const candidate = await readInvalidActiveBookingOfficialConversionCandidate(
+      database,
+      fixture.competition,
+    );
+    expect(candidate).toEqual({
+      conversionId,
+      competitionId: fixture.competition,
+      version: 1,
+      reasonCode: 'OFFICIAL_ELIGIBILITY_LOST',
+    });
+    const closed = await invalidateActiveBookingOfficialConversion(
       database,
       {
-        commandId: testId(20400), commandType: 'DECIDE_BOOKING_OFFICIAL_CONVERSION',
-        idempotencyKey: 'conversion-close-invalid-coach',
-        actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        commandId: testId(20400), commandType: 'CLOSE_INVALID_BOOKING_OFFICIAL_CONVERSION',
+        idempotencyKey: 'conversion-event-close-invalid-coach',
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
         aggregateType: 'BookingOfficialConversion', aggregateId: conversionId,
         expectedVersion: 1, correlationId: testId(20401), causationId: testId(20310),
-        requestId: testId(20402), source: 'api', payloadVersion: 1,
-        payload: { conversionId, decision: 'ACCEPT' },
-      } satisfies CommandEnvelope<DecideBookingOfficialConversionPayload>,
+        requestId: testId(20402), source: 'scheduler', payloadVersion: 1,
+        payload: { conversionId, reasonCode: candidate!.reasonCode },
+      } satisfies CommandEnvelope<InvalidateActiveBookingOfficialConversionPayload>,
       bookingConversionEffects(20410, conversionId),
       () => new Date('2026-09-27T10:07:00.000Z'),
     );
@@ -4258,6 +4271,16 @@ describePostgres('PostgreSQL critical command transaction', () => {
       select state, purpose from scheduling.bookings where booking_id = ${fixture.booking}::uuid
     `.execute(database);
     expect(source.rows[0]).toEqual({ state: 'CONFIRMED_PAIR', purpose: 'TRAINING' });
+    const effects = await sql<{
+      readonly challenges: string;
+      readonly obligations: string;
+      readonly cooldowns: string;
+    }>`
+      select (select count(*)::text from competition.challenges) as challenges,
+        (select count(*)::text from competition.challenge_participant_obligations) as obligations,
+        (select count(*)::text from competition.pair_cooldowns) as cooldowns
+    `.execute(database);
+    expect(effects.rows[0]).toEqual({ challenges: '0', obligations: '0', cooldowns: '0' });
   });
 
   it('[AC-035][AC-036][AC-163] closes a pending conversion and confirms the remaining Athlete as solo', async () => {

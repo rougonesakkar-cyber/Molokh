@@ -8,6 +8,7 @@ import {
 } from '@molokh/core';
 import {
   activateBookingOfficialConversionFromQueue,
+  invalidateActiveBookingOfficialConversion,
   invalidateBookingOfficialConversionFromQueue,
   activateStatusQueueHead,
   claimInboxEvent,
@@ -36,6 +37,7 @@ import {
   readDiscoverySuppressionTimerSnapshot,
   readBookingIntentTimerSnapshot,
   readBookingOfficialConversionActivationCandidate,
+  readInvalidActiveBookingOfficialConversionCandidate,
   readInvalidBookingOfficialConversionCandidate,
   readBookingOfficialConversionTimerSnapshot,
   readBookingSoloContinuationTimerSnapshot,
@@ -57,6 +59,7 @@ import {
   type ExpireDiscoverySuppressionPayload,
   type ExpireBookingIntentPayload,
   type ExpireBookingOfficialConversionPayload,
+  type InvalidateActiveBookingOfficialConversionPayload,
   type ExpireBookingSoloContinuationPayload,
   type ExpireGroupOfferingPayload,
   type ExpireGroupPlanPayload,
@@ -212,6 +215,41 @@ const activateWaitingStatusHead = async (
   competitionId: string,
   causationId: string,
 ): Promise<void> => {
+  const invalidActiveConversion = await readInvalidActiveBookingOfficialConversionCandidate(
+    database,
+    competitionId,
+  );
+  if (invalidActiveConversion) {
+    const command: CommandEnvelope<InvalidateActiveBookingOfficialConversionPayload> = {
+      commandId: randomUUID(), commandType: 'CLOSE_INVALID_BOOKING_OFFICIAL_CONVERSION',
+      idempotencyKey: `booking-conversion:${invalidActiveConversion.conversionId}:close-invalid:${invalidActiveConversion.reasonCode}:v${invalidActiveConversion.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'BookingOfficialConversion',
+      aggregateId: invalidActiveConversion.conversionId,
+      expectedVersion: invalidActiveConversion.version,
+      correlationId: randomUUID(), causationId, requestId: randomUUID(),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { conversionId: invalidActiveConversion.conversionId,
+        reasonCode: invalidActiveConversion.reasonCode },
+    };
+    try {
+      await invalidateActiveBookingOfficialConversion(database, command, {
+        eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+        bookingEventId: randomUUID(), notificationOutboxMessageId: randomUUID(),
+        notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+      });
+    } catch (error) {
+      if (error instanceof SchedulingConflictError && [
+        'OFFICIAL_CONVERSION_NOT_PENDING', 'OFFICIAL_CONVERSION_NOT_ALLOWED',
+      ].includes(error.code)) {
+        logger.info({ competitionId, conversionId: invalidActiveConversion.conversionId,
+          reason: error.code }, 'invalid active conversion already reconciled');
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
   const invalidConversion = await readInvalidBookingOfficialConversionCandidate(
     database,
     competitionId,

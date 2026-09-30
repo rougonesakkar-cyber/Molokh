@@ -96,6 +96,23 @@ export interface InvalidBookingOfficialConversionCandidate
   readonly reasonCode: 'BOUND_HOLDER_CHANGED' | 'PREBOOKED_SOURCE_UNAVAILABLE';
 }
 
+export type ActiveBookingOfficialConversionInvalidationReason =
+  | 'BOUND_HOLDER_CHANGED'
+  | 'OFFICIAL_ELIGIBILITY_LOST'
+  | 'STATUS_SLOT_UNAVAILABLE';
+
+export interface InvalidActiveBookingOfficialConversionCandidate {
+  readonly conversionId: string;
+  readonly competitionId: string;
+  readonly version: number;
+  readonly reasonCode: ActiveBookingOfficialConversionInvalidationReason;
+}
+
+export interface InvalidateActiveBookingOfficialConversionPayload {
+  readonly conversionId: string;
+  readonly reasonCode: ActiveBookingOfficialConversionInvalidationReason;
+}
+
 interface ConversionContextRow {
   readonly booking_id: string;
   readonly booking_version: string;
@@ -322,6 +339,23 @@ function contextEligibilityFailure(
   return null;
 }
 
+function activeConversionInvalidationReason(
+  conversion: Pick<ConversionRow, 'stake' | 'bound_holder_user_id'>,
+  context: ConversionContextRow,
+): ActiveBookingOfficialConversionInvalidationReason | null {
+  const currentStake = stakeFor(context);
+  if (
+    conversion.stake === 'CONTENDER'
+    && conversion.bound_holder_user_id !== context.contender_user_id
+  ) return 'BOUND_HOLDER_CHANGED';
+  if (currentStake !== conversion.stake) return 'OFFICIAL_ELIGIBILITY_LOST';
+  const failure = contextEligibilityFailure(context, conversion.stake);
+  if (failure === 'OFFICIAL_ELIGIBILITY_LOST' || failure === 'STATUS_SLOT_UNAVAILABLE') {
+    return failure;
+  }
+  return null;
+}
+
 function assertContextEligible(context: ConversionContextRow, stake: 'NONE' | 'CONTENDER' | 'TITLE'): void {
   if (contextEligibilityFailure(context, stake) !== null) {
     throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_ALLOWED');
@@ -445,6 +479,132 @@ export async function readBookingOfficialConversionForSession(
   if (!id) return null;
   const row = await conversionRow(database, id);
   return row ? projection(database, row, viewerUserId) : null;
+}
+
+export async function readInvalidActiveBookingOfficialConversionCandidate(
+  database: Kysely<Database>,
+  competitionId: string,
+): Promise<InvalidActiveBookingOfficialConversionCandidate | null> {
+  const result = await sql<{
+    readonly conversion_id: string;
+    readonly session_id: string;
+    readonly stake: 'NONE' | 'CONTENDER' | 'TITLE';
+    readonly bound_holder_user_id: string | null;
+    readonly version: string;
+  }>`
+    select conversion_id, session_id, stake, bound_holder_user_id,
+      version::text as version
+    from scheduling.booking_official_conversions
+    where competition_id = ${competitionId}::uuid
+      and state = 'PENDING_CONFIRMATION'
+    order by created_at, conversion_id
+  `.execute(database);
+  for (const row of result.rows) {
+    const context = await conversionContext(database, row.session_id);
+    if (!context) continue;
+    const reasonCode = activeConversionInvalidationReason({
+      stake: row.stake,
+      bound_holder_user_id: row.bound_holder_user_id,
+    }, context);
+    if (reasonCode) {
+      return {
+        conversionId: row.conversion_id,
+        competitionId,
+        version: Number(row.version),
+        reasonCode,
+      };
+    }
+  }
+  return null;
+}
+
+export async function invalidateActiveBookingOfficialConversion(
+  database: Kysely<Database>,
+  command: CommandEnvelope<InvalidateActiveBookingOfficialConversionPayload>,
+  ids: BookingOfficialConversionEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<BookingOfficialConversionProjection>> {
+  if (command.actor.type !== 'SYSTEM' || command.aggregateType !== 'BookingOfficialConversion'
+    || command.aggregateId !== command.payload.conversionId) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, eventContext) => {
+      const existing = await conversionRow(transaction, command.aggregateId, true);
+      if (!existing || existing.state !== 'PENDING_CONFIRMATION') {
+        throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_PENDING');
+      }
+      const context = await conversionContext(transaction, existing.session_id, true);
+      if (!context) throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_ALLOWED');
+      const reasonCode = activeConversionInvalidationReason(existing, context);
+      if (!reasonCode || reasonCode !== command.payload.reasonCode) {
+        throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_ALLOWED');
+      }
+      await sql`
+        update scheduling.booking_official_conversions
+        set state = 'INVALIDATED', terminal_reason = ${reasonCode},
+          decided_at = ${eventContext.occurredAt.toISOString()}::timestamptz,
+          version = ${eventContext.nextVersion},
+          updated_at = ${eventContext.occurredAt.toISOString()}::timestamptz
+        where conversion_id = ${existing.conversion_id}::uuid
+          and state = 'PENDING_CONFIRMATION'
+      `.execute(transaction);
+      await sql`
+        update scheduling.bookings set state = 'CONFIRMED_PAIR', version = version + 1,
+          updated_at = ${eventContext.occurredAt.toISOString()}::timestamptz
+        where booking_id = ${existing.booking_id}::uuid
+          and state = 'OFFICIAL_CONVERSION_PENDING'
+      `.execute(transaction);
+      const closed = await conversionRow(transaction, existing.conversion_id);
+      if (!closed) throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_PENDING');
+      const response = await projection(transaction, closed, existing.requested_by_user_id);
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId, eventName: 'TrainingOfficialConversionClosed',
+          schemaVersion: 1, transitionId: 'B-23', payload: {
+            conversionId: existing.conversion_id, reason: reasonCode,
+            sourcePreservedAsTraining: true,
+          }, metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        relatedEvents: [{
+          eventId: requiredId(ids, 'bookingEventId'), eventName: 'TrainingOfficialConversionClosed',
+          schemaVersion: 1, aggregateType: 'Booking', aggregateId: existing.booking_id,
+          aggregateVersion: Number(context.booking_version) + 1, transitionId: 'B-23',
+          payload: { bookingId: existing.booking_id, conversionId: existing.conversion_id,
+            reason: reasonCode, sourcePreservedAsTraining: true },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        }],
+        audit: {
+          auditId: ids.auditId, action: 'CLOSE_INVALID_TRAINING_OFFICIAL_CONVERSION',
+          transitionId: 'B-23', reasonCode, beforeState: existing.state,
+          afterState: 'INVALIDATED', metadata: {
+            bookingId: existing.booking_id, eventDriven: true, noLoss: true,
+          },
+        },
+        outbox: [
+          { messageId: ids.outboxMessageId,
+            topic: 'scheduling.booking.official-conversion-closed.v1', payload: {
+              conversionId: existing.conversion_id, bookingId: existing.booking_id,
+              competitionId: existing.competition_id, reason: reasonCode,
+              sourcePreservedAsTraining: true,
+            } },
+          { messageId: ids.notificationOutboxMessageId, topic: 'notification.in_app.v1',
+            payload: { notifications: [context.pair_low_id, context.pair_high_id,
+              context.coach_user_id].map((recipientUserId, index) => ({
+                notificationId: ids.notificationIds[index]!, recipientUserId,
+                category: 'SERVICE', renderKey: 'booking.official-conversion-invalidated',
+                actionTarget: { type: 'BOOKING', bookingId: existing.booking_id },
+                payload: { conversionId: existing.conversion_id, reason: reasonCode },
+                deadlineAt: null,
+              })) } },
+        ],
+      };
+    },
+  });
 }
 
 export async function readBookingOfficialConversionActivationCandidate(
