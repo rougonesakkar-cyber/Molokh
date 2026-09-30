@@ -275,8 +275,8 @@ Official Challenge obligation for both participants.
 
 ## Next executable action
 
-Perform the multi-account Web walkthrough for status release, vacancy GENESIS,
-Training-to-Official conversion, Training cancellation/solo continuation and the accepted
-personal-Slot flow. Then complete event-driven eligibility-loss reconciliation and the remaining
-M7 lifecycle/incident contours before pilot hardening.
+Complete the role-switch Web walkthrough for Gym Admin, Appeal, Missing Result and IntegrityCase.
+Then implement the remaining M7 lifecycle contours in dependency order: Community pause/closure,
+Membership exit/removal, Youth consent and age transition, platform-incident compensation, and
+account closure/export/retention before pilot hardening.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

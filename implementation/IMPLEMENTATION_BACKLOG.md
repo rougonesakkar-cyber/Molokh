@@ -264,8 +264,16 @@ This sprint produces a demonstrable Training slice while establishing the same f
   timeout cancels Booking/Session and releases the Slot atomically. A pending Official conversion
   closes first. Core/API/client/Worker and PostgreSQL scenarios AC-035–AC-037/AC-163 pass under
   migration `0040`.
-- Next increment: add event-driven conversion invalidation for eligibility changes, then run the
-  multi-account browser walkthrough for conversion and Training cancellation/solo continuation.
+- M5 active-conversion reconciliation increment: complete. The Worker revalidates a pending
+  Training conversion whenever the Competition path advances, closes a stale holder or lost
+  eligibility without loss, restores the source Booking as ordinary Training and resumes strict
+  FIFO activation from the emitted close event. The command rechecks the canonical context under
+  lock and emits versioned Booking/conversion events, audit, notifications and outbox atomically.
+- The live multi-account walkthrough now covers a confirmed pair Training becoming a BOOKED
+  `OFFICIAL_CHALLENGE` after both Athletes and Coach accept, plus Athlete withdrawal followed by
+  remaining-Athlete and Coach acceptance of the same Session as `CONFIRMED_SOLO`.
+- Next increment: complete the remaining role-switch walkthrough, then start M7 with the
+  Community pause/closure and Membership lifecycle contour.
 
 ## 5. Work that needs product/external input later
 

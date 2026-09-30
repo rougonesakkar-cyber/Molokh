@@ -126,8 +126,8 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Perform the two-account Web walkthrough for GENESIS/direct mandatory Challenge, Training conversion, Training cancellation/solo and the accepted Slot flow.
-2. Complete event-driven eligibility-loss reconciliation for an active Training conversion.
-3. Perform the role-switch Web walkthrough for Gym Admin, Appeal, Missing Result and IntegrityCase paths.
-4. Implement the remaining M7 account/Community lifecycle and platform-incident compensation contours.
+1. Perform the remaining role-switch Web walkthrough for Gym Admin, Appeal, Missing Result and IntegrityCase paths.
+2. Implement M7 Community pause/closure and Membership exit/removal without obligation or status leakage.
+3. Implement M7 Youth consent/18th-birthday transition and hard cross-age isolation.
+4. Implement exact-overlap PlatformIncident compensation, then account closure/export/retention jobs.
 5. Continue to keep payment, group capacity and automatic alternatives outside Molokh MVP.

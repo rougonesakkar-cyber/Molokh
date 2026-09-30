@@ -179,16 +179,18 @@ FIFO projection, no-loss withdrawal and strict direct-head activation against th
 Contender are executable. A mandatory refusal or timeout is represented by an appealable
 administrative Forfeit without inventing a Session. Final holder changes move waiting entries into
 a visible 24-hour reconfirmation without changing their FIFO keys. Production OTP/session handling,
-recovery/duplicate cases, status-only release and later lifecycle hardening remain.
+recovery/duplicate cases, Membership/account lifecycle and incident hardening remain.
 
 ## Verification result
 
-Verified on 2026-09-30:
+Verified on 2026-10-01:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
 - 164 non-database automated tests pass across Core, DB, API, worker and testkit;
 - the current PostgreSQL gate passes all 27 integration scenarios, including MissingResultReview, Appeal, IntegrityCase compensation, direct mandatory status activation/Forfeit, holder-change reconfirmation/expiry, vacancy succession, Training conversion and Training cancellation/solo continuation;
+- event-driven pending-conversion reconciliation restores the same Training without Challenge,
+  obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/chat`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
@@ -205,6 +207,10 @@ Verified on 2026-09-30:
 - live Scheduling HTTP commands publish one future Slot and one GroupOffering, and the authenticated Match Chat returns both with `NO_RESERVATION_BEFORE_HOST_CONFIRMATION`;
 - live two-identity commands produce `HOST_CONFIRMATION_PENDING` with two Athlete selections and an immutable `1500.00 RUB` snapshot while the Slot remains `PUBLISHED`; the GroupPlan reaches `NOTIFIED` with `capacityReserved=false`;
 - live Coach confirmation changes the Booking to `CONFIRMED_PAIR`, claims the Slot exactly once and creates a `SCHEDULED` Session shown in the active Match Chat;
+- live three-party Training conversion changes the same Booking and Session to
+  `OFFICIAL_CHALLENGE`, creates one BOOKED Challenge and exactly two active obligations;
+- live Athlete Training withdrawal followed by remaining-Athlete and Coach acceptance preserves
+  the same Session as `CONFIRMED_SOLO` and keeps the Slot booked without a loss or Challenge;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
 - the generated acceptance matrix maps 86 scenarios (`80/195 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24, and the production dependency gate reports no high or critical advisories;
