@@ -63,3 +63,27 @@ export function idempotentResourceId(
   bytes[8] = 0x80 | (bytes[8]! & 0x3f);
   return encodeUuid(bytes);
 }
+
+export function idempotentUuidV7(
+  resourceType: string,
+  actorId: string,
+  idempotencyKey: string,
+): string {
+  const type = resourceType.trim();
+  const actor = actorId.trim().toLowerCase();
+  const key = idempotencyKey.trim();
+  if (!type || !actor || !key) throw new TypeError('Idempotent resource identity is incomplete');
+
+  const digest = createHash('sha256').update(`${type}:${actor}:${key}`, 'utf8').digest();
+  const timestampToken = key.split(':').at(-1) ?? '';
+  const candidateTimestamp = Number.parseInt(timestampToken, 36);
+  const minimumTimestamp = Date.UTC(2020, 0, 1);
+  const maximumTimestamp = Date.UTC(2100, 0, 1);
+  const digestTimestamp = digest.subarray(0, 6).readUIntBE(0, 6);
+  const timestamp = Number.isSafeInteger(candidateTimestamp)
+    && candidateTimestamp >= minimumTimestamp
+    && candidateTimestamp < maximumTimestamp
+    ? candidateTimestamp
+    : minimumTimestamp + (digestTimestamp % (maximumTimestamp - minimumTimestamp));
+  return newUuidV7({ timestamp, random: digest.subarray(6, 16) });
+}

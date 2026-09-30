@@ -1,22 +1,98 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  SchedulingConflictError,
+  StatusQueueConflictError,
+  type CommandEnvelope,
+  type TimerCommandPayload,
+} from '@molokh/core';
+import {
+  activateBookingOfficialConversionFromQueue,
+  invalidateBookingOfficialConversionFromQueue,
+  activateStatusQueueHead,
   claimInboxEvent,
   claimOutboxBatch,
   createDatabase,
+  expireDiscoverySuppression,
+  expireBookingIntent,
+  expireBookingOfficialConversion,
+  expireBookingSoloContinuation,
+  expireGroupOffering,
+  expireGroupPlan,
+  expireOptionalChallenge,
+  expireGenesisChallenge,
+  expireLike,
+  finalizeResult,
+  expireSlot,
+  expireStatusQueueReconfirmation,
   markOutboxPublished,
-  projectNotificationBatch,
+  remindMissingResultCoach,
+  escalateMissingResultAdmin,
+  openMissingResultReview,
+  openSessionWindow,
   outboxRetryDelayMilliseconds,
+  projectNotificationBatch,
+  promoteSingleGenesisCandidate,
+  readDiscoverySuppressionTimerSnapshot,
+  readBookingIntentTimerSnapshot,
+  readBookingOfficialConversionActivationCandidate,
+  readInvalidBookingOfficialConversionCandidate,
+  readBookingOfficialConversionTimerSnapshot,
+  readBookingSoloContinuationTimerSnapshot,
+  readGroupOfferingTimerSnapshot,
+  readGroupPlanTimerSnapshot,
+  readLikeTimerSnapshot,
+  readResultTimerSnapshot,
+  readMissingResultChallengeTimerSnapshot,
+  readSessionTimerSnapshot,
+  readChallengeTimerSnapshot,
+  readSlotTimerSnapshot,
+  readStatusQueueActivationCandidate,
+  readStatusQueueReconciliationCandidates,
+  readStatusQueueTimerSnapshot,
+  readVacancyQueueReconciliationCandidate,
+  reconcileVacancyQueue,
+  requestStatusQueueReconfirmation,
   releaseOutboxFailure,
+  type ExpireDiscoverySuppressionPayload,
+  type ExpireBookingIntentPayload,
+  type ExpireBookingOfficialConversionPayload,
+  type ExpireBookingSoloContinuationPayload,
+  type ExpireGroupOfferingPayload,
+  type ExpireGroupPlanPayload,
+  type ExpireLikePayload,
+  type FinalizeResultPayload,
+  type ExpireSlotPayload,
+  type OpenSessionWindowPayload,
+  type ExpireOptionalChallengePayload,
+  type ExpireGenesisChallengePayload,
+  type ActivateStatusQueueHeadPayload,
+  type ExpireStatusQueueReconfirmationPayload,
+  type MissingResultTimerPayload,
+  type RequestStatusQueueReconfirmationPayload,
+  type PromoteSingleGenesisCandidatePayload,
+  type ReconcileVacancyQueuePayload,
 } from '@molokh/db';
-import { run } from 'graphile-worker';
+import { makeWorkerUtils, run } from 'graphile-worker';
 import pino from 'pino';
 
 import { startOutboxPolling } from './outbox-dispatcher.js';
 import { parseNotificationProjection } from './notification-projection.js';
+import { socialTimerFromOutbox } from './social-timers.js';
+import { schedulingTimerFromOutbox } from './scheduling-timers.js';
+import { challengeTimerFromOutbox } from './challenge-timers.js';
+import { resultTimerFromOutbox } from './result-timers.js';
+import { missingResultTimerFromOutbox } from './missing-result-timers.js';
+import { statusQueueTimerFromOutbox } from './status-queue-timers.js';
 import { createTaskList } from './tasks.js';
+import { processTimer } from './timer-processor.js';
 
-const connectionString = process.env.DATABASE_URL;
+const production = process.env.NODE_ENV === 'production';
+const connectionString =
+  process.env.DATABASE_URL ??
+  (production
+    ? undefined
+    : 'postgres://molokh:local-only-password@localhost:5432/molokh');
 
 if (!connectionString) {
   throw new Error('DATABASE_URL is required to start the worker');
@@ -24,10 +100,776 @@ if (!connectionString) {
 
 const logger = pino({ name: 'molokh-worker' });
 const database = createDatabase(connectionString);
+const workerUtils = await makeWorkerUtils({ connectionString });
+
+const scheduleTimer = async (payload: TimerCommandPayload, runAt: Date) => {
+  await workerUtils.addJob('process_timer', payload, {
+    jobKey: `timer:${payload.commandType}:${payload.aggregateId}:v${payload.expectedVersion}`,
+    jobKeyMode: 'unsafe_dedupe',
+    maxAttempts: 10,
+    runAt,
+  });
+};
+
+const statusQueueActivationTopics = new Set([
+  'competition.status-queue.submitted.v1',
+  'competition.status-queue.head-released.v1',
+  'competition.status-queue.withdrawn.v1',
+  'competition.status-queue.reconfirmed.v1',
+  'competition.challenge.withdrawn.v1',
+  'competition.result.finalized.v1',
+  'competition.appeal.decided.v1',
+  'competition.integrity-case.decided.v1',
+  'scheduling.booking.official-conversion-closed.v1',
+]);
+
+const statusQueueHolderChangeTopics = new Set([
+  'competition.result.finalized.v1',
+  'competition.appeal.decided.v1',
+  'competition.integrity-case.decided.v1',
+]);
+
+const vacancyQueueReconciliationTopics = new Set([
+  'competition.status-released.v1',
+  'competition.status-queue.submitted.v1',
+  'competition.status-queue.withdrawn.v1',
+  'competition.status-queue.head-released.v1',
+  'competition.genesis.declined.v1',
+  'competition.genesis.expired-no-fault.v1',
+  'competition.status-vacancy.reconcile.v1',
+  'competition.status-vacancy.single-promoted.v1',
+]);
+
+function competitionIdFromOutbox(topic: string, payload: unknown): string | null {
+  if (
+    (!statusQueueActivationTopics.has(topic) && !vacancyQueueReconciliationTopics.has(topic))
+    || typeof payload !== 'object'
+    || payload === null
+  ) {
+    return null;
+  }
+  const value = (payload as Record<string, unknown>).competitionId;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+const reconcileOpenVacancy = async (
+  competitionId: string,
+  causationId: string,
+): Promise<void> => {
+  const candidate = await readVacancyQueueReconciliationCandidate(database, competitionId);
+  if (!candidate) return;
+  const command: CommandEnvelope<ReconcileVacancyQueuePayload> = {
+    commandId: randomUUID(),
+    commandType: 'RECONCILE_VACANCY_QUEUE',
+    idempotencyKey: `status-vacancy:${candidate.queueEntryId}:${candidate.action}:v${candidate.version}`,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'ChallengeQueueEntry',
+    aggregateId: candidate.queueEntryId,
+    expectedVersion: candidate.version,
+    correlationId: randomUUID(),
+    causationId,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: {
+      competitionId,
+      queueEntryId: candidate.queueEntryId,
+      action: candidate.action,
+    },
+  };
+  try {
+    await reconcileVacancyQueue(database, command, {
+      eventId: randomUUID(),
+      auditId: randomUUID(),
+      outboxMessageId: randomUUID(),
+      challengeId: randomUUID(),
+      challengeEventId: randomUUID(),
+      serviceChatId: randomUUID(),
+      serviceChatEventId: randomUUID(),
+      rulesetSnapshotId: randomUUID(),
+      acknowledgmentId: randomUUID(),
+      pairedQueueEventId: randomUUID(),
+      timerOutboxMessageId: randomUUID(),
+      staleQueueEventId: randomUUID(),
+      staleQueueOutboxMessageId: randomUUID(),
+      notificationOutboxMessageId: randomUUID(),
+      notificationIds: [randomUUID(), randomUUID()],
+    });
+  } catch (error) {
+    if (
+      error instanceof StatusQueueConflictError
+      && ['COMPETITION_PHASE_UNAVAILABLE', 'GENESIS_SINGLE_CANDIDATE_CHANGED',
+        'OFFICIAL_OBLIGATION_LIMIT', 'COMMUNITY_NOT_ACTIVE'].includes(error.code)
+    ) {
+      logger.info({ competitionId, reason: error.code }, 'vacancy queue reconciliation deferred');
+      return;
+    }
+    throw error;
+  }
+};
+
+const activateWaitingStatusHead = async (
+  competitionId: string,
+  causationId: string,
+): Promise<void> => {
+  const invalidConversion = await readInvalidBookingOfficialConversionCandidate(
+    database,
+    competitionId,
+  );
+  if (invalidConversion) {
+    const command: CommandEnvelope<{
+      readonly conversionId: string;
+      readonly queueEntryId: string;
+      readonly reasonCode: 'BOUND_HOLDER_CHANGED' | 'PREBOOKED_SOURCE_UNAVAILABLE';
+    }> = {
+      commandId: randomUUID(), commandType: 'INVALIDATE_PREBOOKED_OFFICIAL_CONVERSION',
+      idempotencyKey: `booking-conversion:${invalidConversion.conversionId}:invalidate:${invalidConversion.reasonCode}:v${invalidConversion.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'BookingOfficialConversion', aggregateId: invalidConversion.conversionId,
+      expectedVersion: invalidConversion.version, correlationId: randomUUID(), causationId,
+      requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+      payload: { conversionId: invalidConversion.conversionId,
+        queueEntryId: invalidConversion.queueEntryId, reasonCode: invalidConversion.reasonCode },
+    };
+    try {
+      await invalidateBookingOfficialConversionFromQueue(database, command, {
+        eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+        queueEventId: randomUUID(), notificationOutboxMessageId: randomUUID(),
+        notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+      });
+    } catch (error) {
+      if (error instanceof SchedulingConflictError && [
+        'OFFICIAL_CONVERSION_FIFO_REQUIRED', 'OFFICIAL_CONVERSION_NOT_ALLOWED',
+      ].includes(error.code)) {
+        logger.info({ competitionId, conversionId: invalidConversion.conversionId,
+          reason: error.code }, 'invalid prebooked conversion already reconciled');
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+  const conversion = await readBookingOfficialConversionActivationCandidate(database, competitionId);
+  if (conversion) {
+    const command: CommandEnvelope<{
+      readonly conversionId: string;
+      readonly queueEntryId: string;
+    }> = {
+      commandId: randomUUID(), commandType: 'ACTIVATE_PREBOOKED_OFFICIAL_CONVERSION',
+      idempotencyKey: `booking-conversion:${conversion.conversionId}:activate:v${conversion.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'BookingOfficialConversion', aggregateId: conversion.conversionId,
+      expectedVersion: conversion.version, correlationId: randomUUID(), causationId,
+      requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+      payload: { conversionId: conversion.conversionId, queueEntryId: conversion.queueEntryId },
+    };
+    try {
+      await activateBookingOfficialConversionFromQueue(database, command, {
+        eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+        queueEventId: randomUUID(), queueConsumedEventId: randomUUID(),
+        bookingEventId: randomUUID(),
+        timerOutboxMessageId: randomUUID(),
+        notificationOutboxMessageId: randomUUID(),
+        notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+      });
+    } catch (error) {
+      if (error instanceof SchedulingConflictError && [
+        'OFFICIAL_CONVERSION_FIFO_REQUIRED', 'OFFICIAL_CONVERSION_NOT_ALLOWED',
+      ].includes(error.code)) {
+        logger.info({ competitionId, conversionId: conversion.conversionId, reason: error.code },
+          'prebooked conversion activation deferred');
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+  const candidate = await readStatusQueueActivationCandidate(database, competitionId);
+  if (!candidate) return;
+  const command: CommandEnvelope<ActivateStatusQueueHeadPayload> = {
+    commandId: randomUUID(),
+    commandType: 'ACTIVATE_STATUS_QUEUE_HEAD',
+    idempotencyKey: `status-queue:${candidate.queueEntryId}:activate:v${candidate.version}`,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'ChallengeQueueEntry',
+    aggregateId: candidate.queueEntryId,
+    expectedVersion: candidate.version,
+    correlationId: randomUUID(),
+    causationId,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { competitionId, queueEntryId: candidate.queueEntryId },
+  };
+  try {
+    await activateStatusQueueHead(database, command, {
+      eventId: randomUUID(),
+      auditId: randomUUID(),
+      outboxMessageId: randomUUID(),
+      challengeId: randomUUID(),
+      challengeEventId: randomUUID(),
+      serviceChatId: randomUUID(),
+      serviceChatEventId: randomUUID(),
+      rulesetSnapshotId: randomUUID(),
+      acknowledgmentId: randomUUID(),
+      pairedQueueEventId: randomUUID(),
+      timerOutboxMessageId: randomUUID(),
+      staleQueueEventId: randomUUID(),
+      staleQueueOutboxMessageId: randomUUID(),
+      notificationOutboxMessageId: randomUUID(),
+      notificationIds: [randomUUID(), randomUUID()],
+    });
+  } catch (error) {
+    if (
+      error instanceof StatusQueueConflictError
+      && ['QUEUE_ENTRY_NOT_FOUND', 'QUEUE_ENTRY_NOT_HEAD', 'QUEUE_ENTRY_NOT_WAITING',
+        'STATUS_SLOT_OCCUPIED', 'BOUND_HOLDER_CHANGED', 'COMPETITION_PHASE_UNAVAILABLE',
+        'COMPETITION_NOT_ACTIVE', 'COMPETITION_INTEGRITY_HOLD', 'COMMUNITY_NOT_ACTIVE',
+        'RULESET_ACK_REQUIRED'].includes(error.code)
+    ) {
+      logger.info({ competitionId, reason: error.code }, 'status queue activation deferred');
+      return;
+    }
+    throw error;
+  }
+};
+
+const reconcileWaitingStatusEntries = async (
+  competitionId: string,
+  causationId: string,
+): Promise<void> => {
+  const candidates = await readStatusQueueReconciliationCandidates(database, competitionId);
+  for (const candidate of candidates) {
+    const command: CommandEnvelope<RequestStatusQueueReconfirmationPayload> = {
+      commandId: randomUUID(),
+      commandType: 'REQUEST_STATUS_QUEUE_RECONFIRMATION',
+      idempotencyKey: `status-queue:${candidate.queueEntryId}:holder-change:v${candidate.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry',
+      aggregateId: candidate.queueEntryId,
+      expectedVersion: candidate.version,
+      correlationId: randomUUID(),
+      causationId,
+      requestId: randomUUID(),
+      source: 'scheduler',
+      payloadVersion: 1,
+      payload: { competitionId, queueEntryId: candidate.queueEntryId },
+    };
+    try {
+      await requestStatusQueueReconfirmation(database, command, {
+        eventId: randomUUID(),
+        auditId: randomUUID(),
+        outboxMessageId: randomUUID(),
+        timerOutboxMessageId: randomUUID(),
+        notificationOutboxMessageId: randomUUID(),
+        notificationId: randomUUID(),
+      });
+    } catch (error) {
+      if (
+        error instanceof StatusQueueConflictError
+        && ['QUEUE_ENTRY_NOT_FOUND', 'QUEUE_RECONFIRMATION_NOT_REQUIRED',
+          'COMPETITION_PHASE_UNAVAILABLE'].includes(error.code)
+      ) {
+        logger.info(
+          { competitionId, queueEntryId: candidate.queueEntryId, reason: error.code },
+          'status queue holder reconciliation skipped',
+        );
+        continue;
+      }
+      throw error;
+    }
+  }
+};
+
+const executeLikeExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireLikePayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_LIKE',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Like',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { likeId: payload.aggregateId },
+  };
+  await expireLike(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+  });
+};
+
+const executeSuppressionExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireDiscoverySuppressionPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_DISCOVERY_SUPPRESSION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'DiscoveryPairSuppression',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { suppressionId: payload.aggregateId },
+  };
+  await expireDiscoverySuppression(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+  });
+};
+
+const executeSlotExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireSlotPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_SLOT',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Slot',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { slotId: payload.aggregateId },
+  };
+  await expireSlot(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+  });
+};
+
+const executeGroupOfferingExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireGroupOfferingPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_GROUP_OFFERING',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'GroupOffering',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { groupOfferingId: payload.aggregateId },
+  };
+  await expireGroupOffering(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+  });
+};
+
+const executeBookingIntentExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireBookingIntentPayload> = {
+    commandId: randomUUID(),
+    commandType: payload.commandType,
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Booking',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { bookingId: payload.aggregateId },
+  };
+  await expireBookingIntent(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    challengeEventId: randomUUID(),
+    challengeOutboxMessageId: randomUUID(),
+  });
+};
+
+const executeGroupPlanExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireGroupPlanPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_GROUP_PLAN',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'GroupPlan',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { groupPlanId: payload.aggregateId },
+  };
+  await expireGroupPlan(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+  });
+};
+
+const executeOpenSessionWindow = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<OpenSessionWindowPayload> = {
+    commandId: randomUUID(),
+    commandType: 'OPEN_SESSION_WINDOW',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Session',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { sessionId: payload.aggregateId },
+  };
+  await openSessionWindow(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    competitiveSnapshotId: randomUUID(),
+    bookingEventId: randomUUID(),
+    conversionEventId: randomUUID(),
+    conversionQueueEventId: randomUUID(),
+    conversionOutboxMessageId: randomUUID(),
+    conversionNotificationOutboxMessageId: randomUUID(),
+    conversionNotificationIds: [randomUUID(), randomUUID(), randomUUID()],
+  });
+};
+
+const executeOptionalChallengeExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireOptionalChallengePayload> = {
+    commandId: randomUUID(),
+    commandType: payload.commandType,
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Challenge',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { challengeId: payload.aggregateId },
+  };
+  await expireOptionalChallenge(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    notificationId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    resultId: randomUUID(),
+    resultEventId: randomUUID(),
+    statusTransitionId: randomUUID(),
+    statusEventId: randomUUID(),
+    cooldownId: randomUUID(),
+    cooldownEventId: randomUUID(),
+    timerOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID()],
+  });
+};
+
+const executeGenesisChallengeExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireGenesisChallengePayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_GENESIS_CHALLENGE',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Challenge',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { challengeId: payload.aggregateId },
+  };
+  await expireGenesisChallenge(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    queueEventIds: [randomUUID(), randomUUID()],
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID()],
+  });
+};
+
+const executeStatusQueueReconfirmationExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireStatusQueueReconfirmationPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_STATUS_QUEUE_RECONFIRMATION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'ChallengeQueueEntry',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { queueEntryId: payload.aggregateId },
+  };
+  await expireStatusQueueReconfirmation(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    timerOutboxMessageId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationId: randomUUID(),
+  });
+};
+
+const executeSingleGenesisCandidatePromotion = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<PromoteSingleGenesisCandidatePayload> = {
+    commandId: randomUUID(),
+    commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'ChallengeQueueEntry',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { queueEntryId: payload.aggregateId },
+  };
+  await promoteSingleGenesisCandidate(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    statusEventId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationId: randomUUID(),
+  });
+};
+
+const executeBookingOfficialConversionExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireBookingOfficialConversionPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_BOOKING_OFFICIAL_CONVERSION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'BookingOfficialConversion', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { conversionId: payload.aggregateId },
+  };
+  await expireBookingOfficialConversion(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+    bookingEventId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+  });
+};
+
+const executeBookingSoloContinuationExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireBookingSoloContinuationPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_BOOKING_SOLO_CONTINUATION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'BookingSoloContinuation',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { continuationId: payload.aggregateId },
+  };
+  await expireBookingSoloContinuation(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    bookingEventId: randomUUID(),
+    sessionEventId: randomUUID(),
+    slotEventId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID()],
+  });
+};
+
+const executeResultFinalization = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<FinalizeResultPayload> = {
+    commandId: randomUUID(),
+    commandType: 'FINALIZE_RESULT',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Result',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { resultId: payload.aggregateId },
+  };
+  await finalizeResult(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    challengeEventId: randomUUID(),
+    statusFinalizationId: randomUUID(),
+    statusEventId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID()],
+  });
+};
+
+const executeMissingResultTimer = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<MissingResultTimerPayload> = {
+    commandId: randomUUID(), commandType: payload.commandType,
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Challenge', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(),
+    causationId: null, requestId: randomUUID(), source: 'scheduler',
+    payloadVersion: 1, payload: { challengeId: payload.aggregateId },
+  };
+  const ids = {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: Array.from({ length: 20 }, () => randomUUID()),
+    reviewId: randomUUID(), reviewEventId: randomUUID(), operationalFollowupId: randomUUID(),
+  };
+  if (payload.commandType === 'REMIND_MISSING_RESULT_COACH') {
+    await remindMissingResultCoach(database, command, ids);
+  } else if (payload.commandType === 'ESCALATE_MISSING_RESULT_ADMIN') {
+    await escalateMissingResultAdmin(database, command, ids);
+  } else {
+    await openMissingResultReview(database, command, ids);
+  }
+};
+
 const taskList = createTaskList({
   onRuntimeProbe: (message) => logger.info({ message }, 'runtime probe'),
   onTimer: async (payload) => {
-    throw new Error(`No product timer handler registered for ${payload.commandType}`);
+    await processTimer(payload, {
+      handlers: {
+        EXPIRE_LIKE: {
+          loadSnapshot: (timer) => readLikeTimerSnapshot(database, timer.aggregateId),
+          execute: executeLikeExpiry,
+        },
+        EXPIRE_DISCOVERY_SUPPRESSION: {
+          loadSnapshot: (timer) =>
+            readDiscoverySuppressionTimerSnapshot(database, timer.aggregateId),
+          execute: executeSuppressionExpiry,
+        },
+        EXPIRE_SLOT: {
+          loadSnapshot: (timer) => readSlotTimerSnapshot(database, timer.aggregateId),
+          execute: executeSlotExpiry,
+        },
+        EXPIRE_GROUP_OFFERING: {
+          loadSnapshot: (timer) =>
+            readGroupOfferingTimerSnapshot(database, timer.aggregateId),
+          execute: executeGroupOfferingExpiry,
+        },
+        EXPIRE_BOOKING_SELECTION: {
+          loadSnapshot: (timer) =>
+            readBookingIntentTimerSnapshot(database, timer.aggregateId),
+          execute: executeBookingIntentExpiry,
+        },
+        EXPIRE_HOST_CONFIRMATION: {
+          loadSnapshot: (timer) =>
+            readBookingIntentTimerSnapshot(database, timer.aggregateId),
+          execute: executeBookingIntentExpiry,
+        },
+        EXPIRE_GROUP_PLAN: {
+          loadSnapshot: (timer) => readGroupPlanTimerSnapshot(database, timer.aggregateId),
+          execute: executeGroupPlanExpiry,
+        },
+        OPEN_SESSION_WINDOW: {
+          loadSnapshot: (timer) =>
+            readSessionTimerSnapshot(database, timer.aggregateId),
+          execute: executeOpenSessionWindow,
+        },
+        EXPIRE_OPTIONAL_CHALLENGE: {
+          loadSnapshot: (timer) =>
+            readChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeOptionalChallengeExpiry,
+        },
+        EXPIRE_MANDATORY_CHALLENGE: {
+          loadSnapshot: (timer) =>
+            readChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeOptionalChallengeExpiry,
+        },
+        EXPIRE_GENESIS_CHALLENGE: {
+          loadSnapshot: (timer) =>
+            readChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeGenesisChallengeExpiry,
+        },
+        EXPIRE_STATUS_QUEUE_RECONFIRMATION: {
+          loadSnapshot: (timer) =>
+            readStatusQueueTimerSnapshot(database, timer.aggregateId),
+          execute: executeStatusQueueReconfirmationExpiry,
+        },
+        PROMOTE_SINGLE_GENESIS_CANDIDATE: {
+          loadSnapshot: (timer) =>
+            readStatusQueueTimerSnapshot(database, timer.aggregateId),
+          execute: executeSingleGenesisCandidatePromotion,
+        },
+        EXPIRE_BOOKING_OFFICIAL_CONVERSION: {
+          loadSnapshot: (timer) =>
+            readBookingOfficialConversionTimerSnapshot(database, timer.aggregateId),
+          execute: executeBookingOfficialConversionExpiry,
+        },
+        EXPIRE_BOOKING_SOLO_CONTINUATION: {
+          loadSnapshot: (timer) =>
+            readBookingSoloContinuationTimerSnapshot(database, timer.aggregateId),
+          execute: executeBookingSoloContinuationExpiry,
+        },
+        FINALIZE_RESULT: {
+          loadSnapshot: (timer) => readResultTimerSnapshot(database, timer.aggregateId),
+          execute: executeResultFinalization,
+        },
+        REMIND_MISSING_RESULT_COACH: {
+          loadSnapshot: (timer) => readMissingResultChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeMissingResultTimer,
+        },
+        ESCALATE_MISSING_RESULT_ADMIN: {
+          loadSnapshot: (timer) => readMissingResultChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeMissingResultTimer,
+        },
+        OPEN_MISSING_RESULT_REVIEW: {
+          loadSnapshot: (timer) => readMissingResultChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeMissingResultTimer,
+        },
+      },
+      now: () => new Date(),
+      reschedule: scheduleTimer,
+      recordStaleDiagnostic: async (timer, decision) => {
+        logger.info(
+          {
+            actualState: decision.actualState,
+            actualVersion: decision.actualVersion,
+            aggregateId: timer.aggregateId,
+            commandType: timer.commandType,
+            reason: decision.reason,
+          },
+          'stale timer ignored',
+        );
+      },
+    });
   },
   onOutboxEvent: async (message) => {
     const notifications = parseNotificationProjection(message);
@@ -43,6 +885,18 @@ const taskList = createTaskList({
         'notification inbox projection handled',
       );
       return;
+    }
+    const competitionId = competitionIdFromOutbox(message.topic, message.payload);
+    if (competitionId) {
+      if (vacancyQueueReconciliationTopics.has(message.topic)) {
+        await reconcileOpenVacancy(competitionId, message.eventId);
+      }
+      if (statusQueueActivationTopics.has(message.topic)) {
+        if (statusQueueHolderChangeTopics.has(message.topic)) {
+          await reconcileWaitingStatusEntries(competitionId, message.eventId);
+        }
+        await activateWaitingStatusHead(competitionId, message.eventId);
+      }
     }
     const claimed = await claimInboxEvent(database, `outbox:${message.topic}`, message.eventId);
     if (!claimed) {
@@ -85,6 +939,16 @@ const outboxPolling = startOutboxPolling({
       ),
   },
   deliver: async (message) => {
+    const socialTimer = socialTimerFromOutbox(message.topic, message.payload);
+    const timer = socialTimer
+      ?? schedulingTimerFromOutbox(message.topic, message.payload)
+      ?? challengeTimerFromOutbox(message.topic, message.payload)
+      ?? statusQueueTimerFromOutbox(message.topic, message.payload)
+      ?? missingResultTimerFromOutbox(message.topic, message.payload)
+      ?? resultTimerFromOutbox(message.topic, message.payload);
+    if (timer) {
+      await scheduleTimer(timer, new Date(timer.deadlineAt));
+    }
     await runner.addJob(
       'deliver_outbox_event',
       {
@@ -109,6 +973,7 @@ const shutdown = async () => {
   stopping = true;
   await outboxPolling.stop();
   await runner.stop();
+  await workerUtils.release();
   await database.destroy();
 };
 

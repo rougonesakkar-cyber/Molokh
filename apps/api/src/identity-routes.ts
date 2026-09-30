@@ -6,15 +6,18 @@ import {
 import {
   ApiErrorSchema,
   ChangeDisplayNameBodySchema,
+  ChangeSportsBodySchema,
   IdentityCommandResponseSchema,
   MeResponseSchema,
   type ChangeDisplayNameBody,
+  type ChangeSportsBody,
   type IdentityCommandResponse,
   type IdentityProjectionContract,
   type MeResponse,
 } from '@molokh/contracts';
 import type {
   ChangeDisplayNamePayload,
+  ChangeSportsPayload,
   ExecutedCommand,
   IdentityEffectIds,
 } from '@molokh/db';
@@ -29,6 +32,10 @@ export interface IdentityRouteDependencies {
   readonly readMe: (userId: string) => Promise<IdentityProjection | null>;
   readonly changeDisplayName: (
     command: CommandEnvelope<ChangeDisplayNamePayload>,
+    ids: IdentityEffectIds,
+  ) => Promise<ExecutedCommand<IdentityProjection>>;
+  readonly changeSports: (
+    command: CommandEnvelope<ChangeSportsPayload>,
     ids: IdentityEffectIds,
   ) => Promise<ExecutedCommand<IdentityProjection>>;
 }
@@ -154,6 +161,70 @@ export async function registerIdentityRoutes(
         payload: { displayName: request.body.displayName },
       };
       const executed = await dependencies.changeDisplayName(command, {
+        eventId: newUuidV7(),
+        auditId: newUuidV7(),
+        outboxMessageId: newUuidV7(),
+      });
+      return {
+        data: contractIdentity(executed.response),
+        meta: {
+          requestId: context.requestId,
+          eventId: executed.eventId,
+          replayed: executed.replayed,
+        },
+      };
+    },
+  );
+
+  app.patch<{
+    Body: ChangeSportsBody;
+    Headers: IdentityHeaders;
+  }>(
+    '/api/v1/me/sports',
+    {
+      schema: {
+        operationId: 'changeMySports',
+        body: ChangeSportsBodySchema,
+        response: {
+          200: IdentityCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<IdentityCommandResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const idempotencyKey = request.headers['idempotency-key']?.trim();
+      if (!idempotencyKey) throw new InvalidCommandEnvelopeError('Idempotency-Key');
+      const context = requestContext(request);
+      const command: CommandEnvelope<ChangeSportsPayload> = {
+        commandId: newUuidV7(),
+        commandType: 'CHANGE_SPORTS',
+        idempotencyKey,
+        actor: {
+          type: 'USER',
+          id: authenticated.userId,
+          roles: ['ATHLETE'],
+          scopeIds: [],
+        },
+        aggregateType: 'User',
+        aggregateId: authenticated.userId,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'api',
+        payloadVersion: 1,
+        payload: request.body,
+      };
+      const executed = await dependencies.changeSports(command, {
         eventId: newUuidV7(),
         auditId: newUuidV7(),
         outboxMessageId: newUuidV7(),

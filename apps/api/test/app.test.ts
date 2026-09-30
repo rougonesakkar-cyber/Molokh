@@ -7,18 +7,90 @@ import {
 } from '@molokh/core';
 import type {
   ChangeDisplayNamePayload,
+  ChangeSportsPayload,
   CommunityContextProjection,
   DiscoveryCardProjection,
   IdentityEffectIds,
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
   AppointGymAdminPayload,
+  BlockActionProjection,
+  BlockEffectIds,
+  BlockProjection,
+  BlockUserPayload,
   ChangePrimaryAdminPayload,
+  ChatMessagePage,
+  ChatMessageProjection,
+  DiscoveryActionProjection,
+  CreateLikePayload,
   StartVerificationPayload,
   InviteCoachPayload,
   RoleGrantEffectIds,
   PrimaryAdminEffectIds,
   PrimaryAdminProjection,
+  MatchProjection,
+  LikeEffectIds,
+  SkipDiscoveryPayload,
+  SkipEffectIds,
+  UnblockActionProjection,
+  UnblockEffectIds,
+  UnblockUserPayload,
+  UnmatchEffectIds,
+  UnmatchPayload,
+  UnmatchProjection,
+  ExecutedCommand,
+  EditChatMessageEffectIds,
+  EditChatMessagePayload,
+  HiddenMessageProjection,
+  HideChatMessageEffectIds,
+  HideChatMessagePayload,
+  ReportChatMessageEffectIds,
+  ReportChatMessagePayload,
+  ReportedMessageProjection,
+  SendChatMessageEffectIds,
+  SendChatMessagePayload,
+  BookingIntentProjection,
+  BookingOfficialConversionEffectIds,
+  BookingOfficialConversionProjection,
+  BookingSoloContinuationEffectIds,
+  BookingSoloContinuationProjection,
+  DecideBookingOfficialConversionPayload,
+  DecideBookingSoloContinuationPayload,
+  ConfirmBookingHostPayload,
+  ConfirmGroupPlanPayload,
+  GroupOfferingProjection,
+  GroupPlanProjection,
+  HostConfirmationEffectIds,
+  HostConfirmationProjection,
+  HostRejectionEffectIds,
+  HostRejectionProjection,
+  PairIntentNotificationEffectIds,
+  ProposeGroupPlanPayload,
+  PublishGroupOfferingPayload,
+  PublishSlotPayload,
+  RejectBookingHostPayload,
+  SchedulingEffectIds,
+  SelectSameSlotPayload,
+  SelectSlotPayload,
+  SessionLifecycleProjection,
+  SessionEffectIds,
+  StartSessionPayload,
+  RecordAttendancePayload,
+  RequestBookingOfficialConversionPayload,
+  RequestTrainingParticipantCancellationPayload,
+  EndSessionPayload,
+  ReplaceSessionCoachPayload,
+  CancelAfterCoachReplacementPayload,
+  FailSessionExternalPayload,
+  SlotProjection,
+  TrainingOptionsProjection,
+  UpdateGroupOfferingPayload,
+  UpdateSlotPayload,
+  VenueAdminDashboardProjection,
+  WithdrawGroupOfferingPayload,
+  WithdrawSlotPayload,
+  ChallengeProjection,
+  ChatChallengeProjection,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -57,18 +129,33 @@ afterEach(async () => {
 });
 
 describe('runtime contract', () => {
-  it('returns the typed readiness projection', async () => {
-    const app = await buildApp();
+  it('separates process liveness from dependency readiness', async () => {
+    const readiness = vi.fn().mockResolvedValue(true);
+    const app = await buildApp({ readiness });
     apps.push(app);
 
+    const live = await app.inject({ method: 'GET', url: '/health/live' });
     const response = await app.inject({ method: 'GET', url: '/health/ready' });
 
+    expect(live.statusCode).toBe(200);
     expect(response.statusCode).toBe(200);
+    expect(readiness).toHaveBeenCalledOnce();
     expect(response.json()).toEqual({
       status: 'ok',
       service: 'molokh-api',
       contractVersion: 1,
     });
+
+    const unavailableApp = await buildApp({
+      readiness: vi.fn().mockResolvedValue(false),
+    });
+    apps.push(unavailableApp);
+    const unavailable = await unavailableApp.inject({
+      method: 'GET',
+      url: '/health/ready',
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toMatchObject({ code: 'SERVICE_NOT_READY' });
   });
 
   it('publishes an OpenAPI 3.1 document', async () => {
@@ -79,6 +166,7 @@ describe('runtime contract', () => {
     const document = app.swagger();
 
     expect('openapi' in document ? document.openapi : undefined).toBe('3.1.0');
+    expect(document.paths).toHaveProperty('/health/live');
     expect(document.paths).toHaveProperty('/health/ready');
     expect(document.paths).toHaveProperty('/v1/meta/runtime');
   });
@@ -132,6 +220,7 @@ describe('runtime contract', () => {
         auth: new StaticBearerAuthAdapter(token, userId),
         readMe: async () => identity,
         changeDisplayName: vi.fn(),
+        changeSports: vi.fn(),
       },
     });
     apps.push(app);
@@ -173,6 +262,7 @@ describe('runtime contract', () => {
         auth: new StaticBearerAuthAdapter(token, userId),
         readMe: async () => identity,
         changeDisplayName,
+        changeSports: vi.fn(),
       },
     });
     apps.push(app);
@@ -210,6 +300,58 @@ describe('runtime contract', () => {
     });
   });
 
+  it('passes an idempotent, versioned sports command to the identity module', async () => {
+    const changed: IdentityProjection = {
+      ...identity,
+      primarySport: 'RUNNING',
+      secondarySport: 'BOXING',
+      version: 2,
+    };
+    const changeSports = vi.fn(async (
+      _command: CommandEnvelope<ChangeSportsPayload>,
+      _ids: IdentityEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: changed,
+      eventId: '0199a1b2-1234-7000-8000-000000000312',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const app = await buildApp({
+      identity: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readMe: async () => identity,
+        changeDisplayName: vi.fn(),
+        changeSports,
+      },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/me/sports',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'sports-test-1',
+        'if-match': '1',
+      },
+      payload: { primarySport: 'RUNNING', secondarySport: 'BOXING' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: { primarySport: 'RUNNING', secondarySport: 'BOXING', version: 2 },
+      meta: { eventId: '0199a1b2-1234-7000-8000-000000000312' },
+    });
+    expect(changeSports.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CHANGE_SPORTS',
+      idempotencyKey: 'sports-test-1',
+      aggregateId: userId,
+      expectedVersion: 1,
+      payload: { primarySport: 'RUNNING', secondarySport: 'BOXING' },
+    });
+  });
+
   it('answers allowed browser preflight requests without reaching a route', async () => {
     const app = await buildApp({ allowedOrigins: ['http://localhost:8081'] });
     apps.push(app);
@@ -217,11 +359,16 @@ describe('runtime contract', () => {
     const response = await app.inject({
       method: 'OPTIONS',
       url: '/api/v1/me',
-      headers: { origin: 'http://localhost:8081' },
+      headers: {
+        origin: 'http://localhost:8081',
+        'access-control-request-method': 'PATCH',
+      },
     });
 
     expect(response.statusCode).toBe(204);
     expect(response.headers['access-control-allow-origin']).toBe('http://localhost:8081');
+    expect(response.headers['access-control-allow-headers']).toContain('X-Causation-Id');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
   });
 
   it('returns the authenticated pilot Community with action-level denials', async () => {
@@ -328,10 +475,137 @@ describe('runtime contract', () => {
       },
     ];
     const readCards = vi.fn(async () => cards);
+    const matchedAt = '2026-09-06T12:00:00.000Z';
+    const match: MatchProjection = {
+      matchId: '0199a1b2-1234-7000-8000-000000000405',
+      chatId: '0199a1b2-1234-7000-8000-000000000406',
+      state: 'ACTIVE',
+      counterpartUserId: cards[0]!.candidateUserId,
+      counterpartDisplayName: cards[0]!.displayName,
+      lastActivityAt: matchedAt,
+      version: 1,
+    };
+    const createLike = vi.fn(async (
+      _command: CommandEnvelope<CreateLikePayload>,
+      _ids: LikeEffectIds,
+    ): Promise<ExecutedCommand<DiscoveryActionProjection>> => ({
+      responseStatus: 201,
+      response: {
+        action: 'MATCHED',
+        like: {
+          likeId: '0199a1b2-1234-7000-8000-000000000407',
+          fromUserId: userId,
+          toUserId: cards[0]!.candidateUserId,
+          state: 'MATCHED',
+          expiresAt: '2026-10-06T12:00:00.000Z',
+          version: 1,
+        },
+        match,
+        suppressionUntil: null,
+      } satisfies DiscoveryActionProjection,
+      eventId: '0199a1b2-1234-7000-8000-000000000408',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const skip = vi.fn(async (
+      _command: CommandEnvelope<SkipDiscoveryPayload>,
+      _ids: SkipEffectIds,
+    ): Promise<ExecutedCommand<DiscoveryActionProjection>> => ({
+      responseStatus: 201,
+      response: {
+        action: 'SKIPPED',
+        like: null,
+        match: null,
+        suppressionUntil: '2026-09-21T12:00:00.000Z',
+      } satisfies DiscoveryActionProjection,
+      eventId: '0199a1b2-1234-7000-8000-000000000409',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const readMatches = vi.fn(async () => [match]);
+    const preservation = {
+      acceptedObligationsPreserved: true,
+      statusPathsPreserved: true,
+      optionalPreAcceptanceIntentsClosed: true,
+    } as const;
+    const unmatch = vi.fn(async (
+      _command: CommandEnvelope<UnmatchPayload>,
+      _ids: UnmatchEffectIds,
+    ): Promise<ExecutedCommand<UnmatchProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'UNMATCHED',
+        matchId: match.matchId,
+        matchState: 'UNMATCHED',
+        chatId: match.chatId,
+        chatState: 'CLOSED',
+        suppressionUntil: '2026-09-21T12:00:00.000Z',
+        version: 2,
+        preservation,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000410',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const blockProjection: BlockProjection = {
+      blockId: '0199a1b2-1234-7000-8000-000000000411',
+      blockedUserId: cards[0]!.candidateUserId,
+      blockedDisplayName: cards[0]!.displayName,
+      state: 'ACTIVE',
+      reasonCode: null,
+      createdAt: matchedAt,
+      revokedAt: null,
+      version: 1,
+    };
+    const block = vi.fn(async (
+      _command: CommandEnvelope<BlockUserPayload>,
+      _ids: BlockEffectIds,
+    ): Promise<ExecutedCommand<BlockActionProjection>> => ({
+      responseStatus: 201,
+      response: {
+        action: 'BLOCKED',
+        block: blockProjection,
+        affectedMatch: { matchId: match.matchId, state: 'BLOCKED', version: 2 },
+        personalChatClosed: true,
+        preservation,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000412',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const readBlocks = vi.fn(async () => [blockProjection]);
+    const readLatestBlock = vi.fn(async () => blockProjection);
+    const unblock = vi.fn(async (
+      _command: CommandEnvelope<UnblockUserPayload>,
+      _ids: UnblockEffectIds,
+    ): Promise<ExecutedCommand<UnblockActionProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'UNBLOCKED',
+        block: {
+          ...blockProjection,
+          state: 'REVOKED',
+          revokedAt: '2026-09-07T12:00:00.000Z',
+          version: 2,
+        },
+        oldMatchRestored: false,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000413',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
     const app = await buildApp({
       discovery: {
         auth: new StaticBearerAuthAdapter(token, userId),
         readCards,
+        createLike,
+        skip,
+        readMatches,
+        unmatch,
+        block,
+        readBlocks,
+        readLatestBlock,
+        unblock,
       },
     });
     apps.push(app);
@@ -366,8 +640,288 @@ describe('runtime contract', () => {
     });
     expect(response.json().data[0]).not.toHaveProperty('recentActivityBucket');
     expect(response.json().data[0]).not.toHaveProperty('responseSpeedBucket');
+
+    const invalidLike = await app.inject({
+      method: 'POST',
+      url: `/api/v1/discovery/${cards[0]!.candidateUserId}/like`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'discovery-like-test-1',
+      },
+    });
+    expect(invalidLike.statusCode).toBe(400);
+
+    const liked = await app.inject({
+      method: 'POST',
+      url: `/api/v1/discovery/${cards[0]!.candidateUserId}/like`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'discovery-like-test-1',
+        'if-match': '0',
+      },
+    });
+    expect(liked.statusCode).toBe(201);
+    expect(liked.json()).toMatchObject({
+      data: { action: 'MATCHED', match: { chatId: match.chatId } },
+      meta: { replayed: false },
+    });
+    expect(createLike.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'LIKE',
+      aggregateType: 'Like',
+      expectedVersion: 0,
+      payload: { targetUserId: cards[0]!.candidateUserId, source: 'DISCOVERY' },
+    });
+
+    const skipped = await app.inject({
+      method: 'POST',
+      url: `/api/v1/discovery/${cards[0]!.candidateUserId}/skip`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'discovery-skip-test-1',
+        'if-match': '0',
+      },
+    });
+    expect(skipped.statusCode).toBe(201);
+    expect(skipped.json()).toMatchObject({ data: { action: 'SKIPPED' } });
+
+    const matches = await app.inject({
+      method: 'GET',
+      url: '/api/v1/matches',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(matches.statusCode).toBe(200);
+    expect(matches.json()).toMatchObject({ data: [{ matchId: match.matchId }] });
+
+    const unmatched = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/matches/${match.matchId}`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'match-unmatch-test-1',
+        'if-match': '1',
+      },
+    });
+    expect(unmatched.statusCode).toBe(200);
+    expect(unmatched.json()).toMatchObject({
+      data: {
+        action: 'UNMATCHED',
+        preservation: { acceptedObligationsPreserved: true, statusPathsPreserved: true },
+      },
+    });
+    expect(unmatch.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'UNMATCH',
+      aggregateType: 'Match',
+      aggregateId: match.matchId,
+      expectedVersion: 1,
+    });
+
+    const blocked = await app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${cards[0]!.candidateUserId}/block`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'user-block-test-1',
+        'if-match': '0',
+      },
+    });
+    expect(blocked.statusCode).toBe(201);
+    expect(blocked.json()).toMatchObject({ data: { action: 'BLOCKED' } });
+
+    const blocks = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me/blocks',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(blocks.statusCode).toBe(200);
+    expect(blocks.json()).toMatchObject({ data: [{ blockId: blockProjection.blockId }] });
+
+    const unblocked = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/users/${cards[0]!.candidateUserId}/block`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'user-unblock-test-1',
+        'if-match': '1',
+      },
+    });
+    expect(unblocked.statusCode).toBe(200);
+    expect(unblocked.json()).toMatchObject({
+      data: { action: 'UNBLOCKED', oldMatchRestored: false },
+    });
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/discovery/cards');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/discovery/{userId}/like');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/discovery/{userId}/skip');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/matches');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/matches/{matchId}');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/users/{userId}/block');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/me/blocks');
+  });
+
+  it('[AC-193][AC-194] exposes participant-only Chat message commands without parsing action text', async () => {
+    const chatId = '0199a1b2-1234-7000-8000-000000000501';
+    const messageId = '0199a1b2-1234-7000-8000-000000000502';
+    const message: ChatMessageProjection = {
+      messageId,
+      chatId,
+      senderUserId: userId,
+      senderDisplayName: 'Свободный атлет',
+      payloadType: 'PERSONAL_TEXT',
+      content: { kind: 'PERSONAL_TEXT', text: 'Пойдём тренироваться?' },
+      state: 'ACTIVE',
+      revisionNo: 1,
+      edited: false,
+      reported: false,
+      createdAt: '2026-09-07T10:00:00.000Z',
+      updatedAt: '2026-09-07T10:00:00.000Z',
+      version: 1,
+    };
+    const readMessages = vi.fn(async (): Promise<ChatMessagePage> => ({
+      messages: [message],
+      chatState: 'OPEN',
+      nextCursor: null,
+    }));
+    const sendMessage = vi.fn(async (
+      _command: CommandEnvelope<SendChatMessagePayload>,
+      _ids: SendChatMessageEffectIds,
+    ): Promise<ExecutedCommand<ChatMessageProjection>> => ({
+      responseStatus: 201,
+      response: message,
+      eventId: '0199a1b2-1234-7000-8000-000000000503',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const editMessage = vi.fn(async (
+      _command: CommandEnvelope<EditChatMessagePayload>,
+      _ids: EditChatMessageEffectIds,
+    ): Promise<ExecutedCommand<ChatMessageProjection>> => ({
+      responseStatus: 200,
+      response: {
+        ...message,
+        content: { kind: 'PERSONAL_TEXT', text: 'Пойдём на групповую?' },
+        revisionNo: 2,
+        edited: true,
+        version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000504',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const hideMessage = vi.fn(async (
+      _command: CommandEnvelope<HideChatMessagePayload>,
+      _ids: HideChatMessageEffectIds,
+    ): Promise<ExecutedCommand<HiddenMessageProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'HIDDEN_FOR_USER',
+        messageId,
+        hiddenAt: '2026-09-07T10:05:00.000Z',
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000505',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const reportMessage = vi.fn(async (
+      _command: CommandEnvelope<ReportChatMessagePayload>,
+      _ids: ReportChatMessageEffectIds,
+    ): Promise<ExecutedCommand<ReportedMessageProjection>> => ({
+      responseStatus: 201,
+      response: {
+        action: 'REPORTED',
+        messageId,
+        reportId: '0199a1b2-1234-7000-8000-000000000506',
+        state: 'PENDING_CENTRAL',
+        reportedAt: '2026-09-07T10:06:00.000Z',
+        version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000507',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const app = await buildApp({
+      chat: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readMessages,
+        sendMessage,
+        editMessage,
+        hideMessage,
+        reportMessage,
+      },
+    });
+    apps.push(app);
+
+    const history = await app.inject({
+      method: 'GET',
+      url: `/api/v1/chats/${chatId}/messages?limit=25`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(history.statusCode).toBe(200);
+    expect(history.json()).toMatchObject({
+      data: [{ messageId, content: { kind: 'PERSONAL_TEXT' } }],
+      meta: { chatState: 'OPEN', nextCursor: null, viewerUserId: userId },
+    });
+    expect(readMessages).toHaveBeenCalledWith(chatId, userId, 25, null);
+
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/v1/chats/${chatId}/messages`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'chat-send-api-1',
+        'if-match': '0',
+      },
+      payload: { text: 'Пойдём тренироваться?' },
+    });
+    expect(sent.statusCode).toBe(201);
+    expect(sendMessage.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'SEND_MESSAGE',
+      expectedVersion: 0,
+      payload: { chatId, content: { kind: 'PERSONAL_TEXT' } },
+    });
+
+    const edited = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/messages/${messageId}`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'chat-edit-api-1',
+        'if-match': '1',
+      },
+      payload: { text: 'Пойдём на групповую?' },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json()).toMatchObject({ data: { revisionNo: 2, edited: true } });
+
+    const hidden = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/messages/${messageId}/visibility`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'chat-hide-api-1',
+        'if-match': '0',
+      },
+    });
+    expect(hidden.statusCode).toBe(200);
+    expect(hidden.json()).toMatchObject({ data: { action: 'HIDDEN_FOR_USER' } });
+
+    const reported = await app.inject({
+      method: 'POST',
+      url: `/api/v1/messages/${messageId}/reports`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'chat-report-api-1',
+        'if-match': '1',
+      },
+      payload: { reasonCode: 'ABUSE' },
+    });
+    expect(reported.statusCode).toBe(201);
+    expect(reported.json()).toMatchObject({ data: { action: 'REPORTED' } });
+
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/messages');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/visibility');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/reports');
   });
 
   it('runs the no-document Athlete-to-Central verification workflow', async () => {
@@ -729,5 +1283,1278 @@ describe('runtime contract', () => {
       expectedVersion: 0,
       payload: { userId: coachUserId, venueId, reasonCode: 'PILOT_PRIMARY' },
     });
+  });
+
+  it('[AC-173] exposes role-owned schedule publication and participant Chat options', async () => {
+    const venueId = '0199a1b2-1234-7000-8000-000000000701';
+    const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
+    const chatId = '0199a1b2-1234-7000-8000-000000000703';
+    const slot: SlotProjection = {
+      slotId: '0199a1b2-1234-7000-8000-000000000704',
+      venueId,
+      venueDisplayName: 'Molokh Pilot Gym',
+      coachUserId,
+      coachDisplayName: 'Пилотный тренер',
+      startAt: '2026-09-10T14:00:00.000Z',
+      endAt: '2026-09-10T15:00:00.000Z',
+      state: 'PUBLISHED',
+      priceAmount: '1500.00',
+      priceCurrency: 'RUB',
+      priceText: 'Оплата напрямую залу',
+      cancellationTermsText: 'Уточните условия у зала',
+      commercialVersion: 1,
+      version: 1,
+    };
+    const offering: GroupOfferingProjection = {
+      groupOfferingId: '0199a1b2-1234-7000-8000-000000000705',
+      venueId,
+      venueDisplayName: 'Molokh Pilot Gym',
+      sportCode: 'BOXING',
+      classLabel: 'Открытая группа по боксу',
+      startAt: '2026-09-11T16:00:00.000Z',
+      endAt: '2026-09-11T17:00:00.000Z',
+      coachDisplayName: 'Пилотный тренер',
+      priceText: 'Уточните стоимость у зала',
+      externalInfoUrl: null,
+      contact: { phone: '+79990000501' },
+      capacityDisclaimerKey: 'group.capacity.confirm-with-venue',
+      lastUpdatedAt: '2026-09-07T10:00:00.000Z',
+      state: 'PUBLISHED',
+      version: 1,
+    };
+    const options: TrainingOptionsProjection = {
+      slots: [slot],
+      groupOfferings: [offering],
+      activeIntent: { booking: null, groupPlan: null },
+      reservationPolicy: 'NO_RESERVATION_BEFORE_HOST_CONFIRMATION',
+    };
+    const readTrainingOptions = vi.fn(async () => options);
+    const publishSlot = vi.fn(
+      async (
+        _command: CommandEnvelope<PublishSlotPayload>,
+        _ids: SchedulingEffectIds,
+      ): Promise<ExecutedCommand<SlotProjection>> => {
+        return {
+          responseStatus: 201,
+          response: slot,
+          eventId: '0199a1b2-1234-7000-8000-000000000706',
+          aggregateVersion: 1,
+          replayed: false,
+        };
+      },
+    );
+    const publishGroupOffering = vi.fn(
+      async (
+        _command: CommandEnvelope<PublishGroupOfferingPayload>,
+        _ids: SchedulingEffectIds,
+      ): Promise<ExecutedCommand<GroupOfferingProjection>> => ({
+        responseStatus: 201,
+        response: offering,
+        eventId: '0199a1b2-1234-7000-8000-000000000707',
+        aggregateVersion: 1,
+        replayed: false,
+      }),
+    );
+    const updateSlot = vi.fn(
+      async (
+        _command: CommandEnvelope<UpdateSlotPayload>,
+        _ids: SchedulingEffectIds,
+      ): Promise<ExecutedCommand<SlotProjection>> => ({
+        responseStatus: 200,
+        response: { ...slot, commercialVersion: 2, version: 2 },
+        eventId: '0199a1b2-1234-7000-8000-000000000726',
+        aggregateVersion: 2,
+        replayed: false,
+      }),
+    );
+    const withdrawSlot = vi.fn(
+      async (
+        _command: CommandEnvelope<WithdrawSlotPayload>,
+        _ids: SchedulingEffectIds,
+      ): Promise<ExecutedCommand<SlotProjection>> => ({
+        responseStatus: 200,
+        response: { ...slot, state: 'WITHDRAWN', version: 2 },
+        eventId: '0199a1b2-1234-7000-8000-000000000727',
+        aggregateVersion: 2,
+        replayed: false,
+      }),
+    );
+    const updateGroupOffering = vi.fn(
+      async (
+        _command: CommandEnvelope<UpdateGroupOfferingPayload>,
+        _ids: SchedulingEffectIds,
+      ): Promise<ExecutedCommand<GroupOfferingProjection>> => ({
+        responseStatus: 200,
+        response: { ...offering, classLabel: 'Обновлённая группа', version: 2 },
+        eventId: '0199a1b2-1234-7000-8000-000000000728',
+        aggregateVersion: 2,
+        replayed: false,
+      }),
+    );
+    const withdrawGroupOffering = vi.fn(
+      async (
+        _command: CommandEnvelope<WithdrawGroupOfferingPayload>,
+        _ids: SchedulingEffectIds,
+      ): Promise<ExecutedCommand<GroupOfferingProjection>> => ({
+        responseStatus: 200,
+        response: { ...offering, state: 'WITHDRAWN', version: 2 },
+        eventId: '0199a1b2-1234-7000-8000-000000000729',
+        aggregateVersion: 2,
+        replayed: false,
+      }),
+    );
+    const booking: BookingIntentProjection = {
+      bookingId: '0199a1b2-1234-7000-8000-000000000708',
+      chatId,
+      slotId: slot.slotId,
+      purpose: 'TRAINING',
+      challengeId: null,
+      state: 'SELECTING',
+      selectedByUserIds: [userId],
+      selectionExpiresAt: '2026-09-07T11:00:00.000Z',
+      hostConfirmationDeadlineAt: '2026-09-10T06:00:00.000Z',
+      commercialTermsSnapshot: null,
+      hostConfirmedAt: null,
+      sessionId: null,
+      version: 1,
+    };
+    const groupPlan: GroupPlanProjection = {
+      groupPlanId: '0199a1b2-1234-7000-8000-000000000709',
+      chatId,
+      groupOfferingId: offering.groupOfferingId,
+      proposedByUserId: userId,
+      confirmedByPeer: false,
+      state: 'PROPOSED',
+      offeringSnapshot: {
+        groupOfferingId: offering.groupOfferingId,
+        venueId,
+        venueDisplayName: offering.venueDisplayName,
+        sportCode: offering.sportCode,
+        classLabel: offering.classLabel,
+        startAt: offering.startAt,
+        endAt: offering.endAt,
+        coachDisplayName: offering.coachDisplayName,
+        priceText: offering.priceText,
+        externalInfoUrl: offering.externalInfoUrl,
+        contact: offering.contact as Record<string, unknown>,
+        offeringVersion: offering.version,
+      },
+      version: 1,
+    };
+    const selectedSlot = vi.fn(
+      async (_command: CommandEnvelope<SelectSlotPayload>, _ids: PairIntentNotificationEffectIds): Promise<ExecutedCommand<BookingIntentProjection>> => ({
+        responseStatus: 201,
+        response: booking,
+        eventId: '0199a1b2-1234-7000-8000-000000000710',
+        aggregateVersion: 1,
+        replayed: false,
+      }),
+    );
+    const selectedSameSlot = vi.fn(
+      async (_command: CommandEnvelope<SelectSameSlotPayload>, _ids: PairIntentNotificationEffectIds): Promise<ExecutedCommand<BookingIntentProjection>> => ({
+        responseStatus: 200,
+        response: { ...booking, state: 'HOST_CONFIRMATION_PENDING', selectedByUserIds: [userId, coachUserId], commercialTermsSnapshot: {
+          slotId: slot.slotId, venueId, venueDisplayName: slot.venueDisplayName,
+          coachUserId, coachDisplayName: slot.coachDisplayName, startAt: slot.startAt,
+          endAt: slot.endAt, priceAmount: slot.priceAmount, priceCurrency: slot.priceCurrency,
+          priceText: slot.priceText, cancellationTermsText: slot.cancellationTermsText,
+          commercialVersion: slot.commercialVersion,
+        }, version: 2 },
+        eventId: '0199a1b2-1234-7000-8000-000000000711', aggregateVersion: 2, replayed: false,
+      }),
+    );
+    const pendingBooking: BookingIntentProjection = {
+      ...booking,
+      state: 'HOST_CONFIRMATION_PENDING',
+      selectedByUserIds: [userId, coachUserId],
+      commercialTermsSnapshot: {
+        slotId: slot.slotId,
+        venueId,
+        venueDisplayName: slot.venueDisplayName,
+        coachUserId,
+        coachDisplayName: slot.coachDisplayName,
+        startAt: slot.startAt,
+        endAt: slot.endAt,
+        priceAmount: slot.priceAmount,
+        priceCurrency: slot.priceCurrency,
+        priceText: slot.priceText,
+        cancellationTermsText: slot.cancellationTermsText,
+        commercialVersion: slot.commercialVersion,
+      },
+      version: 2,
+    };
+    const hostConfirmationItems = [
+      {
+        booking: pendingBooking,
+        athleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'] as const,
+      },
+    ] as const;
+    const readHostConfirmationQueue = vi.fn(async () => hostConfirmationItems);
+    const adminDashboard: VenueAdminDashboardProjection = {
+      venue: {
+        venueId,
+        displayName: 'Molokh Pilot Gym',
+        timezone: 'Europe/Moscow',
+        slotPublishHorizonDays: 30,
+      },
+      coaches: [{ userId: coachUserId, displayName: 'Пилотный тренер' }],
+      slots: [slot],
+      groupOfferings: [offering],
+      hostConfirmations: hostConfirmationItems,
+      groupInterests: [{
+        groupPlanId: groupPlan.groupPlanId,
+        groupOfferingId: offering.groupOfferingId,
+        athleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'],
+        classLabel: offering.classLabel,
+        startAt: offering.startAt,
+        notifiedAt: '2026-09-07T10:30:00.000Z',
+        state: 'NOTIFIED',
+        version: 2,
+      }],
+    };
+    const readVenueAdminDashboard = vi.fn(async () => adminDashboard);
+    const sessionId = '0199a1b2-1234-7000-8000-000000000714';
+    const confirmedByHost = vi.fn(
+      async (
+        _command: CommandEnvelope<ConfirmBookingHostPayload>,
+        _ids: HostConfirmationEffectIds,
+      ): Promise<ExecutedCommand<HostConfirmationProjection>> => ({
+        responseStatus: 200,
+        response: {
+          outcome: 'CONFIRMED',
+          booking: {
+            ...pendingBooking,
+            state: 'CONFIRMED_PAIR',
+            hostConfirmedAt: '2026-09-07T10:10:00.000Z',
+            sessionId,
+            version: 3,
+          },
+          session: {
+            sessionId,
+            bookingId: booking.bookingId,
+            challengeId: null,
+            venueId,
+            coachUserId,
+            athleteUserIds: [userId, coachUserId],
+            purpose: 'TRAINING',
+            state: 'SCHEDULED',
+            scheduledStartAt: slot.startAt,
+            scheduledEndAt: slot.endAt,
+            version: 1,
+          },
+        },
+        eventId: '0199a1b2-1234-7000-8000-000000000715',
+        aggregateVersion: 3,
+        replayed: false,
+      }),
+    );
+    const rejectedByHost = vi.fn(
+      async (
+        _command: CommandEnvelope<RejectBookingHostPayload>,
+        _ids: HostRejectionEffectIds,
+      ): Promise<ExecutedCommand<HostRejectionProjection>> => ({
+        responseStatus: 200,
+        response: {
+          booking: { ...pendingBooking, state: 'REJECTED', version: 3 },
+          rejectedAt: '2026-09-07T10:12:00.000Z',
+          reasonCode: 'COACH_UNAVAILABLE',
+          reasonNote: 'Тренер заболел',
+        },
+        eventId: '0199a1b2-1234-7000-8000-000000000730',
+        aggregateVersion: 3,
+        replayed: false,
+      }),
+    );
+    const proposedGroupPlan = vi.fn(
+      async (_command: CommandEnvelope<ProposeGroupPlanPayload>, _ids: PairIntentNotificationEffectIds): Promise<ExecutedCommand<GroupPlanProjection>> => ({
+        responseStatus: 201, response: groupPlan,
+        eventId: '0199a1b2-1234-7000-8000-000000000712', aggregateVersion: 1, replayed: false,
+      }),
+    );
+    const confirmedGroupPlan = vi.fn(
+      async (_command: CommandEnvelope<ConfirmGroupPlanPayload>, _ids: PairIntentNotificationEffectIds): Promise<ExecutedCommand<GroupPlanProjection>> => ({
+        responseStatus: 200, response: { ...groupPlan, confirmedByPeer: true, state: 'NOTIFIED', version: 2 },
+        eventId: '0199a1b2-1234-7000-8000-000000000713', aggregateVersion: 2, replayed: false,
+      }),
+    );
+    const lifecycleSession: SessionLifecycleProjection = {
+      sessionId,
+      bookingId: booking.bookingId,
+      challengeId: null,
+      challengeState: null,
+      challengeVersion: null,
+      resultId: null,
+      venueId,
+      venueDisplayName: slot.venueDisplayName,
+      coachUserId,
+      coachDisplayName: slot.coachDisplayName,
+      athleteUserIds: [userId, '0199a1b2-1234-7000-8000-000000000716'],
+      athleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'],
+      activeAthleteUserIds: [userId, '0199a1b2-1234-7000-8000-000000000716'],
+      activeAthleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'],
+      purpose: 'TRAINING',
+      state: 'READY_FOR_COACH',
+      scheduledStartAt: slot.startAt,
+      scheduledEndAt: slot.endAt,
+      windowOpenedAt: slot.startAt,
+      actualStartAt: null,
+      actualEndAt: null,
+      latestCoachReplacementAt: null,
+      cancellationReasonCode: null,
+      noShowGraceMinutes: 15,
+      attendance: [],
+      viewerCanManage: true,
+      viewerCanRecordResult: true,
+      viewerCanAdminister: false,
+      viewerCanRequestNoFaultReschedule: false,
+      viewerCanRequestOfficialConversion: false,
+      viewerCanCancelTraining: false,
+      officialConversion: null,
+      soloContinuation: null,
+      replacementCoachOptions: [],
+      version: 2,
+    };
+    const readMySessions = vi.fn(async () => ({
+      sessions: [lifecycleSession],
+      completedTrainingCount: 0,
+    }));
+    const readSession = vi.fn(async () => lifecycleSession);
+    const startSession = vi.fn(async (
+      _command: CommandEnvelope<StartSessionPayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        state: 'IN_PROGRESS' as const,
+        actualStartAt: slot.startAt,
+        version: 3,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000717',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
+    const recordSessionAttendance = vi.fn(async (
+      _command: CommandEnvelope<RecordAttendancePayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        state: 'IN_PROGRESS' as const,
+        actualStartAt: slot.startAt,
+        attendance: [{
+          attendanceId: '0199a1b2-1234-7000-8000-000000000718',
+          athleteUserId: userId,
+          athleteDisplayName: 'Первый спортсмен',
+          status: 'PRESENT' as const,
+          arrivalAt: slot.startAt,
+          recordedByUserId: coachUserId,
+          recordedAt: slot.startAt,
+          reasonCode: null,
+          comment: null,
+        }],
+        version: 3,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000719',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
+    const endSession = vi.fn(async (
+      _command: CommandEnvelope<EndSessionPayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        state: 'ENDED' as const,
+        actualStartAt: slot.startAt,
+        actualEndAt: slot.endAt,
+        version: 5,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000720',
+      aggregateVersion: 5,
+      replayed: false,
+    }));
+    const replacementCoachUserId = '0199a1b2-1234-7000-8000-000000000721';
+    const replaceSessionCoach = vi.fn(async (
+      _command: CommandEnvelope<ReplaceSessionCoachPayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        coachUserId: replacementCoachUserId,
+        coachDisplayName: 'Резервный тренер',
+        latestCoachReplacementAt: '2026-09-07T10:20:00.000Z',
+        viewerCanRequestNoFaultReschedule: true,
+        version: 3,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000722',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
+    const cancelledAfterReplacement = vi.fn(async (
+      _command: CommandEnvelope<CancelAfterCoachReplacementPayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        state: 'CANCELLED' as const,
+        cancellationReasonCode: 'COACH_REPLACEMENT_REJECTED',
+        version: 4,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000723',
+      aggregateVersion: 4,
+      replayed: false,
+    }));
+    const failSessionExternal = vi.fn(async (
+      _command: CommandEnvelope<FailSessionExternalPayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        state: 'CANCELLED' as const,
+        cancellationReasonCode: 'VENUE_UNAVAILABLE',
+        version: 3,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000724',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
+    const conversionId = '0199a1b2-1234-7000-8000-000000000726';
+    const conversion: BookingOfficialConversionProjection = {
+      conversionId,
+      bookingId: booking.bookingId,
+      sessionId,
+      competitionId: '0199a1b2-1234-7000-8000-000000000727',
+      requestedByUserId: userId,
+      stake: 'NONE',
+      state: 'PENDING_CONFIRMATION',
+      boundHolderUserId: null,
+      queueEntryId: null,
+      queuePosition: null,
+      challengeId: null,
+      confirmationDeadlineAt: '2026-09-10T10:00:00.000Z',
+      confirmations: [{
+        actorUserId: userId,
+        requiredRole: 'ATHLETE_LOW',
+        decision: 'ACCEPT',
+        decidedAt: '2026-09-07T10:00:00.000Z',
+      }],
+      viewerRequiredRole: 'ATHLETE_LOW',
+      viewerHasDecided: true,
+      viewerCanRequest: false,
+      viewerCanConfirm: false,
+      viewerCanDecline: false,
+      version: 1,
+    };
+    const requestBookingOfficialConversion = vi.fn(async (
+      _command: CommandEnvelope<RequestBookingOfficialConversionPayload>,
+      _ids: BookingOfficialConversionEffectIds,
+    ): Promise<ExecutedCommand<BookingOfficialConversionProjection>> => ({
+      responseStatus: 201, response: conversion,
+      eventId: '0199a1b2-1234-7000-8000-000000000728',
+      aggregateVersion: 1, replayed: false,
+    }));
+    const decideBookingOfficialConversion = vi.fn(async (
+      _command: CommandEnvelope<DecideBookingOfficialConversionPayload>,
+      _ids: BookingOfficialConversionEffectIds,
+    ): Promise<ExecutedCommand<BookingOfficialConversionProjection>> => ({
+      responseStatus: 200,
+      response: {
+        ...conversion,
+        confirmations: [...conversion.confirmations, {
+          actorUserId: coachUserId,
+          requiredRole: 'COACH' as const,
+          decision: 'ACCEPT' as const,
+          decidedAt: '2026-09-07T10:05:00.000Z',
+        }],
+        version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000729',
+      aggregateVersion: 2, replayed: false,
+    }));
+    const soloContinuationId = '0199a1b2-1234-7000-8000-000000000731';
+    const soloContinuation: BookingSoloContinuationProjection = {
+      continuationId: soloContinuationId,
+      bookingId: booking.bookingId,
+      sessionId,
+      cancelledAthleteUserId: userId,
+      remainingAthleteUserId: '0199a1b2-1234-7000-8000-000000000716',
+      state: 'PENDING',
+      deadlineAt: '2026-09-07T11:00:00.000Z',
+      confirmations: [],
+      viewerRequiredRole: null,
+      viewerHasDecided: false,
+      viewerCanConfirm: false,
+      viewerCanDecline: false,
+      version: 1,
+    };
+    const requestTrainingParticipantCancellation = vi.fn(async (
+      _command: CommandEnvelope<RequestTrainingParticipantCancellationPayload>,
+      _ids: BookingSoloContinuationEffectIds,
+    ): Promise<ExecutedCommand<BookingSoloContinuationProjection>> => ({
+      responseStatus: 201,
+      response: soloContinuation,
+      eventId: '0199a1b2-1234-7000-8000-000000000732',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const decideBookingSoloContinuation = vi.fn(async (
+      _command: CommandEnvelope<DecideBookingSoloContinuationPayload>,
+      _ids: BookingSoloContinuationEffectIds,
+    ): Promise<ExecutedCommand<BookingSoloContinuationProjection>> => ({
+      responseStatus: 200,
+      response: {
+        ...soloContinuation,
+        confirmations: [{
+          actorUserId: coachUserId,
+          requiredRole: 'COACH',
+          decision: 'ACCEPT',
+          decidedAt: '2026-09-07T10:05:00.000Z',
+        }],
+        version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000733',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const app = await buildApp({
+      scheduling: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readTrainingOptions,
+        publishSlot,
+        updateSlot,
+        withdrawSlot,
+        publishGroupOffering,
+        updateGroupOffering,
+        withdrawGroupOffering,
+        selectSlot: selectedSlot,
+        selectSameSlot: selectedSameSlot,
+        readHostConfirmationQueue,
+        readVenueAdminDashboard,
+        confirmBookingHost: confirmedByHost,
+        rejectBookingHost: rejectedByHost,
+        readMySessions,
+        readSession,
+        startSession,
+        recordSessionAttendance,
+        endSession,
+        replaceSessionCoach,
+        cancelSessionAfterCoachReplacement: cancelledAfterReplacement,
+        failSessionExternal,
+        requestBookingOfficialConversion,
+        decideBookingOfficialConversion,
+        requestTrainingParticipantCancellation,
+        decideBookingSoloContinuation,
+        proposeGroupPlan: proposedGroupPlan,
+        confirmGroupPlan: confirmedGroupPlan,
+      },
+    });
+    apps.push(app);
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: `/api/v1/chats/${chatId}/training-options`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      data: {
+        slots: [{ slotId: slot.slotId }],
+        groupOfferings: [
+          {
+            groupOfferingId: offering.groupOfferingId,
+            capacityDisclaimerKey: 'group.capacity.confirm-with-venue',
+          },
+        ],
+        reservationPolicy: 'NO_RESERVATION_BEFORE_HOST_CONFIRMATION',
+      },
+      meta: { viewerUserId: userId },
+    });
+    expect(readTrainingOptions).toHaveBeenCalledWith(chatId, userId);
+
+    const dashboard = await app.inject({
+      method: 'GET',
+      url: `/api/v1/venues/${venueId}/admin-dashboard`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(dashboard.statusCode).toBe(200);
+    expect(dashboard.json()).toMatchObject({
+      data: {
+        venue: { venueId, timezone: 'Europe/Moscow' },
+        coaches: [{ userId: coachUserId }],
+        slots: [{ slotId: slot.slotId }],
+        groupOfferings: [{ groupOfferingId: offering.groupOfferingId }],
+        hostConfirmations: [{ booking: { bookingId: pendingBooking.bookingId } }],
+        groupInterests: [{
+          groupPlanId: groupPlan.groupPlanId,
+          state: 'NOTIFIED',
+        }],
+      },
+    });
+    expect(readVenueAdminDashboard).toHaveBeenCalledWith(userId, venueId);
+
+    const publishedSlot = await app.inject({
+      method: 'POST',
+      url: `/api/v1/venues/${venueId}/slots`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'publish-slot-api-1',
+        'if-match': '0',
+      },
+      payload: {
+        coachUserId,
+        startAt: slot.startAt,
+        endAt: slot.endAt,
+        priceAmount: slot.priceAmount,
+        priceCurrency: slot.priceCurrency,
+      },
+    });
+    expect(publishedSlot.statusCode).toBe(201);
+    expect(publishSlot.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PUBLISH_SLOT',
+      aggregateType: 'Slot',
+      expectedVersion: 0,
+      payload: { venueId, coachUserId },
+    });
+
+    const publishedOffering = await app.inject({
+      method: 'POST',
+      url: `/api/v1/venues/${venueId}/group-offerings`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'publish-group-api-1',
+        'if-match': '0',
+      },
+      payload: {
+        sportCode: offering.sportCode,
+        classLabel: offering.classLabel,
+        startAt: offering.startAt,
+        endAt: offering.endAt,
+      },
+    });
+    expect(publishedOffering.statusCode).toBe(201);
+    expect(publishGroupOffering.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PUBLISH_GROUP_OFFERING',
+      aggregateType: 'GroupOffering',
+      expectedVersion: 0,
+      payload: { venueId, sportCode: 'BOXING' },
+    });
+
+    const updatedSlot = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/slots/${slot.slotId}`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'update-slot-api-1',
+        'if-match': '1',
+      },
+      payload: {
+        coachUserId,
+        startAt: slot.startAt,
+        endAt: slot.endAt,
+        priceAmount: slot.priceAmount,
+        priceCurrency: slot.priceCurrency,
+      },
+    });
+    expect(updatedSlot.statusCode).toBe(200);
+    expect(updatedSlot.json()).toMatchObject({ data: { version: 2, commercialVersion: 2 } });
+    expect(updateSlot.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'UPDATE_SLOT',
+      aggregateId: slot.slotId,
+      expectedVersion: 1,
+      payload: { slotId: slot.slotId, coachUserId },
+    });
+
+    const withdrawnSlot = await app.inject({
+      method: 'POST',
+      url: `/api/v1/slots/${slot.slotId}/withdraw`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'withdraw-slot-api-1',
+        'if-match': '1',
+      },
+      payload: { reasonCode: 'SCHEDULE_CHANGED', reasonNote: 'Зал закрыт' },
+    });
+    expect(withdrawnSlot.statusCode).toBe(200);
+    expect(withdrawnSlot.json()).toMatchObject({ data: { state: 'WITHDRAWN' } });
+    expect(withdrawSlot.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'WITHDRAW_SLOT',
+      expectedVersion: 1,
+      payload: {
+        slotId: slot.slotId,
+        reasonCode: 'SCHEDULE_CHANGED',
+        reasonNote: 'Зал закрыт',
+      },
+    });
+
+    const updatedOffering = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/group-offerings/${offering.groupOfferingId}`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'update-offering-api-1',
+        'if-match': '1',
+      },
+      payload: {
+        sportCode: offering.sportCode,
+        classLabel: 'Обновлённая группа',
+        startAt: offering.startAt,
+        endAt: offering.endAt,
+      },
+    });
+    expect(updatedOffering.statusCode).toBe(200);
+    expect(updatedOffering.json()).toMatchObject({
+      data: { classLabel: 'Обновлённая группа', version: 2 },
+    });
+    expect(updateGroupOffering.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'UPDATE_GROUP_OFFERING',
+      expectedVersion: 1,
+      payload: { groupOfferingId: offering.groupOfferingId },
+    });
+
+    const withdrawnOffering = await app.inject({
+      method: 'POST',
+      url: `/api/v1/group-offerings/${offering.groupOfferingId}/withdraw`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'withdraw-offering-api-1',
+        'if-match': '1',
+      },
+      payload: { reasonCode: 'VENUE_UNAVAILABLE' },
+    });
+    expect(withdrawnOffering.statusCode).toBe(200);
+    expect(withdrawnOffering.json()).toMatchObject({ data: { state: 'WITHDRAWN' } });
+    expect(withdrawGroupOffering.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'WITHDRAW_GROUP_OFFERING',
+      expectedVersion: 1,
+      payload: {
+        groupOfferingId: offering.groupOfferingId,
+        reasonCode: 'VENUE_UNAVAILABLE',
+        reasonNote: null,
+      },
+    });
+
+    const selected = await app.inject({
+      method: 'POST',
+      url: '/api/v1/bookings',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'select-slot-api-1',
+        'if-match': '0',
+      },
+      payload: {
+        chatId,
+        slotId: slot.slotId,
+        commercialVersion: 1,
+        challengeId: '0199a1b2-1234-7000-8000-000000000725',
+      },
+    });
+    expect(selected.statusCode).toBe(201);
+    expect(selected.json()).toMatchObject({ data: { state: 'SELECTING', slotId: slot.slotId } });
+    expect(selectedSlot.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'SELECT_SLOT',
+      aggregateType: 'Booking',
+      payload: {
+        chatId,
+        slotId: slot.slotId,
+        commercialVersion: 1,
+        challengeId: '0199a1b2-1234-7000-8000-000000000725',
+      },
+    });
+
+    const selectedSame = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/select-same`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'select-same-slot-api-1',
+        'if-match': '1',
+      },
+      payload: { commercialVersion: 1 },
+    });
+    expect(selectedSame.statusCode).toBe(200);
+    expect(selectedSame.json()).toMatchObject({
+      data: { state: 'HOST_CONFIRMATION_PENDING', commercialTermsSnapshot: { slotId: slot.slotId } },
+    });
+    expect(selectedSameSlot.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'SELECT_SAME_SLOT',
+      expectedVersion: 1,
+      payload: { bookingId: booking.bookingId, commercialVersion: 1 },
+    });
+
+    const hostQueue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me/host-confirmations',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(hostQueue.statusCode).toBe(200);
+    expect(hostQueue.json()).toMatchObject({
+      data: [
+        {
+          booking: { bookingId: booking.bookingId, state: 'HOST_CONFIRMATION_PENDING' },
+          athleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'],
+        },
+      ],
+    });
+    expect(readHostConfirmationQueue).toHaveBeenCalledWith(userId);
+
+    const hostConfirmed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/host-confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'host-confirm-api-1',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(hostConfirmed.statusCode).toBe(200);
+    expect(hostConfirmed.json()).toMatchObject({
+      data: {
+        outcome: 'CONFIRMED',
+        booking: { state: 'CONFIRMED_PAIR', sessionId },
+        session: { sessionId, state: 'SCHEDULED' },
+      },
+    });
+    expect(confirmedByHost.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CONFIRM_BOOKING_HOST',
+      expectedVersion: 2,
+      payload: { bookingId: booking.bookingId },
+    });
+
+    const hostRejected = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/host-reject`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'host-reject-api-1',
+        'if-match': '2',
+      },
+      payload: { reasonCode: 'COACH_UNAVAILABLE', reasonNote: 'Тренер заболел' },
+    });
+    expect(hostRejected.statusCode).toBe(200);
+    expect(hostRejected.json()).toMatchObject({
+      data: {
+        booking: { state: 'REJECTED' },
+        reasonCode: 'COACH_UNAVAILABLE',
+        reasonNote: 'Тренер заболел',
+      },
+    });
+    expect(rejectedByHost.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REJECT_BOOKING_HOST',
+      expectedVersion: 2,
+      payload: {
+        bookingId: booking.bookingId,
+        reasonCode: 'COACH_UNAVAILABLE',
+        reasonNote: 'Тренер заболел',
+      },
+    });
+
+    const sessionList = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me/sessions',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(sessionList.statusCode).toBe(200);
+    expect(sessionList.json()).toMatchObject({
+      data: {
+        sessions: [{ sessionId, state: 'READY_FOR_COACH', viewerCanManage: true }],
+        completedTrainingCount: 0,
+      },
+    });
+
+    const sessionDetail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/sessions/${sessionId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(sessionDetail.statusCode).toBe(200);
+    expect(readSession).toHaveBeenCalledWith(sessionId, userId);
+
+    const conversionRequested = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/official-conversion`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'request-official-conversion-api-1',
+        'if-match': '0',
+      },
+      payload: {},
+    });
+    expect(conversionRequested.statusCode).toBe(201);
+    expect(conversionRequested.json()).toMatchObject({
+      data: { conversionId, state: 'PENDING_CONFIRMATION', confirmations: [{ actorUserId: userId }] },
+    });
+    expect(requestBookingOfficialConversion.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REQUEST_BOOKING_OFFICIAL_CONVERSION',
+      aggregateType: 'BookingOfficialConversion',
+      expectedVersion: 0,
+      payload: { sessionId },
+    });
+
+    const conversionConfirmed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/booking-official-conversions/${conversionId}/decision`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'confirm-official-conversion-api-1',
+        'if-match': '1',
+      },
+      payload: { decision: 'ACCEPT' },
+    });
+    expect(conversionConfirmed.statusCode).toBe(200);
+    expect(conversionConfirmed.json()).toMatchObject({ data: { version: 2 } });
+    expect(decideBookingOfficialConversion.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'DECIDE_BOOKING_OFFICIAL_CONVERSION',
+      aggregateId: conversionId,
+      expectedVersion: 1,
+      payload: { conversionId, decision: 'ACCEPT' },
+    });
+
+    const cancellationRequested = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/cancel-training-participation`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'cancel-training-participation-api-1',
+        'if-match': '0',
+      },
+      payload: {},
+    });
+    expect(cancellationRequested.statusCode).toBe(201);
+    expect(cancellationRequested.json()).toMatchObject({
+      data: { continuationId: soloContinuationId, state: 'PENDING', version: 1 },
+    });
+    expect(requestTrainingParticipantCancellation.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CANCEL_TRAINING_PARTICIPATION',
+      aggregateType: 'BookingSoloContinuation',
+      expectedVersion: 0,
+      payload: { sessionId },
+    });
+
+    const soloDecisionRecorded = await app.inject({
+      method: 'POST',
+      url: `/api/v1/booking-solo-continuations/${soloContinuationId}/decision`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'confirm-solo-continuation-api-1',
+        'if-match': '1',
+      },
+      payload: { decision: 'ACCEPT' },
+    });
+    expect(soloDecisionRecorded.statusCode).toBe(200);
+    expect(soloDecisionRecorded.json()).toMatchObject({ data: { version: 2 } });
+    expect(decideBookingSoloContinuation.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'DECIDE_BOOKING_SOLO_CONTINUATION',
+      aggregateType: 'BookingSoloContinuation',
+      aggregateId: soloContinuationId,
+      expectedVersion: 1,
+      payload: { continuationId: soloContinuationId, decision: 'ACCEPT' },
+    });
+
+    const sessionStarted = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/start`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-start-api-1',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(sessionStarted.statusCode).toBe(200);
+    expect(sessionStarted.json()).toMatchObject({ data: { state: 'IN_PROGRESS' } });
+    expect(startSession.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'START_SESSION',
+      aggregateType: 'Session',
+      aggregateId: sessionId,
+      expectedVersion: 2,
+    });
+
+    const attendanceRecorded = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/attendance`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-attendance-api-1',
+        'if-match': '2',
+      },
+      payload: { athleteUserId: userId, status: 'PRESENT' },
+    });
+    expect(attendanceRecorded.statusCode).toBe(200);
+    expect(recordSessionAttendance.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'RECORD_ATTENDANCE',
+      expectedVersion: 2,
+      payload: { sessionId, athleteUserId: userId, status: 'PRESENT', comment: null },
+    });
+
+    const sessionEnded = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/end`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-end-api-1',
+        'if-match': '4',
+      },
+      payload: {},
+    });
+    expect(sessionEnded.statusCode).toBe(200);
+    expect(sessionEnded.json()).toMatchObject({ data: { state: 'ENDED' } });
+    expect(endSession.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'END_SESSION',
+      expectedVersion: 4,
+    });
+
+    const coachReplaced = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/replace-coach`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-replace-coach-api-1',
+        'if-match': '2',
+      },
+      payload: { replacementCoachUserId },
+    });
+    expect(coachReplaced.statusCode).toBe(200);
+    expect(replaceSessionCoach.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REPLACE_SESSION_COACH',
+      expectedVersion: 2,
+      payload: { sessionId, replacementCoachUserId },
+    });
+
+    const replacementRejected = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/cancel-after-coach-replacement`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-reject-replacement-api-1',
+        'if-match': '3',
+      },
+      payload: {},
+    });
+    expect(replacementRejected.statusCode).toBe(200);
+    expect(cancelledAfterReplacement.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REQUEST_RESCHEDULE_AFTER_COACH_REPLACEMENT',
+      payload: { sessionId },
+    });
+
+    const externalFailure = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/fail-external`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-fail-external-api-1',
+        'if-match': '2',
+      },
+      payload: { reasonCode: 'VENUE_UNAVAILABLE' },
+    });
+    expect(externalFailure.statusCode).toBe(200);
+    expect(failSessionExternal.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'FAIL_SESSION_EXTERNAL',
+      payload: { sessionId, reasonCode: 'VENUE_UNAVAILABLE' },
+    });
+
+    const planProposed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/group-plans',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'propose-group-plan-api-1',
+        'if-match': '0',
+      },
+      payload: { chatId, groupOfferingId: offering.groupOfferingId, offeringVersion: 1 },
+    });
+    expect(planProposed.statusCode).toBe(201);
+    expect(planProposed.json()).toMatchObject({ data: { state: 'PROPOSED' } });
+    expect(proposedGroupPlan.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PROPOSE_GROUP_PLAN',
+      payload: { chatId, groupOfferingId: offering.groupOfferingId, offeringVersion: 1 },
+    });
+
+    const planConfirmed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/group-plans/${groupPlan.groupPlanId}/confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'confirm-group-plan-api-1',
+        'if-match': '1',
+      },
+      payload: {},
+    });
+    expect(planConfirmed.statusCode).toBe(200);
+    expect(planConfirmed.json()).toMatchObject({
+      data: { state: 'NOTIFIED', confirmedByPeer: true },
+    });
+    expect(confirmedGroupPlan.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CONFIRM_GROUP_PLAN',
+      expectedVersion: 1,
+      payload: { groupPlanId: groupPlan.groupPlanId },
+    });
+
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/training-options');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/venues/{venueId}/admin-dashboard',
+    );
+    expect(app.swagger().paths).toHaveProperty('/api/v1/venues/{venueId}/slots');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/slots/{slotId}');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/slots/{slotId}/withdraw');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/venues/{venueId}/group-offerings',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/group-offerings/{groupOfferingId}',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/group-offerings/{groupOfferingId}/withdraw',
+    );
+    expect(app.swagger().paths).toHaveProperty('/api/v1/bookings');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/select-same');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/me/host-confirmations');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/host-confirm');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/host-reject');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/me/sessions');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/sessions/{sessionId}/official-conversion',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/booking-official-conversions/{conversionId}/decision',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/sessions/{sessionId}/cancel-training-participation',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/booking-solo-continuations/{continuationId}/decision',
+    );
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/start');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/attendance');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/end');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/replace-coach');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/cancel-after-coach-replacement');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/fail-external');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');
+  });
+
+  it('exposes the direct optional Official Challenge flow in a Match chat', async () => {
+    const chatId = '0199a1b2-1234-7000-8000-000000001101';
+    const challengeId = '0199a1b2-1234-7000-8000-000000001102';
+    const challenge: ChallengeProjection = {
+      challengeId,
+      competitionId: '0199a1b2-1234-7000-8000-000000001103',
+      sourceChatId: chatId,
+      serviceChatId: '0199a1b2-1234-7000-8000-000000001104',
+      initiatorUserId: userId,
+      initiatorDisplayName: 'Свободный атлет',
+      recipientUserId: '0199a1b2-1234-7000-8000-000000001105',
+      recipientDisplayName: 'Партнёр',
+      responsePolicy: 'OPTIONAL',
+      stake: 'NONE',
+      state: 'AWAITING_RESPONSE',
+      rulesetRef: 'MOLOKH_RECOMMENDED_V1',
+      rulesetAckMode: 'IMPLICIT_ON_ACCEPT',
+      responseDeadlineAt: '2026-09-10T10:00:00.000Z',
+      acceptedAt: null,
+      schedulingDeadlineAt: null,
+      pairQuietUntil: null,
+      viewerRole: 'INITIATOR',
+      version: 1,
+    };
+    const chatProjection: ChatChallengeProjection = {
+      challenge: null,
+      canCreate: true,
+      createDenialCode: null,
+      policyVersion: 'challenge-mvp-v1',
+    };
+    const created = vi.fn().mockResolvedValue({
+      responseStatus: 201,
+      response: challenge,
+      eventId: '0199a1b2-1234-7000-8000-000000001106',
+      aggregateVersion: 1,
+      replayed: false,
+    });
+    const acceptedProjection: ChallengeProjection = {
+      ...challenge,
+      state: 'ACCEPTED_UNSCHEDULED',
+      acceptedAt: '2026-09-08T11:00:00.000Z',
+      schedulingDeadlineAt: '2026-09-22T11:00:00.000Z',
+      viewerRole: 'RECIPIENT',
+      version: 2,
+    };
+    const accepted = vi.fn().mockResolvedValue({
+      responseStatus: 200,
+      response: acceptedProjection,
+      eventId: '0199a1b2-1234-7000-8000-000000001107',
+      aggregateVersion: 2,
+      replayed: false,
+    });
+    const app = await buildApp({
+      challenge: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readChatChallenge: vi.fn().mockResolvedValue(chatProjection),
+        createDirectOpenChallenge: created,
+        acceptOptionalChallenge: accepted,
+        declineOptionalChallenge: vi.fn(),
+        withdrawOptionalChallenge: vi.fn(),
+      },
+    });
+    apps.push(app);
+
+    const read = await app.inject({
+      method: 'GET',
+      url: `/api/v1/chats/${chatId}/challenge`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({ data: { challenge: null, canCreate: true } });
+
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/v1/challenges',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-create-api-1',
+        'if-match': '0',
+      },
+      payload: { sourceChatId: chatId },
+    });
+    expect(create.statusCode).toBe(201);
+    expect(created.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+      aggregateType: 'Challenge',
+      expectedVersion: 0,
+      payload: { sourceChatId: chatId },
+    });
+
+    const accept = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/accept`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-accept-api-1',
+        'if-match': '1',
+      },
+      payload: {},
+    });
+    expect(accept.statusCode).toBe(200);
+    expect(accepted.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'ACCEPT_OPTIONAL_CHALLENGE',
+      aggregateId: challengeId,
+      expectedVersion: 1,
+      payload: { challengeId },
+    });
+
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/challenge');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/accept');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/decline');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/withdraw');
   });
 });

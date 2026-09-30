@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  ChatActionDeniedError,
+  ChallengeConflictError,
   IdempotencyKeyReusedError,
   IdentityPermissionDeniedError,
   IdentityValidationError,
@@ -8,8 +10,17 @@ import {
   InvalidIdentityTransitionError,
   MinimumAgeNotMetError,
   InvalidRoleGrantTransitionError,
+  ResultConflictError,
+  ResultPermissionDeniedError,
+  ResultValidationError,
   RoleGrantPermissionDeniedError,
   RoleGrantValidationError,
+  SchedulingConflictError,
+  SchedulingPermissionDeniedError,
+  SchedulingValidationError,
+  SocialActionDeniedError,
+  StatusQueueConflictError,
+  StatusReleaseConflictError,
   VersionConflictError,
 } from '@molokh/core';
 import type { ApiError } from '@molokh/contracts';
@@ -113,6 +124,167 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: {
         code: error.code,
         message: 'Role grant request is not valid',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof SocialActionDeniedError) {
+    const statusCode =
+      error.code === 'IDENTITY_NOT_FOUND' || error.code === 'MATCH_NOT_FOUND'
+        ? 404
+        : error.code === 'ACCOUNT_NOT_ACTIVE' ||
+            error.code === 'DISCOVERY_PAUSED' ||
+            error.code === 'MATCH_PARTICIPANT_REQUIRED' ||
+            error.code === 'BLOCK_OWNER_REQUIRED'
+          ? 403
+          : error.code === 'AGE_CONTOUR_MISMATCH' ||
+              error.code === 'SELF_ACTION_NOT_ALLOWED'
+            ? 422
+            : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This social action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof ChatActionDeniedError) {
+    const statusCode =
+      error.code === 'CHAT_NOT_FOUND' || error.code === 'MESSAGE_NOT_FOUND'
+        ? 404
+        : error.code === 'CHAT_PARTICIPANT_REQUIRED' ||
+            error.code === 'MESSAGE_SENDER_REQUIRED' ||
+            error.code === 'REPORT_SELF_NOT_ALLOWED'
+          ? 403
+          : error.code === 'MESSAGE_CONTENT_INVALID' || error.code === 'REPORT_REASON_INVALID'
+            ? 422
+            : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Chat action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof ChallengeConflictError) {
+    const statusCode =
+      error.code === 'MATCH_REQUIRED'
+        ? 404
+        : error.code === 'CHALLENGE_INITIATOR_REQUIRED'
+            || error.code === 'CHALLENGE_RECIPIENT_REQUIRED'
+          ? 403
+          : error.code === 'AGE_CONTOUR_MISMATCH'
+              || error.code === 'RULESET_ACK_REQUIRED'
+            ? 422
+            : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Official Challenge action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof StatusQueueConflictError) {
+    const statusCode = error.code === 'QUEUE_ENTRY_NOT_FOUND'
+        || error.code === 'GENESIS_CHALLENGE_NOT_FOUND'
+      ? 404
+      : error.code === 'QUEUE_ENTRY_INITIATOR_REQUIRED'
+          || error.code === 'GENESIS_PARTICIPANT_REQUIRED'
+        ? 403
+        : error.code === 'AGE_CONTOUR_MISMATCH'
+            || error.code === 'RULESET_ACK_REQUIRED'
+          ? 422
+          : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This status queue action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof StatusReleaseConflictError) {
+    const statusCode = error.code === 'STATUS_RELEASE_NOT_FOUND'
+      ? 404
+      : error.code === 'STATUS_RELEASE_OWNER_REQUIRED'
+          || error.code === 'STATUS_RELEASE_ACCOUNT_NOT_ACTIVE'
+          || error.code === 'STATUS_RELEASE_MEMBERSHIP_NOT_ACTIVE'
+          || error.code === 'STATUS_RELEASE_NOT_STATUS_HOLDER'
+        ? 403
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This voluntary status release is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof SchedulingValidationError) {
+    return {
+      statusCode: 422,
+      body: {
+        code: error.code,
+        message: `Scheduling input is not valid: ${error.field}`,
+        requestId,
+      },
+    };
+  }
+  if (error instanceof SchedulingPermissionDeniedError) {
+    return {
+      statusCode: 403,
+      body: {
+        code: error.code,
+        message: 'This scheduling action is outside your role or Chat scope',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof SchedulingConflictError) {
+    return {
+      statusCode: 409,
+      body: {
+        code: error.code,
+        message: 'This scheduling resource is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof ResultValidationError) {
+    return {
+      statusCode: 422,
+      body: {
+        code: error.code,
+        message: `Result input is not valid: ${error.field}`,
+        requestId,
+      },
+    };
+  }
+  if (error instanceof ResultPermissionDeniedError) {
+    return {
+      statusCode: 403,
+      body: {
+        code: error.code,
+        message: 'This Result action is outside your role or Session scope',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof ResultConflictError) {
+    const statusCode = error.code === 'RESULT_NOT_RECORDED' ? 404 : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Result or Appeal action is no longer available',
         requestId,
       },
     };
