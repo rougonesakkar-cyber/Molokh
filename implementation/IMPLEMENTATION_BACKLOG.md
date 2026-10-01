@@ -283,8 +283,16 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Forfeit, immutable voluntary-resignation Appeal waiver and Cooldown, cancels Booking/Session/Slot,
   releases obligations, and removes any status temporarily assigned to the departing Athlete.
   Started Sessions stay on the Coach/frozen-ruleset path. Core/API/client and PostgreSQL scenarios
-  AC-106/AC-107/AC-108/AC-109/AC-110 pass. Acceptance traceability is 92/213 (`86/195 P0`).
-- Next increment: implement Ordinary removal and Central-reviewed status-holder removal.
+  AC-106/AC-107/AC-108/AC-109/AC-110 pass.
+- M7 Membership removal governance increment: complete. Scoped Gym Admin removal closes an
+  Ordinary's incomplete Official work no-fault and opens a 48-hour Appeal. An overturned decision
+  creates a new active Membership without resurrecting cancelled work. Champion/Contender removal
+  creates `UNDER_REVIEW` plus `STATUS_REVIEW` ProcessHold; Central confirmation applies audited
+  succession/vacancy without Result or loss. The hold retains Challenge deadlines and prevents a
+  booked Official Session from starting; in-progress/Result-pending Sessions finish before review
+  can open. AC-022/AC-131/AC-132/AC-133/AC-134 pass.
+  Acceptance traceability is 97/213 (`91/195 P0`).
+- Next increment: implement Youth consent and the age-18 transition.
 
 ## 5. Work that needs product/external input later
 

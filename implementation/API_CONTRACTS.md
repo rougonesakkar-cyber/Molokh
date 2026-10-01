@@ -119,6 +119,12 @@ the blocker revokes it. Neither endpoint cascades from Match to Challenge or Boo
 | POST | `/memberships/{id}/reject` | neutral + internal reason |
 | POST | `/memberships/{id}/leave-preview` | exact status/obligation consequence token |
 | POST | `/memberships/{id}/leave-confirm` | consume preview token |
+| GET | `/venues/{venue_id}/members` | scoped Gym Admin participant/status projection |
+| POST | `/memberships/{id}/removal` | remove Ordinary no-fault or open status-holder Central review |
+| GET | `/me/membership-removals` | subject reads removal history and 48h Appeal deadline |
+| POST | `/membership-removals/{case_id}/appeal` | Ordinary subject appeals within 48h |
+| GET | `/central/membership-removals` | FIFO status-holder/Ordinary-Appeal review queue |
+| POST | `/central/membership-removals/{case_id}/decision` | independent confirm/reject; explicit confirmed-Session cancellation policy |
 | POST | `/central/venues/{venue_id}/admins` | Central appoints a verified Venue-scoped Gym Admin |
 | GET | `/central/venues/{venue_id}/roles` | Central reads active Gym/Primary grants and Primary version |
 | PUT | `/central/venues/{venue_id}/primary-admin` | Central-only atomic first appointment or transfer |

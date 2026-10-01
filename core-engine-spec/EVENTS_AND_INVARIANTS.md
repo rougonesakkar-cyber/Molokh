@@ -695,6 +695,7 @@ MembershipArchivedByCommunityClosure
 MembershipLeft
 MembershipRejected
 MembershipRemovalConfirmed
+MembershipRemovalAppealed
 MembershipRemovalRejected
 MembershipRemoved
 MembershipRequested

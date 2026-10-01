@@ -6,12 +6,12 @@ Molokh — mobile-first продукт для поиска партнёров п
 
 - Core Engine: **v1.0, product decisions closed**;
 - state transitions: **300**;
-- registered events: **282**;
+- registered events: **283**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **92/213** (`86/195 P0`);
+- executable acceptance traceability: **97/213** (`91/195 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure and voluntary Membership exit both without and after an accepted Challenge;
-- database gate: PostgreSQL migrations `0001`–`0044` and **30/30** integration scenarios pass locally;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, Gym Admin removal of Ordinary and Central-reviewed Champion/Contender removal;
+- database gate: PostgreSQL migrations `0001`–`0045` and **31/31** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned and the production audit has no high/critical advisories;
 - external deployment/accounts: not configured.
 
@@ -305,9 +305,19 @@ administrative Forfeit, creates the pair Cooldown, stores an immutable voluntary
 Appeal waiver, releases obligations and then removes any status temporarily assigned to the
 departing Athlete. A started Session remains under the Coach and frozen ruleset path.
 
+Membership removal is now a separate governed contour. Gym Admin sees active Community members
+and may remove only an Ordinary immediately; the operation cancels incomplete Challenge/Booking
+work no-fault, preserves history and opens an exact 48-hour Appeal window. An overturned removal
+creates a new active Membership and never resurrects cancelled processes. For Champion or
+Contender the same Admin action only creates `UNDER_REVIEW` plus a Competition `STATUS_REVIEW`
+hold. Central independently confirms or rejects the request; confirmation applies transparent
+succession/vacancy without a Result or sporting loss. While the hold is active, status Challenge
+deadlines are retained and an already booked Official Session cannot start; an in-progress or
+Result-pending Session must first complete its Coach-governed path. Migration
+`0045_membership_removal_governance.sql` stores the immutable case and reusable ProcessHold.
+
 ## Next executable action
 
-Implement Gym Admin removal of Ordinary and Central-reviewed Champion/Contender removal. Then
-continue with Youth consent/age transition, platform-incident compensation, and account
-closure/export/retention.
+Implement Youth consent and the age-18 transition. Then continue with platform-incident
+compensation and account closure/export/retention.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

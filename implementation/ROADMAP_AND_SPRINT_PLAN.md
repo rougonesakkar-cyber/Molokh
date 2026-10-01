@@ -122,13 +122,13 @@ Rules protecting the 12-week target:
 - Missing Result increment: 2h/12h/24h stale-safe timers, private Athlete statements, Venue confirmation, Central coordination and constrained independent-Coach Result now pass Core/API/client/Worker/PostgreSQL gates.
 - Final Result IntegrityCase increment: evidence-scoped independent Central review, neutral public marker, Competition hold, immutable decision and deterministic status replay pass Core/API/client/PostgreSQL gates.
 - Status Queue foundation, GENESIS response, direct activation, holder reconfirmation, voluntary status release and vacancy succession: explicit intent, immutable server-time FIFO, atomic first-two pairing, three-day single-candidate promotion, strict direct-head activation, 72-hour mandatory response, appealable refusal/timeout Forfeit, 24-hour holder-change reconfirmation and two-step no-loss status release pass code and PostgreSQL gates. Confirmed-Training conversion now passes strict prebooked FIFO activation, three-party confirmation and no-fault fallback. Training withdrawal additionally opens a one-hour remaining-Athlete/Coach solo decision and never creates a loss, Forfeit or Cooldown.
-- M7 Community lifecycle now includes pause/reactivation, governed permanent closure and both voluntary Membership-exit contours. The two-step token-bound preview shows exact consequences; no-obligation exit stays no-fault, while an accepted not-started Challenge becomes a FINAL administrative Forfeit with immutable Appeal waiver, Cooldown and atomic Booking/Session/Slot cancellation. Any temporary status assigned to the departing Athlete is released without a second loss. Acceptance traceability is 92/213 (`86/195 P0`).
+- M7 Community lifecycle now includes pause/reactivation, governed permanent closure, both voluntary Membership-exit contours and governed Admin removal. Ordinary removal is immediate/no-fault with a 48-hour Appeal; Champion/Contender removal is held for independent Central review and applies succession/vacancy without a sporting loss. Acceptance traceability is 97/213 (`91/195 P0`).
 - Source control: the foundation is preserved in local Git history; remote protection remains external.
 
 ## 8. Immediate next actions
 
-1. Perform the remaining role-switch Web walkthrough for Gym Admin, Appeal, Missing Result and IntegrityCase paths.
-2. Implement M7 Ordinary removal and Central-reviewed Champion/Contender removal.
-3. Implement M7 Youth consent/18th-birthday transition and hard cross-age isolation.
-4. Implement exact-overlap PlatformIncident compensation, then account closure/export/retention jobs.
+1. Implement M7 Youth consent/18th-birthday transition and hard cross-age isolation.
+2. Implement exact-overlap PlatformIncident compensation.
+3. Implement account closure/export/retention jobs.
+4. Perform the remaining role-switch Web walkthrough for Appeal, Missing Result and IntegrityCase paths.
 5. Continue to keep payment, group capacity and automatic alternatives outside Molokh MVP.
