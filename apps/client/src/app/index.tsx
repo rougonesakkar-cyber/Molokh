@@ -25,6 +25,8 @@ import type {
   MatchesResponse,
   MissingResultReviewListResponse,
   MembershipExitCommandResponse,
+  MembershipRemovalCommandResponse,
+  MembershipRemovalListResponse,
   MySessionsResponse,
   PendingCoachInviteListResponse,
   RecordSessionResultBody,
@@ -38,6 +40,7 @@ import type {
   StatusQueueEntryCommandResponse,
   StatusReleaseCommandResponse,
   VenueAdminDashboardResponse,
+  VenueMemberListResponse,
 } from '@molokh/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Href, useRouter } from 'expo-router';
@@ -79,6 +82,8 @@ type CommunityClosureDisposition = 'RETAIN_TO_COMPLETION' | 'CANCEL_NO_FAULT';
 type CompetitionStatus = CompetitionStatusResponse['data'];
 type StatusReleasePreview = StatusReleaseCommandResponse['data'];
 type MembershipExitPreview = MembershipExitCommandResponse['data'];
+type MembershipRemoval = MembershipRemovalListResponse['data'][number];
+type VenueMember = VenueMemberListResponse['data'][number];
 type Capability = Identity['capabilities'][number];
 type CommunityDenialCode = CommunityContext['access']['denials'][number]['code'];
 type CoachInvite = PendingCoachInviteListResponse['data'][number];
@@ -402,6 +407,16 @@ export default function IdentityScreen() {
     useState<MembershipExitPreview | null>(null);
   const [membershipExitNotice, setMembershipExitNotice] = useState<string | null>(null);
   const [actingMembershipExit, setActingMembershipExit] = useState(false);
+  const [membershipRemovals, setMembershipRemovals] = useState<MembershipRemoval[]>([]);
+  const [venueMembers, setVenueMembers] = useState<VenueMember[]>([]);
+  const [removalTargetId, setRemovalTargetId] = useState<string | null>(null);
+  const [removalReason, setRemovalReason] = useState('');
+  const [removalAppealCaseId, setRemovalAppealCaseId] = useState<string | null>(null);
+  const [removalAppealReason, setRemovalAppealReason] = useState('');
+  const [removalDecisionCaseId, setRemovalDecisionCaseId] = useState<string | null>(null);
+  const [removalDecisionReason, setRemovalDecisionReason] = useState('');
+  const [actingMembershipRemoval, setActingMembershipRemoval] = useState(false);
+  const [membershipRemovalNotice, setMembershipRemovalNotice] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [primarySport, setPrimarySport] = useState('BOXING');
   const [secondarySport, setSecondarySport] = useState<string | null>(null);
@@ -427,6 +442,7 @@ export default function IdentityScreen() {
   const sessionActionKeys = useRef(new Map<string, string>());
   const resultActionKeys = useRef(new Map<string, string>());
   const statusQueueActionKeys = useRef(new Map<string, string>());
+  const membershipRemovalActionKeys = useRef(new Map<string, string>());
   const [actingRelationshipId, setActingRelationshipId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -517,6 +533,12 @@ export default function IdentityScreen() {
         setCompetitionStatus(competitionResult.data);
       }
       const currentAccount = localTestAccounts.find((account) => account.token === localToken);
+      const myRemovalResponse = await fetch(`${apiUrl}/api/v1/me/membership-removals`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!myRemovalResponse.ok) throw new Error(await apiErrorMessage(myRemovalResponse));
+      const myRemovalResult = (await myRemovalResponse.json()) as MembershipRemovalListResponse;
+      setMembershipRemovals(myRemovalResult.data);
       if (currentAccount?.role === 'Central' && loadedCommunity) {
         const lifecycleResponse = await fetch(
           `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/lifecycle`,
@@ -559,6 +581,18 @@ export default function IdentityScreen() {
         setCommunityClosureCandidates([]);
         setCommunityClosureDispositions({});
       }
+      if (currentAccount?.role === 'Central') {
+        const removalQueueResponse = await fetch(
+          `${apiUrl}/api/v1/central/membership-removals`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (!removalQueueResponse.ok) {
+          throw new Error(await apiErrorMessage(removalQueueResponse));
+        }
+        const removalQueue =
+          (await removalQueueResponse.json()) as MembershipRemovalListResponse;
+        setMembershipRemovals(removalQueue.data);
+      }
       if (currentAccount?.role === 'Gym Admin' && loadedCommunity) {
         const dashboardResponse = await fetch(
           `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/admin-dashboard`,
@@ -574,8 +608,16 @@ export default function IdentityScreen() {
           dashboardResult.data.coaches.some((coach) => coach.userId === current)
             ? current
             : dashboardResult.data.coaches[0]?.userId ?? '');
+        const membersResponse = await fetch(
+          `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/members`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (!membersResponse.ok) throw new Error(await apiErrorMessage(membersResponse));
+        const membersResult = (await membersResponse.json()) as VenueMemberListResponse;
+        setVenueMembers(membersResult.data);
       } else {
         setVenueAdminDashboard(null);
+        setVenueMembers([]);
       }
       const coachInviteResponse = await fetch(`${apiUrl}/api/v1/me/coach-invites`, {
         headers: { Authorization: `Bearer ${localToken}` },
@@ -830,6 +872,16 @@ export default function IdentityScreen() {
     setMembershipExitPreview(null);
     setMembershipExitNotice(null);
     setActingMembershipExit(false);
+    setMembershipRemovals([]);
+    setVenueMembers([]);
+    setRemovalTargetId(null);
+    setRemovalReason('');
+    setRemovalAppealCaseId(null);
+    setRemovalAppealReason('');
+    setRemovalDecisionCaseId(null);
+    setRemovalDecisionReason('');
+    setActingMembershipRemoval(false);
+    setMembershipRemovalNotice(null);
     setCoachInvites([]);
     setHostConfirmations([]);
     setVenueAdminDashboard(null);
@@ -2429,6 +2481,131 @@ export default function IdentityScreen() {
     }
   };
 
+  const requestMembershipRemoval = async (member: VenueMember) => {
+    if (actingMembershipRemoval || removalReason.trim().length < 10) return;
+    const operation = `membership-removal-request:${member.membershipId}`;
+    const idempotencyKey = membershipRemovalActionKeys.current.get(operation)
+      ?? `${operation}:${Date.now().toString(36)}`;
+    membershipRemovalActionKeys.current.set(operation, idempotencyKey);
+    setActingMembershipRemoval(true);
+    setMembershipRemovalNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/memberships/${member.membershipId}/removal`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': '0',
+          },
+          body: JSON.stringify({ reason: removalReason.trim() }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as MembershipRemovalCommandResponse;
+      membershipRemovalActionKeys.current.delete(operation);
+      setRemovalTargetId(null);
+      setRemovalReason('');
+      await loadIdentity();
+      setMembershipRemovalNotice(
+        result.data.subjectStatus === 'ORDINARY'
+          ? 'Ordinary удалён без поражения. Appeal доступен спортсмену 48 часов.'
+          : 'Запрос передан Central. Статус сохранён, новые статусные действия остановлены.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось оформить удаление');
+    } finally {
+      setActingMembershipRemoval(false);
+    }
+  };
+
+  const appealMembershipRemoval = async (removal: MembershipRemoval) => {
+    if (actingMembershipRemoval || removalAppealReason.trim().length < 10) return;
+    const operation = `membership-removal-appeal:${removal.caseId}:v${removal.version}`;
+    const idempotencyKey = membershipRemovalActionKeys.current.get(operation)
+      ?? operation;
+    membershipRemovalActionKeys.current.set(operation, idempotencyKey);
+    setActingMembershipRemoval(true);
+    setMembershipRemovalNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/membership-removals/${removal.caseId}/appeal`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(removal.version),
+          },
+          body: JSON.stringify({ reason: removalAppealReason.trim() }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      membershipRemovalActionKeys.current.delete(operation);
+      setRemovalAppealCaseId(null);
+      setRemovalAppealReason('');
+      await loadIdentity();
+      setMembershipRemovalNotice('Appeal отправлен Central. Отменённые процессы не возобновляются автоматически.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отправить Appeal');
+    } finally {
+      setActingMembershipRemoval(false);
+    }
+  };
+
+  const decideMembershipRemoval = async (
+    removal: MembershipRemoval,
+    decision: 'CONFIRM_REMOVAL' | 'REJECT_REMOVAL',
+  ) => {
+    if (actingMembershipRemoval || removalDecisionReason.trim().length < 10) return;
+    const operation = `membership-removal-decision:${removal.caseId}:${decision}:v${removal.version}`;
+    const idempotencyKey = membershipRemovalActionKeys.current.get(operation)
+      ?? operation;
+    membershipRemovalActionKeys.current.set(operation, idempotencyKey);
+    setActingMembershipRemoval(true);
+    setMembershipRemovalNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/central/membership-removals/${removal.caseId}/decision`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(removal.version),
+          },
+          body: JSON.stringify({
+            decision,
+            reason: removalDecisionReason.trim(),
+            cancelConfirmedSessions: true,
+          }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as MembershipRemovalCommandResponse;
+      membershipRemovalActionKeys.current.delete(operation);
+      setRemovalDecisionCaseId(null);
+      setRemovalDecisionReason('');
+      await loadIdentity();
+      setMembershipRemovalNotice(
+        result.data.state === 'OVERTURNED' || result.data.state === 'REJECTED'
+          ? 'Удаление отклонено. Membership восстановлена или снова активна.'
+          : 'Удаление подтверждено Central. Спортивного поражения не создано.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось сохранить решение Central');
+    } finally {
+      setActingMembershipRemoval(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -2824,6 +3001,164 @@ export default function IdentityScreen() {
                     <Text accessibilityLiveRegion="polite" style={styles.successText}>
                       {membershipExitNotice}
                     </Text>
+                  </View>
+                ) : null}
+                {activeTestAccount.role !== 'Gym Admin' && membershipRemovalNotice ? (
+                  <View accessibilityLiveRegion="polite" style={styles.successCard}>
+                    <Text style={styles.successText}>{membershipRemovalNotice}</Text>
+                  </View>
+                ) : null}
+                {activeTestAccount.role === 'Athlete'
+                  && membershipRemovals.some((item) =>
+                    item.state === 'REMOVED_APPEALABLE' || item.state === 'APPEALED') ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      Решение по Membership
+                    </Text>
+                    {membershipRemovals.filter((item) =>
+                      item.state === 'REMOVED_APPEALABLE' || item.state === 'APPEALED')
+                      .slice(0, 1).map((removal) => (
+                        <View key={removal.caseId} style={styles.hostConfirmationCard}>
+                          <Text style={styles.sessionState}>
+                            {removal.state === 'APPEALED' ? 'Appeal рассматривается' : 'Membership удалена'}
+                          </Text>
+                          <Text style={styles.hint}>{removal.requestReason}</Text>
+                          {removal.appealDeadlineAt ? (
+                            <Text style={styles.muted}>
+                              Appeal до {formatDateTime(removal.appealDeadlineAt)}
+                            </Text>
+                          ) : null}
+                          {removal.state === 'REMOVED_APPEALABLE' ? (
+                            removalAppealCaseId === removal.caseId ? (
+                              <>
+                                <TextInput
+                                  accessibilityLabel="Причина Appeal удаления Membership"
+                                  maxLength={1000}
+                                  multiline
+                                  onChangeText={setRemovalAppealReason}
+                                  placeholder="Опишите, почему решение нужно пересмотреть"
+                                  style={[styles.input, styles.appealInput]}
+                                  value={removalAppealReason}
+                                />
+                                <Pressable
+                                  accessibilityRole="button"
+                                  disabled={actingMembershipRemoval || removalAppealReason.trim().length < 10}
+                                  onPress={() => void appealMembershipRemoval(removal)}
+                                  style={({ pressed }) => [
+                                    styles.button,
+                                    (actingMembershipRemoval || removalAppealReason.trim().length < 10)
+                                      && styles.buttonDisabled,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.buttonText}>Отправить Appeal</Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  disabled={actingMembershipRemoval}
+                                  onPress={() => {
+                                    setRemovalAppealCaseId(null);
+                                    setRemovalAppealReason('');
+                                  }}
+                                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                                >
+                                  <Text style={styles.secondaryButtonText}>Отмена</Text>
+                                </Pressable>
+                              </>
+                            ) : (
+                              <Pressable
+                                accessibilityRole="button"
+                                onPress={() => setRemovalAppealCaseId(removal.caseId)}
+                                style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                              >
+                                <Text style={styles.secondaryButtonText}>Подать Appeal</Text>
+                              </Pressable>
+                            )
+                          ) : null}
+                        </View>
+                      ))}
+                  </View>
+                ) : null}
+
+                {activeTestAccount.role === 'Central' && membershipRemovals.length > 0 ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      Удаление участников · Central
+                    </Text>
+                    <Text style={styles.hint}>
+                      FIFO-очередь: статусные участники и Appeal Ordinary. Решение не создаёт спортивного поражения.
+                    </Text>
+                    <Text style={styles.hint}>
+                      Подтверждение отменит не начатые Official Booking и Session без вины участников. Начатую Session сначала завершает Coach.
+                    </Text>
+                    {membershipRemovals.map((removal) => (
+                      <View key={removal.caseId} style={styles.hostConfirmationCard}>
+                        <View style={styles.row}>
+                          <Text style={styles.venueName}>{removal.subjectDisplayName}</Text>
+                          <Text style={styles.sessionState}>
+                            {removal.subjectStatus === 'CHAMPION' ? '№1'
+                              : removal.subjectStatus === 'CONTENDER' ? 'Претендент' : 'Ordinary'}
+                          </Text>
+                        </View>
+                        <Text style={styles.hint}>Запрос: {removal.requestReason}</Text>
+                        {removal.appealReason ? (
+                          <Text style={styles.hint}>Appeal: {removal.appealReason}</Text>
+                        ) : null}
+                        {removalDecisionCaseId === removal.caseId ? (
+                          <>
+                            <TextInput
+                              accessibilityLabel="Обоснование решения Central"
+                              maxLength={1000}
+                              multiline
+                              onChangeText={setRemovalDecisionReason}
+                              placeholder="Зафиксируйте независимое обоснование"
+                              style={[styles.input, styles.appealInput]}
+                              value={removalDecisionReason}
+                            />
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={actingMembershipRemoval || removalDecisionReason.trim().length < 10}
+                              onPress={() => void decideMembershipRemoval(removal, 'CONFIRM_REMOVAL')}
+                              style={({ pressed }) => [
+                                styles.dangerButton,
+                                (actingMembershipRemoval || removalDecisionReason.trim().length < 10)
+                                  && styles.buttonDisabled,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.dangerButtonText}>Подтвердить удаление</Text>
+                            </Pressable>
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={actingMembershipRemoval || removalDecisionReason.trim().length < 10}
+                              onPress={() => void decideMembershipRemoval(removal, 'REJECT_REMOVAL')}
+                              style={({ pressed }) => [
+                                styles.secondaryButton,
+                                (actingMembershipRemoval || removalDecisionReason.trim().length < 10)
+                                  && styles.buttonDisabled,
+                                pressed && styles.buttonPressed,
+                              ]}
+                            >
+                              <Text style={styles.secondaryButtonText}>
+                                {removal.subjectStatus === 'ORDINARY'
+                                  ? 'Отменить удаление' : 'Отклонить запрос'}
+                              </Text>
+                            </Pressable>
+                          </>
+                        ) : (
+                          <Pressable
+                            accessibilityRole="button"
+                            onPress={() => {
+                              setRemovalDecisionCaseId(removal.caseId);
+                              setRemovalDecisionReason('');
+                            }}
+                            style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                          >
+                            <Text style={styles.secondaryButtonText}>Рассмотреть</Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    ))}
                   </View>
                 ) : null}
                 {activeTestAccount.role === 'Central' && communityLifecycle ? (
@@ -3330,6 +3665,99 @@ export default function IdentityScreen() {
                           </View>
                         ))}
                       </View>
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                        Участники Community
+                      </Text>
+                      <Text style={styles.hint}>
+                        Ordinary удаляется сразу без поражения и может подать Appeal в течение 48 часов.
+                        Для №1 и Претендента Gym Admin только открывает рассмотрение Central.
+                      </Text>
+                      {venueMembers.length === 0 ? (
+                        <Text style={styles.muted}>Активных участников пока нет.</Text>
+                      ) : venueMembers.map((member) => (
+                        <View key={member.membershipId} style={styles.hostConfirmationCard}>
+                          <View style={styles.row}>
+                            <Text style={styles.venueName}>{member.displayName}</Text>
+                            <Text style={styles.sessionState}>
+                              {member.status === 'CHAMPION' ? '№1'
+                                : member.status === 'CONTENDER' ? 'Претендент' : 'Ordinary'}
+                            </Text>
+                          </View>
+                          <Text style={styles.muted}>
+                            {member.ageDivision === 'ADULT' ? '18+' : '14–17'} · {
+                              member.membershipState === 'UNDER_REVIEW'
+                                ? 'На рассмотрении Central' : 'Активен'}
+                          </Text>
+                          {member.membershipState === 'ACTIVE' ? (
+                            removalTargetId === member.membershipId ? (
+                              <>
+                                <TextInput
+                                  accessibilityLabel={`Причина удаления ${member.displayName}`}
+                                  maxLength={1000}
+                                  multiline
+                                  onChangeText={setRemovalReason}
+                                  placeholder="Укажите проверяемую причину — минимум 10 символов"
+                                  style={[styles.input, styles.appealInput]}
+                                  value={removalReason}
+                                />
+                                <Pressable
+                                  accessibilityRole="button"
+                                  disabled={actingMembershipRemoval || removalReason.trim().length < 10}
+                                  onPress={() => void requestMembershipRemoval(member)}
+                                  style={({ pressed }) => [
+                                    styles.dangerButton,
+                                    (actingMembershipRemoval || removalReason.trim().length < 10)
+                                      && styles.buttonDisabled,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.dangerButtonText}>
+                                    {member.status === 'ORDINARY'
+                                      ? 'Удалить без поражения'
+                                      : 'Передать на рассмотрение Central'}
+                                  </Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  disabled={actingMembershipRemoval}
+                                  onPress={() => {
+                                    setRemovalTargetId(null);
+                                    setRemovalReason('');
+                                  }}
+                                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                                >
+                                  <Text style={styles.secondaryButtonText}>Отмена</Text>
+                                </Pressable>
+                              </>
+                            ) : (
+                              <Pressable
+                                accessibilityRole="button"
+                                disabled={actingMembershipRemoval}
+                                onPress={() => {
+                                  setRemovalTargetId(member.membershipId);
+                                  setRemovalReason('');
+                                  setMembershipRemovalNotice(null);
+                                }}
+                                style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                              >
+                                <Text style={styles.secondaryButtonText}>Управление Membership</Text>
+                              </Pressable>
+                            )
+                          ) : (
+                            <Text style={styles.hint}>
+                              Статус виден, но новые статусные действия остановлены до решения Central.
+                            </Text>
+                          )}
+                        </View>
+                      ))}
+                      {membershipRemovalNotice ? (
+                        <Text accessibilityLiveRegion="polite" style={styles.successText}>
+                          {membershipRemovalNotice}
+                        </Text>
+                      ) : null}
                     </View>
 
                     <View style={styles.card}>

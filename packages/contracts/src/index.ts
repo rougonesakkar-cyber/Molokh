@@ -2781,6 +2781,127 @@ export const MembershipExitCommandResponseSchema = Type.Object(
 
 export type MembershipExitCommandResponse = Static<typeof MembershipExitCommandResponseSchema>;
 
+export const MembershipRemovalCaseStateSchema = Type.Union([
+  Type.Literal('REMOVED_APPEALABLE'),
+  Type.Literal('UNDER_REVIEW'),
+  Type.Literal('APPEALED'),
+  Type.Literal('CONFIRMED'),
+  Type.Literal('REJECTED'),
+  Type.Literal('OVERTURNED'),
+]);
+
+export const MembershipRemovalCaseSchema = Type.Object(
+  {
+    caseId: Type.String({ format: 'uuid' }),
+    membershipId: Type.String({ format: 'uuid' }),
+    communityId: Type.String({ format: 'uuid' }),
+    competitionId: Type.String({ format: 'uuid' }),
+    subjectUserId: Type.String({ format: 'uuid' }),
+    subjectDisplayName: Type.String({ minLength: 1, maxLength: 80 }),
+    requestedByUserId: Type.String({ format: 'uuid' }),
+    requestedByDisplayName: Type.String({ minLength: 1, maxLength: 80 }),
+    subjectStatus: Type.Union([
+      Type.Literal('ORDINARY'), Type.Literal('CHAMPION'), Type.Literal('CONTENDER'),
+    ]),
+    state: MembershipRemovalCaseStateSchema,
+    requestReason: Type.String({ minLength: 10, maxLength: 1000 }),
+    requestedAt: Type.String({ format: 'date-time' }),
+    appealDeadlineAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    appealReason: Type.Union([Type.String({ minLength: 10, maxLength: 1000 }), Type.Null()]),
+    appealedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    reviewedByUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    decisionReason: Type.Union([Type.String({ minLength: 10, maxLength: 1000 }), Type.Null()]),
+    decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    replacementMembershipId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    cancelledChallengeCount: Type.Integer({ minimum: 0 }),
+    cancelledBookingCount: Type.Integer({ minimum: 0 }),
+    invalidatedQueueEntryCount: Type.Integer({ minimum: 0 }),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'MembershipRemovalCase', additionalProperties: false },
+);
+
+export const RequestMembershipRemovalBodySchema = Type.Object(
+  { reason: Type.String({ minLength: 10, maxLength: 1000 }) },
+  { $id: 'RequestMembershipRemovalBody', additionalProperties: false },
+);
+export type RequestMembershipRemovalBody = Static<typeof RequestMembershipRemovalBodySchema>;
+
+export const AppealMembershipRemovalBodySchema = Type.Object(
+  { reason: Type.String({ minLength: 10, maxLength: 1000 }) },
+  { $id: 'AppealMembershipRemovalBody', additionalProperties: false },
+);
+export type AppealMembershipRemovalBody = Static<typeof AppealMembershipRemovalBodySchema>;
+
+export const DecideMembershipRemovalBodySchema = Type.Object(
+  {
+    decision: Type.Union([
+      Type.Literal('CONFIRM_REMOVAL'), Type.Literal('REJECT_REMOVAL'),
+    ]),
+    reason: Type.String({ minLength: 10, maxLength: 1000 }),
+    cancelConfirmedSessions: Type.Boolean(),
+  },
+  { $id: 'DecideMembershipRemovalBody', additionalProperties: false },
+);
+export type DecideMembershipRemovalBody = Static<typeof DecideMembershipRemovalBodySchema>;
+
+export const MembershipRemovalCommandResponseSchema = Type.Object(
+  {
+    data: MembershipRemovalCaseSchema,
+    meta: Type.Object(
+      {
+        requestId: Type.String({ format: 'uuid' }),
+        eventId: Type.String({ format: 'uuid' }),
+        replayed: Type.Boolean(),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'MembershipRemovalCommandResponse', additionalProperties: false },
+);
+export type MembershipRemovalCommandResponse = Static<
+  typeof MembershipRemovalCommandResponseSchema
+>;
+
+export const MembershipRemovalListResponseSchema = Type.Object(
+  {
+    data: Type.Array(MembershipRemovalCaseSchema),
+    meta: Type.Object(
+      { requestId: Type.String({ format: 'uuid' }) },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'MembershipRemovalListResponse', additionalProperties: false },
+);
+export type MembershipRemovalListResponse = Static<typeof MembershipRemovalListResponseSchema>;
+
+export const VenueMemberSchema = Type.Object(
+  {
+    membershipId: Type.String({ format: 'uuid' }),
+    userId: Type.String({ format: 'uuid' }),
+    displayName: Type.String({ minLength: 1, maxLength: 80 }),
+    ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+    membershipState: Type.Union([Type.Literal('ACTIVE'), Type.Literal('UNDER_REVIEW')]),
+    status: Type.Union([
+      Type.Literal('ORDINARY'), Type.Literal('CHAMPION'), Type.Literal('CONTENDER'),
+    ]),
+    latestRemovalCase: Type.Union([MembershipRemovalCaseSchema, Type.Null()]),
+  },
+  { $id: 'VenueMember', additionalProperties: false },
+);
+
+export const VenueMemberListResponseSchema = Type.Object(
+  {
+    data: Type.Array(VenueMemberSchema),
+    meta: Type.Object(
+      { requestId: Type.String({ format: 'uuid' }) },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'VenueMemberListResponse', additionalProperties: false },
+);
+export type VenueMemberListResponse = Static<typeof VenueMemberListResponseSchema>;
+
 export const GenesisResponseBodySchema = Type.Object(
   { explicitRulesetAcknowledged: Type.Optional(Type.Boolean()) },
   { $id: 'GenesisResponseBody', additionalProperties: false },

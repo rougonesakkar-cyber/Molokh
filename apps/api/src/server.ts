@@ -71,6 +71,12 @@ import {
   confirmStatusRelease,
   previewMembershipExit,
   confirmMembershipExit,
+  appealMembershipRemoval,
+  decideMembershipRemoval,
+  listMembershipRemovalsForCentral,
+  listMembershipRemovalsForSubject,
+  listVenueMembersForAdmin,
+  requestMembershipRemoval,
   respondToGenesisChallenge,
   readVenueAdminDashboard,
   reportChatMessage,
@@ -1107,6 +1113,18 @@ const app = await buildApp({
     preview: (command, ids, confirmationToken) =>
       previewMembershipExit(database, command, ids, confirmationToken),
     confirm: (command, ids) => confirmMembershipExit(database, command, ids),
+  },
+  membershipRemoval: {
+    auth: localAuth,
+    listVenueMembers: (actorUserId, venueId) =>
+      listVenueMembersForAdmin(database, actorUserId, venueId),
+    listForSubject: (subjectUserId) =>
+      listMembershipRemovalsForSubject(database, subjectUserId),
+    listForCentral: (centralUserId) =>
+      listMembershipRemovalsForCentral(database, centralUserId),
+    request: (command, ids) => requestMembershipRemoval(database, command, ids),
+    appeal: (command, ids) => appealMembershipRemoval(database, command, ids),
+    decide: (command, ids) => decideMembershipRemoval(database, command, ids),
   },
   logger: {
     redact: {

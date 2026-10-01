@@ -12,6 +12,7 @@ import {
   MinimumAgeNotMetError,
   InvalidRoleGrantTransitionError,
   MembershipExitConflictError,
+  MembershipRemovalConflictError,
   ResultConflictError,
   ResultPermissionDeniedError,
   ResultValidationError,
@@ -260,6 +261,26 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: {
         code: error.code,
         message: 'This voluntary Membership exit is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof MembershipRemovalConflictError) {
+    const statusCode = error.code === 'MEMBERSHIP_REMOVAL_NOT_FOUND'
+      ? 404
+      : error.code === 'MEMBERSHIP_REMOVAL_ADMIN_REQUIRED'
+          || error.code === 'MEMBERSHIP_REMOVAL_CENTRAL_REQUIRED'
+          || error.code === 'MEMBERSHIP_REMOVAL_SELF_CONFLICT'
+          || error.code === 'MEMBERSHIP_REMOVAL_SUBJECT_REQUIRED'
+        ? 403
+        : error.code === 'MEMBERSHIP_REMOVAL_REASON_REQUIRED'
+          ? 422
+          : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Membership removal action is no longer available',
         requestId,
       },
     };
