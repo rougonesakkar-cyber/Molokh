@@ -195,6 +195,8 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
     const statusCode = error.code === 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED'
       ? 403
       : error.code === 'COMMUNITY_LIFECYCLE_REASON_REQUIRED'
+          || error.code === 'COMMUNITY_CLOSURE_EFFECTIVE_AT_INVALID'
+          || error.code === 'COMMUNITY_CLOSURE_SESSION_DISPOSITIONS_INVALID'
         ? 422
         : 409;
     return {

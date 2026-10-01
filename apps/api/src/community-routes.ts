@@ -1,19 +1,35 @@
 import {
   ApiErrorSchema,
   CommunityContextResponseSchema,
+  CommunityClosureCandidatesResponseSchema,
+  CommunityClosureCommandResponseSchema,
+  CommunityClosurePlanResponseSchema,
   CommunityLifecycleCommandResponseSchema,
   CommunityLifecycleReasonBodySchema,
   CommunityLifecycleResponseSchema,
+  FinalizeCommunityClosureBodySchema,
+  ScheduleCommunityClosureBodySchema,
   type CommunityContextContract,
   type CommunityContextResponse,
+  type CommunityClosureCandidatesResponse,
+  type CommunityClosureCommandResponse,
+  type CommunityClosurePlanResponse,
   type CommunityLifecycleCommandResponse,
   type CommunityLifecycleContract,
   type CommunityLifecycleReasonBody,
   type CommunityLifecycleResponse,
+  type FinalizeCommunityClosureBody,
+  type ScheduleCommunityClosureBody,
 } from '@molokh/contracts';
 import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core';
 import type {
   CommunityContextProjection,
+  CommunityClosureCommandPreparation,
+  CommunityClosureProjection,
+  FinalizeCommunityClosureEffectIds,
+  FinalizeCommunityClosurePayload,
+  ScheduleCommunityClosureEffectIds,
+  ScheduleCommunityClosurePayload,
   CommunityLifecycleEffectIds,
   CommunityLifecycleProjection,
   ExecutedCommand,
@@ -46,6 +62,18 @@ export interface CommunityLifecycleRouteDependencies {
     command: CommandEnvelope<ReactivateCommunityPayload>,
     ids: CommunityLifecycleEffectIds,
   ) => Promise<ExecutedCommand<CommunityLifecycleProjection>>;
+  readonly closure?: {
+    readonly read: (communityId: string) => Promise<CommunityClosureProjection | null>;
+    readonly prepare: (communityId: string) => Promise<CommunityClosureCommandPreparation>;
+    readonly schedule: (
+      command: CommandEnvelope<ScheduleCommunityClosurePayload>,
+      ids: ScheduleCommunityClosureEffectIds,
+    ) => Promise<ExecutedCommand<CommunityClosureProjection>>;
+    readonly finalize: (
+      command: CommandEnvelope<FinalizeCommunityClosurePayload>,
+      ids: FinalizeCommunityClosureEffectIds,
+    ) => Promise<ExecutedCommand<CommunityClosureProjection>>;
+  };
 }
 
 export interface CommunityRouteDependencies {
@@ -121,6 +149,99 @@ function lifecycleIds(
     pauseId: idempotentResourceId('CommunityPause', communityId, idempotencyKey),
     competitionEventIds: Array.from({ length: competitionCount }, (_, index) =>
       idempotentResourceId(`CommunityCompetitionLifecycle:${index}`, actorUserId, idempotencyKey)),
+  };
+}
+
+function scheduleClosureCommand(
+  actorUserId: string,
+  communityId: string,
+  idempotencyKey: string,
+  version: number,
+  body: ScheduleCommunityClosureBody,
+  request: Parameters<typeof requestContext>[0],
+): CommandEnvelope<ScheduleCommunityClosurePayload> {
+  const context = requestContext(request);
+  return {
+    commandId: newUuidV7(), commandType: 'SCHEDULE_COMMUNITY_CLOSURE', idempotencyKey,
+    actor: { type: 'USER', id: actorUserId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+    aggregateType: 'Community', aggregateId: communityId, expectedVersion: version,
+    correlationId: context.correlationId, causationId: context.causationId,
+    requestId: context.requestId, source: 'admin', payloadVersion: 1,
+    payload: {
+      communityId, category: body.category, reason: body.reason,
+      emergency: body.emergency, effectiveAt: body.effectiveAt,
+      sessionDispositions: body.sessionDispositions.map((item) => ({ ...item })),
+    },
+  };
+}
+
+function finalizeClosureCommand(
+  actorUserId: string,
+  communityId: string,
+  idempotencyKey: string,
+  version: number,
+  body: FinalizeCommunityClosureBody,
+  request: Parameters<typeof requestContext>[0],
+): CommandEnvelope<FinalizeCommunityClosurePayload> {
+  const context = requestContext(request);
+  return {
+    commandId: newUuidV7(), commandType: 'FINALIZE_COMMUNITY_CLOSURE', idempotencyKey,
+    actor: { type: 'USER', id: actorUserId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+    aggregateType: 'Community', aggregateId: communityId, expectedVersion: version,
+    correlationId: context.correlationId, causationId: context.causationId,
+    requestId: context.requestId, source: 'admin', payloadVersion: 1,
+    payload: { communityId, planId: body.planId, reason: body.reason },
+  };
+}
+
+function scheduleClosureIds(
+  actorUserId: string,
+  communityId: string,
+  idempotencyKey: string,
+  preparation: CommunityClosureCommandPreparation,
+): ScheduleCommunityClosureEffectIds {
+  const id = (kind: string, index?: number) => idempotentResourceId(
+    index === undefined ? kind : `${kind}:${index}`,
+    `${actorUserId}:${communityId}`,
+    idempotencyKey,
+  );
+  return {
+    planId: id('CommunityClosurePlan'), eventId: newUuidV7(), auditId: newUuidV7(),
+    outboxMessageId: newUuidV7(), notificationOutboxMessageId: newUuidV7(),
+    notificationIds: Array.from({ length: preparation.memberCount }, (_, index) =>
+      id('CommunityClosureNotification', index)),
+    competitionEventIds: Array.from({ length: preparation.competitionCount }, (_, index) =>
+      id('CommunityClosureCompetitionEvent', index)),
+    challengeEventIds: Array.from({ length: preparation.liveChallengeCount }, (_, index) =>
+      id('CommunityClosureChallengeEvent', index)),
+    sessionEventIds: Array.from({ length: preparation.sessions.length }, (_, index) =>
+      id('CommunityClosureSessionEvent', index)),
+  };
+}
+
+function finalizeClosureIds(
+  actorUserId: string,
+  communityId: string,
+  idempotencyKey: string,
+  preparation: CommunityClosureCommandPreparation,
+): FinalizeCommunityClosureEffectIds {
+  const id = (kind: string, index?: number) => idempotentResourceId(
+    index === undefined ? kind : `${kind}:${index}`,
+    `${actorUserId}:${communityId}`,
+    idempotencyKey,
+  );
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    competitionEventIds: Array.from({ length: preparation.competitionCount }, (_, index) =>
+      id('CommunityClosedCompetitionEvent', index)),
+    membershipEventIds: Array.from({ length: preparation.memberCount }, (_, index) =>
+      id('CommunityClosedMembershipEvent', index)),
+    statusDispositionIds: Array.from({ length: preparation.statusHolderCount }, (_, index) =>
+      id('CommunityClosedStatusDisposition', index)),
+    statusEventIds: Array.from({ length: preparation.statusHolderCount }, (_, index) =>
+      id('CommunityClosedStatusEvent', index)),
+    challengeEventIds: Array.from({ length: preparation.liveChallengeCount }, (_, index) =>
+      id('CommunityClosedChallengeEvent', index)),
   };
 }
 
@@ -258,4 +379,160 @@ export async function registerCommunityRoutes(
 
   registerCommand('pause', 'PAUSE_COMMUNITY');
   registerCommand('reactivate', 'REACTIVATE_COMMUNITY');
+
+  const closure = lifecycle.closure;
+  if (!closure) return;
+
+  app.get<{ Headers: LifecycleHeaders; Params: CommunityParams }>(
+    '/api/v1/central/communities/:communityId/closure/candidates',
+    {
+      schema: {
+        operationId: 'readCommunityClosureCandidates',
+        params: Type.Object({ communityId: Type.String({ format: 'uuid' }) }),
+        response: { 200: CommunityClosureCandidatesResponseSchema, 401: ApiErrorSchema },
+      },
+    },
+    async (request, reply): Promise<CommunityClosureCandidatesResponse | undefined> => {
+      const authenticated = await lifecycle.auth.authenticate(request.headers.authorization);
+      const context = requestContext(request);
+      if (!authenticated) {
+        await reply.status(401).send({
+          code: 'UNAUTHENTICATED', message: 'Authentication is required', requestId: context.requestId,
+        });
+        return;
+      }
+      const preparation = await closure.prepare(request.params.communityId);
+      return { data: preparation.sessions.map((session) => ({ ...session,
+        athleteDisplayNames: [...session.athleteDisplayNames] as [string, string] })),
+      meta: { requestId: context.requestId } };
+    },
+  );
+
+  app.get<{ Headers: LifecycleHeaders; Params: CommunityParams }>(
+    '/api/v1/central/communities/:communityId/closure',
+    {
+      schema: {
+        operationId: 'readCommunityClosurePlan',
+        params: Type.Object({ communityId: Type.String({ format: 'uuid' }) }),
+        response: { 200: CommunityClosurePlanResponseSchema, 401: ApiErrorSchema, 404: ApiErrorSchema },
+      },
+    },
+    async (request, reply): Promise<CommunityClosurePlanResponse | undefined> => {
+      const authenticated = await lifecycle.auth.authenticate(request.headers.authorization);
+      const context = requestContext(request);
+      if (!authenticated) {
+        await reply.status(401).send({
+          code: 'UNAUTHENTICATED', message: 'Authentication is required', requestId: context.requestId,
+        });
+        return;
+      }
+      const plan = await closure.read(request.params.communityId);
+      if (!plan) {
+        await reply.status(404).send({
+          code: 'COMMUNITY_CLOSURE_NOT_FOUND', message: 'Community Closure Plan was not found',
+          requestId: context.requestId,
+        });
+        return;
+      }
+      return { data: { ...plan }, meta: { requestId: context.requestId } };
+    },
+  );
+
+  app.post<{
+    Body: ScheduleCommunityClosureBody;
+    Headers: LifecycleHeaders;
+    Params: CommunityParams;
+  }>(
+    '/api/v1/central/communities/:communityId/closure/schedule',
+    {
+      schema: {
+        operationId: 'scheduleCommunityClosure',
+        params: Type.Object({ communityId: Type.String({ format: 'uuid' }) }),
+        body: ScheduleCommunityClosureBodySchema,
+        response: {
+          200: CommunityClosureCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema,
+          404: ApiErrorSchema, 409: ApiErrorSchema, 422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<CommunityClosureCommandResponse | undefined> => {
+      const authenticated = await lifecycle.auth.authenticate(request.headers.authorization);
+      const context = requestContext(request);
+      if (!authenticated) {
+        await reply.status(401).send({
+          code: 'UNAUTHENTICATED', message: 'Authentication is required', requestId: context.requestId,
+        });
+        return;
+      }
+      const current = await lifecycle.read(request.params.communityId);
+      if (!current) {
+        await reply.status(404).send({
+          code: 'COMMUNITY_CONTEXT_NOT_FOUND', message: 'Community was not found', requestId: context.requestId,
+        });
+        return;
+      }
+      const key = requiredHeader(request.headers['idempotency-key'], 'Idempotency-Key');
+      const preparation = await closure.prepare(request.params.communityId);
+      const command = scheduleClosureCommand(
+        authenticated.userId, request.params.communityId, key,
+        expectedVersion(request.headers['if-match']), request.body, request,
+      );
+      const executed = await closure.schedule(command, scheduleClosureIds(
+        authenticated.userId, request.params.communityId, key, preparation,
+      ));
+      return { data: { ...executed.response }, meta: {
+        requestId: context.requestId, eventId: executed.eventId, replayed: executed.replayed,
+      } };
+    },
+  );
+
+  app.post<{
+    Body: FinalizeCommunityClosureBody;
+    Headers: LifecycleHeaders;
+    Params: CommunityParams;
+  }>(
+    '/api/v1/central/communities/:communityId/closure/finalize',
+    {
+      schema: {
+        operationId: 'finalizeCommunityClosure',
+        params: Type.Object({ communityId: Type.String({ format: 'uuid' }) }),
+        body: FinalizeCommunityClosureBodySchema,
+        response: {
+          200: CommunityClosureCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema,
+          404: ApiErrorSchema, 409: ApiErrorSchema, 422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<CommunityClosureCommandResponse | undefined> => {
+      const authenticated = await lifecycle.auth.authenticate(request.headers.authorization);
+      const context = requestContext(request);
+      if (!authenticated) {
+        await reply.status(401).send({
+          code: 'UNAUTHENTICATED', message: 'Authentication is required', requestId: context.requestId,
+        });
+        return;
+      }
+      const current = await lifecycle.read(request.params.communityId);
+      if (!current) {
+        await reply.status(404).send({
+          code: 'COMMUNITY_CONTEXT_NOT_FOUND', message: 'Community was not found', requestId: context.requestId,
+        });
+        return;
+      }
+      const key = requiredHeader(request.headers['idempotency-key'], 'Idempotency-Key');
+      const preparation = await closure.prepare(request.params.communityId);
+      const command = finalizeClosureCommand(
+        authenticated.userId, request.params.communityId, key,
+        expectedVersion(request.headers['if-match']), request.body, request,
+      );
+      const executed = await closure.finalize(command, finalizeClosureIds(
+        authenticated.userId, request.params.communityId, key, preparation,
+      ));
+      return { data: { ...executed.response }, meta: {
+        requestId: context.requestId, eventId: executed.eventId, replayed: executed.replayed,
+      } };
+    },
+  );
 }

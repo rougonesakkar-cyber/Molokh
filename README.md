@@ -281,10 +281,22 @@ their state and scheduled time. Timer workers re-read the current projection dea
 created before the pause cannot fire early after reactivation. The Central UI requires a reason and
 shows these consequences before the versioned command is available.
 
+Permanent closure now follows a separate versioned `Closure Plan`; it is never an overloaded
+pause. Central records a future effective time (or an explicit emergency), a reason/category and
+one disposition for every confirmed Official Session, including physically ended Sessions whose
+Result or Appeal is still open. Scheduling the plan moves Community to `CLOSING`, closes every
+Competition to new actions, cancels pending Challenges no-fault and preserves only explicitly
+retained Sessions. Finalization is rejected before the effective time or while any retained
+Session/Result/Appeal path is unresolved. A successful finalization archives live Memberships,
+closes Competitions and current Champion/Contender records with `COMMUNITY_CLOSED`, and performs
+no loss, succession or status migration. The Central UI exposes the same two-step review and
+confirmation flow; migration `0042_community_closure_foundation.sql` stores the immutable plan and
+Session/status dispositions.
+
 ## Next executable action
 
 Create a deterministic local governance fixture for the remaining Appeal, Missing Result and
 IntegrityCase role-switch walkthroughs. Then implement the remaining M7 lifecycle contours in
-dependency order: Community closure, Membership exit/removal, Youth consent and age transition,
-platform-incident compensation, and account closure/export/retention before pilot hardening.
+dependency order: Membership exit/removal, Youth consent and age transition, platform-incident
+compensation, and account closure/export/retention before pilot hardening.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

@@ -2330,14 +2330,19 @@ export type CommunityContextResponse = Static<typeof CommunityContextResponseSch
 export const CommunityLifecycleProjectionSchema = Type.Object(
   {
     communityId: Type.String({ format: 'uuid' }),
-    state: Type.Union([Type.Literal('ACTIVE'), Type.Literal('PAUSED')]),
+    state: Type.Union([
+      Type.Literal('ACTIVE'), Type.Literal('PAUSED'),
+      Type.Literal('CLOSING'), Type.Literal('CLOSED'),
+    ]),
     pauseStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     latestPauseDurationSeconds: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
     version: Type.Integer({ minimum: 1 }),
     competitions: Type.Array(Type.Object(
       {
         competitionId: Type.String({ format: 'uuid' }),
-        availability: Type.Union([Type.Literal('ACTIVE'), Type.Literal('PAUSED')]),
+        availability: Type.Union([
+          Type.Literal('ACTIVE'), Type.Literal('PAUSED'), Type.Literal('CLOSED'),
+        ]),
         version: Type.Integer({ minimum: 1 }),
       },
       { additionalProperties: false },
@@ -2374,6 +2379,108 @@ export const CommunityLifecycleReasonBodySchema = Type.Object(
   { $id: 'CommunityLifecycleReasonBody', additionalProperties: false },
 );
 export type CommunityLifecycleReasonBody = Static<typeof CommunityLifecycleReasonBodySchema>;
+
+const CommunityClosureDispositionSchema = Type.Union([
+  Type.Literal('RETAIN_TO_COMPLETION'), Type.Literal('CANCEL_NO_FAULT'),
+]);
+
+export const CommunityClosureSessionCandidateSchema = Type.Object(
+  {
+    sessionId: Type.String({ format: 'uuid' }),
+    state: Type.Union([
+      Type.Literal('SCHEDULED'), Type.Literal('READY_FOR_COACH'), Type.Literal('IN_PROGRESS'),
+      Type.Literal('ENDED'),
+    ]),
+    scheduledStartAt: Type.String({ format: 'date-time' }),
+    scheduledEndAt: Type.String({ format: 'date-time' }),
+    athleteDisplayNames: Type.Tuple([Type.String(), Type.String()]),
+    recommendedDisposition: CommunityClosureDispositionSchema,
+    cancellationAllowed: Type.Boolean(),
+  },
+  { $id: 'CommunityClosureSessionCandidate', additionalProperties: false },
+);
+export type CommunityClosureSessionCandidateContract =
+  Static<typeof CommunityClosureSessionCandidateSchema>;
+
+export const CommunityClosureCandidatesResponseSchema = Type.Object(
+  {
+    data: Type.Array(CommunityClosureSessionCandidateSchema),
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'CommunityClosureCandidatesResponse', additionalProperties: false },
+);
+export type CommunityClosureCandidatesResponse =
+  Static<typeof CommunityClosureCandidatesResponseSchema>;
+
+export const CommunityClosurePlanSchema = Type.Object(
+  {
+    planId: Type.String({ format: 'uuid' }),
+    communityId: Type.String({ format: 'uuid' }),
+    planVersion: Type.Integer({ minimum: 1 }),
+    planState: Type.Union([Type.Literal('SCHEDULED'), Type.Literal('FINALIZED')]),
+    communityState: Type.Union([Type.Literal('CLOSING'), Type.Literal('CLOSED')]),
+    category: Type.String({ minLength: 1, maxLength: 80 }),
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+    emergency: Type.Boolean(),
+    effectiveAt: Type.String({ format: 'date-time' }),
+    scheduledAt: Type.String({ format: 'date-time' }),
+    finalizedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    retainedSessionCount: Type.Integer({ minimum: 0 }),
+    cancelledSessionCount: Type.Integer({ minimum: 0 }),
+    communityVersion: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'CommunityClosurePlan', additionalProperties: false },
+);
+export type CommunityClosurePlanContract = Static<typeof CommunityClosurePlanSchema>;
+
+export const CommunityClosurePlanResponseSchema = Type.Object(
+  {
+    data: CommunityClosurePlanSchema,
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'CommunityClosurePlanResponse', additionalProperties: false },
+);
+export type CommunityClosurePlanResponse = Static<typeof CommunityClosurePlanResponseSchema>;
+
+export const CommunityClosureCommandResponseSchema = Type.Object(
+  {
+    data: CommunityClosurePlanSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }),
+  },
+  { $id: 'CommunityClosureCommandResponse', additionalProperties: false },
+);
+export type CommunityClosureCommandResponse = Static<typeof CommunityClosureCommandResponseSchema>;
+
+export const ScheduleCommunityClosureBodySchema = Type.Object(
+  {
+    category: Type.String({ minLength: 1, maxLength: 80 }),
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+    emergency: Type.Boolean(),
+    effectiveAt: Type.String({ format: 'date-time' }),
+    sessionDispositions: Type.Array(Type.Object(
+      {
+        sessionId: Type.String({ format: 'uuid' }),
+        disposition: CommunityClosureDispositionSchema,
+      },
+      { additionalProperties: false },
+    )),
+  },
+  { $id: 'ScheduleCommunityClosureBody', additionalProperties: false },
+);
+export type ScheduleCommunityClosureBody = Static<typeof ScheduleCommunityClosureBodySchema>;
+
+export const FinalizeCommunityClosureBodySchema = Type.Object(
+  {
+    planId: Type.String({ format: 'uuid' }),
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+  },
+  { $id: 'FinalizeCommunityClosureBody', additionalProperties: false },
+);
+export type FinalizeCommunityClosureBody = Static<typeof FinalizeCommunityClosureBodySchema>;
 
 const CompetitionPhaseSchema = Type.Union([
   Type.Literal('FOUNDING_OPEN'),

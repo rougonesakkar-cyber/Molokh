@@ -100,6 +100,10 @@ import {
   openIntegrityCase,
   pauseCommunity,
   reactivateCommunity,
+  readCommunityClosure,
+  readCommunityClosureCommandPreparation,
+  scheduleCommunityClosure,
+  finalizeCommunityClosure,
   startIntegrityReview,
   decideIntegrityCase,
 } from '@molokh/db';
@@ -1141,6 +1145,12 @@ const app = await buildApp({
       read: (communityId) => readCommunityLifecycle(database, communityId),
       pause: (command, ids) => pauseCommunity(database, command, ids),
       reactivate: (command, ids) => reactivateCommunity(database, command, ids),
+      closure: {
+        read: (communityId) => readCommunityClosure(database, communityId),
+        prepare: (communityId) => readCommunityClosureCommandPreparation(database, communityId),
+        schedule: (command, ids) => scheduleCommunityClosure(database, command, ids),
+        finalize: (command, ids) => finalizeCommunityClosure(database, command, ids),
+      },
     },
   },
   discovery: {

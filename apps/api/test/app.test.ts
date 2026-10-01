@@ -95,6 +95,12 @@ import type {
   ChatChallengeProjection,
   PauseCommunityPayload,
   ReactivateCommunityPayload,
+  CommunityClosureCommandPreparation,
+  CommunityClosureProjection,
+  FinalizeCommunityClosureEffectIds,
+  FinalizeCommunityClosurePayload,
+  ScheduleCommunityClosureEffectIds,
+  ScheduleCommunityClosurePayload,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -489,6 +495,43 @@ describe('runtime contract', () => {
       eventId: '0199a1b2-1234-7000-8000-000000000406',
       aggregateVersion: 9, replayed: false,
     }));
+    const preparation: CommunityClosureCommandPreparation = {
+      sessions: [{
+        sessionId: '0199a1b2-1234-7000-8000-000000000407',
+        state: 'SCHEDULED', scheduledStartAt: '2026-10-05T10:00:00.000Z',
+        scheduledEndAt: '2026-10-05T11:00:00.000Z',
+        athleteDisplayNames: ['Анна', 'Марина'],
+        recommendedDisposition: 'RETAIN_TO_COMPLETION', cancellationAllowed: true,
+      }],
+      competitionCount: 1, liveChallengeCount: 2, memberCount: 2, statusHolderCount: 1,
+    };
+    const closurePlan: CommunityClosureProjection = {
+      planId: '0199a1b2-1234-7000-8000-000000000408', communityId,
+      planVersion: 1, planState: 'SCHEDULED', communityState: 'CLOSING',
+      category: 'VENUE_EXIT', reason: 'Зал прекращает работу', emergency: false,
+      effectiveAt: '2026-10-10T10:00:00.000Z', scheduledAt: '2026-10-01T10:00:00.000Z',
+      finalizedAt: null, retainedSessionCount: 1, cancelledSessionCount: 0,
+      communityVersion: 8,
+    };
+    const schedule = vi.fn(async (
+      _command: CommandEnvelope<ScheduleCommunityClosurePayload>,
+      _ids: ScheduleCommunityClosureEffectIds,
+    ) => ({
+      responseStatus: 200, response: closurePlan,
+      eventId: '0199a1b2-1234-7000-8000-000000000409',
+      aggregateVersion: 8, replayed: false,
+    }));
+    const finalize = vi.fn(async (
+      _command: CommandEnvelope<FinalizeCommunityClosurePayload>,
+      _ids: FinalizeCommunityClosureEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: { ...closurePlan, planState: 'FINALIZED' as const,
+        communityState: 'CLOSED' as const, finalizedAt: '2026-10-10T10:01:00.000Z',
+        communityVersion: 9 },
+      eventId: '0199a1b2-1234-7000-8000-000000000410',
+      aggregateVersion: 9, replayed: false,
+    }));
     const app = await buildApp({
       community: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -498,6 +541,12 @@ describe('runtime contract', () => {
           read: async () => active,
           pause,
           reactivate,
+          closure: {
+            read: async () => closurePlan,
+            prepare: async () => preparation,
+            schedule,
+            finalize,
+          },
         },
       },
     });
@@ -531,9 +580,62 @@ describe('runtime contract', () => {
       payload: { communityId, reason: 'Плановые работы' },
     });
     expect(pause.mock.calls[0]?.[1].competitionEventIds).toHaveLength(1);
+
+    const candidates = await app.inject({
+      method: 'GET',
+      url: `/api/v1/central/communities/${communityId}/closure/candidates`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(candidates.statusCode).toBe(200);
+    expect(candidates.json()).toMatchObject({ data: preparation.sessions });
+
+    const scheduleResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/communities/${communityId}/closure/schedule`,
+      headers: {
+        authorization: `Bearer ${token}`, 'content-type': 'application/json',
+        'idempotency-key': 'schedule-community-closure-test', 'if-match': '7',
+      },
+      payload: {
+        category: 'VENUE_EXIT', reason: 'Зал прекращает работу', emergency: false,
+        effectiveAt: '2026-10-10T10:00:00.000Z',
+        sessionDispositions: [{
+          sessionId: preparation.sessions[0]!.sessionId,
+          disposition: 'RETAIN_TO_COMPLETION',
+        }],
+      },
+    });
+    expect(scheduleResponse.statusCode).toBe(200);
+    expect(scheduleResponse.json()).toMatchObject({ data: closurePlan });
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(schedule.mock.calls[0]?.[1]).toMatchObject({
+      notificationIds: expect.arrayContaining([expect.any(String), expect.any(String)]),
+      competitionEventIds: [expect.any(String)],
+      challengeEventIds: expect.arrayContaining([expect.any(String), expect.any(String)]),
+      sessionEventIds: [expect.any(String)],
+    });
+
+    const finalizeResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/communities/${communityId}/closure/finalize`,
+      headers: {
+        authorization: `Bearer ${token}`, 'content-type': 'application/json',
+        'idempotency-key': 'finalize-community-closure-test', 'if-match': '8',
+      },
+      payload: { planId: closurePlan.planId, reason: 'Closure Plan completed' },
+    });
+    expect(finalizeResponse.statusCode).toBe(200);
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(finalize.mock.calls[0]?.[1].statusDispositionIds).toHaveLength(1);
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/central/communities/{communityId}/pause');
     expect(app.swagger().paths).toHaveProperty('/api/v1/central/communities/{communityId}/reactivate');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/central/communities/{communityId}/closure/schedule',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/central/communities/{communityId}/closure/finalize',
+    );
   });
 
   it('returns transparent Discovery cards without exposing private rank buckets', async () => {

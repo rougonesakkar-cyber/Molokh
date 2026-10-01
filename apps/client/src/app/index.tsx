@@ -7,6 +7,9 @@ import type {
   BookingSoloContinuationCommandResponse,
   CommunityLifecycleCommandResponse,
   CommunityLifecycleResponse,
+  CommunityClosureCandidatesResponse,
+  CommunityClosureCommandResponse,
+  CommunityClosurePlanResponse,
   CommunityContextResponse,
   CompetitionStatusResponse,
   DiscoveryActionResponse,
@@ -68,6 +71,9 @@ import { sportLabel, sportOptions } from '../lib/sports';
 type Identity = MeResponse['data'];
 type CommunityContext = CommunityContextResponse['data'];
 type CommunityLifecycle = CommunityLifecycleResponse['data'];
+type CommunityClosureCandidate = CommunityClosureCandidatesResponse['data'][number];
+type CommunityClosurePlan = CommunityClosurePlanResponse['data'];
+type CommunityClosureDisposition = 'RETAIN_TO_COMPLETION' | 'CANCEL_NO_FAULT';
 type CompetitionStatus = CompetitionStatusResponse['data'];
 type StatusReleasePreview = StatusReleaseCommandResponse['data'];
 type Capability = Identity['capabilities'][number];
@@ -224,6 +230,12 @@ function formatDateTime(value: string): string {
   });
 }
 
+function defaultClosureEffectiveAt(): string {
+  const value = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000);
+  value.setMinutes(0, 0, 0);
+  return value.toISOString().slice(0, 16);
+}
+
 function venueDateTimeToIso(
   dateText: string,
   timeText: string,
@@ -367,6 +379,19 @@ export default function IdentityScreen() {
   const [communityLifecycleReason, setCommunityLifecycleReason] = useState('');
   const [communityLifecycleNotice, setCommunityLifecycleNotice] = useState<string | null>(null);
   const [actingCommunityLifecycle, setActingCommunityLifecycle] = useState(false);
+  const [communityClosurePlan, setCommunityClosurePlan] = useState<CommunityClosurePlan | null>(null);
+  const [communityClosureCandidates, setCommunityClosureCandidates] =
+    useState<CommunityClosureCandidate[]>([]);
+  const [communityClosureDispositions, setCommunityClosureDispositions] =
+    useState<Record<string, CommunityClosureDisposition>>({});
+  const [communityClosureCategory, setCommunityClosureCategory] = useState('VENUE_EXIT');
+  const [communityClosureReason, setCommunityClosureReason] = useState('');
+  const [communityClosureEffectiveAt, setCommunityClosureEffectiveAt] =
+    useState(defaultClosureEffectiveAt);
+  const [communityClosureEmergency, setCommunityClosureEmergency] = useState(false);
+  const [communityClosureArmed, setCommunityClosureArmed] = useState(false);
+  const [communityClosureNotice, setCommunityClosureNotice] = useState<string | null>(null);
+  const [actingCommunityClosure, setActingCommunityClosure] = useState(false);
   const [competitionStatus, setCompetitionStatus] = useState<CompetitionStatus | null>(null);
   const [statusReleasePreview, setStatusReleasePreview] =
     useState<StatusReleasePreview | null>(null);
@@ -493,8 +518,39 @@ export default function IdentityScreen() {
         if (!lifecycleResponse.ok) throw new Error(await apiErrorMessage(lifecycleResponse));
         const lifecycleResult = (await lifecycleResponse.json()) as CommunityLifecycleResponse;
         setCommunityLifecycle(lifecycleResult.data);
+        const closureResponse = await fetch(
+          `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/closure`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (closureResponse.status === 404) setCommunityClosurePlan(null);
+        else {
+          if (!closureResponse.ok) throw new Error(await apiErrorMessage(closureResponse));
+          const closureResult = (await closureResponse.json()) as CommunityClosurePlanResponse;
+          setCommunityClosurePlan(closureResult.data);
+        }
+        if (lifecycleResult.data.state === 'ACTIVE' || lifecycleResult.data.state === 'PAUSED') {
+          const candidatesResponse = await fetch(
+            `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/closure/candidates`,
+            { headers: { Authorization: `Bearer ${localToken}` } },
+          );
+          if (!candidatesResponse.ok) throw new Error(await apiErrorMessage(candidatesResponse));
+          const candidatesResult =
+            (await candidatesResponse.json()) as CommunityClosureCandidatesResponse;
+          setCommunityClosureCandidates(candidatesResult.data);
+          setCommunityClosureDispositions(Object.fromEntries(
+            candidatesResult.data.map((candidate) => [
+              candidate.sessionId, candidate.recommendedDisposition,
+            ]),
+          ));
+        } else {
+          setCommunityClosureCandidates([]);
+          setCommunityClosureDispositions({});
+        }
       } else {
         setCommunityLifecycle(null);
+        setCommunityClosurePlan(null);
+        setCommunityClosureCandidates([]);
+        setCommunityClosureDispositions({});
       }
       if (currentAccount?.role === 'Gym Admin' && loadedCommunity) {
         const dashboardResponse = await fetch(
@@ -752,6 +808,16 @@ export default function IdentityScreen() {
     setCommunityLifecycleReason('');
     setCommunityLifecycleNotice(null);
     setActingCommunityLifecycle(false);
+    setCommunityClosurePlan(null);
+    setCommunityClosureCandidates([]);
+    setCommunityClosureDispositions({});
+    setCommunityClosureCategory('VENUE_EXIT');
+    setCommunityClosureReason('');
+    setCommunityClosureEffectiveAt(defaultClosureEffectiveAt());
+    setCommunityClosureEmergency(false);
+    setCommunityClosureArmed(false);
+    setCommunityClosureNotice(null);
+    setActingCommunityClosure(false);
     setCompetitionStatus(null);
     setStatusReleasePreview(null);
     setCoachInvites([]);
@@ -1530,7 +1596,10 @@ export default function IdentityScreen() {
   };
 
   const runCommunityLifecycleAction = async () => {
-    if (!communityLifecycle || actingCommunityLifecycle) return;
+    if (
+      !communityLifecycle || actingCommunityLifecycle
+      || (communityLifecycle.state !== 'ACTIVE' && communityLifecycle.state !== 'PAUSED')
+    ) return;
     const reason = communityLifecycleReason.trim();
     if (reason.length === 0) return;
     const action = communityLifecycle.state === 'ACTIVE' ? 'pause' : 'reactivate';
@@ -1567,6 +1636,106 @@ export default function IdentityScreen() {
       setError(caught instanceof Error ? caught.message : 'Не удалось изменить состояние Community');
     } finally {
       setActingCommunityLifecycle(false);
+    }
+  };
+
+  const scheduleCommunityClosurePlan = async () => {
+    if (
+      !communityLifecycle || actingCommunityClosure
+      || (communityLifecycle.state !== 'ACTIVE' && communityLifecycle.state !== 'PAUSED')
+    ) return;
+    const reason = communityClosureReason.trim();
+    const parsedEffectiveAt = new Date(communityClosureEffectiveAt);
+    if (reason.length === 0 || Number.isNaN(parsedEffectiveAt.getTime())) {
+      setCommunityClosureNotice('Укажите причину и корректные дату и время закрытия.');
+      return;
+    }
+    if (!communityClosureArmed) {
+      setCommunityClosureArmed(true);
+      setCommunityClosureNotice(
+        `Проверьте план: ${communityClosureCandidates.length} подтверждённых Session, `
+        + `${communityClosureCandidates.filter((candidate) =>
+          communityClosureDispositions[candidate.sessionId] === 'CANCEL_NO_FAULT').length} будут отменены без вины.`,
+      );
+      return;
+    }
+    setActingCommunityClosure(true);
+    setCommunityClosureNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/central/communities/${communityLifecycle.communityId}/closure/schedule`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': `community-closure:schedule:${communityLifecycle.communityId}:v${communityLifecycle.version}:${Date.now().toString(36)}`,
+            'If-Match': String(communityLifecycle.version),
+          },
+          body: JSON.stringify({
+            category: communityClosureCategory, reason,
+            emergency: communityClosureEmergency,
+            effectiveAt: parsedEffectiveAt.toISOString(),
+            sessionDispositions: communityClosureCandidates.map((candidate) => ({
+              sessionId: candidate.sessionId,
+              disposition: communityClosureDispositions[candidate.sessionId]
+                ?? candidate.recommendedDisposition,
+            })),
+          }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as CommunityClosureCommandResponse;
+      setCommunityClosurePlan(result.data);
+      setCommunityClosureArmed(false);
+      setCommunityClosureReason('');
+      setCommunityClosureNotice(
+        'Closure Plan запланирован. Новые статусные действия остановлены; '
+        + 'сохранённые Session могут безопасно завершиться.',
+      );
+      await loadIdentity();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось запланировать закрытие Community');
+    } finally {
+      setActingCommunityClosure(false);
+    }
+  };
+
+  const finalizeCommunityClosurePlan = async () => {
+    if (!communityLifecycle || !communityClosurePlan || actingCommunityClosure) return;
+    const reason = communityClosureReason.trim();
+    if (reason.length === 0) {
+      setCommunityClosureNotice('Укажите причину завершения Closure Plan.');
+      return;
+    }
+    setActingCommunityClosure(true);
+    setCommunityClosureNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/central/communities/${communityLifecycle.communityId}/closure/finalize`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': `community-closure:finalize:${communityLifecycle.communityId}:v${communityLifecycle.version}:${Date.now().toString(36)}`,
+            'If-Match': String(communityLifecycle.version),
+          },
+          body: JSON.stringify({ planId: communityClosurePlan.planId, reason }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as CommunityClosureCommandResponse;
+      setCommunityClosurePlan(result.data);
+      setCommunityClosureReason('');
+      setCommunityClosureNotice('Community закрыта без переноса статусов и без поражений участникам.');
+      await loadIdentity();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось завершить Closure Plan');
+    } finally {
+      setActingCommunityClosure(false);
     }
   };
 
@@ -2552,55 +2721,276 @@ export default function IdentityScreen() {
                         Состояние Community
                       </Text>
                       <Text style={styles.sessionState}>
-                        {communityLifecycle.state === 'ACTIVE' ? 'Активна' : 'Приостановлена'}
+                        {communityLifecycle.state === 'ACTIVE' ? 'Активна'
+                          : communityLifecycle.state === 'PAUSED' ? 'Приостановлена'
+                            : communityLifecycle.state === 'CLOSING' ? 'Закрывается' : 'Закрыта'}
                       </Text>
                     </View>
                     <Text style={styles.hint}>
                       {communityLifecycle.state === 'ACTIVE'
                         ? 'Пауза временно остановит новые статусные действия и Challenge-дедлайны. Уже подтверждённые Session продолжатся, cooldown не изменится.'
-                        : `Пауза действует с ${communityLifecycle.pauseStartedAt ? formatDateTime(communityLifecycle.pauseStartedAt) : 'зафиксированного времени'}. После возобновления Challenge получат точное продление на длительность паузы.`}
+                        : communityLifecycle.state === 'PAUSED'
+                          ? `Пауза действует с ${communityLifecycle.pauseStartedAt ? formatDateTime(communityLifecycle.pauseStartedAt) : 'зафиксированного времени'}. После возобновления Challenge получат точное продление на длительность паузы.`
+                          : communityLifecycle.state === 'CLOSING'
+                            ? 'Новые статусные действия остановлены. Разрешённые Closure Plan Session могут завершиться.'
+                            : 'Community окончательно закрыта; Membership архивированы, статусы завершены без поражений и переноса.'}
                     </Text>
                     <Text style={styles.muted}>
                       Контуры: {communityLifecycle.competitions.length} · версия {communityLifecycle.version}
                     </Text>
-                    <TextInput
-                      accessibilityLabel={communityLifecycle.state === 'ACTIVE'
-                        ? 'Причина приостановки Community'
-                        : 'Причина возобновления Community'}
-                      maxLength={500}
-                      multiline
-                      onChangeText={setCommunityLifecycleReason}
-                      placeholder={communityLifecycle.state === 'ACTIVE'
-                        ? 'Укажите операционную причину или причину, связанную с безопасностью'
-                        : 'Кратко укажите, что причина паузы устранена'}
-                      style={[styles.input, styles.appealInput]}
-                      value={communityLifecycleReason}
-                    />
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{
-                        disabled: actingCommunityLifecycle || communityLifecycleReason.trim().length === 0,
-                      }}
-                      disabled={actingCommunityLifecycle || communityLifecycleReason.trim().length === 0}
-                      onPress={() => void runCommunityLifecycleAction()}
-                      style={({ pressed }) => [
-                        communityLifecycle.state === 'ACTIVE' ? styles.dangerButton : styles.button,
-                        (actingCommunityLifecycle || communityLifecycleReason.trim().length === 0)
-                          && styles.buttonDisabled,
-                        pressed && !actingCommunityLifecycle && styles.buttonPressed,
-                      ]}
-                    >
-                      {actingCommunityLifecycle ? <ActivityIndicator color="#ffffff" /> : (
-                        <Text style={communityLifecycle.state === 'ACTIVE'
-                          ? styles.dangerButtonText : styles.buttonText}>
-                          {communityLifecycle.state === 'ACTIVE'
-                            ? 'Приостановить Community'
-                            : 'Возобновить Community'}
-                        </Text>
-                      )}
-                    </Pressable>
+                    {communityLifecycle.state === 'ACTIVE' || communityLifecycle.state === 'PAUSED' ? (
+                      <>
+                        <TextInput
+                          accessibilityLabel={communityLifecycle.state === 'ACTIVE'
+                            ? 'Причина приостановки Community'
+                            : 'Причина возобновления Community'}
+                          maxLength={500}
+                          multiline
+                          onChangeText={setCommunityLifecycleReason}
+                          placeholder={communityLifecycle.state === 'ACTIVE'
+                            ? 'Укажите операционную причину или причину, связанную с безопасностью'
+                            : 'Кратко укажите, что причина паузы устранена'}
+                          style={[styles.input, styles.appealInput]}
+                          value={communityLifecycleReason}
+                        />
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            disabled: actingCommunityLifecycle || communityLifecycleReason.trim().length === 0,
+                          }}
+                          disabled={actingCommunityLifecycle || communityLifecycleReason.trim().length === 0}
+                          onPress={() => void runCommunityLifecycleAction()}
+                          style={({ pressed }) => [
+                            communityLifecycle.state === 'ACTIVE' ? styles.dangerButton : styles.button,
+                            (actingCommunityLifecycle || communityLifecycleReason.trim().length === 0)
+                              && styles.buttonDisabled,
+                            pressed && !actingCommunityLifecycle && styles.buttonPressed,
+                          ]}
+                        >
+                          {actingCommunityLifecycle ? <ActivityIndicator color="#ffffff" /> : (
+                            <Text style={communityLifecycle.state === 'ACTIVE'
+                              ? styles.dangerButtonText : styles.buttonText}>
+                              {communityLifecycle.state === 'ACTIVE'
+                                ? 'Приостановить Community'
+                                : 'Возобновить Community'}
+                            </Text>
+                          )}
+                        </Pressable>
+                      </>
+                    ) : null}
                     {communityLifecycleNotice ? (
                       <Text style={styles.hint}>{communityLifecycleNotice}</Text>
+                    ) : null}
+                  </View>
+                ) : null}
+
+                {activeTestAccount.role === 'Central' && communityLifecycle ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      Закрытие Community
+                    </Text>
+                    {communityLifecycle.state === 'ACTIVE' || communityLifecycle.state === 'PAUSED' ? (
+                      <>
+                        <Text style={styles.hint}>
+                          Closure Plan сразу остановит новые статусные действия. Pending Challenge
+                          закроются без вины; подтверждённые Official Session требуют явного решения.
+                        </Text>
+                        <Text style={styles.label}>Причина</Text>
+                        <View style={styles.chips}>
+                          {[
+                            ['VENUE_EXIT', 'Зал прекращает работу'],
+                            ['SAFETY', 'Безопасность'],
+                            ['OPERATIONS', 'Операционная причина'],
+                          ].map(([value, label]) => (
+                            <Pressable
+                              key={value}
+                              accessibilityRole="button"
+                              onPress={() => {
+                                setCommunityClosureCategory(value!);
+                                setCommunityClosureArmed(false);
+                              }}
+                              style={[
+                                styles.choiceChip,
+                                communityClosureCategory === value && styles.choiceChipSelected,
+                              ]}
+                            >
+                              <Text style={[
+                                styles.choiceChipText,
+                                communityClosureCategory === value && styles.choiceChipTextSelected,
+                              ]}>{label}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                        <Text style={styles.label}>Подтверждённые Official Session</Text>
+                        {communityClosureCandidates.length === 0 ? (
+                          <Text style={styles.muted}>Нет Session, требующих решения.</Text>
+                        ) : communityClosureCandidates.map((candidate) => {
+                          const selected = communityClosureDispositions[candidate.sessionId]
+                            ?? candidate.recommendedDisposition;
+                          return (
+                            <View key={candidate.sessionId} style={styles.adminScheduleItem}>
+                              <Text style={styles.label}>
+                                {candidate.athleteDisplayNames.join(' · ')}
+                              </Text>
+                              <Text style={styles.muted}>
+                                {formatDateTime(candidate.scheduledStartAt)} · {candidate.state}
+                              </Text>
+                              <View style={styles.chips}>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => {
+                                    setCommunityClosureDispositions((current) => ({
+                                      ...current, [candidate.sessionId]: 'RETAIN_TO_COMPLETION',
+                                    }));
+                                    setCommunityClosureArmed(false);
+                                  }}
+                                  style={[
+                                    styles.choiceChip,
+                                    selected === 'RETAIN_TO_COMPLETION' && styles.choiceChipSelected,
+                                  ]}
+                                >
+                                  <Text style={[
+                                    styles.choiceChipText,
+                                    selected === 'RETAIN_TO_COMPLETION' && styles.choiceChipTextSelected,
+                                  ]}>Дать завершить</Text>
+                                </Pressable>
+                                {candidate.cancellationAllowed ? (
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    onPress={() => {
+                                      setCommunityClosureDispositions((current) => ({
+                                        ...current, [candidate.sessionId]: 'CANCEL_NO_FAULT',
+                                      }));
+                                      setCommunityClosureArmed(false);
+                                    }}
+                                    style={[
+                                      styles.choiceChip,
+                                      selected === 'CANCEL_NO_FAULT' && styles.choiceChipSelected,
+                                    ]}
+                                  >
+                                    <Text style={[
+                                      styles.choiceChipText,
+                                      selected === 'CANCEL_NO_FAULT' && styles.choiceChipTextSelected,
+                                    ]}>Отменить без вины</Text>
+                                  </Pressable>
+                                ) : null}
+                              </View>
+                            </View>
+                          );
+                        })}
+                        <Text style={styles.label}>Когда закрыть окончательно</Text>
+                        <TextInput
+                          accessibilityLabel="Дата и время окончательного закрытия Community"
+                          onChangeText={(value) => {
+                            setCommunityClosureEffectiveAt(value);
+                            setCommunityClosureArmed(false);
+                          }}
+                          placeholder="2026-10-10T18:00"
+                          style={styles.input}
+                          value={communityClosureEffectiveAt}
+                        />
+                        <View style={styles.chips}>
+                          {[[false, 'Плановое'], [true, 'Экстренное']].map(([value, label]) => (
+                            <Pressable
+                              key={String(value)}
+                              accessibilityRole="button"
+                              onPress={() => {
+                                setCommunityClosureEmergency(value === true);
+                                setCommunityClosureArmed(false);
+                              }}
+                              style={[
+                                styles.choiceChip,
+                                communityClosureEmergency === value && styles.choiceChipSelected,
+                              ]}
+                            >
+                              <Text style={[
+                                styles.choiceChipText,
+                                communityClosureEmergency === value && styles.choiceChipTextSelected,
+                              ]}>{label}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                        <TextInput
+                          accessibilityLabel="Обоснование Closure Plan"
+                          maxLength={500}
+                          multiline
+                          onChangeText={(value) => {
+                            setCommunityClosureReason(value);
+                            setCommunityClosureArmed(false);
+                          }}
+                          placeholder="Кратко объясните решение участникам и аудитору Central"
+                          style={[styles.input, styles.appealInput]}
+                          value={communityClosureReason}
+                        />
+                        <Pressable
+                          accessibilityRole="button"
+                          disabled={actingCommunityClosure || communityClosureReason.trim().length === 0}
+                          onPress={() => void scheduleCommunityClosurePlan()}
+                          style={({ pressed }) => [
+                            styles.dangerButton,
+                            (actingCommunityClosure || communityClosureReason.trim().length === 0)
+                              && styles.buttonDisabled,
+                            pressed && !actingCommunityClosure && styles.buttonPressed,
+                          ]}
+                        >
+                          {actingCommunityClosure ? <ActivityIndicator color="#9a3023" /> : (
+                            <Text style={styles.dangerButtonText}>
+                              {communityClosureArmed
+                                ? 'Подтвердить Closure Plan'
+                                : 'Проверить план закрытия'}
+                            </Text>
+                          )}
+                        </Pressable>
+                      </>
+                    ) : communityClosurePlan ? (
+                      <>
+                        <Text style={styles.hint}>
+                          План №{communityClosurePlan.planVersion} · {communityClosurePlan.category}
+                        </Text>
+                        <Text style={styles.muted}>
+                          Эффективная дата: {formatDateTime(communityClosurePlan.effectiveAt)} ·
+                          Session сохранено: {communityClosurePlan.retainedSessionCount} ·
+                          отменено без вины: {communityClosurePlan.cancelledSessionCount}
+                        </Text>
+                        <Text style={styles.hint}>{communityClosurePlan.reason}</Text>
+                        {communityLifecycle.state === 'CLOSING' ? (
+                          <>
+                            <TextInput
+                              accessibilityLabel="Причина завершения Closure Plan"
+                              maxLength={500}
+                              onChangeText={setCommunityClosureReason}
+                              placeholder="Подтвердите, что все сохранённые Result и Appeal разрешены"
+                              style={styles.input}
+                              value={communityClosureReason}
+                            />
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={actingCommunityClosure || communityClosureReason.trim().length === 0}
+                              onPress={() => void finalizeCommunityClosurePlan()}
+                              style={({ pressed }) => [
+                                styles.dangerButton,
+                                (actingCommunityClosure || communityClosureReason.trim().length === 0)
+                                  && styles.buttonDisabled,
+                                pressed && !actingCommunityClosure && styles.buttonPressed,
+                              ]}
+                            >
+                              {actingCommunityClosure ? <ActivityIndicator color="#9a3023" /> : (
+                                <Text style={styles.dangerButtonText}>Завершить закрытие Community</Text>
+                              )}
+                            </Pressable>
+                          </>
+                        ) : (
+                          <Text style={styles.successText}>
+                            Закрытие завершено {communityClosurePlan.finalizedAt
+                              ? formatDateTime(communityClosurePlan.finalizedAt) : ''}.
+                          </Text>
+                        )}
+                      </>
+                    ) : (
+                      <Text style={styles.muted}>Closure Plan загружается.</Text>
+                    )}
+                    {communityClosureNotice ? (
+                      <Text style={styles.hint}>{communityClosureNotice}</Text>
                     ) : null}
                   </View>
                 ) : null}
