@@ -2716,6 +2716,66 @@ export const StatusReleaseCommandResponseSchema = Type.Object(
 
 export type StatusReleaseCommandResponse = Static<typeof StatusReleaseCommandResponseSchema>;
 
+export const PreviewMembershipExitBodySchema = Type.Object(
+  { membershipId: Type.String({ format: 'uuid' }) },
+  { $id: 'PreviewMembershipExitBody', additionalProperties: false },
+);
+
+export type PreviewMembershipExitBody = Static<typeof PreviewMembershipExitBodySchema>;
+
+export const ConfirmMembershipExitBodySchema = Type.Object(
+  { confirmationToken: Type.String({ format: 'uuid' }) },
+  { $id: 'ConfirmMembershipExitBody', additionalProperties: false },
+);
+
+export type ConfirmMembershipExitBody = Static<typeof ConfirmMembershipExitBodySchema>;
+
+export const MembershipExitSchema = Type.Object(
+  {
+    exitId: Type.String({ format: 'uuid' }),
+    membershipId: Type.String({ format: 'uuid' }),
+    competitionId: Type.String({ format: 'uuid' }),
+    departingStatus: Type.Union([
+      Type.Literal('ORDINARY'), Type.Literal('CHAMPION'), Type.Literal('CONTENDER'),
+    ]),
+    consequence: Type.Union([
+      Type.Literal('ORDINARY_EXIT'), Type.Literal('CHAMPION_SUCCESSION'),
+      Type.Literal('CHAMPION_VACANCY'), Type.Literal('CONTENDER_VACANCY'),
+    ]),
+    state: Type.Union([Type.Literal('PREVIEWED'), Type.Literal('CONFIRMED')]),
+    successorUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    successorDisplayName: Type.Union([Type.String(), Type.Null()]),
+    beforeMembershipVersion: Type.Integer({ minimum: 1 }),
+    afterMembershipVersion: Type.Union([Type.Integer({ minimum: 2 }), Type.Null()]),
+    beforeStatusVersion: Type.Integer({ minimum: 0 }),
+    afterStatusVersion: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+    previewExpiresAt: Type.String({ format: 'date-time' }),
+    confirmationToken: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    closedChallengeCount: Type.Integer({ minimum: 0 }),
+    invalidatedQueueEntryCount: Type.Integer({ minimum: 0 }),
+    createsForfeit: Type.Literal(false),
+    createsLoss: Type.Literal(false),
+    createsCooldown: Type.Literal(false),
+    appealWaived: Type.Literal(false),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'MembershipExit', additionalProperties: false },
+);
+
+export const MembershipExitCommandResponseSchema = Type.Object(
+  {
+    data: MembershipExitSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }),
+  },
+  { $id: 'MembershipExitCommandResponse', additionalProperties: false },
+);
+
+export type MembershipExitCommandResponse = Static<typeof MembershipExitCommandResponseSchema>;
+
 export const GenesisResponseBodySchema = Type.Object(
   { explicitRulesetAcknowledged: Type.Optional(Type.Boolean()) },
   { $id: 'GenesisResponseBody', additionalProperties: false },

@@ -272,8 +272,18 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - The live multi-account walkthrough now covers a confirmed pair Training becoming a BOOKED
   `OFFICIAL_CHALLENGE` after both Athletes and Coach accept, plus Athlete withdrawal followed by
   remaining-Athlete and Coach acceptance of the same Session as `CONFIRMED_SOLO`.
-- Next increment: complete the remaining role-switch walkthrough, then start M7 with the
-  Community pause/closure and Membership lifecycle contour.
+- M7 Community lifecycle increment: complete. Central pause/reactivation and governed permanent
+  closure now preserve confirmed Sessions only by an explicit Closure Plan, archive Memberships
+  without losses and close status without hidden succession or migration.
+- M7 voluntary Membership exit (no accepted obligation) increment: complete. Athlete receives a
+  token-bound 15-minute consequence preview; confirmation atomically closes optional unanswered
+  Challenges no-fault, invalidates the departing Athlete's FIFO intents, applies ST-09/ST-10/ST-14
+  when the Athlete holds status and moves Membership to `LEFT`. Accepted obligations and live
+  mandatory/GENESIS response duties are deliberately rejected into the next governed Forfeit
+  increment. Core/API/client and PostgreSQL scenarios AC-106/AC-108/AC-109 pass without Result,
+  loss or Cooldown. Acceptance traceability is 90/213 (`84/195 P0`).
+- Next increment: finish Membership exit after acceptance with administrative Forfeit + immutable
+  waiver, then implement Ordinary removal and Central-reviewed status-holder removal.
 
 ## 5. Work that needs product/external input later
 

@@ -69,6 +69,8 @@ import {
   reconfirmStatusQueueEntry,
   previewStatusRelease,
   confirmStatusRelease,
+  previewMembershipExit,
+  confirmMembershipExit,
   respondToGenesisChallenge,
   readVenueAdminDashboard,
   reportChatMessage,
@@ -1099,6 +1101,12 @@ const app = await buildApp({
     preview: (command, ids, confirmationToken) =>
       previewStatusRelease(database, command, ids, confirmationToken),
     confirm: (command, ids) => confirmStatusRelease(database, command, ids),
+  },
+  membershipExit: {
+    auth: localAuth,
+    preview: (command, ids, confirmationToken) =>
+      previewMembershipExit(database, command, ids, confirmationToken),
+    confirm: (command, ids) => confirmMembershipExit(database, command, ids),
   },
   logger: {
     redact: {

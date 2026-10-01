@@ -62,6 +62,8 @@ import {
   readStatusQueueReconciliationCandidates,
   previewStatusRelease,
   confirmStatusRelease,
+  previewMembershipExit,
+  confirmMembershipExit,
   readVacancyQueueReconciliationCandidate,
   reconcileVacancyQueue,
   promoteSingleGenesisCandidate,
@@ -217,6 +219,8 @@ import {
   type ReconfirmStatusQueueEntryPayload,
   type PreviewStatusReleasePayload,
   type ConfirmStatusReleasePayload,
+  type PreviewMembershipExitPayload,
+  type ConfirmMembershipExitPayload,
   type ReconcileVacancyQueuePayload,
   type PromoteSingleGenesisCandidatePayload,
   type RequestBookingOfficialConversionPayload,
@@ -1777,6 +1781,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         community.community_closure_status_dispositions,
         community.community_closure_session_dispositions,
         community.community_closure_plans,
+        community.voluntary_membership_exits,
         scheduling.booking_solo_confirmations,
         scheduling.booking_solo_continuations,
         scheduling.booking_conversion_confirmations,
@@ -7215,6 +7220,205 @@ describePostgres('PostgreSQL critical command transaction', () => {
       community_state: 'CLOSED', competition_phase: 'CLOSED', champion_user_id: null,
       retained_challenge_state: 'CANCELLED_NO_FAULT', archived_memberships: '2',
       closure_reason: 'COMMUNITY_CLOSED', status_migration_events: '0',
+    });
+  });
+
+  it('[AC-106][AC-108][AC-109] confirms no-obligation Membership exit without loss', async () => {
+    const ordinary = testId(17000);
+    const champion = testId(17001);
+    const contender = testId(17002);
+    const central = testId(17003);
+    const venue = testId(17004);
+    const community = testId(17005);
+    const competition = testId(17006);
+    const ordinaryMembership = testId(17007);
+    const contenderMembership = testId(17008);
+    const occurredAt = '2026-10-01T08:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${ordinary}::uuid, '+79991700000', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Ordinary Exit', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${champion}::uuid, '+79991700001', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Champion Exit', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${contender}::uuid, '+79991700002', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Contender Exit', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${central}::uuid, '+79991700003', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Central Exit', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: testId(17009), communityId: community,
+      communityConfigurationId: testId(17010), membershipId: ordinaryMembership,
+      centralGrantId: testId(17011), athleteUserId: ordinary, centralActorId: central,
+      legalName: 'Membership Exit Pilot LLC', venueDisplayName: 'Membership Exit Pilot',
+      communityName: 'Membership Exit Community', address: 'Москва', cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow', contactPayload: { phone: '+79990000700' }, occurredAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community, centralActorId: central, occurredAt,
+      memberships: [
+        { membershipId: ordinaryMembership, userId: ordinary },
+        { membershipId: testId(17012), userId: champion },
+        { membershipId: contenderMembership, userId: contender },
+      ],
+    });
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${champion}::uuid,
+        contender_user_id = ${contender}::uuid, status_version = 7, version = 8
+      where competition_id = ${competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+      values
+        (${testId(17013)}::uuid, 'PERSONAL_MATCH', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+        (${testId(17014)}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (
+        ${testId(17015)}::uuid, ${competition}::uuid, ${testId(17010)}::uuid,
+        'pilot-rules-v1', 'IMPLICIT_ON_ACCEPT', 'membership-exit-mvp-v1',
+        ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.challenges (
+        challenge_id, competition_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+        version, created_at, updated_at
+      ) values (
+        ${testId(17016)}::uuid, ${competition}::uuid, ${testId(17013)}::uuid,
+        ${testId(17014)}::uuid, ${ordinary}::uuid, ${champion}::uuid,
+        ${ordinary}::uuid, ${champion}::uuid, 'OPTIONAL', 'NONE',
+        'AWAITING_RESPONSE', ${testId(17015)}::uuid,
+        '2026-10-03T08:00:00.000Z'::timestamptz, 1,
+        ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+
+    const ordinaryExit = testId(17020);
+    const ordinaryToken = testId(17021);
+    const ordinaryPreview = await previewMembershipExit(
+      database,
+      {
+        commandId: testId(17022), commandType: 'PREVIEW_MEMBERSHIP_EXIT',
+        idempotencyKey: `preview-membership-exit-${ordinaryExit}`,
+        actor: { type: 'USER', id: ordinary, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'VoluntaryMembershipExit', aggregateId: ordinaryExit,
+        expectedVersion: 0, correlationId: testId(17023), causationId: null,
+        requestId: testId(17024), source: 'api', payloadVersion: 1,
+        payload: { membershipId: ordinaryMembership },
+      } satisfies CommandEnvelope<PreviewMembershipExitPayload>,
+      {
+        eventId: testId(17025), membershipEventId: testId(17026),
+        competitionEventId: testId(17027), auditId: testId(17028),
+        outboxMessageId: testId(17029), notificationOutboxMessageId: testId(17030),
+        notificationIds: [testId(17031), testId(17032)],
+      },
+      ordinaryToken,
+      () => new Date('2026-10-01T09:00:00.000Z'),
+    );
+    expect(ordinaryPreview.response).toMatchObject({
+      departingStatus: 'ORDINARY', consequence: 'ORDINARY_EXIT', state: 'PREVIEWED',
+      confirmationToken: ordinaryToken, createsForfeit: false, createsLoss: false,
+    });
+    const ordinaryConfirmed = await confirmMembershipExit(
+      database,
+      {
+        commandId: testId(17033), commandType: 'CONFIRM_MEMBERSHIP_EXIT',
+        idempotencyKey: `confirm-membership-exit-${ordinaryExit}`,
+        actor: { type: 'USER', id: ordinary, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'VoluntaryMembershipExit', aggregateId: ordinaryExit,
+        expectedVersion: 1, correlationId: testId(17034), causationId: testId(17025),
+        requestId: testId(17035), source: 'api', payloadVersion: 1,
+        payload: { exitId: ordinaryExit, confirmationToken: ordinaryToken },
+      } satisfies CommandEnvelope<ConfirmMembershipExitPayload>,
+      {
+        eventId: testId(17036), membershipEventId: testId(17037),
+        competitionEventId: testId(17038), auditId: testId(17039),
+        outboxMessageId: testId(17040), notificationOutboxMessageId: testId(17041),
+        notificationIds: [testId(17042), testId(17043)],
+      },
+      () => new Date('2026-10-01T09:05:00.000Z'),
+    );
+    expect(ordinaryConfirmed.response).toMatchObject({
+      state: 'CONFIRMED', afterMembershipVersion: 2,
+      closedChallengeCount: 1, createsForfeit: false, appealWaived: false,
+    });
+
+    const contenderExit = testId(17050);
+    const contenderToken = testId(17051);
+    await previewMembershipExit(
+      database,
+      {
+        commandId: testId(17052), commandType: 'PREVIEW_MEMBERSHIP_EXIT',
+        idempotencyKey: `preview-membership-exit-${contenderExit}`,
+        actor: { type: 'USER', id: contender, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'VoluntaryMembershipExit', aggregateId: contenderExit,
+        expectedVersion: 0, correlationId: testId(17053), causationId: null,
+        requestId: testId(17054), source: 'api', payloadVersion: 1,
+        payload: { membershipId: contenderMembership },
+      } satisfies CommandEnvelope<PreviewMembershipExitPayload>,
+      {
+        eventId: testId(17055), membershipEventId: testId(17056),
+        competitionEventId: testId(17057), auditId: testId(17058),
+        outboxMessageId: testId(17059), notificationOutboxMessageId: testId(17060),
+        notificationIds: [testId(17061), testId(17062)],
+      },
+      contenderToken,
+      () => new Date('2026-10-01T09:10:00.000Z'),
+    );
+    const contenderConfirmed = await confirmMembershipExit(
+      database,
+      {
+        commandId: testId(17063), commandType: 'CONFIRM_MEMBERSHIP_EXIT',
+        idempotencyKey: `confirm-membership-exit-${contenderExit}`,
+        actor: { type: 'USER', id: contender, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'VoluntaryMembershipExit', aggregateId: contenderExit,
+        expectedVersion: 1, correlationId: testId(17064), causationId: testId(17055),
+        requestId: testId(17065), source: 'api', payloadVersion: 1,
+        payload: { exitId: contenderExit, confirmationToken: contenderToken },
+      } satisfies CommandEnvelope<ConfirmMembershipExitPayload>,
+      {
+        eventId: testId(17066), membershipEventId: testId(17067),
+        competitionEventId: testId(17068), auditId: testId(17069),
+        outboxMessageId: testId(17070), notificationOutboxMessageId: testId(17071),
+        notificationIds: [testId(17072), testId(17073)],
+      },
+      () => new Date('2026-10-01T09:15:00.000Z'),
+    );
+    expect(contenderConfirmed.response).toMatchObject({
+      departingStatus: 'CONTENDER', consequence: 'CONTENDER_VACANCY',
+      state: 'CONFIRMED', afterStatusVersion: 8,
+    });
+    const evidence = await sql<{
+      readonly ordinary_membership_state: string;
+      readonly contender_membership_state: string;
+      readonly challenge_state: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string | null;
+      readonly competition_phase: string;
+      readonly result_count: string;
+      readonly cooldown_count: string;
+    }>`
+      select
+        (select state from community.community_memberships where membership_id = ${ordinaryMembership}::uuid) as ordinary_membership_state,
+        (select state from community.community_memberships where membership_id = ${contenderMembership}::uuid) as contender_membership_state,
+        (select state from competition.challenges where challenge_id = ${testId(17016)}::uuid) as challenge_state,
+        (select champion_user_id::text from competition.competitions where competition_id = ${competition}::uuid) as champion_user_id,
+        (select contender_user_id::text from competition.competitions where competition_id = ${competition}::uuid) as contender_user_id,
+        (select phase from competition.competitions where competition_id = ${competition}::uuid) as competition_phase,
+        (select count(*)::text from competition.results where challenge_id = ${testId(17016)}::uuid) as result_count,
+        (select count(*)::text from competition.pair_cooldowns where competition_id = ${competition}::uuid) as cooldown_count
+    `.execute(database);
+    expect(evidence.rows[0]).toEqual({
+      ordinary_membership_state: 'LEFT', contender_membership_state: 'LEFT',
+      challenge_state: 'CANCELLED_NO_FAULT', champion_user_id: champion,
+      contender_user_id: null, competition_phase: 'CONTENDER_VACANT_OPEN',
+      result_count: '0', cooldown_count: '0',
     });
   });
 });

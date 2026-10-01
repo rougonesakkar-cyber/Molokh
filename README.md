@@ -6,12 +6,12 @@ Molokh — mobile-first продукт для поиска партнёров п
 
 - Core Engine: **v1.0, product decisions closed**;
 - state transitions: **300**;
-- registered events: **278**;
+- registered events: **282**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **86/213** (`80/195 P0`);
+- executable acceptance traceability: **90/213** (`84/195 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach;
-- database gate: PostgreSQL 18 migrations `0001`–`0040` and **27/27** integration scenarios pass locally;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure and no-obligation voluntary Membership exit;
+- database gate: PostgreSQL migrations `0001`–`0043` and **29/29** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned and the production audit has no high/critical advisories;
 - external deployment/accounts: not configured.
 
@@ -293,10 +293,19 @@ no loss, succession or status migration. The Central UI exposes the same two-ste
 confirmation flow; migration `0042_community_closure_foundation.sql` stores the immutable plan and
 Session/status dispositions.
 
+Voluntary Membership exit now has its own two-step lifecycle instead of reusing status-only
+release. The Athlete first receives a token-bound 15-minute preview with exact succession or
+vacancy consequences. Confirmation closes optional unanswered Challenges no-fault, invalidates
+the Athlete's live FIFO intents, applies deterministic ST-09/ST-10/ST-14 when needed and moves the
+Membership to `LEFT` without Result, loss or Cooldown. Migration
+`0043_voluntary_membership_exit.sql` stores immutable preview/confirmation history. Accepted
+obligations and live mandatory/GENESIS duties are rejected until the next increment can create the
+required administrative Forfeit and explicit Appeal waiver atomically.
+
 ## Next executable action
 
-Create a deterministic local governance fixture for the remaining Appeal, Missing Result and
-IntegrityCase role-switch walkthroughs. Then implement the remaining M7 lifecycle contours in
-dependency order: Membership exit/removal, Youth consent and age transition, platform-incident
-compensation, and account closure/export/retention before pilot hardening.
+Complete voluntary Membership exit after Challenge acceptance with administrative Forfeit and an
+immutable Appeal waiver. Then implement Gym Admin removal of Ordinary and Central-reviewed
+Champion/Contender removal before Youth consent/age transition, platform-incident compensation,
+and account closure/export/retention.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

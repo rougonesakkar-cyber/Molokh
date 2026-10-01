@@ -24,6 +24,7 @@ import type {
   MeResponse,
   MatchesResponse,
   MissingResultReviewListResponse,
+  MembershipExitCommandResponse,
   MySessionsResponse,
   PendingCoachInviteListResponse,
   RecordSessionResultBody,
@@ -57,6 +58,7 @@ import {
 } from '../features/discovery/DiscoverySection';
 import { MissingResultReviewSection } from '../features/missing-result/MissingResultReviewSection';
 import { IntegrityCaseSection } from '../features/integrity-case/IntegrityCaseSection';
+import { MembershipExitSection } from '../features/membership-exit/MembershipExitSection';
 import { StatusQueueSection } from '../features/status-queue/StatusQueueSection';
 import {
   apiErrorMessage,
@@ -76,6 +78,7 @@ type CommunityClosurePlan = CommunityClosurePlanResponse['data'];
 type CommunityClosureDisposition = 'RETAIN_TO_COMPLETION' | 'CANCEL_NO_FAULT';
 type CompetitionStatus = CompetitionStatusResponse['data'];
 type StatusReleasePreview = StatusReleaseCommandResponse['data'];
+type MembershipExitPreview = MembershipExitCommandResponse['data'];
 type Capability = Identity['capabilities'][number];
 type CommunityDenialCode = CommunityContext['access']['denials'][number]['code'];
 type CoachInvite = PendingCoachInviteListResponse['data'][number];
@@ -395,6 +398,10 @@ export default function IdentityScreen() {
   const [competitionStatus, setCompetitionStatus] = useState<CompetitionStatus | null>(null);
   const [statusReleasePreview, setStatusReleasePreview] =
     useState<StatusReleasePreview | null>(null);
+  const [membershipExitPreview, setMembershipExitPreview] =
+    useState<MembershipExitPreview | null>(null);
+  const [membershipExitNotice, setMembershipExitNotice] = useState<string | null>(null);
+  const [actingMembershipExit, setActingMembershipExit] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [primarySport, setPrimarySport] = useState('BOXING');
   const [secondarySport, setSecondarySport] = useState<string | null>(null);
@@ -820,6 +827,9 @@ export default function IdentityScreen() {
     setActingCommunityClosure(false);
     setCompetitionStatus(null);
     setStatusReleasePreview(null);
+    setMembershipExitPreview(null);
+    setMembershipExitNotice(null);
+    setActingMembershipExit(false);
     setCoachInvites([]);
     setHostConfirmations([]);
     setVenueAdminDashboard(null);
@@ -2334,6 +2344,89 @@ export default function IdentityScreen() {
     }
   };
 
+  const previewMembershipExit = async () => {
+    const membership = communityContext?.membership;
+    if (!membership || membership.state !== 'ACTIVE' || actingMembershipExit) return;
+    const operation = `membership-exit-preview:${membership.membershipId}:v${communityContext.community.version}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `membership-exit:${operation}:${Date.now().toString(36)}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingMembershipExit(true);
+    setMembershipExitNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/membership-exits/preview`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': '0',
+        },
+        body: JSON.stringify({ membershipId: membership.membershipId }),
+      });
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as MembershipExitCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      setMembershipExitPreview(result.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось подготовить выход из Community');
+    } finally {
+      setActingMembershipExit(false);
+    }
+  };
+
+  const confirmMembershipExit = async () => {
+    if (!membershipExitPreview?.confirmationToken || actingMembershipExit) return;
+    const operation = `membership-exit-confirm:${membershipExitPreview.exitId}:v${membershipExitPreview.version}`;
+    const idempotencyKey = statusQueueActionKeys.current.get(operation)
+      ?? `membership-exit:${operation}`;
+    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    setActingMembershipExit(true);
+    setMembershipExitNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/membership-exits/${membershipExitPreview.exitId}/confirm`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(membershipExitPreview.version),
+          },
+          body: JSON.stringify({ confirmationToken: membershipExitPreview.confirmationToken }),
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) {
+          setMembershipExitPreview(null);
+          await loadIdentity();
+        }
+        throw new Error(message);
+      }
+      const result = (await response.json()) as MembershipExitCommandResponse;
+      statusQueueActionKeys.current.delete(operation);
+      setMembershipExitPreview(null);
+      await loadIdentity();
+      setMembershipExitNotice(
+        result.data.consequence === 'CHAMPION_SUCCESSION'
+          ? 'Вы вышли из Community. Статус №1 прозрачно передан Претенденту.'
+          : 'Вы вышли из Community без поражения. История сохранена.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось выйти из Community');
+    } finally {
+      setActingMembershipExit(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -2713,6 +2806,23 @@ export default function IdentityScreen() {
                       } as unknown) as Href);
                     }}
                   />
+                ) : null}
+                {activeTestAccount.role === 'Athlete'
+                  && communityContext?.membership?.state === 'ACTIVE' ? (
+                  <MembershipExitSection
+                    acting={actingMembershipExit}
+                    notice={membershipExitNotice}
+                    preview={membershipExitPreview}
+                    onPreview={() => void previewMembershipExit()}
+                    onConfirm={() => void confirmMembershipExit()}
+                    onCancel={() => setMembershipExitPreview(null)}
+                  />
+                ) : membershipExitNotice ? (
+                  <View style={styles.stateCard}>
+                    <Text accessibilityLiveRegion="polite" style={styles.successText}>
+                      {membershipExitNotice}
+                    </Text>
+                  </View>
                 ) : null}
                 {activeTestAccount.role === 'Central' && communityLifecycle ? (
                   <View style={styles.card}>

@@ -45,6 +45,7 @@ import { registerMissingResultRoutes, type MissingResultRouteDependencies } from
 import { registerIntegrityCaseRoutes, type IntegrityCaseRouteDependencies } from './integrity-case-routes.js';
 import { registerStatusQueueRoutes, type StatusQueueRouteDependencies } from './status-queue-routes.js';
 import { registerStatusReleaseRoutes, type StatusReleaseRouteDependencies } from './status-release-routes.js';
+import { registerMembershipExitRoutes, type MembershipExitRouteDependencies } from './membership-exit-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
@@ -57,6 +58,7 @@ export interface BuildAppOptions extends FastifyServerOptions {
   readonly integrityCase?: IntegrityCaseRouteDependencies;
   readonly statusQueue?: StatusQueueRouteDependencies;
   readonly statusRelease?: StatusReleaseRouteDependencies;
+  readonly membershipExit?: MembershipExitRouteDependencies;
   readonly missingResult?: MissingResultRouteDependencies;
   readonly roles?: RoleRouteDependencies;
   readonly result?: ResultRouteDependencies;
@@ -77,6 +79,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     integrityCase,
     statusQueue,
     statusRelease,
+    membershipExit,
     missingResult,
     roles,
     result,
@@ -127,6 +130,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   if (integrityCase) await registerIntegrityCaseRoutes(app, integrityCase);
   if (statusQueue) await registerStatusQueueRoutes(app, statusQueue);
   if (statusRelease) await registerStatusReleaseRoutes(app, statusRelease);
+  if (membershipExit) await registerMembershipExitRoutes(app, membershipExit);
   if (appeal) await registerAppealRoutes(app, appeal);
   if (missingResult) await registerMissingResultRoutes(app, missingResult);
   if (chat) await registerChatRoutes(app, chat);

@@ -11,6 +11,7 @@ import {
   InvalidIdentityTransitionError,
   MinimumAgeNotMetError,
   InvalidRoleGrantTransitionError,
+  MembershipExitConflictError,
   ResultConflictError,
   ResultPermissionDeniedError,
   ResultValidationError,
@@ -242,6 +243,23 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: {
         code: error.code,
         message: 'This voluntary status release is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof MembershipExitConflictError) {
+    const statusCode = error.code === 'MEMBERSHIP_EXIT_NOT_FOUND'
+      ? 404
+      : error.code === 'MEMBERSHIP_EXIT_OWNER_REQUIRED'
+          || error.code === 'MEMBERSHIP_EXIT_ACCOUNT_NOT_ACTIVE'
+          || error.code === 'MEMBERSHIP_EXIT_MEMBERSHIP_NOT_ACTIVE'
+        ? 403
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This voluntary Membership exit is no longer available',
         requestId,
       },
     };

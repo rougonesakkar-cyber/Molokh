@@ -847,6 +847,8 @@ QueueEntrySourceDetached
 SessionCoachReplaced
 SessionFailedExternal
 SessionWindowOpened
+ResignationPreviewed
+StatusReleasePreviewed
 StatusTenureClosed
 StatusTenureCompensated
 StatusTenureFinalized
@@ -859,6 +861,8 @@ TechnicalCorrectionReviewStarted
 TechnicalCorrectionWithdrawn
 UserAccountActivated
 UserAccountClosed
+VoluntaryResignationConfirmed
+VoluntaryStatusReleased
 VenueClosed
 VenuePaused
 VenueReactivated
