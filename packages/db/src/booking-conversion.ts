@@ -610,7 +610,9 @@ export async function invalidateActiveBookingOfficialConversion(
 export async function readBookingOfficialConversionActivationCandidate(
   database: Kysely<Database>,
   competitionId: string,
+  now?: () => Date,
 ): Promise<BookingOfficialConversionActivationCandidate | null> {
+  const observedAt = now?.().toISOString() ?? null;
   const result = await sql<{
     readonly conversion_id: string;
     readonly competition_id: string;
@@ -644,7 +646,8 @@ export async function readBookingOfficialConversionActivationCandidate(
       and entry.kind = 'PREBOOKED_CONVERSION' and entry.state = 'WAITING'
       and entry.bound_holder_user_id = competitive.contender_user_id
       and session.state = 'SCHEDULED' and session.window_opened_at is null
-      and session.actual_start_at is null and session.scheduled_start_at > clock_timestamp()
+      and session.actual_start_at is null
+      and session.scheduled_start_at > coalesce(${observedAt}::timestamptz, clock_timestamp())
       and not exists (
         select 1 from scheduling.booking_official_conversions other_conversion
         where other_conversion.competition_id = competitive.competition_id

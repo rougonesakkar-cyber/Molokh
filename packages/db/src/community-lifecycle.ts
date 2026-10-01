@@ -30,13 +30,13 @@ export interface CommunityLifecycleEffectIds {
 
 export interface CommunityLifecycleProjection {
   readonly communityId: string;
-  readonly state: Extract<CommunityState, 'ACTIVE' | 'PAUSED'>;
+  readonly state: CommunityState;
   readonly pauseStartedAt: string | null;
   readonly latestPauseDurationSeconds: number | null;
   readonly version: number;
   readonly competitions: readonly {
     readonly competitionId: string;
-    readonly availability: 'ACTIVE' | 'PAUSED';
+    readonly availability: 'ACTIVE' | 'PAUSED' | 'CLOSED';
     readonly version: number;
   }[];
 }
@@ -82,7 +82,7 @@ async function competitionRows(
   const result = await sql<CompetitionRow>`
     select competition_id, availability, version::text
     from competition.competitions
-    where community_id = ${communityId}::uuid and availability <> 'CLOSED'
+    where community_id = ${communityId}::uuid
     order by age_division, coalesce(discipline_key, ''), competition_id
     ${lock ? sql`for update` : sql``}
   `.execute(database);
@@ -137,9 +137,6 @@ async function projection(
   database: Kysely<Database> | Transaction<Database>,
   row: CommunityLifecycleRow,
 ): Promise<CommunityLifecycleProjection> {
-  if (row.state !== 'ACTIVE' && row.state !== 'PAUSED') {
-    throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_INVALID_STATE');
-  }
   const competitions = await competitionRows(database, row.community_id);
   return {
     communityId: row.community_id,
@@ -148,9 +145,6 @@ async function projection(
     latestPauseDurationSeconds: await latestPauseDuration(database, row.community_id),
     version: Number(row.version),
     competitions: competitions.map((competition) => {
-      if (competition.availability !== 'ACTIVE' && competition.availability !== 'PAUSED') {
-        throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_INVALID_STATE');
-      }
       return {
         competitionId: competition.competition_id,
         availability: competition.availability,

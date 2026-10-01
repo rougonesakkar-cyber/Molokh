@@ -19,10 +19,16 @@ export type RoleScopeType = 'VENUE' | 'COMMUNITY' | 'SESSION' | 'GLOBAL';
 export const COMMUNITY_LIFECYCLE_POLICY_VERSION = 'community-lifecycle-mvp-v1' as const;
 
 export type CommunityLifecycleAction = 'PAUSE' | 'REACTIVATE';
+export type CommunityClosureAction = 'SCHEDULE_CLOSURE' | 'FINALIZE_CLOSURE';
+export type CommunityClosureSessionDisposition = 'RETAIN_TO_COMPLETION' | 'CANCEL_NO_FAULT';
 export type CommunityLifecycleConflictCode =
   | 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED'
   | 'COMMUNITY_LIFECYCLE_INVALID_STATE'
-  | 'COMMUNITY_LIFECYCLE_REASON_REQUIRED';
+  | 'COMMUNITY_LIFECYCLE_REASON_REQUIRED'
+  | 'COMMUNITY_CLOSURE_EFFECTIVE_AT_INVALID'
+  | 'COMMUNITY_CLOSURE_SESSION_DISPOSITIONS_INVALID'
+  | 'COMMUNITY_CLOSURE_NOT_DUE'
+  | 'COMMUNITY_CLOSURE_RETAINED_SESSION_UNRESOLVED';
 
 export class CommunityLifecycleConflictError extends Error {
   readonly code: CommunityLifecycleConflictCode;
@@ -50,6 +56,69 @@ export function assertCommunityLifecycleTransition(input: {
   const expectedState: CommunityState = input.action === 'PAUSE' ? 'ACTIVE' : 'PAUSED';
   if (input.currentState !== expectedState) {
     throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_INVALID_STATE');
+  }
+}
+
+export function assertCommunityClosureTransition(input: {
+  readonly action: CommunityClosureAction;
+  readonly actorIsCentral: boolean;
+  readonly actorIsSystem?: boolean;
+  readonly currentState: CommunityState;
+  readonly reason: string;
+  readonly effectiveAt: Date;
+  readonly now: Date;
+  readonly emergency: boolean;
+  readonly dispositions?: readonly {
+    readonly sessionId: string;
+    readonly disposition: CommunityClosureSessionDisposition;
+  }[];
+  readonly unresolvedRetainedSessionCount?: number;
+}): void {
+  if (!input.actorIsCentral && !(input.action === 'FINALIZE_CLOSURE' && input.actorIsSystem)) {
+    throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED');
+  }
+  const reasonLength = input.reason.trim().length;
+  if (reasonLength < 1 || reasonLength > 500) {
+    throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_REASON_REQUIRED');
+  }
+  if (Number.isNaN(input.effectiveAt.getTime())) {
+    throw new CommunityLifecycleConflictError('COMMUNITY_CLOSURE_EFFECTIVE_AT_INVALID');
+  }
+
+  if (input.action === 'SCHEDULE_CLOSURE') {
+    if (input.currentState !== 'ACTIVE' && input.currentState !== 'PAUSED') {
+      throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_INVALID_STATE');
+    }
+    if (!input.emergency && input.effectiveAt.getTime() <= input.now.getTime()) {
+      throw new CommunityLifecycleConflictError('COMMUNITY_CLOSURE_EFFECTIVE_AT_INVALID');
+    }
+    const dispositions = input.dispositions ?? [];
+    const sessionIds = new Set<string>();
+    for (const disposition of dispositions) {
+      if (
+        disposition.sessionId.trim().length === 0
+        || sessionIds.has(disposition.sessionId)
+        || !['RETAIN_TO_COMPLETION', 'CANCEL_NO_FAULT'].includes(disposition.disposition)
+      ) {
+        throw new CommunityLifecycleConflictError(
+          'COMMUNITY_CLOSURE_SESSION_DISPOSITIONS_INVALID',
+        );
+      }
+      sessionIds.add(disposition.sessionId);
+    }
+    return;
+  }
+
+  if (input.currentState !== 'CLOSING') {
+    throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_INVALID_STATE');
+  }
+  if (input.effectiveAt.getTime() > input.now.getTime()) {
+    throw new CommunityLifecycleConflictError('COMMUNITY_CLOSURE_NOT_DUE');
+  }
+  if ((input.unresolvedRetainedSessionCount ?? 0) > 0) {
+    throw new CommunityLifecycleConflictError(
+      'COMMUNITY_CLOSURE_RETAINED_SESSION_UNRESOLVED',
+    );
   }
 }
 

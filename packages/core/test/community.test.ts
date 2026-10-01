@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertCommunityClosureTransition,
   assertCommunityLifecycleTransition,
   projectCommunityAccess,
   type CommunityAccessInput,
@@ -131,6 +132,42 @@ describe('community lifecycle guard', () => {
       action: 'PAUSE', actorIsCentral: true, currentState: 'ACTIVE', reason: '   ',
     })).toThrowError(expect.objectContaining({
       code: 'COMMUNITY_LIFECYCLE_REASON_REQUIRED',
+    }));
+  });
+
+  it('[CO-04][CO-05][AC-177] validates a versioned closure plan and blocks early finalization', () => {
+    const now = new Date('2026-10-01T10:00:00.000Z');
+    const effectiveAt = new Date('2026-10-02T10:00:00.000Z');
+    expect(() => assertCommunityClosureTransition({
+      action: 'SCHEDULE_CLOSURE', actorIsCentral: true, currentState: 'ACTIVE',
+      reason: 'Permanent venue closure', effectiveAt, now, emergency: false,
+      dispositions: [{
+        sessionId: '0199a1b2-1234-7000-8000-000000000404',
+        disposition: 'RETAIN_TO_COMPLETION',
+      }],
+    })).not.toThrow();
+    expect(() => assertCommunityClosureTransition({
+      action: 'SCHEDULE_CLOSURE', actorIsCentral: true, currentState: 'PAUSED',
+      reason: 'Emergency closure', effectiveAt: now, now, emergency: true, dispositions: [],
+    })).not.toThrow();
+    expect(() => assertCommunityClosureTransition({
+      action: 'SCHEDULE_CLOSURE', actorIsCentral: true, currentState: 'ACTIVE',
+      reason: 'Too early', effectiveAt: now, now, emergency: false, dispositions: [],
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CLOSURE_EFFECTIVE_AT_INVALID',
+    }));
+    expect(() => assertCommunityClosureTransition({
+      action: 'FINALIZE_CLOSURE', actorIsCentral: true, currentState: 'CLOSING',
+      reason: 'Plan complete', effectiveAt, now, emergency: false,
+      unresolvedRetainedSessionCount: 0,
+    })).toThrowError(expect.objectContaining({ code: 'COMMUNITY_CLOSURE_NOT_DUE' }));
+    expect(() => assertCommunityClosureTransition({
+      action: 'FINALIZE_CLOSURE', actorIsCentral: true, currentState: 'CLOSING',
+      reason: 'Plan complete', effectiveAt,
+      now: new Date('2026-10-03T10:00:00.000Z'), emergency: false,
+      unresolvedRetainedSessionCount: 1,
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CLOSURE_RETAINED_SESSION_UNRESOLVED',
     }));
   });
 });
