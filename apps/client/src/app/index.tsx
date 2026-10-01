@@ -2416,7 +2416,9 @@ export default function IdentityScreen() {
       setMembershipExitPreview(null);
       await loadIdentity();
       setMembershipExitNotice(
-        result.data.consequence === 'CHAMPION_SUCCESSION'
+        result.data.createsForfeit
+          ? 'Вы вышли из Community. Поражение по Forfeit подтверждено, право на Appeal закрыто.'
+          : result.data.consequence === 'CHAMPION_SUCCESSION'
           ? 'Вы вышли из Community. Статус №1 прозрачно передан Претенденту.'
           : 'Вы вышли из Community без поражения. История сохранена.',
       );

@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **300**;
 - registered events: **282**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **90/213** (`84/195 P0`);
+- executable acceptance traceability: **92/213** (`86/195 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure and no-obligation voluntary Membership exit;
-- database gate: PostgreSQL migrations `0001`–`0043` and **29/29** integration scenarios pass locally;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure and voluntary Membership exit both without and after an accepted Challenge;
+- database gate: PostgreSQL migrations `0001`–`0044` and **30/30** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned and the production audit has no high/critical advisories;
 - external deployment/accounts: not configured.
 
@@ -298,14 +298,16 @@ release. The Athlete first receives a token-bound 15-minute preview with exact s
 vacancy consequences. Confirmation closes optional unanswered Challenges no-fault, invalidates
 the Athlete's live FIFO intents, applies deterministic ST-09/ST-10/ST-14 when needed and moves the
 Membership to `LEFT` without Result, loss or Cooldown. Migration
-`0043_voluntary_membership_exit.sql` stores immutable preview/confirmation history. Accepted
-obligations and live mandatory/GENESIS duties are rejected until the next increment can create the
-required administrative Forfeit and explicit Appeal waiver atomically.
+`0043_voluntary_membership_exit.sql` stores immutable preview/confirmation history. Migration
+`0044_membership_exit_accepted_forfeit.sql` extends the same preview for an accepted Challenge:
+confirmation cancels any not-started Booking/Session/Slot, records and immediately finalizes an
+administrative Forfeit, creates the pair Cooldown, stores an immutable voluntary-resignation
+Appeal waiver, releases obligations and then removes any status temporarily assigned to the
+departing Athlete. A started Session remains under the Coach and frozen ruleset path.
 
 ## Next executable action
 
-Complete voluntary Membership exit after Challenge acceptance with administrative Forfeit and an
-immutable Appeal waiver. Then implement Gym Admin removal of Ordinary and Central-reviewed
-Champion/Contender removal before Youth consent/age transition, platform-incident compensation,
-and account closure/export/retention.
+Implement Gym Admin removal of Ordinary and Central-reviewed Champion/Contender removal. Then
+continue with Youth consent/age transition, platform-incident compensation, and account
+closure/export/retention.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

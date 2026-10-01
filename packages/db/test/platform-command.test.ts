@@ -7421,4 +7421,259 @@ describePostgres('PostgreSQL critical command transaction', () => {
       result_count: '0', cooldown_count: '0',
     });
   });
+
+  it('[AC-107][AC-110] finalizes a waived Forfeit before leaving an accepted Challenge', async () => {
+    const champion = testId(17100);
+    const challenger = testId(17101);
+    const central = testId(17102);
+    const coach = testId(17160);
+    const venue = testId(17103);
+    const community = testId(17104);
+    const competition = testId(17105);
+    const championMembership = testId(17106);
+    const occurredAt = '2026-10-01T08:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${champion}::uuid, '+79991710000', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Leaving Champion', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${challenger}::uuid, '+79991710001', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Winning Challenger', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${central}::uuid, '+79991710002', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Central Forfeit', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${coach}::uuid, '+79991710003', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Forfeit Coach', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: testId(17107), communityId: community,
+      communityConfigurationId: testId(17108), membershipId: championMembership,
+      centralGrantId: testId(17109), athleteUserId: champion, centralActorId: central,
+      legalName: 'Accepted Exit Pilot LLC', venueDisplayName: 'Accepted Exit Pilot',
+      communityName: 'Accepted Exit Community', address: 'Москва', cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow', contactPayload: { phone: '+79990000710' }, occurredAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community, centralActorId: central, occurredAt,
+      memberships: [
+        { membershipId: championMembership, userId: champion },
+        { membershipId: testId(17110), userId: challenger },
+      ],
+    });
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${champion}::uuid,
+        contender_user_id = ${challenger}::uuid, status_version = 7, version = 8
+      where competition_id = ${competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+      values
+        (${testId(17111)}::uuid, 'PERSONAL_MATCH', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+        (${testId(17112)}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (
+        ${testId(17113)}::uuid, ${competition}::uuid, ${testId(17108)}::uuid,
+        'pilot-rules-v1', 'IMPLICIT_ON_ACCEPT', 'membership-exit-mvp-v2',
+        ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    const challenge = testId(17114);
+    await sql`
+      insert into competition.challenges (
+        challenge_id, competition_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+        accepted_at, scheduling_deadline_at, version, created_at, updated_at
+      ) values (
+        ${challenge}::uuid, ${competition}::uuid, ${testId(17111)}::uuid,
+        ${testId(17112)}::uuid, ${challenger}::uuid, ${champion}::uuid,
+        ${champion}::uuid, ${challenger}::uuid, 'MANDATORY', 'TITLE',
+        'BOOKED', ${testId(17113)}::uuid,
+        '2026-10-03T08:00:00.000Z'::timestamptz,
+        '2026-10-01T08:10:00.000Z'::timestamptz,
+        '2026-10-16T08:10:00.000Z'::timestamptz, 4,
+        ${occurredAt}::timestamptz, '2026-10-01T08:10:00.000Z'::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.challenge_participant_obligations (
+        obligation_id, challenge_id, user_id, accepted_at
+      ) values
+        (${testId(17115)}::uuid, ${challenge}::uuid, ${champion}::uuid, '2026-10-01T08:10:00.000Z'::timestamptz),
+        (${testId(17116)}::uuid, ${challenge}::uuid, ${challenger}::uuid, '2026-10-01T08:10:00.000Z'::timestamptz)
+    `.execute(database);
+    const match = testId(17161);
+    const slot = testId(17162);
+    const booking = testId(17163);
+    const session = testId(17164);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into social.matches (
+          match_id, pair_low_id, pair_high_id, state, chat_id,
+          last_activity_at, version, created_at, updated_at
+        ) values (
+          ${match}::uuid, ${champion}::uuid, ${challenger}::uuid, 'ACTIVE',
+          ${testId(17111)}::uuid, ${occurredAt}::timestamptz, 1,
+          ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.slots (
+          slot_id, venue_id, coach_user_id, start_at, end_at, slot_type,
+          state, price_text, cancellation_terms_text, commercial_version,
+          booking_id, published_by, version, created_at, updated_at
+        ) values (
+          ${slot}::uuid, ${venue}::uuid, ${coach}::uuid,
+          '2026-10-05T16:00:00.000Z'::timestamptz,
+          '2026-10-05T17:00:00.000Z'::timestamptz, 'PERSONAL', 'BOOKED',
+          'Тест', 'Без штрафа', 1, ${booking}::uuid, ${central}::uuid, 2,
+          ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.bookings (
+          booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+          purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+          selection_expires_at, host_confirmation_deadline_at,
+          commercial_terms_snapshot, host_confirmed_by, host_confirmed_at,
+          version, created_at, updated_at, challenge_id
+        ) values (
+          ${booking}::uuid, ${testId(17111)}::uuid, ${match}::uuid, ${slot}::uuid,
+          ${champion}::uuid, ${challenger}::uuid, 'OFFICIAL_CHALLENGE',
+          'CONFIRMED_PAIR', ${challenger}::uuid, ${occurredAt}::timestamptz,
+          ${occurredAt}::timestamptz, '2026-10-02T10:00:00.000Z'::timestamptz,
+          '2026-10-03T10:00:00.000Z'::timestamptz, '{"priceText":"Тест"}'::jsonb,
+          ${coach}::uuid, ${occurredAt}::timestamptz, 3,
+          ${occurredAt}::timestamptz, ${occurredAt}::timestamptz, ${challenge}::uuid
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.sessions (
+          session_id, booking_id, venue_id, coach_user_id, pair_low_id, pair_high_id,
+          purpose, state, scheduled_start_at, scheduled_end_at,
+          commercial_terms_snapshot, version, created_at, updated_at, challenge_id
+        ) values (
+          ${session}::uuid, ${booking}::uuid, ${venue}::uuid, ${coach}::uuid,
+          ${champion}::uuid, ${challenger}::uuid, 'OFFICIAL_CHALLENGE', 'SCHEDULED',
+          '2026-10-05T16:00:00.000Z'::timestamptz,
+          '2026-10-05T17:00:00.000Z'::timestamptz, '{"priceText":"Тест"}'::jsonb,
+          1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz, ${challenge}::uuid
+        )
+      `.execute(transaction);
+    });
+
+    const exitId = testId(17120);
+    const confirmationToken = testId(17121);
+    const commonIds = {
+      membershipEventId: testId(17130), competitionEventId: testId(17131),
+      notificationOutboxMessageId: testId(17132),
+      notificationIds: [testId(17133), testId(17134)] as const,
+      resultId: testId(17135), resultEventId: testId(17136),
+      resultFinalEventId: testId(17137), waiverId: testId(17138),
+      waiverEventId: testId(17139), cooldownId: testId(17140),
+      cooldownEventId: testId(17141), challengeEventId: testId(17142),
+      statusTransitionId: testId(17143), statusEventId: testId(17144),
+      statusFinalizationId: testId(17145), statusFinalEventId: testId(17146),
+      postResultStatusEventId: testId(17147), statusOutboxMessageId: testId(17148),
+    };
+    const previewed = await previewMembershipExit(
+      database,
+      {
+        commandId: testId(17122), commandType: 'PREVIEW_MEMBERSHIP_EXIT',
+        idempotencyKey: `preview-accepted-membership-exit-${exitId}`,
+        actor: { type: 'USER', id: champion, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'VoluntaryMembershipExit', aggregateId: exitId,
+        expectedVersion: 0, correlationId: testId(17123), causationId: null,
+        requestId: testId(17124), source: 'api', payloadVersion: 1,
+        payload: { membershipId: championMembership },
+      } satisfies CommandEnvelope<PreviewMembershipExitPayload>,
+      {
+        ...commonIds, eventId: testId(17125), auditId: testId(17126),
+        outboxMessageId: testId(17127),
+      },
+      confirmationToken,
+      () => new Date('2026-10-01T09:00:00.000Z'),
+    );
+    expect(previewed.response).toMatchObject({
+      consequence: 'ACCEPTED_CHALLENGE_FORFEIT', departingStatus: 'CHAMPION',
+      challengeId: challenge, opponentUserId: challenger,
+      opponentDisplayName: 'Winning Challenger', createsForfeit: true,
+      createsLoss: true, createsCooldown: true, appealWaived: true,
+      afterStatusVersion: 10,
+    });
+
+    const confirmed = await confirmMembershipExit(
+      database,
+      {
+        commandId: testId(17150), commandType: 'CONFIRM_MEMBERSHIP_EXIT',
+        idempotencyKey: `confirm-accepted-membership-exit-${exitId}`,
+        actor: { type: 'USER', id: champion, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'VoluntaryMembershipExit', aggregateId: exitId,
+        expectedVersion: 1, correlationId: testId(17151), causationId: testId(17125),
+        requestId: testId(17152), source: 'api', payloadVersion: 1,
+        payload: { exitId, confirmationToken },
+      } satisfies CommandEnvelope<ConfirmMembershipExitPayload>,
+      {
+        ...commonIds, eventId: testId(17153), auditId: testId(17154),
+        outboxMessageId: testId(17155),
+      },
+      () => new Date('2026-10-01T09:05:00.000Z'),
+    );
+    expect(confirmed.response).toMatchObject({
+      state: 'CONFIRMED', resultId: commonIds.resultId,
+      createsForfeit: true, createsLoss: true, createsCooldown: true, appealWaived: true,
+      afterMembershipVersion: 2, afterStatusVersion: 10,
+    });
+    const evidence = await sql<{
+      readonly membership_state: string;
+      readonly challenge_state: string;
+      readonly challenge_version: string;
+      readonly result_state: string;
+      readonly result_version: string;
+      readonly winner_user_id: string;
+      readonly loser_user_id: string;
+      readonly waiver_context: string;
+      readonly cooldown_count: string;
+      readonly open_obligations: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string | null;
+      readonly status_version: string;
+      readonly competition_phase: string;
+      readonly booking_state: string;
+      readonly session_state: string;
+      readonly slot_state: string;
+    }>`
+      select
+        (select state from community.community_memberships where membership_id = ${championMembership}::uuid) as membership_state,
+        (select state from competition.challenges where challenge_id = ${challenge}::uuid) as challenge_state,
+        (select version::text from competition.challenges where challenge_id = ${challenge}::uuid) as challenge_version,
+        (select state from competition.results where result_id = ${commonIds.resultId}::uuid) as result_state,
+        (select version::text from competition.results where result_id = ${commonIds.resultId}::uuid) as result_version,
+        (select winner_user_id::text from competition.results where result_id = ${commonIds.resultId}::uuid) as winner_user_id,
+        (select loser_user_id::text from competition.results where result_id = ${commonIds.resultId}::uuid) as loser_user_id,
+        (select reason_context from competition.appeal_waivers where waiver_id = ${commonIds.waiverId}::uuid) as waiver_context,
+        (select count(*)::text from competition.pair_cooldowns where source_result_id = ${commonIds.resultId}::uuid) as cooldown_count,
+        (select count(*)::text from competition.challenge_participant_obligations where challenge_id = ${challenge}::uuid and released_at is null) as open_obligations,
+        (select champion_user_id::text from competition.competitions where competition_id = ${competition}::uuid) as champion_user_id,
+        (select contender_user_id::text from competition.competitions where competition_id = ${competition}::uuid) as contender_user_id,
+        (select status_version::text from competition.competitions where competition_id = ${competition}::uuid) as status_version,
+        (select phase from competition.competitions where competition_id = ${competition}::uuid) as competition_phase,
+        (select state from scheduling.bookings where booking_id = ${booking}::uuid) as booking_state,
+        (select state from scheduling.sessions where session_id = ${session}::uuid) as session_state,
+        (select state from scheduling.slots where slot_id = ${slot}::uuid) as slot_state
+    `.execute(database);
+    expect(evidence.rows[0]).toEqual({
+      membership_state: 'LEFT', challenge_state: 'COMPLETED', challenge_version: '6',
+      result_state: 'FINAL', result_version: '2', winner_user_id: challenger,
+      loser_user_id: champion, waiver_context: 'VOLUNTARY_RESIGNATION',
+      cooldown_count: '1', open_obligations: '0', champion_user_id: challenger,
+      contender_user_id: null, status_version: '10',
+      competition_phase: 'CONTENDER_VACANT_OPEN', booking_state: 'CANCELLED',
+      session_state: 'CANCELLED', slot_state: 'CANCELLED',
+    });
+  });
 });

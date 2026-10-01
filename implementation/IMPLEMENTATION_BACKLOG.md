@@ -275,15 +275,16 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - M7 Community lifecycle increment: complete. Central pause/reactivation and governed permanent
   closure now preserve confirmed Sessions only by an explicit Closure Plan, archive Memberships
   without losses and close status without hidden succession or migration.
-- M7 voluntary Membership exit (no accepted obligation) increment: complete. Athlete receives a
+- M7 voluntary Membership exit increment: complete. Athlete receives a
   token-bound 15-minute consequence preview; confirmation atomically closes optional unanswered
   Challenges no-fault, invalidates the departing Athlete's FIFO intents, applies ST-09/ST-10/ST-14
-  when the Athlete holds status and moves Membership to `LEFT`. Accepted obligations and live
-  mandatory/GENESIS response duties are deliberately rejected into the next governed Forfeit
-  increment. Core/API/client and PostgreSQL scenarios AC-106/AC-108/AC-109 pass without Result,
-  loss or Cooldown. Acceptance traceability is 90/213 (`84/195 P0`).
-- Next increment: finish Membership exit after acceptance with administrative Forfeit + immutable
-  waiver, then implement Ordinary removal and Central-reviewed status-holder removal.
+  when the Athlete holds status and moves Membership to `LEFT`. For an accepted, not-started
+  Challenge, the same preview discloses and confirmation atomically creates a FINAL administrative
+  Forfeit, immutable voluntary-resignation Appeal waiver and Cooldown, cancels Booking/Session/Slot,
+  releases obligations, and removes any status temporarily assigned to the departing Athlete.
+  Started Sessions stay on the Coach/frozen-ruleset path. Core/API/client and PostgreSQL scenarios
+  AC-106/AC-107/AC-108/AC-109/AC-110 pass. Acceptance traceability is 92/213 (`86/195 P0`).
+- Next increment: implement Ordinary removal and Central-reviewed status-holder removal.
 
 ## 5. Work that needs product/external input later
 

@@ -29,7 +29,7 @@
 | Scheduling publication slice | role-scoped Slot/GroupOffering publish, overlap guard, expiry timers and active-Match Chat cards | Pass in Core/API/client/worker and real PostgreSQL |
 | API edge baseline | official CORS/Helmet/rate-limit plugins, DB-backed readiness and secret log redaction | Pass |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 90/213 mapped (`84/195 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 92/213 mapped (`86/195 P0`) as implementation grows |
 | Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
 | Final Result integrity | evidence-scoped Central review, Competition hold, immutable decision and deterministic status replay | Pass in Core/API/client and real PostgreSQL |
 | Status queue foundation | explicit GENESIS/status intent, server-time FIFO, member/outsider projection and no-loss withdrawal | Pass in Core/API/client and real PostgreSQL |
@@ -37,11 +37,11 @@
 | Direct-status FIFO activation | strict valid head, current-holder binding, 72h mandatory response, 48h reminder, accepted obligations and appealable refusal/timeout Forfeit | Pass in Core/API/client/worker and real PostgreSQL |
 | Holder-change reconfirmation | final-transition reconciliation, preserved FIFO key, 24h versioned timer, manual reconfirm/exit and no-loss expiry | Pass in Core/API/client/worker and real PostgreSQL |
 | Voluntary status release | two-step 15m token/version confirmation, ST-09/ST-10/ST-14 projection, preserved Membership/FIFO and no Result/loss/Cooldown | Pass in Core/API/client and real PostgreSQL |
-| Voluntary Membership exit | separate two-step 15m preview, no-fault optional-request closure, FIFO invalidation, deterministic status succession/vacancy and terminal `LEFT` Membership | Pass for the no-accepted-obligation contour in Core/API/client and real PostgreSQL; Forfeit/waiver contour is next |
+| Voluntary Membership exit | separate two-step 15m preview, no-fault optional-request closure, FIFO invalidation, deterministic status succession/vacancy and terminal `LEFT` Membership; accepted not-started Challenge becomes FINAL administrative Forfeit with waiver/Cooldown and resource cancellation | Pass for no-obligation and accepted-obligation contours in Core/API/client and real PostgreSQL |
 | Vacancy succession | Worker revalidation, atomic first-two pairing, visible three-day solo deadline and stale-safe C-03/C-08 promotion | Pass in Core/client/worker and real PostgreSQL |
 | Training conversion | ordinary/Contender conversion, strict FIFO, three-party confirmation and no-fault fallback | Pass in Core/API/client/worker and real PostgreSQL |
 | Training cancellation/solo | Athlete no-fault withdrawal, two-party one-hour decision, solo conversion or atomic resource release | Pass in Core/API/client/worker and real PostgreSQL |
-| Dependency severity gate | CI rejects high/critical production advisories; production audit reports zero high/critical and six moderate advisories | Pass |
+| Dependency severity gate | CI rejects high/critical production advisories; production audit reports zero high/critical and five moderate advisories | Pass |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |

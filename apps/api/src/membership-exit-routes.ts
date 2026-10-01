@@ -92,6 +92,13 @@ function effectIds(): MembershipExitEffectIds {
     competitionEventId: newUuidV7(), auditId: newUuidV7(),
     outboxMessageId: newUuidV7(), notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7()],
+    resultId: newUuidV7(), resultEventId: newUuidV7(), resultFinalEventId: newUuidV7(),
+    waiverId: newUuidV7(), waiverEventId: newUuidV7(),
+    cooldownId: newUuidV7(), cooldownEventId: newUuidV7(),
+    challengeEventId: newUuidV7(), statusTransitionId: newUuidV7(),
+    statusEventId: newUuidV7(), statusFinalizationId: newUuidV7(),
+    statusFinalEventId: newUuidV7(), postResultStatusEventId: newUuidV7(),
+    statusOutboxMessageId: newUuidV7(),
   };
 }
 

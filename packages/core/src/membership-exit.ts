@@ -4,11 +4,14 @@ import {
   type StatusReleasePlan,
 } from './status-release.js';
 
-export const MEMBERSHIP_EXIT_POLICY_VERSION = 'membership-exit-mvp-v1' as const;
+export const MEMBERSHIP_EXIT_POLICY_VERSION = 'membership-exit-mvp-v2' as const;
 export const MEMBERSHIP_EXIT_PREVIEW_MINUTES = 15;
 
 export type MembershipExitStatus = 'ORDINARY' | 'CHAMPION' | 'CONTENDER';
-export type MembershipExitConsequence = 'ORDINARY_EXIT' | StatusReleaseConsequence;
+export type MembershipExitConsequence =
+  | 'ORDINARY_EXIT'
+  | 'ACCEPTED_CHALLENGE_FORFEIT'
+  | StatusReleaseConsequence;
 
 export type MembershipExitConflictCode =
   | 'MEMBERSHIP_EXIT_ACCOUNT_NOT_ACTIVE'
@@ -17,6 +20,7 @@ export type MembershipExitConflictCode =
   | 'MEMBERSHIP_EXIT_COMPETITION_NOT_ACTIVE'
   | 'MEMBERSHIP_EXIT_INTEGRITY_HOLD'
   | 'MEMBERSHIP_EXIT_ACTIVE_OBLIGATION'
+  | 'MEMBERSHIP_EXIT_SESSION_ALREADY_STARTED'
   | 'MEMBERSHIP_EXIT_LIVE_STATUS_PROCESS'
   | 'MEMBERSHIP_EXIT_NOT_FOUND'
   | 'MEMBERSHIP_EXIT_OWNER_REQUIRED'
@@ -39,6 +43,7 @@ export interface MembershipExitPlan {
   readonly departingStatus: MembershipExitStatus;
   readonly consequence: MembershipExitConsequence;
   readonly statusRelease: StatusReleasePlan | null;
+  readonly createsForfeit: boolean;
 }
 
 export function membershipExitPreviewExpiresAt(previewedAt: Date): Date {
@@ -52,7 +57,21 @@ export function deriveMembershipExitPlan(input: {
   readonly actorUserId: string;
   readonly championUserId: string | null;
   readonly contenderUserId: string | null;
+  readonly hasAcceptedObligation?: boolean;
 }): MembershipExitPlan {
+  const departingStatus: MembershipExitStatus = input.actorUserId === input.championUserId
+    ? 'CHAMPION'
+    : input.actorUserId === input.contenderUserId
+      ? 'CONTENDER'
+      : 'ORDINARY';
+  if (input.hasAcceptedObligation) {
+    return {
+      departingStatus,
+      consequence: 'ACCEPTED_CHALLENGE_FORFEIT',
+      statusRelease: null,
+      createsForfeit: true,
+    };
+  }
   if (
     input.actorUserId === input.championUserId
     || input.actorUserId === input.contenderUserId
@@ -62,12 +81,14 @@ export function deriveMembershipExitPlan(input: {
       departingStatus: statusRelease.releasedStatus,
       consequence: statusRelease.consequence,
       statusRelease,
+      createsForfeit: false,
     };
   }
   return {
     departingStatus: 'ORDINARY',
     consequence: 'ORDINARY_EXIT',
     statusRelease: null,
+    createsForfeit: false,
   };
 }
 
@@ -78,6 +99,8 @@ export function assertMembershipExitEligibility(input: {
   readonly competitionActive: boolean;
   readonly integrityHoldActive: boolean;
   readonly hasActiveObligation: boolean;
+  readonly activeObligationCanForfeit?: boolean;
+  readonly activeSessionStarted?: boolean;
   readonly hasLiveStatusProcess: boolean;
 }): void {
   if (!input.accountActive) {
@@ -95,7 +118,10 @@ export function assertMembershipExitEligibility(input: {
   if (input.integrityHoldActive) {
     throw new MembershipExitConflictError('MEMBERSHIP_EXIT_INTEGRITY_HOLD');
   }
-  if (input.hasActiveObligation) {
+  if (input.activeSessionStarted) {
+    throw new MembershipExitConflictError('MEMBERSHIP_EXIT_SESSION_ALREADY_STARTED');
+  }
+  if (input.hasActiveObligation && !input.activeObligationCanForfeit) {
     throw new MembershipExitConflictError('MEMBERSHIP_EXIT_ACTIVE_OBLIGATION');
   }
   if (input.hasLiveStatusProcess) {

@@ -16,6 +16,7 @@ function projection(overrides: Partial<MembershipExitProjection> = {}): Membersh
     exitId, membershipId, competitionId,
     departingStatus: 'ORDINARY', consequence: 'ORDINARY_EXIT', state: 'PREVIEWED',
     successorUserId: null, successorDisplayName: null,
+    opponentUserId: null, opponentDisplayName: null, challengeId: null, resultId: null,
     beforeMembershipVersion: 1, afterMembershipVersion: null,
     beforeStatusVersion: 4, afterStatusVersion: null,
     previewExpiresAt: '2026-10-01T12:15:00.000Z', confirmationToken,

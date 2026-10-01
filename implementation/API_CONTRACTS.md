@@ -214,9 +214,12 @@ candidate atomically or promotes the unchanged single candidate at the exact thr
 the timer is ignored when state/version changed.
 Champion/Contender release now uses a separate two-step resource rather than overloading Result.
 Preview freezes the holder/status version and exact succession or vacancy consequence; confirm
-fails if that snapshot changed, the token expired, an accepted obligation exists or a blocking
-status Challenge is live. Waiting direct entries are converted to GENESIS candidates without
-changing their FIFO ID or timestamp.
+fails if that snapshot changed, the token expired or a blocking unaccepted status process is live.
+For an accepted Challenge that has not started, the preview includes the opponent and exact
+Forfeit/waiver consequences; confirmation finalizes the administrative Result and cancellation in
+the same transaction. Once Session actual start is recorded, only the Coach/frozen-ruleset path may
+finish it. Waiting direct entries are converted to GENESIS candidates without changing their FIFO
+ID or timestamp.
 
 ## 9. Session, Attendance and Result
 

@@ -19,6 +19,9 @@ function localDate(value: string): string {
 }
 
 function consequenceCopy(exit: MembershipExit): string {
+  if (exit.consequence === 'ACCEPTED_CHALLENGE_FORFEIT') {
+    return `${exit.opponentDisplayName ?? 'Соперник'} получит победу по Forfeit. Результат станет FINAL сразу, начнётся cooldown, а вы безвозвратно откажетесь от Appeal.`;
+  }
   if (exit.consequence === 'CHAMPION_SUCCESSION') {
     return `${exit.successorDisplayName ?? 'Текущий Претендент'} станет №1, а место Претендента освободится.`;
   }
@@ -43,8 +46,10 @@ export function MembershipExitSection({
         <View style={styles.confirmation}>
           <Text style={styles.warning}>Покинуть Community?</Text>
           <Text style={styles.detail}>{consequenceCopy(preview)}</Text>
-          <Text style={styles.safe}>
-            В этом сценарии Result, поражение и cooldown не создаются. История останется сохранённой.
+          <Text style={preview.createsForfeit ? styles.risk : styles.safe}>
+            {preview.createsForfeit
+              ? 'Это действие создаст подтверждённое поражение и сразу закроет право на Appeal. Отменить его после подтверждения нельзя.'
+              : 'В этом сценарии Result, поражение и cooldown не создаются. История останется сохранённой.'}
           </Text>
           <Text style={styles.detail}>
             Подтверждение доступно до {localDate(preview.previewExpiresAt)}.
@@ -111,6 +116,10 @@ const styles = StyleSheet.create({
   warning: { color: '#7d2d25', fontSize: 17, fontWeight: '800' },
   safe: {
     backgroundColor: '#edf5ef', borderRadius: 10, color: '#326044',
+    fontSize: 13, lineHeight: 19, padding: 10,
+  },
+  risk: {
+    backgroundColor: '#f8e9e7', borderRadius: 10, color: '#7d2d25',
     fontSize: 13, lineHeight: 19, padding: 10,
   },
   actions: { flexDirection: 'row', gap: 10 },

@@ -25,6 +25,13 @@ describe('voluntary Membership exit', () => {
       departingStatus: 'CONTENDER', consequence: 'CONTENDER_VACANCY',
       statusRelease: { transitionId: 'ST-10', afterChampionUserId: 'champion' },
     });
+    expect(deriveMembershipExitPlan({
+      actorUserId: 'champion', championUserId: 'champion', contenderUserId: 'contender',
+      hasAcceptedObligation: true,
+    })).toMatchObject({
+      departingStatus: 'CHAMPION', consequence: 'ACCEPTED_CHALLENGE_FORFEIT',
+      statusRelease: null, createsForfeit: true,
+    });
   });
 
   it('keeps accepted obligations and mandatory responses on the governed Forfeit path', () => {
@@ -37,6 +44,13 @@ describe('voluntary Membership exit', () => {
     expect(() => assertMembershipExitEligibility({
       ...eligible, hasActiveObligation: true,
     })).toThrowError(new MembershipExitConflictError('MEMBERSHIP_EXIT_ACTIVE_OBLIGATION'));
+    expect(() => assertMembershipExitEligibility({
+      ...eligible, hasActiveObligation: true, activeObligationCanForfeit: true,
+    })).not.toThrow();
+    expect(() => assertMembershipExitEligibility({
+      ...eligible, hasActiveObligation: true, activeObligationCanForfeit: true,
+      activeSessionStarted: true,
+    })).toThrowError(new MembershipExitConflictError('MEMBERSHIP_EXIT_SESSION_ALREADY_STARTED'));
     expect(() => assertMembershipExitEligibility({
       ...eligible, hasLiveStatusProcess: true,
     })).toThrowError(new MembershipExitConflictError('MEMBERSHIP_EXIT_LIVE_STATUS_PROCESS'));
