@@ -130,6 +130,7 @@ interface RecordContextRow {
   readonly current_status_version: string;
   readonly status_lock_result_id: string | null;
   readonly integrity_hold_case_id: string | null;
+  readonly status_review_hold_active: boolean;
   readonly session_id: string;
   readonly session_state: string;
   readonly venue_id: string;
@@ -256,6 +257,12 @@ async function recordContext(
       competition.status_version::text as current_status_version,
       competition.status_lock_result_id,
       competition.integrity_hold_case_id,
+      exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competition.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      ) as status_review_hold_active,
       session.session_id, session.state as session_state, session.venue_id,
       session.coach_user_id, session.actual_end_at,
       session.pair_low_id, session.pair_high_id,
@@ -574,7 +581,9 @@ export async function recordSessionResult(
         },
       });
       if (transition.locksStatus) {
-        if (row.integrity_hold_case_id) throw new ResultConflictError('COMPETITION_INTEGRITY_HOLD');
+        if (row.integrity_hold_case_id || row.status_review_hold_active) {
+          throw new ResultConflictError('COMPETITION_INTEGRITY_HOLD');
+        }
         if (row.status_lock_result_id) throw new ResultConflictError('COMPETITION_STATUS_LOCKED');
         if (
           row.current_champion_user_id !== row.snapshot_champion_user_id

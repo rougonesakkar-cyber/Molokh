@@ -512,6 +512,29 @@ async function competitiveSnapshotForSession(
   return result.rows[0] ?? null;
 }
 
+async function assertNoCompetitionStatusReviewHold(
+  transaction: Transaction<Database>,
+  challengeId: string,
+): Promise<void> {
+  const result = await sql<{ readonly hold_active: boolean }>`
+    select exists (
+      select 1 from competition.process_holds as process_hold
+      where process_hold.aggregate_type = 'COMPETITION'
+        and process_hold.aggregate_id = competition.competition_id
+        and process_hold.reason = 'STATUS_REVIEW'
+        and process_hold.state = 'ACTIVE'
+    ) as hold_active
+    from competition.challenges as challenge
+    join competition.competitions as competition
+      on competition.competition_id = challenge.competition_id
+    where challenge.challenge_id = ${challengeId}::uuid
+    for update of competition
+  `.execute(transaction);
+  if (result.rows[0]?.hold_active) {
+    throw new SchedulingConflictError('COMPETITION_STATUS_REVIEW_HOLD');
+  }
+}
+
 async function readSessionRow(
   database: Kysely<Database> | Transaction<Database>,
   sessionId: string,
@@ -1451,6 +1474,7 @@ export async function startSession(
         ? await competitiveSnapshotForSession(transaction, row.session_id)
         : null;
       if (challenge) {
+        await assertNoCompetitionStatusReviewHold(transaction, challenge.challenge_id);
         assertChallengeSessionCanStart({
           state: challenge.state,
           activeObligationCount: Number(challenge.active_obligation_count),
@@ -1608,6 +1632,7 @@ export async function recordSessionAttendance(
         : null;
       if (challenge) {
         if (startsSession) {
+          await assertNoCompetitionStatusReviewHold(transaction, challenge.challenge_id);
           assertChallengeSessionCanStart({
             state: challenge.state,
             activeObligationCount: Number(challenge.active_obligation_count),

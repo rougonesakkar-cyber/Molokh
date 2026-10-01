@@ -243,7 +243,12 @@ async function exitContext(
       competitive.competition_id, competitive.version::text as competition_version,
       competitive.status_version::text as status_version, competitive.phase,
       competitive.availability,
-      competitive.integrity_hold_case_id is not null as integrity_hold_active,
+      (competitive.integrity_hold_case_id is not null or exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )) as integrity_hold_active,
       competitive.status_lock_result_id,
       competitive.champion_user_id, competitive.contender_user_id,
       configuration.pair_cooldown_days,

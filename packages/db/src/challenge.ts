@@ -186,6 +186,7 @@ interface AdministrativeForfeitContextRow {
   readonly contender_user_id: string | null;
   readonly status_lock_result_id: string | null;
   readonly integrity_hold_case_id: string | null;
+  readonly status_review_hold_active: boolean;
   readonly pair_cooldown_days: number;
 }
 
@@ -471,9 +472,16 @@ async function assertChallengeCompetitionOperational(
   const result = await sql<{
     readonly competition_availability: string;
     readonly community_state: string;
+    readonly status_review_hold_active: boolean;
   }>`
     select competition.availability as competition_availability,
-      community.state as community_state
+      community.state as community_state,
+      exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competition.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      ) as status_review_hold_active
     from competition.competitions as competition
     join community.communities as community
       on community.community_id = competition.community_id
@@ -484,6 +492,9 @@ async function assertChallengeCompetitionOperational(
     throw new ChallengeConflictError('COMMUNITY_NOT_ACTIVE');
   }
   if (state.competition_availability !== 'ACTIVE') {
+    throw new ChallengeConflictError('COMPETITION_NOT_ACTIVE');
+  }
+  if (state.status_review_hold_active) {
     throw new ChallengeConflictError('COMPETITION_NOT_ACTIVE');
   }
 }
@@ -856,6 +867,12 @@ async function recordMandatoryResponseForfeit(input: {
       competition.status_version::text as status_version,
       competition.champion_user_id, competition.contender_user_id,
       competition.status_lock_result_id, competition.integrity_hold_case_id,
+      exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competition.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      ) as status_review_hold_active,
       competition.phase, competition.availability,
       community.state = 'ACTIVE' as community_active,
       configuration.pair_cooldown_days
@@ -873,6 +890,7 @@ async function recordMandatoryResponseForfeit(input: {
     || competition.availability !== 'ACTIVE'
     || !competition.community_active
     || competition.integrity_hold_case_id !== null
+    || competition.status_review_hold_active
     || competition.status_lock_result_id !== null
     || competition.contender_user_id !== row.recipient_user_id
     || competition.champion_user_id === row.initiator_user_id
@@ -1210,6 +1228,12 @@ export async function readChallengeTimerSnapshot(
     select challenge.state, challenge.version::text as version,
       case
         when community.state = 'PAUSED' or competition.availability = 'PAUSED'
+          or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competition.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )
           then greatest(
             case
               when challenge.state = 'AWAITING_RESPONSE' then challenge.response_deadline_at

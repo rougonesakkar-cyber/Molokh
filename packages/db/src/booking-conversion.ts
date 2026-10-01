@@ -640,6 +640,12 @@ export async function readBookingOfficialConversionActivationCandidate(
     where competitive.competition_id = ${competitionId}::uuid
       and competitive.phase = 'RUNNING' and competitive.availability = 'ACTIVE'
       and competitive.integrity_hold_case_id is null
+      and not exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )
       and competitive.status_lock_result_id is null
       and competitive.contender_user_id is not null
       and community.state = 'ACTIVE'

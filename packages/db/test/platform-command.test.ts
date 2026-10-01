@@ -64,6 +64,11 @@ import {
   confirmStatusRelease,
   previewMembershipExit,
   confirmMembershipExit,
+  appealMembershipRemoval,
+  decideMembershipRemoval,
+  listMembershipRemovalsForCentral,
+  listVenueMembersForAdmin,
+  requestMembershipRemoval,
   readVacancyQueueReconciliationCandidate,
   reconcileVacancyQueue,
   promoteSingleGenesisCandidate,
@@ -221,6 +226,9 @@ import {
   type ConfirmStatusReleasePayload,
   type PreviewMembershipExitPayload,
   type ConfirmMembershipExitPayload,
+  type AppealMembershipRemovalPayload,
+  type DecideMembershipRemovalPayload,
+  type RequestMembershipRemovalPayload,
   type ReconcileVacancyQueuePayload,
   type PromoteSingleGenesisCandidatePayload,
   type RequestBookingOfficialConversionPayload,
@@ -1782,6 +1790,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         community.community_closure_session_dispositions,
         community.community_closure_plans,
         community.voluntary_membership_exits,
+        competition.process_holds,
+        community.membership_removal_cases,
         scheduling.booking_solo_confirmations,
         scheduling.booking_solo_continuations,
         scheduling.booking_conversion_confirmations,
@@ -7674,6 +7684,249 @@ describePostgres('PostgreSQL critical command transaction', () => {
       contender_user_id: null, status_version: '10',
       competition_phase: 'CONTENDER_VACANT_OPEN', booking_state: 'CANCELLED',
       session_state: 'CANCELLED', slot_state: 'CANCELLED',
+    });
+  });
+
+  it('AC-022 AC-131 AC-132 AC-133 AC-134 governs Membership removal end to end', async () => {
+    const occurredAt = new Date('2026-10-02T09:00:00.000Z');
+    const central = testId(18000);
+    const admin = testId(18001);
+    const ordinary = testId(18002);
+    const champion = testId(18003);
+    const contender = testId(18004);
+    const venue = testId(18010);
+    const community = testId(18011);
+    const competition = testId(18012);
+    const ordinaryMembership = testId(18013);
+    const championMembership = testId(18014);
+    const contenderMembership = testId(18015);
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${central}::uuid, '+79991800000', ${occurredAt.toISOString()}::timestamptz, '1985-01-01', 'ADULT', 'Removal Central', 'ACTIVE', 'ru-RU', 1, ${occurredAt.toISOString()}::timestamptz),
+        (${admin}::uuid, '+79991800001', ${occurredAt.toISOString()}::timestamptz, '1985-01-01', 'ADULT', 'Removal Admin', 'ACTIVE', 'ru-RU', 1, ${occurredAt.toISOString()}::timestamptz),
+        (${ordinary}::uuid, '+79991800002', ${occurredAt.toISOString()}::timestamptz, '1995-01-01', 'ADULT', 'Ordinary Athlete', 'ACTIVE', 'ru-RU', 1, ${occurredAt.toISOString()}::timestamptz),
+        (${champion}::uuid, '+79991800003', ${occurredAt.toISOString()}::timestamptz, '1995-01-01', 'ADULT', 'Champion Athlete', 'ACTIVE', 'ru-RU', 1, ${occurredAt.toISOString()}::timestamptz),
+        (${contender}::uuid, '+79991800004', ${occurredAt.toISOString()}::timestamptz, '1995-01-01', 'ADULT', 'Contender Athlete', 'ACTIVE', 'ru-RU', 1, ${occurredAt.toISOString()}::timestamptz)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: testId(18016), communityId: community,
+      communityConfigurationId: testId(18017), membershipId: ordinaryMembership,
+      centralGrantId: testId(18018), athleteUserId: ordinary,
+      centralActorId: central, legalName: 'Removal Pilot Gym LLC',
+      venueDisplayName: 'Removal Pilot Gym', communityName: 'Removal Community',
+      address: 'Moscow', cityCode: 'MOSCOW', timezone: 'Europe/Moscow',
+      contactPayload: { phone: '+79991809999' }, occurredAt: occurredAt.toISOString(),
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community, centralActorId: central,
+      occurredAt: occurredAt.toISOString(),
+      memberships: [
+        { membershipId: championMembership, userId: champion },
+        { membershipId: contenderMembership, userId: contender },
+      ],
+    });
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${champion}::uuid,
+        contender_user_id = ${contender}::uuid, status_version = 1, version = 2
+      where competition_id = ${competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${testId(18019)}::uuid, ${admin}::uuid, 'GYM_ADMIN', 'VENUE', ${venue}::uuid,
+        'ACTIVE', ${central}::uuid, ${occurredAt.toISOString()}::timestamptz, 1
+      )
+    `.execute(database);
+
+    const idsFor = (base: number, caseId: string) => ({
+      caseId, holdId: testId(base + 1), replacementMembershipId: testId(base + 2),
+      eventId: testId(base + 3), membershipEventId: testId(base + 4),
+      statusEventId: testId(base + 5), auditId: testId(base + 6),
+      outboxMessageId: testId(base + 7), notificationOutboxMessageId: testId(base + 8),
+    });
+    const ordinaryCase = testId(18020);
+    const ordinaryRequested = await requestMembershipRemoval(
+      database,
+      {
+        commandId: testId(18030), commandType: 'REQUEST_MEMBERSHIP_REMOVAL',
+        idempotencyKey: 'remove-ordinary-18020',
+        actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+        aggregateType: 'MembershipRemovalCase', aggregateId: ordinaryCase,
+        expectedVersion: 0, correlationId: testId(18031), causationId: null,
+        requestId: testId(18032), source: 'admin', payloadVersion: 1,
+        payload: {
+          membershipId: ordinaryMembership,
+          reason: 'Repeated violation of the published Community conduct rules.',
+        },
+      } satisfies CommandEnvelope<RequestMembershipRemovalPayload>,
+      idsFor(18020, ordinaryCase),
+      () => occurredAt,
+    );
+    expect(ordinaryRequested.response).toMatchObject({
+      subjectStatus: 'ORDINARY', state: 'REMOVED_APPEALABLE', version: 1,
+      appealDeadlineAt: '2026-10-04T09:00:00.000Z',
+    });
+    expect(await listVenueMembersForAdmin(database, admin, venue)).toHaveLength(2);
+
+    const appealed = await appealMembershipRemoval(
+      database,
+      {
+        commandId: testId(18040), commandType: 'APPEAL_MEMBERSHIP_REMOVAL',
+        idempotencyKey: 'appeal-removal-18020',
+        actor: { type: 'USER', id: ordinary, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'MembershipRemovalCase', aggregateId: ordinaryCase,
+        expectedVersion: 1, correlationId: testId(18041), causationId: testId(18023),
+        requestId: testId(18042), source: 'api', payloadVersion: 1,
+        payload: {
+          caseId: ordinaryCase,
+          reason: 'The decision refers to another participant with a similar display name.',
+        },
+      } satisfies CommandEnvelope<AppealMembershipRemovalPayload>,
+      idsFor(18040, ordinaryCase),
+      () => new Date('2026-10-02T10:00:00.000Z'),
+    );
+    expect(appealed.response).toMatchObject({ state: 'APPEALED', version: 2 });
+    expect(await listMembershipRemovalsForCentral(database, central)).toHaveLength(1);
+
+    const replacementMembership = testId(18042);
+    const overturned = await decideMembershipRemoval(
+      database,
+      {
+        commandId: testId(18050), commandType: 'DECIDE_MEMBERSHIP_REMOVAL',
+        idempotencyKey: 'overturn-removal-18020',
+        actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'MembershipRemovalCase', aggregateId: ordinaryCase,
+        expectedVersion: 2, correlationId: testId(18051), causationId: testId(18043),
+        requestId: testId(18052), source: 'admin', payloadVersion: 1,
+        payload: {
+          caseId: ordinaryCase, decision: 'REJECT_REMOVAL',
+          reason: 'The evidence confirms that the wrong participant was selected.',
+          cancelConfirmedSessions: true,
+        },
+      } satisfies CommandEnvelope<DecideMembershipRemovalPayload>,
+      { ...idsFor(18050, ordinaryCase), replacementMembershipId: replacementMembership },
+      () => new Date('2026-10-02T11:00:00.000Z'),
+    );
+    expect(overturned.response).toMatchObject({
+      state: 'OVERTURNED', replacementMembershipId: replacementMembership,
+    });
+
+    const removalSourceChat = testId(18100);
+    const removalServiceChat = testId(18101);
+    const removalRuleset = testId(18102);
+    const pendingStatusChallenge = testId(18103);
+    await sql`
+      insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+      values
+        (${removalSourceChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+          '2026-10-01T23:00:00.000Z'::timestamptz, '2026-10-01T23:00:00.000Z'::timestamptz),
+        (${removalServiceChat}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1,
+          '2026-10-01T23:00:00.000Z'::timestamptz, '2026-10-01T23:00:00.000Z'::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (
+        ${removalRuleset}::uuid, ${competition}::uuid, ${testId(18017)}::uuid,
+        'pilot-rules-v1', 'IMPLICIT_ON_ACCEPT', 'membership-removal-mvp-v1',
+        '2026-10-01T23:00:00.000Z'::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.challenges (
+        challenge_id, competition_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+        version, created_at, updated_at
+      ) values (
+        ${pendingStatusChallenge}::uuid, ${competition}::uuid,
+        ${removalSourceChat}::uuid, ${removalServiceChat}::uuid,
+        ${champion}::uuid, ${contender}::uuid, ${champion}::uuid, ${contender}::uuid,
+        'MANDATORY', 'TITLE', 'AWAITING_RESPONSE', ${removalRuleset}::uuid,
+        '2026-10-02T00:01:00.000Z'::timestamptz, 1,
+        '2026-10-01T23:00:00.000Z'::timestamptz,
+        '2026-10-01T23:00:00.000Z'::timestamptz
+      )
+    `.execute(database);
+
+    const championCase = testId(18060);
+    const championRequested = await requestMembershipRemoval(
+      database,
+      {
+        commandId: testId(18070), commandType: 'REQUEST_MEMBERSHIP_REMOVAL',
+        idempotencyKey: 'review-champion-18060',
+        actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+        aggregateType: 'MembershipRemovalCase', aggregateId: championCase,
+        expectedVersion: 0, correlationId: testId(18071), causationId: null,
+        requestId: testId(18072), source: 'admin', payloadVersion: 1,
+        payload: {
+          membershipId: championMembership,
+          reason: 'A governed Central review is required for repeated rule violations.',
+        },
+      } satisfies CommandEnvelope<RequestMembershipRemovalPayload>,
+      idsFor(18060, championCase),
+      () => new Date('2026-10-02T12:00:00.000Z'),
+    );
+    expect(championRequested.response).toMatchObject({
+      subjectStatus: 'CHAMPION', state: 'UNDER_REVIEW', version: 1,
+    });
+    const hold = await sql<{ readonly state: string }>`
+      select state from competition.process_holds where source_case_id = ${championCase}::uuid
+    `.execute(database);
+    expect(hold.rows[0]?.state).toBe('ACTIVE');
+    const heldTimer = await readChallengeTimerSnapshot(database, pendingStatusChallenge);
+    expect(heldTimer.state).toBe('AWAITING_RESPONSE');
+    expect(new Date(heldTimer.deadlineAt!).getTime()).toBeGreaterThan(Date.now());
+
+    const confirmed = await decideMembershipRemoval(
+      database,
+      {
+        commandId: testId(18080), commandType: 'DECIDE_MEMBERSHIP_REMOVAL',
+        idempotencyKey: 'confirm-champion-18060',
+        actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'MembershipRemovalCase', aggregateId: championCase,
+        expectedVersion: 1, correlationId: testId(18081), causationId: testId(18063),
+        requestId: testId(18082), source: 'admin', payloadVersion: 1,
+        payload: {
+          caseId: championCase, decision: 'CONFIRM_REMOVAL',
+          reason: 'Independent review confirms removal without a sporting loss.',
+          cancelConfirmedSessions: true,
+        },
+      } satisfies CommandEnvelope<DecideMembershipRemovalPayload>,
+      idsFor(18080, championCase),
+      () => new Date('2026-10-02T13:00:00.000Z'),
+    );
+    expect(confirmed.response).toMatchObject({
+      state: 'CONFIRMED', cancelledChallengeCount: 1,
+    });
+    const final = await sql<{
+      readonly membership_state: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string | null;
+      readonly status_version: string;
+      readonly hold_state: string;
+      readonly challenge_state: string;
+    }>`
+      select
+        (select state from community.community_memberships where membership_id = ${championMembership}::uuid) as membership_state,
+        (select champion_user_id::text from competition.competitions where competition_id = ${competition}::uuid) as champion_user_id,
+        (select contender_user_id::text from competition.competitions where competition_id = ${competition}::uuid) as contender_user_id,
+        (select status_version::text from competition.competitions where competition_id = ${competition}::uuid) as status_version,
+        (select state from competition.process_holds where source_case_id = ${championCase}::uuid) as hold_state,
+        (select state from competition.challenges where challenge_id = ${pendingStatusChallenge}::uuid) as challenge_state
+    `.execute(database);
+    expect(final.rows[0]).toEqual({
+      membership_state: 'REMOVED', champion_user_id: contender,
+      contender_user_id: null, status_version: '2', hold_state: 'RELEASED',
+      challenge_state: 'CANCELLED_NO_FAULT',
     });
   });
 });

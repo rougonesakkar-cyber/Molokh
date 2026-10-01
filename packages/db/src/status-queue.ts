@@ -395,7 +395,12 @@ async function competitionViewerContext(
       competitive.phase,
       competitive.availability,
       competitive.status_version::text,
-      competitive.integrity_hold_case_id is not null as integrity_hold_active,
+      (competitive.integrity_hold_case_id is not null or exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )) as integrity_hold_active,
       competitive.champion_user_id,
       champion.display_name as champion_display_name,
       competitive.contender_user_id,
@@ -620,6 +625,12 @@ async function viewerGenesisAction(
       (
         competitive.availability = 'ACTIVE'
         and competitive.integrity_hold_case_id is null
+        and not exists (
+          select 1 from competition.process_holds as process_hold
+          where process_hold.aggregate_type = 'COMPETITION'
+            and process_hold.aggregate_id = competitive.competition_id
+            and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+        )
         and community.state = 'ACTIVE'
         and (
           (challenge.stake = 'GENESIS_CHAMPION' and competitive.phase = 'FOUNDING_CHALLENGE')
@@ -750,7 +761,12 @@ async function vacancyCompetition(
   const result = lock
     ? await sql<VacancyCompetitionRow>`
         select competitive.competition_id, competitive.phase, competitive.availability,
-          competitive.integrity_hold_case_id is not null as integrity_hold_active,
+          (competitive.integrity_hold_case_id is not null or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competitive.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )) as integrity_hold_active,
           community.state = 'ACTIVE' as community_active,
           competitive.status_lock_result_id is null and not exists (
             select 1 from competition.challenges as challenge
@@ -771,7 +787,12 @@ async function vacancyCompetition(
       `.execute(database)
     : await sql<VacancyCompetitionRow>`
         select competitive.competition_id, competitive.phase, competitive.availability,
-          competitive.integrity_hold_case_id is not null as integrity_hold_active,
+          (competitive.integrity_hold_case_id is not null or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competitive.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )) as integrity_hold_active,
           community.state = 'ACTIVE' as community_active,
           competitive.status_lock_result_id is null and not exists (
             select 1 from competition.challenges as challenge
@@ -925,6 +946,12 @@ export async function readStatusQueueActivationCandidate(
       and competitive.phase = 'RUNNING'
       and competitive.availability = 'ACTIVE'
       and competitive.integrity_hold_case_id is null
+      and not exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )
       and competitive.status_lock_result_id is null
       and competitive.contender_user_id is not null
       and community.state = 'ACTIVE'
@@ -1431,7 +1458,12 @@ export async function activateStatusQueueHead(
     mutate: async (transaction, context) => {
       const competitionResult = await sql<ActivationCompetitionRow>`
         select competitive.competition_id, competitive.phase, competitive.availability,
-          competitive.integrity_hold_case_id is not null as integrity_hold_active,
+          (competitive.integrity_hold_case_id is not null or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competitive.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )) as integrity_hold_active,
           community.state = 'ACTIVE' as community_active,
           competitive.contender_user_id,
           (
@@ -2660,7 +2692,12 @@ async function assertGenesisParticipantsEligible(
     select
       competitive.availability as competition_availability,
       competitive.phase as competition_phase,
-      competitive.integrity_hold_case_id is not null as integrity_hold_active,
+      (competitive.integrity_hold_case_id is not null or exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )) as integrity_hold_active,
       community.state = 'ACTIVE' as community_active,
       (select count(*)::text from identity.users as athlete
         where athlete.user_id in (${row.initiator_user_id}::uuid, ${row.recipient_user_id}::uuid)
