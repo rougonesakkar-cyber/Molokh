@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertCommunityLifecycleTransition,
   projectCommunityAccess,
   type CommunityAccessInput,
 } from '../src/community.js';
@@ -105,5 +106,31 @@ describe('community access projection', () => {
         code: 'MVP_ACTIVE_COMMUNITY_LIMIT',
       }),
     );
+  });
+});
+
+describe('community lifecycle guard', () => {
+  it('[CO-02][CO-03] keeps pause/reactivation Central-only and state-explicit', () => {
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: true, currentState: 'ACTIVE', reason: 'Плановые работы',
+    })).not.toThrow();
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'REACTIVATE', actorIsCentral: true, currentState: 'PAUSED', reason: 'Работы завершены',
+    })).not.toThrow();
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: false, currentState: 'ACTIVE', reason: 'Нет полномочий',
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED',
+    }));
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: true, currentState: 'PAUSED', reason: 'Повтор',
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_LIFECYCLE_INVALID_STATE',
+    }));
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: true, currentState: 'ACTIVE', reason: '   ',
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_LIFECYCLE_REASON_REQUIRED',
+    }));
   });
 });

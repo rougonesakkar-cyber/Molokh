@@ -273,10 +273,18 @@ no-fault return and expiry also produce mandatory in-app notifications from the 
 After mutual acceptance, the service Chat opens the existing personal-slot flow and creates an
 Official Challenge obligation for both participants.
 
+Central now has an executable Community lifecycle control. `PAUSE_COMMUNITY` atomically pauses
+the Community and every live Competition, writes one durable pause interval and blocks new
+Official actions. On reactivation, every still-valid Challenge response/scheduling deadline moves
+by the exact pause duration, while Pair Cooldown endpoints stay unchanged. Confirmed Sessions keep
+their state and scheduled time. Timer workers re-read the current projection deadline, so a timer
+created before the pause cannot fire early after reactivation. The Central UI requires a reason and
+shows these consequences before the versioned command is available.
+
 ## Next executable action
 
-Complete the role-switch Web walkthrough for Gym Admin, Appeal, Missing Result and IntegrityCase.
-Then implement the remaining M7 lifecycle contours in dependency order: Community pause/closure,
-Membership exit/removal, Youth consent and age transition, platform-incident compensation, and
-account closure/export/retention before pilot hardening.
+Create a deterministic local governance fixture for the remaining Appeal, Missing Result and
+IntegrityCase role-switch walkthroughs. Then implement the remaining M7 lifecycle contours in
+dependency order: Community closure, Membership exit/removal, Youth consent and age transition,
+platform-incident compensation, and account closure/export/retention before pilot hardening.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

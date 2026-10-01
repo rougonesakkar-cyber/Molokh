@@ -464,6 +464,30 @@ async function challengeRow(
   return row;
 }
 
+async function assertChallengeCompetitionOperational(
+  database: Kysely<Database> | Transaction<Database>,
+  competitionId: string,
+): Promise<void> {
+  const result = await sql<{
+    readonly competition_availability: string;
+    readonly community_state: string;
+  }>`
+    select competition.availability as competition_availability,
+      community.state as community_state
+    from competition.competitions as competition
+    join community.communities as community
+      on community.community_id = competition.community_id
+    where competition.competition_id = ${competitionId}::uuid
+  `.execute(database);
+  const state = result.rows[0];
+  if (state?.community_state !== 'ACTIVE') {
+    throw new ChallengeConflictError('COMMUNITY_NOT_ACTIVE');
+  }
+  if (state.competition_availability !== 'ACTIVE') {
+    throw new ChallengeConflictError('COMPETITION_NOT_ACTIVE');
+  }
+}
+
 export async function readChatChallenge(
   database: Kysely<Database>,
   sourceChatId: string,
@@ -1181,17 +1205,40 @@ export async function readChallengeTimerSnapshot(
   const result = await sql<{
     readonly state: ChallengeState;
     readonly version: string;
-    readonly response_deadline_at: Date;
+    readonly effective_deadline_at: Date | null;
   }>`
-    select state, version::text as version, response_deadline_at
-    from competition.challenges
-    where challenge_id = ${challengeId}::uuid
+    select challenge.state, challenge.version::text as version,
+      case
+        when community.state = 'PAUSED' or competition.availability = 'PAUSED'
+          then greatest(
+            case
+              when challenge.state = 'AWAITING_RESPONSE' then challenge.response_deadline_at
+              when challenge.state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+                then challenge.scheduling_deadline_at
+              else null
+            end,
+            clock_timestamp() + interval '5 minutes'
+          )
+        when challenge.state = 'AWAITING_RESPONSE' then challenge.response_deadline_at
+        when challenge.state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+          then challenge.scheduling_deadline_at
+        else null
+      end as effective_deadline_at
+    from competition.challenges as challenge
+    join competition.competitions as competition
+      on competition.competition_id = challenge.competition_id
+    join community.communities as community
+      on community.community_id = competition.community_id
+    where challenge.challenge_id = ${challengeId}::uuid
   `.execute(database);
   const row = result.rows[0];
   return row
     ? {
         state: row.state,
         version: Number(row.version),
+        ...(row.effective_deadline_at
+          ? { deadlineAt: row.effective_deadline_at.toISOString() }
+          : {}),
       }
     : { state: 'MISSING', version: 0 };
 }
@@ -1215,6 +1262,7 @@ export async function expireOptionalChallenge(
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const row = await challengeRow(transaction, command.aggregateId, true);
+      await assertChallengeCompetitionOperational(transaction, row.competition_id);
       if (row.response_policy === 'MANDATORY') {
         assertMandatoryChallengeCanBeExpired(
           row.state,
@@ -1289,6 +1337,23 @@ export async function ensureLocalPilotCompetition(
         'FOUNDING_OPEN', 'ACTIVE', 1, ${fixture.occurredAt}::timestamptz,
         ${fixture.occurredAt}::timestamptz
       ) on conflict (competition_id) do nothing
+    `.execute(transaction);
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, actor_id, actor_type,
+        actor_roles, actor_scope_ids, occurred_at, idempotency_key_hash, payload, metadata
+      ) values (
+        md5('competition-created:' || ${fixture.competitionId})::uuid,
+        'CompetitionCreated', 1, 'Competition', ${fixture.competitionId}::uuid, 1, null,
+        md5('competition-created-correlation:' || ${fixture.competitionId})::uuid,
+        ${fixture.centralActorId}::uuid, 'SYSTEM', '["CENTRAL_ADMIN"]'::jsonb,
+        '{}'::uuid[], ${fixture.occurredAt}::timestamptz,
+        md5('competition-created:' || ${fixture.competitionId}),
+        ${JSON.stringify({ competitionId: fixture.competitionId,
+          communityId: fixture.communityId, ageDivision: 'ADULT', bootstrap: true })}::jsonb,
+        ${JSON.stringify({ policyVersion: 'community-lifecycle-mvp-v1', bootstrap: true })}::jsonb
+      ) on conflict do nothing
     `.execute(transaction);
     for (const membership of fixture.memberships) {
       await sql`

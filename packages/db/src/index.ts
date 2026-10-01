@@ -25,6 +25,7 @@ export * from './solo-continuation.js';
 export * from './chat.js';
 export * from './challenge.js';
 export * from './community.js';
+export * from './community-lifecycle.js';
 export * from './discovery.js';
 export * from './identity.js';
 export * from './integrity-case.js';

@@ -9,6 +9,8 @@ import type {
   ChangeDisplayNamePayload,
   ChangeSportsPayload,
   CommunityContextProjection,
+  CommunityLifecycleEffectIds,
+  CommunityLifecycleProjection,
   DiscoveryCardProjection,
   IdentityEffectIds,
   ApproveVerificationPayload,
@@ -91,6 +93,8 @@ import type {
   WithdrawSlotPayload,
   ChallengeProjection,
   ChatChallengeProjection,
+  PauseCommunityPayload,
+  ReactivateCommunityPayload,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -444,6 +448,92 @@ describe('runtime contract', () => {
     });
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/community');
+  });
+
+  it('[CO-02][CO-03] exposes versioned Central Community lifecycle commands', async () => {
+    const communityId = '0199a1b2-1234-7000-8000-000000000402';
+    const active: CommunityLifecycleProjection = {
+      communityId,
+      state: 'ACTIVE',
+      pauseStartedAt: null,
+      latestPauseDurationSeconds: null,
+      version: 7,
+      competitions: [{
+        competitionId: '0199a1b2-1234-7000-8000-000000000404',
+        availability: 'ACTIVE',
+        version: 3,
+      }],
+    };
+    const paused: CommunityLifecycleProjection = {
+      ...active,
+      state: 'PAUSED',
+      pauseStartedAt: '2026-10-01T10:00:00.000Z',
+      version: 8,
+      competitions: active.competitions.map((competition) => ({
+        ...competition, availability: 'PAUSED', version: 4,
+      })),
+    };
+    const pause = vi.fn(async (
+      _command: CommandEnvelope<PauseCommunityPayload>,
+      _ids: CommunityLifecycleEffectIds,
+    ) => ({
+      responseStatus: 200, response: paused,
+      eventId: '0199a1b2-1234-7000-8000-000000000405',
+      aggregateVersion: 8, replayed: false,
+    }));
+    const reactivate = vi.fn(async (
+      _command: CommandEnvelope<ReactivateCommunityPayload>,
+      _ids: CommunityLifecycleEffectIds,
+    ) => ({
+      responseStatus: 200, response: active,
+      eventId: '0199a1b2-1234-7000-8000-000000000406',
+      aggregateVersion: 9, replayed: false,
+    }));
+    const app = await buildApp({
+      community: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readContext: async () => null,
+        lifecycle: {
+          auth: new StaticBearerAuthAdapter(token, userId),
+          read: async () => active,
+          pause,
+          reactivate,
+        },
+      },
+    });
+    apps.push(app);
+
+    const read = await app.inject({
+      method: 'GET',
+      url: `/api/v1/central/communities/${communityId}/lifecycle`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({ data: active });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/communities/${communityId}/pause`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'idempotency-key': 'pause-community-test',
+        'if-match': '7',
+      },
+      payload: { reason: 'Плановые работы' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ data: paused, meta: { replayed: false } });
+    expect(pause).toHaveBeenCalledOnce();
+    expect(pause.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PAUSE_COMMUNITY', expectedVersion: 7,
+      actor: { id: userId, roles: ['CENTRAL_ADMIN'] },
+      payload: { communityId, reason: 'Плановые работы' },
+    });
+    expect(pause.mock.calls[0]?.[1].competitionEventIds).toHaveLength(1);
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/communities/{communityId}/pause');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/communities/{communityId}/reactivate');
   });
 
   it('returns transparent Discovery cards without exposing private rank buckets', async () => {

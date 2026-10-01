@@ -16,6 +16,43 @@ export type CommunityRole =
   | 'CENTRAL_ADMIN';
 export type RoleScopeType = 'VENUE' | 'COMMUNITY' | 'SESSION' | 'GLOBAL';
 
+export const COMMUNITY_LIFECYCLE_POLICY_VERSION = 'community-lifecycle-mvp-v1' as const;
+
+export type CommunityLifecycleAction = 'PAUSE' | 'REACTIVATE';
+export type CommunityLifecycleConflictCode =
+  | 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED'
+  | 'COMMUNITY_LIFECYCLE_INVALID_STATE'
+  | 'COMMUNITY_LIFECYCLE_REASON_REQUIRED';
+
+export class CommunityLifecycleConflictError extends Error {
+  readonly code: CommunityLifecycleConflictCode;
+
+  constructor(readonly reason: CommunityLifecycleConflictCode) {
+    super(`Community lifecycle transition is not allowed: ${reason}`);
+    this.name = 'CommunityLifecycleConflictError';
+    this.code = reason;
+  }
+}
+
+export function assertCommunityLifecycleTransition(input: {
+  readonly action: CommunityLifecycleAction;
+  readonly actorIsCentral: boolean;
+  readonly currentState: CommunityState;
+  readonly reason: string;
+}): void {
+  if (!input.actorIsCentral) {
+    throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED');
+  }
+  const reasonLength = input.reason.trim().length;
+  if (reasonLength < 1 || reasonLength > 500) {
+    throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_REASON_REQUIRED');
+  }
+  const expectedState: CommunityState = input.action === 'PAUSE' ? 'ACTIVE' : 'PAUSED';
+  if (input.currentState !== expectedState) {
+    throw new CommunityLifecycleConflictError('COMMUNITY_LIFECYCLE_INVALID_STATE');
+  }
+}
+
 export interface ActiveRoleGrant {
   readonly role: CommunityRole;
   readonly scopeType: RoleScopeType;

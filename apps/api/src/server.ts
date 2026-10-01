@@ -48,6 +48,7 @@ import {
   withdrawSlot,
   proposeGroupPlan,
   readCommunityContext,
+  readCommunityLifecycle,
   readChatChallenge,
   readChatMessages,
   readActiveBlocks,
@@ -97,6 +98,8 @@ import {
   withdrawAppeal,
   withdrawStatusQueueEntry,
   openIntegrityCase,
+  pauseCommunity,
+  reactivateCommunity,
   startIntegrityReview,
   decideIntegrityCase,
 } from '@molokh/db';
@@ -1133,6 +1136,12 @@ const app = await buildApp({
   community: {
     auth: localAuth,
     readContext: (userId) => readCommunityContext(database, userId, localCommunityId),
+    lifecycle: {
+      auth: localCentralAuth,
+      read: (communityId) => readCommunityLifecycle(database, communityId),
+      pause: (command, ids) => pauseCommunity(database, command, ids),
+      reactivate: (command, ids) => reactivateCommunity(database, command, ids),
+    },
   },
   discovery: {
     auth: localAuth,

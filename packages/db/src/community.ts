@@ -153,6 +153,23 @@ export async function ensureLocalPilotCommunity(
       ) on conflict (configuration_id) do nothing
     `.execute(transaction);
     await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, actor_id, actor_type,
+        actor_roles, actor_scope_ids, occurred_at, idempotency_key_hash, payload, metadata
+      ) values (
+        md5('community-created:' || ${fixture.communityId})::uuid,
+        'CommunityCreated', 1, 'Community', ${fixture.communityId}::uuid, 1, 'CO-01',
+        md5('community-created-correlation:' || ${fixture.communityId})::uuid,
+        ${fixture.centralActorId}::uuid, 'SYSTEM', '["CENTRAL_ADMIN"]'::jsonb,
+        '{}'::uuid[], ${fixture.occurredAt}::timestamptz,
+        md5('community-created:' || ${fixture.communityId}),
+        ${JSON.stringify({ communityId: fixture.communityId, venueId: fixture.venueId,
+          bootstrap: true })}::jsonb,
+        ${JSON.stringify({ policyVersion: 'community-lifecycle-mvp-v1', bootstrap: true })}::jsonb
+      ) on conflict do nothing
+    `.execute(transaction);
+    await sql`
       insert into community.community_memberships (
         membership_id, community_id, user_id, age_division, state,
         competition_enabled, join_path, decided_at, decided_by, version

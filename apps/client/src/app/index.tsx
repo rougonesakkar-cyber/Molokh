@@ -5,6 +5,8 @@ import type {
   BlockedUsersResponse,
   BookingOfficialConversionCommandResponse,
   BookingSoloContinuationCommandResponse,
+  CommunityLifecycleCommandResponse,
+  CommunityLifecycleResponse,
   CommunityContextResponse,
   CompetitionStatusResponse,
   DiscoveryActionResponse,
@@ -65,6 +67,7 @@ import { sportLabel, sportOptions } from '../lib/sports';
 
 type Identity = MeResponse['data'];
 type CommunityContext = CommunityContextResponse['data'];
+type CommunityLifecycle = CommunityLifecycleResponse['data'];
 type CompetitionStatus = CompetitionStatusResponse['data'];
 type StatusReleasePreview = StatusReleaseCommandResponse['data'];
 type Capability = Identity['capabilities'][number];
@@ -360,6 +363,10 @@ export default function IdentityScreen() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [communityContext, setCommunityContext] = useState<CommunityContext | null>(null);
+  const [communityLifecycle, setCommunityLifecycle] = useState<CommunityLifecycle | null>(null);
+  const [communityLifecycleReason, setCommunityLifecycleReason] = useState('');
+  const [communityLifecycleNotice, setCommunityLifecycleNotice] = useState<string | null>(null);
+  const [actingCommunityLifecycle, setActingCommunityLifecycle] = useState(false);
   const [competitionStatus, setCompetitionStatus] = useState<CompetitionStatus | null>(null);
   const [statusReleasePreview, setStatusReleasePreview] =
     useState<StatusReleasePreview | null>(null);
@@ -478,6 +485,17 @@ export default function IdentityScreen() {
         setCompetitionStatus(competitionResult.data);
       }
       const currentAccount = localTestAccounts.find((account) => account.token === localToken);
+      if (currentAccount?.role === 'Central' && loadedCommunity) {
+        const lifecycleResponse = await fetch(
+          `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/lifecycle`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (!lifecycleResponse.ok) throw new Error(await apiErrorMessage(lifecycleResponse));
+        const lifecycleResult = (await lifecycleResponse.json()) as CommunityLifecycleResponse;
+        setCommunityLifecycle(lifecycleResult.data);
+      } else {
+        setCommunityLifecycle(null);
+      }
       if (currentAccount?.role === 'Gym Admin' && loadedCommunity) {
         const dashboardResponse = await fetch(
           `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/admin-dashboard`,
@@ -730,6 +748,10 @@ export default function IdentityScreen() {
     openSection(account.startSection);
     setIdentity(null);
     setCommunityContext(null);
+    setCommunityLifecycle(null);
+    setCommunityLifecycleReason('');
+    setCommunityLifecycleNotice(null);
+    setActingCommunityLifecycle(false);
     setCompetitionStatus(null);
     setStatusReleasePreview(null);
     setCoachInvites([]);
@@ -1504,6 +1526,47 @@ export default function IdentityScreen() {
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Result');
     } finally {
       setActingResultKey(null);
+    }
+  };
+
+  const runCommunityLifecycleAction = async () => {
+    if (!communityLifecycle || actingCommunityLifecycle) return;
+    const reason = communityLifecycleReason.trim();
+    if (reason.length === 0) return;
+    const action = communityLifecycle.state === 'ACTIVE' ? 'pause' : 'reactivate';
+    setActingCommunityLifecycle(true);
+    setCommunityLifecycleNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/central/communities/${communityLifecycle.communityId}/${action}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': `community-lifecycle:${action}:${communityLifecycle.communityId}:v${communityLifecycle.version}:${Date.now().toString(36)}`,
+            'If-Match': String(communityLifecycle.version),
+          },
+          body: JSON.stringify({ reason }),
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as CommunityLifecycleCommandResponse;
+      setCommunityLifecycle(result.data);
+      setCommunityLifecycleReason('');
+      setCommunityLifecycleNotice(result.data.state === 'PAUSED'
+        ? 'Community приостановлена. Новые статусные действия недоступны; подтверждённые Session продолжаются.'
+        : `Community активна. Challenge-дедлайны продлены на ${Math.round((result.data.latestPauseDurationSeconds ?? 0) / 3600)} ч; cooldown не изменён.`);
+      void loadIdentity();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось изменить состояние Community');
+    } finally {
+      setActingCommunityLifecycle(false);
     }
   };
 
@@ -2482,6 +2545,66 @@ export default function IdentityScreen() {
                     }}
                   />
                 ) : null}
+                {activeTestAccount.role === 'Central' && communityLifecycle ? (
+                  <View style={styles.card}>
+                    <View style={styles.row}>
+                      <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                        Состояние Community
+                      </Text>
+                      <Text style={styles.sessionState}>
+                        {communityLifecycle.state === 'ACTIVE' ? 'Активна' : 'Приостановлена'}
+                      </Text>
+                    </View>
+                    <Text style={styles.hint}>
+                      {communityLifecycle.state === 'ACTIVE'
+                        ? 'Пауза временно остановит новые статусные действия и Challenge-дедлайны. Уже подтверждённые Session продолжатся, cooldown не изменится.'
+                        : `Пауза действует с ${communityLifecycle.pauseStartedAt ? formatDateTime(communityLifecycle.pauseStartedAt) : 'зафиксированного времени'}. После возобновления Challenge получат точное продление на длительность паузы.`}
+                    </Text>
+                    <Text style={styles.muted}>
+                      Контуры: {communityLifecycle.competitions.length} · версия {communityLifecycle.version}
+                    </Text>
+                    <TextInput
+                      accessibilityLabel={communityLifecycle.state === 'ACTIVE'
+                        ? 'Причина приостановки Community'
+                        : 'Причина возобновления Community'}
+                      maxLength={500}
+                      multiline
+                      onChangeText={setCommunityLifecycleReason}
+                      placeholder={communityLifecycle.state === 'ACTIVE'
+                        ? 'Укажите операционную причину или причину, связанную с безопасностью'
+                        : 'Кратко укажите, что причина паузы устранена'}
+                      style={[styles.input, styles.appealInput]}
+                      value={communityLifecycleReason}
+                    />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{
+                        disabled: actingCommunityLifecycle || communityLifecycleReason.trim().length === 0,
+                      }}
+                      disabled={actingCommunityLifecycle || communityLifecycleReason.trim().length === 0}
+                      onPress={() => void runCommunityLifecycleAction()}
+                      style={({ pressed }) => [
+                        communityLifecycle.state === 'ACTIVE' ? styles.dangerButton : styles.button,
+                        (actingCommunityLifecycle || communityLifecycleReason.trim().length === 0)
+                          && styles.buttonDisabled,
+                        pressed && !actingCommunityLifecycle && styles.buttonPressed,
+                      ]}
+                    >
+                      {actingCommunityLifecycle ? <ActivityIndicator color="#ffffff" /> : (
+                        <Text style={communityLifecycle.state === 'ACTIVE'
+                          ? styles.dangerButtonText : styles.buttonText}>
+                          {communityLifecycle.state === 'ACTIVE'
+                            ? 'Приостановить Community'
+                            : 'Возобновить Community'}
+                        </Text>
+                      )}
+                    </Pressable>
+                    {communityLifecycleNotice ? (
+                      <Text style={styles.hint}>{communityLifecycleNotice}</Text>
+                    ) : null}
+                  </View>
+                ) : null}
+
                 {activeTestAccount.role === 'Central' ? (
                   <View style={styles.card}>
                     <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>

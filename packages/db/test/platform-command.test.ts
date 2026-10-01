@@ -126,6 +126,7 @@ import {
   declineOptionalChallenge,
   finalizeResult,
   readChatChallenge,
+  readChallengeTimerSnapshot,
   remindMissingResultCoach,
   escalateMissingResultAdmin,
   openMissingResultReview,
@@ -139,6 +140,9 @@ import {
   assignMissingResultReviewerCoach,
   readMissingResultReview,
   openIntegrityCase,
+  pauseCommunity,
+  reactivateCommunity,
+  readCommunityLifecycle,
   startIntegrityReview,
   decideIntegrityCase,
   readIntegrityCase,
@@ -214,6 +218,8 @@ import {
   type PromoteSingleGenesisCandidatePayload,
   type RequestBookingOfficialConversionPayload,
   type RequestTrainingParticipantCancellationPayload,
+  type PauseCommunityPayload,
+  type ReactivateCommunityPayload,
 } from '../src/index.js';
 
 const ids = {
@@ -1813,6 +1819,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         social.blocks,
         social.matches,
         social.likes,
+        community.community_pause_intervals,
         community.role_grants,
         community.community_memberships,
         community.community_configuration_versions,
@@ -6685,5 +6692,294 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(pairedState.rows[0]).toEqual({
       phase: 'CONTENDER_GENESIS', challenge_count: '1', paired_count: '2',
     });
+  });
+
+  it('[AC-067][AC-068] pauses Community deadlines while preserving cooldowns and confirmed Sessions', async () => {
+    const athlete = testId(16000);
+    const secondAthlete = testId(16001);
+    const central = testId(16002);
+    const coach = testId(16040);
+    const venue = testId(16003);
+    const community = testId(16004);
+    const competition = testId(16005);
+    const occurredAt = '2026-09-28T10:00:00.000Z';
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${athlete}::uuid, '+79991600000', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Pause Athlete', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${secondAthlete}::uuid, '+79991600001', ${occurredAt}::timestamptz, '1994-01-01', 'ADULT', 'Cooldown Athlete', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${central}::uuid, '+79991600002', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Pause Central', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${coach}::uuid, '+79991600040', ${occurredAt}::timestamptz, '1987-01-01', 'ADULT', 'Pause Coach', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values (
+        ${testId(16006)}::uuid, ${athlete}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+        'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid,
+        'TEST_APPROVED', 1
+      )
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue,
+      venueConfigurationId: testId(16007),
+      communityId: community,
+      communityConfigurationId: testId(16008),
+      membershipId: testId(16009),
+      centralGrantId: testId(16010),
+      athleteUserId: athlete,
+      centralActorId: central,
+      legalName: 'Pause Pilot LLC',
+      venueDisplayName: 'Pause Pilot',
+      communityName: 'Pause Community',
+      address: 'Москва',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: { phone: '+79990000600' },
+      occurredAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition,
+      communityId: community,
+      centralActorId: central,
+      occurredAt,
+      memberships: [
+        { membershipId: testId(16009), userId: athlete },
+        { membershipId: testId(16011), userId: secondAthlete },
+      ],
+    });
+    const challenge = testId(16036);
+    await sql`
+      insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+      values
+        (${testId(16037)}::uuid, 'PERSONAL_MATCH', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+        (${testId(16038)}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (
+        ${testId(16039)}::uuid, ${competition}::uuid, ${testId(16008)}::uuid,
+        'MOLOKH_RECOMMENDED_V1', 'IMPLICIT_ON_ACCEPT', 'challenge-mvp-v1',
+        ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.challenges (
+        challenge_id, competition_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+        version, created_at, updated_at
+      ) values (
+        ${challenge}::uuid, ${competition}::uuid, ${testId(16037)}::uuid,
+        ${testId(16038)}::uuid, ${athlete}::uuid, ${secondAthlete}::uuid,
+        ${athlete}::uuid, ${secondAthlete}::uuid, 'OPTIONAL', 'NONE',
+        'AWAITING_RESPONSE', ${testId(16039)}::uuid,
+        '2026-09-30T12:00:00.000Z'::timestamptz, 1,
+        ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    const match = testId(16041);
+    const slot = testId(16042);
+    const booking = testId(16043);
+    const session = testId(16044);
+    await sql`
+      insert into social.matches (
+        match_id, pair_low_id, pair_high_id, state, chat_id,
+        last_activity_at, version, created_at, updated_at
+      ) values (
+        ${match}::uuid, ${athlete}::uuid, ${secondAthlete}::uuid, 'ACTIVE',
+        ${testId(16037)}::uuid, ${occurredAt}::timestamptz, 1,
+        ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into scheduling.slots (
+        slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+        price_text, cancellation_terms_text, commercial_version,
+        published_by, version, created_at, updated_at
+      ) values (
+        ${slot}::uuid, ${venue}::uuid, ${coach}::uuid,
+        '2026-10-02T10:00:00.000Z'::timestamptz,
+        '2026-10-02T11:00:00.000Z'::timestamptz,
+        'PERSONAL', 'PUBLISHED', 'Тест', 'Без штрафа', 1,
+        ${central}::uuid, 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into scheduling.bookings (
+        booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+        purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+        selection_expires_at, host_confirmation_deadline_at,
+        commercial_terms_snapshot, host_confirmed_by, host_confirmed_at,
+        version, created_at, updated_at
+      ) values (
+        ${booking}::uuid, ${testId(16037)}::uuid, ${match}::uuid, ${slot}::uuid,
+        ${athlete}::uuid, ${secondAthlete}::uuid, 'TRAINING', 'CONFIRMED_PAIR',
+        ${athlete}::uuid, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz,
+        '2026-09-29T10:00:00.000Z'::timestamptz,
+        '2026-10-02T02:00:00.000Z'::timestamptz,
+        '{"priceText":"Тест"}'::jsonb, ${coach}::uuid, ${occurredAt}::timestamptz,
+        3, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      update scheduling.slots set state = 'BOOKED', booking_id = ${booking}::uuid
+      where slot_id = ${slot}::uuid
+    `.execute(database);
+    await sql`
+      insert into scheduling.sessions (
+        session_id, booking_id, venue_id, coach_user_id, pair_low_id, pair_high_id,
+        purpose, state, scheduled_start_at, scheduled_end_at,
+        commercial_terms_snapshot, version, created_at, updated_at
+      ) values (
+        ${session}::uuid, ${booking}::uuid, ${venue}::uuid, ${coach}::uuid,
+        ${athlete}::uuid, ${secondAthlete}::uuid, 'TRAINING', 'SCHEDULED',
+        '2026-10-02T10:00:00.000Z'::timestamptz,
+        '2026-10-02T11:00:00.000Z'::timestamptz,
+        '{"priceText":"Тест"}'::jsonb, 1,
+        ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.pair_cooldowns (
+        cooldown_id, competition_id, pair_low_id, pair_high_id,
+        source_result_id, started_at, ends_at
+      ) values (
+        ${testId(16012)}::uuid, ${competition}::uuid,
+        ${athlete}::uuid, ${secondAthlete}::uuid, null,
+        '2026-09-25T10:00:00.000Z'::timestamptz,
+        '2026-10-10T10:00:00.000Z'::timestamptz
+      )
+    `.execute(database);
+
+    const pauseCommand = {
+      commandId: testId(16013),
+      commandType: 'PAUSE_COMMUNITY',
+      idempotencyKey: `pause-community-${community}`,
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'Community', aggregateId: community, expectedVersion: 1,
+      correlationId: testId(16014), causationId: null, requestId: testId(16015),
+      source: 'api', payloadVersion: 1,
+      payload: { communityId: community, reason: 'Плановые работы' },
+    } satisfies CommandEnvelope<PauseCommunityPayload>;
+    const pauseIds = {
+      eventId: testId(16016), auditId: testId(16017), outboxMessageId: testId(16018),
+      pauseId: testId(16019), competitionEventIds: [testId(16020)],
+    };
+
+    await expect(pauseCommunity(
+      database,
+      {
+        ...pauseCommand,
+        commandId: testId(16021),
+        idempotencyKey: `pause-community-denied-${community}`,
+        actor: { type: 'USER', id: athlete, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        correlationId: testId(16022), requestId: testId(16023),
+      },
+      {
+        ...pauseIds,
+        eventId: testId(16024), auditId: testId(16025),
+        outboxMessageId: testId(16026), pauseId: testId(16027),
+        competitionEventIds: [testId(16028)],
+      },
+      () => new Date('2026-09-28T11:00:00.000Z'),
+    )).rejects.toMatchObject({ code: 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED' });
+
+    const paused = await pauseCommunity(
+      database,
+      pauseCommand,
+      pauseIds,
+      () => new Date('2026-09-28T12:00:00.000Z'),
+    );
+    expect(paused.response).toMatchObject({
+      communityId: community,
+      state: 'PAUSED',
+      pauseStartedAt: '2026-09-28T12:00:00.000Z',
+      version: 2,
+      competitions: [{ competitionId: competition, availability: 'PAUSED', version: 2 }],
+    });
+    const pausedAccess = await readCommunityContext(database, athlete, community);
+    expect(pausedAccess?.access.capabilities).not.toContain('CREATE_OFFICIAL_CHALLENGE');
+    expect(pausedAccess?.access.denials).toContainEqual(expect.objectContaining({
+      capability: 'CREATE_OFFICIAL_CHALLENGE', code: 'COMMUNITY_NOT_ACTIVE',
+    }));
+    const heldTimer = await readChallengeTimerSnapshot(database, challenge);
+    expect(heldTimer).toMatchObject({ state: 'AWAITING_RESPONSE', version: 1 });
+    expect(Date.parse(heldTimer.deadlineAt ?? '')).toBeGreaterThan(Date.now());
+
+    const reactivated = await reactivateCommunity(
+      database,
+      {
+        commandId: testId(16029), commandType: 'REACTIVATE_COMMUNITY',
+        idempotencyKey: `reactivate-community-${community}`,
+        actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'Community', aggregateId: community, expectedVersion: 2,
+        correlationId: testId(16030), causationId: testId(16016), requestId: testId(16031),
+        source: 'api', payloadVersion: 1,
+        payload: { communityId: community, reason: 'Работы завершены' },
+      } satisfies CommandEnvelope<ReactivateCommunityPayload>,
+      {
+        eventId: testId(16032), auditId: testId(16033), outboxMessageId: testId(16034),
+        pauseId: testId(16019), competitionEventIds: [testId(16035)],
+      },
+      () => new Date('2026-09-28T22:00:00.000Z'),
+    );
+    expect(reactivated.response).toMatchObject({
+      state: 'ACTIVE', pauseStartedAt: null, latestPauseDurationSeconds: 36_000,
+      version: 3,
+      competitions: [{ competitionId: competition, availability: 'ACTIVE', version: 3 }],
+    });
+    expect(await readCommunityLifecycle(database, community)).toEqual(reactivated.response);
+    expect(await readChallengeTimerSnapshot(database, challenge)).toEqual({
+      state: 'AWAITING_RESPONSE',
+      version: 1,
+      deadlineAt: '2026-09-30T22:00:00.000Z',
+    });
+
+    const evidence = await sql<{
+      readonly duration_seconds: string;
+      readonly cooldown_ends_at: Date;
+      readonly response_deadline_at: Date;
+      readonly session_state: string;
+      readonly session_start_at: Date;
+      readonly session_version: string;
+      readonly community_versions: number[];
+      readonly competition_versions: number[];
+    }>`
+      select
+        (select duration_seconds::text from community.community_pause_intervals
+          where community_id = ${community}::uuid) as duration_seconds,
+        (select ends_at from competition.pair_cooldowns
+          where cooldown_id = ${testId(16012)}::uuid) as cooldown_ends_at,
+        (select response_deadline_at from competition.challenges
+          where challenge_id = ${challenge}::uuid) as response_deadline_at,
+        (select state from scheduling.sessions
+          where session_id = ${session}::uuid) as session_state,
+        (select scheduled_start_at from scheduling.sessions
+          where session_id = ${session}::uuid) as session_start_at,
+        (select version::text from scheduling.sessions
+          where session_id = ${session}::uuid) as session_version,
+        array(select aggregate_version::integer from platform.domain_events
+          where aggregate_type = 'Community' and aggregate_id = ${community}::uuid
+          order by aggregate_version) as community_versions,
+        array(select aggregate_version::integer from platform.domain_events
+          where aggregate_type = 'Competition' and aggregate_id = ${competition}::uuid
+          order by aggregate_version) as competition_versions
+    `.execute(database);
+    expect(evidence.rows[0]).toMatchObject({
+      duration_seconds: '36000',
+      session_state: 'SCHEDULED',
+      session_version: '1',
+      community_versions: [1, 2, 3],
+      competition_versions: [1, 2, 3],
+    });
+    expect(evidence.rows[0]?.cooldown_ends_at.toISOString()).toBe('2026-10-10T10:00:00.000Z');
+    expect(evidence.rows[0]?.response_deadline_at.toISOString()).toBe('2026-09-30T22:00:00.000Z');
+    expect(evidence.rows[0]?.session_start_at.toISOString()).toBe('2026-10-02T10:00:00.000Z');
   });
 });

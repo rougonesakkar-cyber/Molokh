@@ -2327,6 +2327,54 @@ export const CommunityContextResponseSchema = Type.Object(
 
 export type CommunityContextResponse = Static<typeof CommunityContextResponseSchema>;
 
+export const CommunityLifecycleProjectionSchema = Type.Object(
+  {
+    communityId: Type.String({ format: 'uuid' }),
+    state: Type.Union([Type.Literal('ACTIVE'), Type.Literal('PAUSED')]),
+    pauseStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    latestPauseDurationSeconds: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+    version: Type.Integer({ minimum: 1 }),
+    competitions: Type.Array(Type.Object(
+      {
+        competitionId: Type.String({ format: 'uuid' }),
+        availability: Type.Union([Type.Literal('ACTIVE'), Type.Literal('PAUSED')]),
+        version: Type.Integer({ minimum: 1 }),
+      },
+      { additionalProperties: false },
+    )),
+  },
+  { $id: 'CommunityLifecycleProjection', additionalProperties: false },
+);
+export type CommunityLifecycleContract = Static<typeof CommunityLifecycleProjectionSchema>;
+
+export const CommunityLifecycleResponseSchema = Type.Object(
+  {
+    data: CommunityLifecycleProjectionSchema,
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'CommunityLifecycleResponse', additionalProperties: false },
+);
+export type CommunityLifecycleResponse = Static<typeof CommunityLifecycleResponseSchema>;
+
+export const CommunityLifecycleCommandResponseSchema = Type.Object(
+  {
+    data: CommunityLifecycleProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }),
+  },
+  { $id: 'CommunityLifecycleCommandResponse', additionalProperties: false },
+);
+export type CommunityLifecycleCommandResponse = Static<typeof CommunityLifecycleCommandResponseSchema>;
+
+export const CommunityLifecycleReasonBodySchema = Type.Object(
+  { reason: Type.String({ minLength: 1, maxLength: 500 }) },
+  { $id: 'CommunityLifecycleReasonBody', additionalProperties: false },
+);
+export type CommunityLifecycleReasonBody = Static<typeof CommunityLifecycleReasonBodySchema>;
+
 const CompetitionPhaseSchema = Type.Union([
   Type.Literal('FOUNDING_OPEN'),
   Type.Literal('FOUNDING_CHALLENGE'),

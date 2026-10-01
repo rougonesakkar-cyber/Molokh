@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ChatActionDeniedError,
   ChallengeConflictError,
+  CommunityLifecycleConflictError,
   IdempotencyKeyReusedError,
   IdentityPermissionDeniedError,
   IdentityValidationError,
@@ -186,6 +187,21 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: {
         code: error.code,
         message: 'This Official Challenge action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof CommunityLifecycleConflictError) {
+    const statusCode = error.code === 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED'
+      ? 403
+      : error.code === 'COMMUNITY_LIFECYCLE_REASON_REQUIRED'
+        ? 422
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Community lifecycle action is not available',
         requestId,
       },
     };
