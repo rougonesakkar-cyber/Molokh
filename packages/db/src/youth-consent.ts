@@ -2,6 +2,7 @@ import { createHash, createHmac } from 'node:crypto';
 
 import {
   YOUTH_CONSENT_POLICY_VERSION,
+  SCHEDULING_POLICY_VERSION,
   YouthConsentConflictError,
   assertYouthConsentCanBeRequested,
   assertYouthConsentDecisionCanBeRecorded,
@@ -17,6 +18,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { openBookedOfficialTrainingRetention } from './training-retention.js';
 
 export interface RequestYouthConsentPayload {
   readonly challengeId: string;
@@ -42,6 +44,13 @@ export interface YouthConsentEffectIds {
   readonly notificationId: string;
   readonly challengeEventId?: string;
   readonly challengeOutboxMessageId?: string;
+  readonly trainingRetentionId?: string;
+  readonly trainingRetentionEventId?: string;
+  readonly trainingRetentionBookingEventId?: string;
+  readonly trainingRetentionOutboxMessageId?: string;
+  readonly trainingRetentionTimerOutboxMessageId?: string;
+  readonly trainingRetentionNotificationOutboxMessageId?: string;
+  readonly trainingRetentionNotificationIds?: readonly [string, string, string];
 }
 
 export interface YouthConsentProjection {
@@ -455,7 +464,7 @@ export async function readPublicYouthConsent(
     canGrant: active && row.state === 'PENDING' && row.challenge_state === 'AWAITING_RESPONSE',
     canDecline: active && row.state === 'PENDING' && row.challenge_state === 'AWAITING_RESPONSE',
     canRevoke: active && row.state === 'GRANTED'
-      && ['AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED'].includes(row.challenge_state),
+      && ['AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED', 'BOOKED'].includes(row.challenge_state),
   };
 }
 
@@ -496,7 +505,7 @@ export async function decideYouthConsent(
         throw new YouthConsentConflictError('YOUTH_CONSENT_INVALID_STATE');
       }
       if (command.payload.decision === 'REVOKE'
-        && !['AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED'].includes(row.challenge_state)) {
+        && !['AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED', 'BOOKED'].includes(row.challenge_state)) {
         throw new YouthConsentConflictError('YOUTH_CONSENT_INVALID_STATE');
       }
 
@@ -525,6 +534,8 @@ export async function decideYouthConsent(
       const challengeClosureReason = command.payload.decision === 'DECLINE'
         ? 'YOUTH_CONSENT_DECLINED'
         : 'YOUTH_CONSENT_REVOKED';
+      const retainsBookedSession = command.payload.decision === 'REVOKE'
+        && row.challenge_state === 'BOOKED';
 
       if (command.payload.decision === 'REVOKE') {
         await sql`
@@ -555,7 +566,7 @@ export async function decideYouthConsent(
           set state = 'CANCELLED_NO_FAULT', decided_at = ${context.occurredAt.toISOString()}::timestamptz,
             version = version + 1, updated_at = ${context.occurredAt.toISOString()}::timestamptz
           where challenge_id = ${row.challenge_id}::uuid
-            and state in ('AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED')
+            and state in ('AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED', 'BOOKED')
         `.execute(transaction);
         await sql`
           update competition.challenge_participant_obligations
@@ -564,6 +575,14 @@ export async function decideYouthConsent(
           where challenge_id = ${row.challenge_id}::uuid and released_at is null
         `.execute(transaction);
       }
+      const trainingRetention = retainsBookedSession
+        ? await openBookedOfficialTrainingRetention(transaction, {
+            challengeId: row.challenge_id,
+            cause: 'YOUTH_CONSENT_REVOKED',
+            occurredAt: context.occurredAt,
+            ids: { retentionId: requiredYouthEffectId(ids, 'trainingRetentionId') },
+          })
+        : null;
       const updated = await consentRowById(transaction, row.consent_id);
       if (!updated) throw new YouthConsentConflictError('YOUTH_CONSENT_NOT_FOUND');
       const base = projection(updated);
@@ -574,7 +593,7 @@ export async function decideYouthConsent(
         canGrant: false,
         canDecline: false,
         canRevoke: updated.state === 'GRANTED'
-          && ['AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED'].includes(updated.challenge_state),
+          && ['AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED', 'BOOKED'].includes(updated.challenge_state),
       };
       return {
         responseStatus: 200,
@@ -616,7 +635,41 @@ export async function decideYouthConsent(
                   consentId: row.consent_id,
                 },
                 metadata: { policyVersion: YOUTH_CONSENT_POLICY_VERSION },
-              }],
+              }, ...(trainingRetention ? [
+                {
+                  eventId: requiredYouthEffectId(ids, 'trainingRetentionEventId'),
+                  eventName: 'BookingTrainingRetentionRequested',
+                  schemaVersion: 1,
+                  aggregateType: 'BookingTrainingRetention',
+                  aggregateId: trainingRetention.retentionId,
+                  aggregateVersion: 1,
+                  transitionId: 'B-26',
+                  payload: {
+                    retentionId: trainingRetention.retentionId,
+                    bookingId: trainingRetention.bookingId,
+                    sessionId: trainingRetention.sessionId,
+                    sourceChallengeId: trainingRetention.challengeId,
+                    cause: 'YOUTH_CONSENT_REVOKED',
+                    deadlineAt: trainingRetention.deadlineAt,
+                  },
+                  metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+                },
+                {
+                  eventId: requiredYouthEffectId(ids, 'trainingRetentionBookingEventId'),
+                  eventName: 'BookingOfficialReleasePending',
+                  schemaVersion: 1,
+                  aggregateType: 'Booking',
+                  aggregateId: trainingRetention.bookingId,
+                  aggregateVersion: trainingRetention.bookingVersion,
+                  transitionId: 'B-26',
+                  payload: {
+                    bookingId: trainingRetention.bookingId,
+                    retentionId: trainingRetention.retentionId,
+                    sourceChallengeId: trainingRetention.challengeId,
+                  },
+                  metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+                },
+              ] : [])],
             }
           : {}),
         audit: {
@@ -668,10 +721,75 @@ export async function decideYouthConsent(
                 },
               }]
             : []),
+          ...(trainingRetention
+            ? [
+                {
+                  messageId: requiredYouthEffectId(ids, 'trainingRetentionOutboxMessageId'),
+                  topic: 'scheduling.booking.training-retention-requested.v1',
+                  sourceEventId: requiredYouthEffectId(ids, 'trainingRetentionEventId'),
+                  payload: {
+                    retentionId: trainingRetention.retentionId,
+                    bookingId: trainingRetention.bookingId,
+                    sessionId: trainingRetention.sessionId,
+                    sourceChallengeId: trainingRetention.challengeId,
+                    cause: 'YOUTH_CONSENT_REVOKED',
+                    deadlineAt: trainingRetention.deadlineAt,
+                  },
+                },
+                {
+                  messageId: requiredYouthEffectId(ids, 'trainingRetentionTimerOutboxMessageId'),
+                  topic: 'scheduling.booking.training-retention-timer.v1',
+                  sourceEventId: requiredYouthEffectId(ids, 'trainingRetentionEventId'),
+                  payload: {
+                    retentionId: trainingRetention.retentionId,
+                    timer: {
+                      commandType: 'EXPIRE_BOOKING_TRAINING_RETENTION',
+                      aggregateType: 'BookingTrainingRetention',
+                      aggregateId: trainingRetention.retentionId,
+                      expectedState: 'PENDING',
+                      expectedVersion: 1,
+                      deadlineAt: trainingRetention.deadlineAt,
+                      policyVersion: SCHEDULING_POLICY_VERSION,
+                      idempotencyKey: `booking-training-retention:${trainingRetention.retentionId}:expire:v1`,
+                    },
+                  },
+                },
+                {
+                  messageId: requiredYouthEffectId(ids, 'trainingRetentionNotificationOutboxMessageId'),
+                  topic: 'notification.in_app.v1',
+                  sourceEventId: requiredYouthEffectId(ids, 'trainingRetentionEventId'),
+                  payload: {
+                    notifications: [...trainingRetention.athleteUserIds, trainingRetention.coachUserId]
+                      .map((recipientUserId, index) => ({
+                        notificationId: requiredYouthNotificationId(ids, index),
+                        recipientUserId,
+                        category: 'MANDATORY',
+                        renderKey: 'booking.training-retention-required',
+                        actionTarget: { type: 'SESSION', sessionId: trainingRetention.sessionId },
+                        payload: { retentionId: trainingRetention.retentionId,
+                          cause: 'YOUTH_CONSENT_REVOKED' },
+                        deadlineAt: trainingRetention.deadlineAt,
+                      })),
+                  },
+                },
+              ]
+            : []),
         ],
       };
     },
   });
+}
+
+function requiredYouthEffectId(ids: YouthConsentEffectIds, key: keyof YouthConsentEffectIds): string {
+  const value = ids[key];
+  if (typeof value !== 'string') throw new TypeError(`Youth consent effect ID ${key} is required`);
+  return value;
+}
+
+function requiredYouthNotificationId(ids: YouthConsentEffectIds, index: number): string {
+  const value = ids.trainingRetentionNotificationIds?.[index];
+  if (!value) throw new TypeError(`Youth consent retention notification ID ${index} is required`);
+  return value;
 }
 
 export function youthConsentTokenHash(token: string): string {

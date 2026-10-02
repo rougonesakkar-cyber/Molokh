@@ -22,6 +22,7 @@ export * from './migrations.js';
 export * from './appeal.js';
 export * from './booking-conversion.js';
 export * from './solo-continuation.js';
+export * from './training-retention.js';
 export * from './chat.js';
 export * from './challenge.js';
 export * from './community.js';

@@ -27,6 +27,7 @@ import {
   approveAccountVerification,
   decideBookingOfficialConversion,
   decideBookingSoloContinuation,
+  decideBookingTrainingRetention,
   invalidateActiveBookingOfficialConversion,
   changeDisplayName,
   changeSports,
@@ -57,6 +58,7 @@ import {
   readCommunityContext,
   readBookingOfficialConversionForSession,
   readBookingSoloContinuationForSession,
+  readBookingTrainingRetentionForSession,
   readBookingOfficialConversionActivationCandidate,
   readInvalidActiveBookingOfficialConversionCandidate,
   readCompetitionStatus,
@@ -192,6 +194,7 @@ import {
   type ConfirmBookingHostPayload,
   type DecideBookingOfficialConversionPayload,
   type DecideBookingSoloContinuationPayload,
+  type DecideBookingTrainingRetentionPayload,
   type ExpireBookingOfficialConversionPayload,
   type ExpireBookingSoloContinuationPayload,
   type InvalidateActiveBookingOfficialConversionPayload,
@@ -1802,6 +1805,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         community.voluntary_membership_exits,
         competition.process_holds,
         community.membership_removal_cases,
+        scheduling.booking_training_retention_confirmations,
+        scheduling.booking_training_retentions,
         scheduling.booking_solo_confirmations,
         scheduling.booking_solo_continuations,
         scheduling.booking_conversion_confirmations,
@@ -7946,7 +7951,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('AC-055 AC-169 persists two independent token-scoped Youth consents without guardian accounts or documents', async () => {
+  it('AC-055 AC-149 AC-169 AC-170 retains a booked Youth challenge only as consensual Training', async () => {
     const athleteA = testId(19000);
     const athleteB = testId(19001);
     const venue = testId(19002);
@@ -7960,6 +7965,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const challenge = testId(19010);
     const consentA = testId(19011);
     const consentB = testId(19012);
+    const coach = testId(19013);
+    const match = testId(19014);
+    const slot = testId(19015);
+    const booking = testId(19016);
+    const session = testId(19017);
     const now = new Date('2026-10-02T10:00:00.000Z');
 
     await database.transaction().execute(async (transaction) => {
@@ -7974,6 +7984,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
             ${now.toISOString()}::timestamptz),
           (${athleteB}::uuid, '+79991900001', ${now.toISOString()}::timestamptz,
             '2010-02-10'::date, 'YOUTH', 'Youth B', 'ACTIVE', 'ru-RU', 1,
+            ${now.toISOString()}::timestamptz),
+          (${coach}::uuid, '+79991900002', ${now.toISOString()}::timestamptz,
+            '1990-02-10'::date, 'ADULT', 'Youth Coach', 'ACTIVE', 'ru-RU', 1,
             ${now.toISOString()}::timestamptz)
       `.execute(transaction);
       await sql`
@@ -8069,6 +8082,15 @@ describePostgres('PostgreSQL critical command transaction', () => {
       notificationId: testId(base + 4),
       challengeEventId: testId(base + 5),
       challengeOutboxMessageId: testId(base + 6),
+      trainingRetentionId: testId(base + 7),
+      trainingRetentionEventId: testId(base + 8),
+      trainingRetentionBookingEventId: testId(base + 9),
+      trainingRetentionOutboxMessageId: testId(base + 10),
+      trainingRetentionTimerOutboxMessageId: testId(base + 11),
+      trainingRetentionNotificationOutboxMessageId: testId(base + 12),
+      trainingRetentionNotificationIds: [
+        testId(base + 13), testId(base + 14), testId(base + 15),
+      ],
     });
     const requestCommand = (
       actorId: string,
@@ -8186,14 +8208,73 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const identities = await sql<{ readonly count: string }>`
       select count(*)::text as count from identity.users
     `.execute(database);
-    expect(identities.rows[0]?.count).toBe('2');
+    expect(identities.rows[0]?.count).toBe('3');
 
     await sql`
       update competition.challenges
-      set state = 'ACCEPTED_UNSCHEDULED', accepted_at = '2026-10-02T10:12:00.000Z',
+      set state = 'BOOKED', accepted_at = '2026-10-02T10:12:00.000Z',
         scheduling_deadline_at = '2026-10-16T10:12:00.000Z', version = 2,
         updated_at = '2026-10-02T10:12:00.000Z'
       where challenge_id = ${challenge}::uuid
+    `.execute(database);
+    await sql`
+      insert into social.matches (
+        match_id, pair_low_id, pair_high_id, state, chat_id,
+        last_activity_at, version, created_at, updated_at
+      ) values (
+        ${match}::uuid, ${athleteA}::uuid, ${athleteB}::uuid, 'ACTIVE', ${sourceChat}::uuid,
+        ${now.toISOString()}::timestamptz, 1,
+        ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into scheduling.slots (
+        slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+        price_text, cancellation_terms_text, commercial_version,
+        published_by, version, created_at, updated_at
+      ) values (
+        ${slot}::uuid, ${venue}::uuid, ${coach}::uuid,
+        '2026-10-02T12:00:00.000Z'::timestamptz,
+        '2026-10-02T13:00:00.000Z'::timestamptz,
+        'PERSONAL', 'BOOKED', 'Test', 'No penalty', 1,
+        ${coach}::uuid, 2, ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into scheduling.bookings (
+        booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+        purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+        selection_expires_at, host_confirmation_deadline_at,
+        commercial_terms_snapshot, host_confirmed_by, host_confirmed_at,
+        version, created_at, updated_at, challenge_id
+      ) values (
+        ${booking}::uuid, ${sourceChat}::uuid, ${match}::uuid, ${slot}::uuid,
+        ${athleteA}::uuid, ${athleteB}::uuid, 'OFFICIAL_CHALLENGE', 'CONFIRMED_PAIR',
+        ${athleteA}::uuid, ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz,
+        '2026-10-02T11:00:00.000Z'::timestamptz,
+        '2026-10-02T11:30:00.000Z'::timestamptz,
+        '{"priceText":"Test"}'::jsonb, ${coach}::uuid, ${now.toISOString()}::timestamptz,
+        3, ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz,
+        ${challenge}::uuid
+      )
+    `.execute(database);
+    await sql`
+      update scheduling.slots set booking_id = ${booking}::uuid where slot_id = ${slot}::uuid
+    `.execute(database);
+    await sql`
+      insert into scheduling.sessions (
+        session_id, booking_id, venue_id, coach_user_id, pair_low_id, pair_high_id,
+        purpose, state, scheduled_start_at, scheduled_end_at,
+        commercial_terms_snapshot, version, created_at, updated_at, challenge_id
+      ) values (
+        ${session}::uuid, ${booking}::uuid, ${venue}::uuid, ${coach}::uuid,
+        ${athleteA}::uuid, ${athleteB}::uuid, 'OFFICIAL_CHALLENGE', 'SCHEDULED',
+        '2026-10-02T12:00:00.000Z'::timestamptz,
+        '2026-10-02T13:00:00.000Z'::timestamptz,
+        '{"priceText":"Test"}'::jsonb, 1,
+        ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz,
+        ${challenge}::uuid
+      )
     `.execute(database);
     await sql`
       insert into competition.challenge_participant_obligations (
@@ -8244,6 +8325,102 @@ describePostgres('PostgreSQL critical command transaction', () => {
     `.execute(database);
     expect(closure.rows[0]).toEqual({
       state: 'CANCELLED_NO_FAULT', active_obligations: '0', challenge_events: '1',
+    });
+    const retentionId = testId(19517);
+    expect(await readBookingTrainingRetentionForSession(database, session, athleteA)).toMatchObject({
+      retentionId,
+      bookingId: booking,
+      sessionId: session,
+      challengeId: challenge,
+      cause: 'YOUTH_CONSENT_REVOKED',
+      state: 'PENDING',
+      deadlineAt: '2026-10-02T11:15:00.000Z',
+      confirmations: [],
+      viewerRequiredRole: 'ATHLETE_LOW',
+      viewerCanConfirm: true,
+      version: 1,
+    });
+    const pendingResources = await sql<{
+      readonly booking_state: string;
+      readonly booking_purpose: string;
+      readonly session_state: string;
+      readonly session_purpose: string;
+      readonly slot_state: string;
+    }>`
+      select booking.state as booking_state, booking.purpose as booking_purpose,
+        session.state as session_state, session.purpose as session_purpose,
+        slot.state as slot_state
+      from scheduling.bookings booking
+      join scheduling.sessions session on session.booking_id = booking.booking_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where booking.booking_id = ${booking}::uuid
+    `.execute(database);
+    expect(pendingResources.rows[0]).toEqual({
+      booking_state: 'OFFICIAL_RELEASE_PENDING', booking_purpose: 'OFFICIAL_CHALLENGE',
+      session_state: 'SCHEDULED', session_purpose: 'OFFICIAL_CHALLENGE', slot_state: 'BOOKED',
+    });
+
+    const decideRetention = async (input: {
+      readonly actorId: string;
+      readonly expectedVersion: number;
+      readonly base: number;
+    }) => decideBookingTrainingRetention(
+      database,
+      {
+        commandId: testId(input.base),
+        commandType: 'DECIDE_BOOKING_TRAINING_RETENTION',
+        idempotencyKey: `training-retention-${input.base}`,
+        actor: { type: 'USER', id: input.actorId, roles: [], scopeIds: [] },
+        aggregateType: 'BookingTrainingRetention', aggregateId: retentionId,
+        expectedVersion: input.expectedVersion,
+        correlationId: testId(input.base + 1), causationId: testId(19518),
+        requestId: testId(input.base + 2), source: 'api', payloadVersion: 1,
+        payload: { retentionId, decision: 'ACCEPT' },
+      } satisfies CommandEnvelope<DecideBookingTrainingRetentionPayload>,
+      {
+        eventId: testId(input.base + 3), auditId: testId(input.base + 4),
+        outboxMessageId: testId(input.base + 5), confirmationId: testId(input.base + 6),
+        bookingEventId: testId(input.base + 7), sessionEventId: testId(input.base + 8),
+        slotEventId: testId(input.base + 9), notificationOutboxMessageId: testId(input.base + 10),
+        notificationIds: [testId(input.base + 11), testId(input.base + 12), testId(input.base + 13)],
+      },
+      () => new Date(`2026-10-02T10:${20 + (input.expectedVersion * 5)}:00.000Z`),
+    );
+
+    expect((await decideRetention({ actorId: athleteA, expectedVersion: 1, base: 19600 })).response)
+      .toMatchObject({ state: 'PENDING', version: 2, viewerHasDecided: true });
+    expect((await decideRetention({ actorId: athleteB, expectedVersion: 2, base: 19620 })).response)
+      .toMatchObject({ state: 'PENDING', version: 3, viewerHasDecided: true });
+    const retained = await decideRetention({ actorId: coach, expectedVersion: 3, base: 19640 });
+    expect(retained.response).toMatchObject({
+      state: 'CONFIRMED', version: 4, viewerRequiredRole: 'COACH_OR_HOST',
+    });
+    const retainedResources = await sql<{
+      readonly booking_state: string;
+      readonly booking_purpose: string;
+      readonly booking_challenge_id: string | null;
+      readonly session_state: string;
+      readonly session_purpose: string;
+      readonly session_challenge_id: string | null;
+      readonly slot_state: string;
+      readonly competition_effects: string;
+    }>`
+      select booking.state as booking_state, booking.purpose as booking_purpose,
+        booking.challenge_id::text as booking_challenge_id,
+        session.state as session_state, session.purpose as session_purpose,
+        session.challenge_id::text as session_challenge_id, slot.state as slot_state,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type in ('Competition', 'CompetitionStatus', 'Result')
+            and occurred_at >= '2026-10-02T10:15:00.000Z'::timestamptz) as competition_effects
+      from scheduling.bookings booking
+      join scheduling.sessions session on session.booking_id = booking.booking_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where booking.booking_id = ${booking}::uuid
+    `.execute(database);
+    expect(retainedResources.rows[0]).toEqual({
+      booking_state: 'CONFIRMED_PAIR', booking_purpose: 'TRAINING',
+      booking_challenge_id: null, session_state: 'SCHEDULED', session_purpose: 'TRAINING',
+      session_challenge_id: null, slot_state: 'BOOKED', competition_effects: '0',
     });
   });
 });

@@ -38,6 +38,10 @@ import {
   readBookingSoloContinuationForSession,
   type BookingSoloContinuationProjection,
 } from './solo-continuation.js';
+import {
+  readBookingTrainingRetentionForSession,
+  type BookingTrainingRetentionProjection,
+} from './training-retention.js';
 
 export interface OpenSessionWindowPayload {
   readonly sessionId: string;
@@ -151,6 +155,7 @@ export interface SessionLifecycleProjection {
   readonly viewerCanCancelTraining: boolean;
   readonly officialConversion: BookingOfficialConversionProjection | null;
   readonly soloContinuation: BookingSoloContinuationProjection | null;
+  readonly trainingRetention: BookingTrainingRetentionProjection | null;
   readonly replacementCoachOptions: readonly ReplacementCoachProjection[];
   readonly version: number;
 }
@@ -611,6 +616,11 @@ async function sessionProjection(
     row.session_id,
     viewerUserId,
   );
+  const trainingRetention = await readBookingTrainingRetentionForSession(
+    database,
+    row.session_id,
+    viewerUserId,
+  );
   const viewerIsAthlete = [row.pair_low_id, row.pair_high_id].includes(viewerUserId);
   const activeAthleteUserIds = activeSessionAthleteIds(row);
   const activeAthleteDisplayNames = activeAthleteUserIds.map((athleteUserId) => (
@@ -671,6 +681,7 @@ async function sessionProjection(
       && soloContinuation === null,
     officialConversion,
     soloContinuation,
+    trainingRetention,
     replacementCoachOptions: viewerCanAdminister
       ? await replacementCoachOptions(database, row)
       : [],
