@@ -95,7 +95,7 @@ Rules protecting the 12-week target:
 
 ## 7. Current evidence
 
-- Core Engine v1.0: 300 transitions, 278 registered events, 213 acceptance scenarios and zero open blocking questions.
+- Core Engine v1.0: 302 transitions, 288 registered events, 213 acceptance scenarios and zero open blocking questions.
 - Workspace: TypeScript checks and Web production build pass across all packages.
 - Tests: 164 non-database tests and 27 real PostgreSQL scenarios pass, including social concurrency, Chat revision/report invariants, the single-winner Booking confirmation race, atomic Challenge→Booking→Session lineage, status FIFO, Training conversion and Training cancellation/solo continuation.
 - Database: PostgreSQL 18 is healthy and checksum-verified migrations `0001`–`0040` pass. The recovered Docker runtime reused the existing database volume; no project file or database data was reset.
@@ -122,13 +122,12 @@ Rules protecting the 12-week target:
 - Missing Result increment: 2h/12h/24h stale-safe timers, private Athlete statements, Venue confirmation, Central coordination and constrained independent-Coach Result now pass Core/API/client/Worker/PostgreSQL gates.
 - Final Result IntegrityCase increment: evidence-scoped independent Central review, neutral public marker, Competition hold, immutable decision and deterministic status replay pass Core/API/client/PostgreSQL gates.
 - Status Queue foundation, GENESIS response, direct activation, holder reconfirmation, voluntary status release and vacancy succession: explicit intent, immutable server-time FIFO, atomic first-two pairing, three-day single-candidate promotion, strict direct-head activation, 72-hour mandatory response, appealable refusal/timeout Forfeit, 24-hour holder-change reconfirmation and two-step no-loss status release pass code and PostgreSQL gates. Confirmed-Training conversion now passes strict prebooked FIFO activation, three-party confirmation and no-fault fallback. Training withdrawal additionally opens a one-hour remaining-Athlete/Coach solo decision and never creates a loss, Forfeit or Cooldown.
-- M7 Community lifecycle now includes pause/reactivation, governed permanent closure, both voluntary Membership-exit contours and governed Admin removal. The privacy-minimized Youth consent foundation is implemented behind a disabled policy flag and enforces two independent grants. Acceptance traceability is 99/213 (`93/195 P0`).
+- M7 Community lifecycle now includes pause/reactivation, governed permanent closure, both voluntary Membership-exit contours, governed Admin removal and the deterministic 18th-birthday transition. The privacy-minimized Youth consent foundation remains behind a disabled policy flag and enforces two independent grants. Booked pre-start Youth Official work reuses B-26; started Sessions preserve their frozen Youth snapshot. Acceptance traceability is 104/213 (`98/195 P0`).
 - Source control: the foundation is preserved in local Git history; remote protection remains external.
 
 ## 8. Immediate next actions
 
-1. Complete M7 booked-Session retention after Youth consent revocation and the 18th-birthday transition.
-2. Implement exact-overlap PlatformIncident compensation.
-3. Implement account closure/export/retention jobs.
-4. Perform the remaining role-switch Web walkthrough for Appeal, Missing Result and IntegrityCase paths.
-5. Continue to keep payment, group capacity and automatic alternatives outside Molokh MVP.
+1. Implement exact-overlap PlatformIncident compensation.
+2. Implement account closure/export/retention jobs.
+3. Perform the remaining role-switch Web walkthrough for Appeal, Missing Result and IntegrityCase paths.
+4. Continue to keep payment, group capacity and automatic alternatives outside Molokh MVP.

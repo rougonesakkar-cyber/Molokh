@@ -32,13 +32,15 @@ Schemas are organizational boundaries inside one database, not permission to cre
 - `duplicate_account_aliases`
 - `trusted_sessions`
 - `display_name_audit`
+- `age_division_transitions`
 
 Critical constraints:
 
 - partial unique verified normalized phone;
 - age 14+ activation check at command layer plus database-consistent birth date;
 - duplicate alias cannot self-reference;
-- one unresolved access/duplicate case per configured subject scope.
+- one unresolved access/duplicate case per configured subject scope;
+- one immutable `YOUTH→ADULT` transition per User; its timer aggregate advances only `0→1`.
 
 ### social
 
@@ -145,6 +147,13 @@ Challenge closes before start. It preserves the original Challenge ID outside th
 Booking/Session, requires three immutable role decisions, and bounds `PENDING` by the earlier of
 one hour or scheduled start. Confirmation converts purpose to `TRAINING`; decline/expiry cancels
 the physical resources without Competition effects.
+
+`0048_age_division_transition.sql` stores one append-only transition per User and backfills one
+UTC 18th-birthday timer for every existing Youth Identity with event lineage. The command moves
+Identity and current Membership to Adult, closes not-started Youth Official work no-fault,
+expires consent and affected FIFO, releases Youth status without a Result/loss/Cooldown and opens
+B-26 for an eligible confirmed future Booking. Started Sessions, competitive snapshots,
+Challenges and obligations are intentionally excluded from those pre-start mutations.
 
 `0023_competition_challenge_foundation.sql` creates the first Competition contour and direct
 optional Challenge persistence: immutable ruleset snapshots and acknowledgments, one live

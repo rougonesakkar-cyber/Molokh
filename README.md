@@ -5,13 +5,13 @@ Molokh — mobile-first продукт для поиска партнёров п
 ## Current state
 
 - Core Engine: **v1.0, product decisions closed**;
-- state transitions: **300**;
-- registered events: **283**;
+- state transitions: **302**;
+- registered events: **288**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **101/213** (`95/195 P0`);
+- executable acceptance traceability: **104/213** (`98/195 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal and the disabled-by-default Youth consent foundation;
-- database gate: PostgreSQL migrations `0001`–`0047` and **32/32** integration scenarios pass locally;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation and the deterministic age-18 transition;
+- database gate: PostgreSQL migrations `0001`–`0048` and **35/35** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   sole unresolved upstream `node-forge` advisory is covered by a narrow regression-tested local
   backport that expires on 2026-10-16 and rejects every other high/critical advisory;
@@ -336,9 +336,16 @@ Training only after both Athletes and the assigned Coach or Venue host explicitl
 or timeout cancels the Booking/Session no-fault. The retained lineage stays auditable while no
 Result, status, loss or Cooldown is created.
 
+The 18th-birthday boundary is now a single idempotent `AgeDivisionTransition` (`0→1`) scheduled
+at UTC server-date midnight. Migration `0048_age_division_transition.sql` records immutable
+lineage, moves the User and current Membership to Adult Ordinary, expires Youth consent and FIFO,
+vacates Youth status without a loss and closes every not-started Youth Official no-fault. A
+confirmed future Booking reuses B-26 instead of discarding the physical training. An already
+started Youth Session, its competitive snapshot, Challenge and obligations remain untouched and
+finish under the frozen Youth rules.
+
 ## Next executable action
 
-Complete the age-18 transition, reusing the booked-Session Training-retention path. Then continue
-with platform-incident compensation and account
+Continue with exact-overlap platform-incident compensation and account
 closure/export/retention.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

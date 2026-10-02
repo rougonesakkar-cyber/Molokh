@@ -297,8 +297,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Official context no-fault; a booked physical Session is held for three explicit Athlete/Athlete/
   Coach-host decisions and either becomes Training or cancels without Competition effects under
   migration `0047`. AC-055/AC-149/AC-169/AC-170 are mapped.
-  Acceptance traceability is 101/213 (`95/195 P0`).
-- Next increment: implement the age-18 transition and reuse B-26 retention for its booked case.
+  The server-date 18th-birthday timer now commits exactly one immutable `AgeDivisionChanged`,
+  moves Membership to Adult Ordinary, expires Youth consent/FIFO, releases Youth status without
+  a loss and closes not-started Youth Official work no-fault. A confirmed future Booking reuses
+  B-26; a started Session keeps the field-identical competitive snapshot, Challenge state and
+  obligations. Migration `0048` and PostgreSQL scenarios AC-002/AC-184/AC-185 pass.
+  Acceptance traceability is 104/213 (`98/195 P0`).
+- Next increment: implement exact-overlap PlatformIncident compensation.
 
 ## 5. Work that needs product/external input later
 

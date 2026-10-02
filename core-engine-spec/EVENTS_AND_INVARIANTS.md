@@ -115,6 +115,23 @@ PII, тексты Report и media не копируются в широкий ev
 
 Содержит appeal/result/decision IDs, reviewer, `UPHOLD|REVERSE|ANNUL|REPEAT`, reason, original/effective outcome, evidence references, `decided_at`, and intended compensation mode. Projection mutation совершается той же транзакцией или идемпотентной saga с decision ID.
 
+### 2.8. `AgeDivisionChanged.v1`
+
+Owner — Identity; producer — единственный SYSTEM timer агрегата `AgeDivisionTransition` с
+версией `0→1`. Payload содержит transition/User IDs, `YOUTH→ADULT`, server
+`transitioned_at`, итоговую Identity version, ID закрытых Challenge/B-26 retention/queue/consent
+и минимальные before/after status projections. Дата рождения, guardian contact и иные raw PII в
+event/outbox не копируются; PII class — `INTERNAL_IDENTIFIER`, retention — бессрочная
+аудит-линия Identity. Consumers: Membership, Competition vacancy/FIFO, Scheduling retention,
+Discovery и notification projection.
+
+Транзакция выпускает ровно один канонический `AgeDivisionChanged`. Технические связанные
+события `UserAgeDivisionChanged` и `MembershipAgeDivisionChanged` двигают версии своих
+агрегатов; `ChallengeCancelledNoFault`, `BookingTrainingRetentionRequested` и status events
+сохраняют независимую replay lineage. Started Session и её
+`session_competitive_snapshot` не изменяются: consent истекает, но физически начатая Session,
+Challenge и obligations завершаются по frozen Youth snapshot.
+
 ## 3. Каталог событий
 
 ### 3.1. Identity и Social
@@ -122,7 +139,7 @@ PII, тексты Report и media не копируются в широкий ev
 | Events | Producer | Primary consumers |
 |---|---|---|
 | `VerificationStarted/AccountVerified/VerificationRejected/Expired/Revoked` | Identity | permissions, UI, Governance |
-| `AgeDivisionChanged` | Identity timer | Membership, Competition succession, Discovery |
+| `AgeDivisionChanged/UserAgeDivisionChanged/MembershipAgeDivisionChanged` | Identity timer | Membership, Competition succession, Scheduling retention, Discovery |
 | `DisplayNameChanged/AvatarChanged` | Identity | profile, audit, moderation; never verification reset |
 | `AccountRecoveryRequested/Approved/Completed/Rejected`, `AccountAccessIncidentConfirmed` | Identity | permissions, obligations, deadline review |
 | `DuplicateAccountReviewStarted/Cleared/Resolved` | Identity governance | holds, account projection, status disposition |
@@ -175,7 +192,7 @@ PII, тексты Report и media не копируются в широкий ev
 | `ChallengeRescheduled/RescheduledByAthlete/SchedulingExtended/CancelledNoCapacity` | Challenge | Booking, deadlines |
 | `FoundingGenesisPaired/GenesisWithoutOpponent/ContenderGenesisPaired/SuccessionWithoutOpponent/GenesisPairingReleased` | Competition | Challenge, Status, FIFO |
 | `GenesisStatusApplied/ContenderAssigned/Transferred/Defended/TitleTransferred/Defended` | Status Engine | tenure, profile, queue |
-| `ChampionSuccessionApplied/ContenderVacated/AgeTransitionApplied` | Status Engine | Competition phase, queue |
+| `ChampionSuccessionApplied/ChampionVacated/ContenderVacated` | Status Engine | Competition phase, queue |
 | `StatusTransitionApplied/Finalized/Compensated/RolledBack` | Status Engine | all status projections |
 | `PairCooldownStarted/Expired/Removed` | Status Engine | eligibility |
 | `ProcessHeld/ProcessHoldReleased` | Governance/Competition | deadlines, permissions |
@@ -607,6 +624,7 @@ BookingCompleted
 BookingConfirmationExpired
 BookingConfirmed
 BookingConflictDetected
+BookingOfficialReleasePending
 BookingConvertedToTraining
 BookingConvertedToSolo
 BookingRejected
@@ -694,6 +712,7 @@ MatchReactivated
 MembershipActivated
 MembershipApproved
 MembershipArchivedByCommunityClosure
+MembershipAgeDivisionChanged
 MembershipLeft
 MembershipRejected
 MembershipRemovalConfirmed
@@ -864,6 +883,7 @@ TechnicalCorrectionReviewStarted
 TechnicalCorrectionWithdrawn
 UserAccountActivated
 UserAccountClosed
+UserAgeDivisionChanged
 VoluntaryResignationConfirmed
 VoluntaryStatusReleased
 VenueClosed
