@@ -4,12 +4,16 @@ import {
   assertPlatformIncidentCanBeCompensated,
   assertPlatformIncidentCanBeConfirmed,
   assertPlatformIncidentCanBeRejected,
+  calculateExactIncidentOverlap,
   normalizePlatformIncidentDetection,
   normalizePlatformIncidentResolution,
+  timerPolicyForCommand,
   type CommandEnvelope,
   type PlatformIncidentSeverity,
   type PlatformIncidentState,
   type PlatformService,
+  type PausableDeadlineKind,
+  type TimerCommandPayload,
 } from '@molokh/core';
 import { type Kysely, type Transaction, sql } from 'kysely';
 
@@ -43,6 +47,40 @@ export interface PlatformIncidentEffectIds {
   readonly eventId: string;
   readonly auditId: string;
   readonly outboxMessageId: string;
+}
+
+export interface ApplyIncidentDeadlineImpactPayload {
+  readonly incidentId: string;
+  readonly challengeId: string;
+  readonly deadlineKind: 'CHALLENGE_RESPONSE';
+  readonly surface: string;
+}
+
+export interface IncidentDeadlineImpactEffectIds extends PlatformIncidentEffectIds {
+  readonly impactId: string;
+}
+
+export interface IncidentDeadlineImpactProjection {
+  readonly impactId: string;
+  readonly incidentId: string;
+  readonly aggregateType: 'Challenge';
+  readonly aggregateId: string;
+  readonly deadlineKind: 'CHALLENGE_RESPONSE';
+  readonly oldDeadlineAt: string;
+  readonly newDeadlineAt: string;
+  readonly overlapMilliseconds: number;
+  readonly version: number;
+}
+
+export interface PlatformIncidentTimerSuppression {
+  readonly incidentId: string;
+  readonly retryAt: string;
+}
+
+export interface ChallengeResponseIncidentImpactCandidate {
+  readonly challengeId: string;
+  readonly version: number;
+  readonly surface: string;
 }
 
 export interface PlatformIncidentProjection {
@@ -235,6 +273,16 @@ async function overlappingConfirmedWindow(
   return result.rows[0]?.duplicate === true;
 }
 
+async function lockIncidentServices(
+  transaction: Transaction<Database>, services: readonly string[],
+): Promise<void> {
+  for (const service of [...new Set(services)].sort()) {
+    await sql`select pg_advisory_xact_lock(
+      hashtextextended(${`platform-incident-service:${service}`}, 0)
+    )`.execute(transaction);
+  }
+}
+
 export async function confirmPlatformIncident(
   database: Kysely<Database>, command: CommandEnvelope<ConfirmPlatformIncidentPayload>,
   ids: PlatformIncidentEffectIds, now?: () => Date,
@@ -245,6 +293,7 @@ export async function confirmPlatformIncident(
       await assertCentral(transaction, command.actor.id);
       const row = (await incidentRows(transaction, command.aggregateId, true))[0];
       if (!row) throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      await lockIncidentServices(transaction, row.affected_services);
       const reason = assertPlatformIncidentCanBeConfirmed({ state: row.state, actor: command.actor,
         reason: command.payload.reason,
         hasOverlappingConfirmedWindow: await overlappingConfirmedWindow(transaction, row) });
@@ -298,6 +347,7 @@ export async function resolvePlatformIncident(
       if (command.actor.type !== 'SYSTEM') await assertCentral(transaction, command.actor.id);
       const row = (await incidentRows(transaction, command.aggregateId, true))[0];
       if (!row) throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      await lockIncidentServices(transaction, row.affected_services);
       const normalized = normalizePlatformIncidentResolution({ state: row.state,
         actor: command.actor, startedAt: row.started_at,
         endedAt: new Date(command.payload.endedAt), reason: command.payload.reason });
@@ -363,4 +413,216 @@ function transitionEffect(
       payload: { incidentId: response.incidentId, state: response.state,
         startedAt: response.startedAt, endedAt: response.endedAt } }],
   } as const;
+}
+
+async function activeTimerIncident(
+  database: Kysely<Database> | Transaction<Database>, input: {
+    readonly commandType: string;
+    readonly aggregateId: string;
+    readonly surface?: string;
+    readonly now: Date;
+  },
+): Promise<{ readonly incident_id: string } | null> {
+  const policy = timerPolicyForCommand(input.commandType);
+  if (!policy || policy.deadlineKind !== 'CHALLENGE_RESPONSE') return null;
+  const surface = input.surface ?? policy.deadlineKind;
+  const result = await sql<{ readonly incident_id: string }>`
+    select incident.incident_id
+    from platform.platform_incidents as incident
+    join competition.challenges as challenge
+      on challenge.challenge_id = ${input.aggregateId}::uuid
+    where (
+        incident.state = 'CONFIRMED_ACTIVE'
+        or (
+          incident.state = 'RESOLVED'
+          and not exists (
+            select 1 from platform.incident_impacts as impact
+            where impact.incident_id = incident.incident_id
+              and impact.aggregate_type = 'Challenge'
+              and impact.aggregate_id = challenge.challenge_id
+              and impact.deadline_kind = ${policy.deadlineKind}
+          )
+        )
+      )
+      and ${policy.service} = any(incident.affected_services)
+      and ${surface} = any(incident.affected_surfaces)
+      and challenge.created_at < coalesce(incident.ended_at, 'infinity'::timestamptz)
+      and incident.started_at < challenge.response_deadline_at
+      and ${input.now.toISOString()}::timestamptz >= incident.started_at
+    order by incident.started_at, incident.incident_id
+    limit 1
+  `.execute(database);
+  return result.rows[0] ?? null;
+}
+
+export async function readPlatformIncidentTimerSuppression(
+  database: Kysely<Database>, payload: TimerCommandPayload,
+  now: Date, surface?: string,
+): Promise<PlatformIncidentTimerSuppression | null> {
+  const incident = await activeTimerIncident(database, {
+    commandType: payload.commandType, aggregateId: payload.aggregateId,
+    ...(surface ? { surface } : {}), now,
+  });
+  return incident
+    ? { incidentId: incident.incident_id,
+        retryAt: new Date(now.getTime() + 5 * 60 * 1_000).toISOString() }
+    : null;
+}
+
+export async function assertNoActivePlatformIncidentForTimer(
+  transaction: Transaction<Database>, input: {
+    readonly commandType: string;
+    readonly aggregateId: string;
+    readonly occurredAt: Date;
+    readonly surface?: string;
+  },
+): Promise<void> {
+  const policy = timerPolicyForCommand(input.commandType);
+  if (policy) await lockIncidentServices(transaction, [policy.service]);
+  if (await activeTimerIncident(transaction, {
+    commandType: input.commandType, aggregateId: input.aggregateId,
+    ...(input.surface ? { surface: input.surface } : {}), now: input.occurredAt,
+  })) {
+    throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_TIMEOUT_SUPPRESSED');
+  }
+}
+
+export async function listChallengeResponseIncidentImpactCandidates(
+  database: Kysely<Database>, incidentId: string,
+): Promise<ChallengeResponseIncidentImpactCandidate[]> {
+  const result = await sql<{
+    readonly challenge_id: string;
+    readonly version: string;
+    readonly surface: string;
+  }>`
+    select challenge.challenge_id, challenge.version::text,
+      'CHALLENGE_RESPONSE'::text as surface
+    from platform.platform_incidents as incident
+    join competition.challenges as challenge
+      on challenge.created_at < incident.ended_at
+      and incident.started_at < challenge.response_deadline_at
+    where incident.incident_id = ${incidentId}::uuid
+      and incident.state = 'RESOLVED'
+      and 'CHALLENGE' = any(incident.affected_services)
+      and 'CHALLENGE_RESPONSE' = any(incident.affected_surfaces)
+      and challenge.state = 'AWAITING_RESPONSE'
+      and not exists (
+        select 1 from platform.incident_impacts as impact
+        where impact.incident_id = incident.incident_id
+          and impact.aggregate_type = 'Challenge'
+          and impact.aggregate_id = challenge.challenge_id
+          and impact.deadline_kind = 'CHALLENGE_RESPONSE'
+      )
+    order by challenge.challenge_id
+  `.execute(database);
+  return result.rows.map((row) => ({ challengeId: row.challenge_id,
+    version: Number(row.version), surface: row.surface }));
+}
+
+export async function applyChallengeResponseIncidentImpact(
+  database: Kysely<Database>, command: CommandEnvelope<ApplyIncidentDeadlineImpactPayload>,
+  ids: IncidentDeadlineImpactEffectIds, now?: () => Date,
+): Promise<ExecutedCommand<IncidentDeadlineImpactProjection>> {
+  if (command.actor.type !== 'SYSTEM' || command.actor.id !== null
+    || command.commandType !== 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT'
+    || command.aggregateType !== 'Challenge'
+    || command.aggregateId !== command.payload.challengeId
+    || command.payload.deadlineKind !== 'CHALLENGE_RESPONSE') {
+    throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_SYSTEM_REQUIRED');
+  }
+  return executeCriticalCommand(database, {
+    command, ...(now ? { now } : {}), mutate: async (transaction, context) => {
+      const incidentResult = await sql<{
+        readonly state: PlatformIncidentState;
+        readonly started_at: Date;
+        readonly ended_at: Date | null;
+        readonly affected_services: string[];
+        readonly affected_surfaces: string[];
+      }>`select state, started_at, ended_at, affected_services, affected_surfaces
+        from platform.platform_incidents
+        where incident_id = ${command.payload.incidentId}::uuid for update`
+        .execute(transaction);
+      const incident = incidentResult.rows[0];
+      if (!incident || incident.state !== 'RESOLVED' || !incident.ended_at
+        || !incident.affected_services.includes('CHALLENGE')
+        || !incident.affected_surfaces.includes(command.payload.surface)) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      }
+      await lockIncidentServices(transaction, ['CHALLENGE']);
+      const challengeResult = await sql<{
+        readonly state: string;
+        readonly created_at: Date;
+        readonly response_deadline_at: Date;
+        readonly response_policy: string;
+        readonly version: string;
+      }>`select state, created_at, response_deadline_at, response_policy, version::text
+        from competition.challenges where challenge_id = ${command.aggregateId}::uuid for update`
+        .execute(transaction);
+      const challenge = challengeResult.rows[0];
+      if (!challenge || challenge.state !== 'AWAITING_RESPONSE'
+        || Number(challenge.version) !== command.expectedVersion) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      }
+      const overlap = calculateExactIncidentOverlap({ clockStartedAt: challenge.created_at,
+        deadlineAt: challenge.response_deadline_at, incidentStartedAt: incident.started_at,
+        incidentEndedAt: incident.ended_at });
+      if (overlap.overlapMilliseconds === 0 || !overlap.overlapStartedAt || !overlap.overlapEndedAt) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_WINDOW');
+      }
+      await sql`insert into platform.incident_impacts (
+        impact_id, incident_id, aggregate_type, aggregate_id, service, surface,
+        deadline_kind, impact_type, clock_started_at, old_deadline_at, new_deadline_at,
+        overlap_started_at, overlap_ended_at, overlap_milliseconds, compensating_event_id
+      ) values (
+        ${ids.impactId}::uuid, ${command.payload.incidentId}::uuid, 'Challenge',
+        ${command.aggregateId}::uuid, 'CHALLENGE', ${command.payload.surface},
+        'CHALLENGE_RESPONSE', 'DEADLINE_EXTENDED', ${challenge.created_at.toISOString()}::timestamptz,
+        ${challenge.response_deadline_at.toISOString()}::timestamptz,
+        ${overlap.newDeadlineAt.toISOString()}::timestamptz,
+        ${overlap.overlapStartedAt.toISOString()}::timestamptz,
+        ${overlap.overlapEndedAt.toISOString()}::timestamptz,
+        ${overlap.overlapMilliseconds}, ${ids.eventId}::uuid
+      )`.execute(transaction);
+      await sql`update competition.challenges
+        set response_deadline_at = ${overlap.newDeadlineAt.toISOString()}::timestamptz,
+          version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${command.aggregateId}::uuid
+          and state = 'AWAITING_RESPONSE' and version = ${command.expectedVersion}`
+        .execute(transaction);
+      const response: IncidentDeadlineImpactProjection = {
+        impactId: ids.impactId, incidentId: command.payload.incidentId,
+        aggregateType: 'Challenge', aggregateId: command.aggregateId,
+        deadlineKind: 'CHALLENGE_RESPONSE',
+        oldDeadlineAt: challenge.response_deadline_at.toISOString(),
+        newDeadlineAt: overlap.newDeadlineAt.toISOString(),
+        overlapMilliseconds: overlap.overlapMilliseconds, version: context.nextVersion,
+      };
+      const timerCommandType = challenge.response_policy === 'OPTIONAL'
+        ? 'EXPIRE_OPTIONAL_CHALLENGE'
+        : challenge.response_policy === 'MANDATORY'
+          ? 'EXPIRE_MANDATORY_CHALLENGE'
+          : 'EXPIRE_GENESIS_CHALLENGE';
+      return {
+        responseStatus: 200, response,
+        event: { eventId: ids.eventId,
+          eventName: 'PausableDeadlineExtendedByPlatformIncident', schemaVersion: 1,
+          transitionId: null, payload: response,
+          metadata: { policyVersion: PLATFORM_INCIDENT_POLICY_VERSION } },
+        audit: { auditId: ids.auditId,
+          action: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT', transitionId: null,
+          reasonCode: 'CONFIRMED_PLATFORM_INCIDENT', beforeState: challenge.state,
+          afterState: challenge.state, metadata: { ...response } },
+        outbox: [{ messageId: ids.outboxMessageId,
+          topic: 'platform.incident.deadline-extended.v1', payload: {
+            ...response, timer: { commandType: timerCommandType, aggregateType: 'Challenge',
+              aggregateId: command.aggregateId, expectedState: challenge.state,
+              expectedVersion: context.nextVersion, deadlineAt: overlap.newDeadlineAt.toISOString(),
+              policyVersion: PLATFORM_INCIDENT_POLICY_VERSION,
+              idempotencyKey: `incident:${command.payload.incidentId}:challenge:${command.aggregateId}:deadline`,
+            },
+          } }],
+      };
+    },
+  });
 }

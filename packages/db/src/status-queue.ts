@@ -33,6 +33,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
 import {
   assertYouthChallengeConsentReady,
   assertYouthOfficialAvailableForUser,
@@ -3057,6 +3058,11 @@ export async function expireGenesisChallenge(
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const row = await genesisChallengeRow(transaction, command.aggregateId, true);
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
       assertGenesisChallengeCanExpire({
         state: row.state,
         responseDeadlineAt: row.response_deadline_at,

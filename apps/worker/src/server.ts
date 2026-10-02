@@ -49,6 +49,7 @@ import {
   readLikeTimerSnapshot,
   readResultTimerSnapshot,
   readMissingResultChallengeTimerSnapshot,
+  readPlatformIncidentTimerSuppression,
   readSessionTimerSnapshot,
   readChallengeTimerSnapshot,
   readSlotTimerSnapshot,
@@ -950,6 +951,8 @@ const taskList = createTaskList({
         },
       },
       now: () => new Date(),
+      readIncidentSuppression: (timer) =>
+        readPlatformIncidentTimerSuppression(database, timer, new Date()),
       reschedule: scheduleTimer,
       recordStaleDiagnostic: async (timer, decision) => {
         logger.info(

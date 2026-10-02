@@ -82,7 +82,8 @@ export type PlatformIncidentErrorCode =
   | 'PLATFORM_INCIDENT_EVIDENCE_REQUIRED'
   | 'PLATFORM_INCIDENT_REASON_REQUIRED'
   | 'PLATFORM_INCIDENT_DUPLICATE_ACTIVE_WINDOW'
-  | 'PLATFORM_INCIDENT_DUPLICATE_IMPACT';
+  | 'PLATFORM_INCIDENT_DUPLICATE_IMPACT'
+  | 'PLATFORM_INCIDENT_TIMEOUT_SUPPRESSED';
 
 export class PlatformIncidentConflictError extends Error {
   constructor(readonly code: PlatformIncidentErrorCode) {

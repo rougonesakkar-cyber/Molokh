@@ -26,6 +26,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
 import {
   assertYouthChallengeConsentReady,
   assertYouthOfficialAvailableForUsers,
@@ -1324,6 +1325,11 @@ export async function expireOptionalChallenge(
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const row = await challengeRow(transaction, command.aggregateId, true);
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
       await assertChallengeCompetitionOperational(transaction, row.competition_id);
       if (row.response_policy === 'MANDATORY') {
         assertMandatoryChallengeCanBeExpired(

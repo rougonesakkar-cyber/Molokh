@@ -1,5 +1,6 @@
 import {
   IdempotencyKeyReusedError,
+  PlatformIncidentConflictError,
   IdentityPermissionDeniedError,
   IdentityValidationError,
   InvalidCommandEnvelopeError,
@@ -50,6 +51,9 @@ import {
   resolvePlatformIncident,
   compensatePlatformIncidentImpacts,
   listPlatformIncidents,
+  listChallengeResponseIncidentImpactCandidates,
+  applyChallengeResponseIncidentImpact,
+  readPlatformIncidentTimerSuppression,
   executeCriticalCommand,
   ensureLocalPilotCommunity,
   ensureLocalPilotCompetition,
@@ -139,6 +143,7 @@ import {
   cancelSessionAfterCoachReplacement,
   failSessionExternal,
   createDirectOpenChallenge,
+  expireOptionalChallenge,
   acceptOptionalChallenge,
   activateStatusQueueHead,
   declineOptionalChallenge,
@@ -185,6 +190,7 @@ import {
   type RejectPlatformIncidentPayload,
   type ResolvePlatformIncidentPayload,
   type CompensatePlatformIncidentPayload,
+  type ApplyIncidentDeadlineImpactPayload,
   type LikeEffectIds,
   type EditChatMessagePayload,
   type HideChatMessagePayload,
@@ -9025,5 +9031,257 @@ describePostgres('PostgreSQL critical command transaction', () => {
       eventId: testId(23039), auditId: testId(23040), outboxMessageId: testId(23041),
     }, () => new Date('2026-10-03T10:02:00.000Z'));
     expect(rejected.response).toMatchObject({ state: 'REJECTED', version: 2 });
+  });
+
+  it('[AC-195] extends a pausable Challenge response deadline by its exact incident overlap once', async () => {
+    const athleteA = testId(24000);
+    const athleteB = testId(24001);
+    const central = testId(24002);
+    const venue = testId(24003);
+    const venueConfig = testId(24004);
+    const community = testId(24005);
+    const communityConfig = testId(24006);
+    const competition = testId(24007);
+    const sourceChat = testId(24008);
+    const match = testId(24009);
+    const challenge = testId(24010);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${athleteA}::uuid, '+79990024000', '2026-09-01T09:00:00Z', '1995-01-01',
+          'ADULT', 'Incident Athlete A', 'ACTIVE', 'ru-RU', 1, '2026-09-01T09:00:00Z'),
+        (${athleteB}::uuid, '+79990024001', '2026-09-01T09:00:00Z', '1995-01-01',
+          'ADULT', 'Incident Athlete B', 'ACTIVE', 'ru-RU', 1, '2026-09-01T09:00:00Z'),
+        (${central}::uuid, '+79990024002', '2026-09-01T09:00:00Z', '1985-01-01',
+          'ADULT', 'Incident Central', 'ACTIVE', 'ru-RU', 1, '2026-09-01T09:00:00Z')`
+        .execute(transaction);
+      await sql`insert into identity.athlete_profiles (
+        user_id, primary_sport, discovery_radius_km
+      ) values (${athleteA}::uuid, 'BOXING', 15), (${athleteB}::uuid, 'BOXING', 15)`
+        .execute(transaction);
+      await sql`insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values
+        (${testId(24011)}::uuid, ${athleteA}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+          'identity-mvp-v1', true, '2026-09-01T09:00:00Z', ${central}::uuid, 'TEST_APPROVED', 1),
+        (${testId(24012)}::uuid, ${athleteB}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+          'identity-mvp-v1', true, '2026-09-01T09:00:00Z', ${central}::uuid, 'TEST_APPROVED', 1)`
+        .execute(transaction);
+      await sql`insert into community.venues (
+        venue_id, legal_name, display_name, address, city_code, timezone, state,
+        minimum_booking_notice_hours, slot_publish_horizon_days,
+        configuration_version_id, version
+      ) values (${venue}::uuid, 'Incident Gym LLC', 'Incident Gym', 'Москва', 'MOSCOW',
+        'Europe/Moscow', 'ACTIVE', 8, 30, ${venueConfig}::uuid, 1)`.execute(transaction);
+      await sql`insert into community.venue_configuration_versions (
+        configuration_id, venue_id, configuration_version, minimum_booking_notice_hours,
+        slot_publish_horizon_days, contact_payload, created_by, effective_at
+      ) values (${venueConfig}::uuid, ${venue}::uuid, 1, 8, 30, '{}'::jsonb,
+        ${central}::uuid, '2026-09-01T09:00:00Z')`.execute(transaction);
+      await sql`insert into community.communities (
+        community_id, venue_id, name, state, configuration_id, created_by_central_id, version
+      ) values (${community}::uuid, ${venue}::uuid, 'Incident Community', 'ACTIVE',
+        ${communityConfig}::uuid, ${central}::uuid, 1)`.execute(transaction);
+      await sql`insert into community.community_configuration_versions (
+        configuration_id, community_id, configuration_version, pair_cooldown_days,
+        no_show_grace_minutes, ruleset_ref, ruleset_ack_mode, created_by, effective_at
+      ) values (${communityConfig}::uuid, ${community}::uuid, 1, 15, 15,
+        'MOLOKH_RECOMMENDED_V1', 'IMPLICIT_ON_ACCEPT', ${central}::uuid,
+        '2026-09-01T09:00:00Z')`.execute(transaction);
+      await sql`insert into community.community_memberships (
+        membership_id, community_id, user_id, age_division, state, competition_enabled,
+        join_path, decided_at, decided_by, version
+      ) values
+        (${testId(24013)}::uuid, ${community}::uuid, ${athleteA}::uuid, 'ADULT', 'ACTIVE',
+          true, 'INVITE', '2026-09-01T09:00:00Z', ${central}::uuid, 1),
+        (${testId(24014)}::uuid, ${community}::uuid, ${athleteB}::uuid, 'ADULT', 'ACTIVE',
+          true, 'INVITE', '2026-09-01T09:00:00Z', ${central}::uuid, 1)`
+        .execute(transaction);
+      await sql`insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (${testId(24015)}::uuid, ${central}::uuid, 'CENTRAL_ADMIN', 'GLOBAL', null,
+        'ACTIVE', ${central}::uuid, '2026-09-01T09:00:00Z', 1)`.execute(transaction);
+      await sql`insert into competition.competitions (
+        competition_id, community_id, age_division, phase, availability, version,
+        created_at, updated_at
+      ) values (${competition}::uuid, ${community}::uuid, 'ADULT', 'FOUNDING_OPEN',
+        'ACTIVE', 1, '2026-09-01T09:00:00Z', '2026-09-01T09:00:00Z')`
+        .execute(transaction);
+      await sql`insert into social.chats (
+        chat_id, scope, state, version, created_at, updated_at
+      ) values (${sourceChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+        '2026-09-01T09:00:00Z', '2026-09-01T09:00:00Z')`.execute(transaction);
+      await sql`insert into social.chat_participants (chat_id, user_id) values
+        (${sourceChat}::uuid, ${athleteA}::uuid), (${sourceChat}::uuid, ${athleteB}::uuid)`
+        .execute(transaction);
+      await sql`insert into social.matches (
+        match_id, pair_low_id, pair_high_id, state, chat_id, last_activity_at, version
+      ) values (${match}::uuid, ${athleteA}::uuid, ${athleteB}::uuid, 'ACTIVE',
+        ${sourceChat}::uuid, '2026-09-08T09:00:00Z', 1)`.execute(transaction);
+    });
+
+    const created = await createDirectOpenChallenge(database, {
+      commandId: testId(24016), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+      idempotencyKey: 'incident-ac195-create-challenge',
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 0,
+      correlationId: testId(24017), causationId: null, requestId: testId(24018),
+      source: 'api', payloadVersion: 1, payload: { sourceChatId: sourceChat },
+    }, {
+      eventId: testId(24019), auditId: testId(24020), outboxMessageId: testId(24021),
+      notificationId: testId(24022), notificationOutboxMessageId: testId(24023),
+      serviceChatId: testId(24024), serviceChatEventId: testId(24025),
+      rulesetSnapshotId: testId(24026), acknowledgmentId: testId(24027),
+    }, () => new Date('2026-09-08T10:00:00.000Z'));
+    expect(created.response.responseDeadlineAt).toBe('2026-09-10T10:00:00.000Z');
+
+    const incident = testId(24030);
+    await detectPlatformIncident(database, {
+      commandId: testId(24031), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac195-detect',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 0,
+      correlationId: testId(24032), causationId: null, requestId: testId(24033),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { startedAt: '2026-09-10T09:40:00.000Z',
+        affectedServices: ['CHALLENGE'], affectedSurfaces: ['CHALLENGE_RESPONSE'],
+        severity: 'MAJOR', monitoringEvidenceReference: 'monitor:ac195' },
+    }, { eventId: testId(24034), auditId: testId(24035), outboxMessageId: testId(24036) },
+    () => new Date('2026-09-10T09:41:00.000Z'));
+    await confirmPlatformIncident(database, {
+      commandId: testId(24037), commandType: 'CONFIRM_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac195-confirm',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 1,
+      correlationId: testId(24032), causationId: testId(24034), requestId: testId(24038),
+      source: 'admin', payloadVersion: 1,
+      payload: { incidentId: incident, reason: '37-minute objective outage.' },
+    }, { eventId: testId(24039), auditId: testId(24040), outboxMessageId: testId(24041) },
+    () => new Date('2026-09-10T09:42:00.000Z'));
+
+    const timer = {
+      commandType: 'EXPIRE_OPTIONAL_CHALLENGE', aggregateType: 'Challenge',
+      aggregateId: challenge, expectedState: 'AWAITING_RESPONSE', expectedVersion: 1,
+      deadlineAt: '2026-09-10T10:00:00.000Z', policyVersion: 'challenge-mvp-v1',
+      idempotencyKey: 'incident-ac195-expire',
+    } as const;
+    await expect(readPlatformIncidentTimerSuppression(
+      database, timer, new Date('2026-09-10T10:00:00.000Z'),
+    )).resolves.toMatchObject({ incidentId: incident });
+    await expect(readPlatformIncidentTimerSuppression(
+      database, timer, new Date('2026-09-10T10:00:00.000Z'), 'DISCOVERY',
+    )).resolves.toBeNull();
+    await expect(expireOptionalChallenge(database, {
+      commandId: testId(24042), commandType: 'EXPIRE_OPTIONAL_CHALLENGE',
+      idempotencyKey: 'incident-ac195-expire-race',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 1,
+      correlationId: testId(24017), causationId: testId(24019), requestId: testId(24043),
+      source: 'scheduler', payloadVersion: 1, payload: { challengeId: challenge },
+    }, {
+      eventId: testId(24044), auditId: testId(24045), outboxMessageId: testId(24046),
+      notificationId: testId(24047), notificationOutboxMessageId: testId(24048),
+    }, () => new Date('2026-09-10T10:00:00.000Z'))).rejects.toEqual(
+      expect.objectContaining<Partial<PlatformIncidentConflictError>>({
+        code: 'PLATFORM_INCIDENT_TIMEOUT_SUPPRESSED',
+      }),
+    );
+
+    await resolvePlatformIncident(database, {
+      commandId: testId(24050), commandType: 'RESOLVE_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac195-resolve',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 2,
+      correlationId: testId(24032), causationId: testId(24039), requestId: testId(24051),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: incident, endedAt: '2026-09-10T10:17:00.000Z',
+        reason: 'Recovery confirmed.' },
+    }, { eventId: testId(24052), auditId: testId(24053), outboxMessageId: testId(24054) },
+    () => new Date('2026-09-10T10:18:00.000Z'));
+    await expect(readPlatformIncidentTimerSuppression(
+      database, timer, new Date('2026-09-10T10:18:00.000Z'),
+    )).resolves.toMatchObject({ incidentId: incident });
+    await expect(listChallengeResponseIncidentImpactCandidates(database, incident))
+      .resolves.toEqual([{ challengeId: challenge, version: 1, surface: 'CHALLENGE_RESPONSE' }]);
+
+    const impactCommand = {
+      commandId: testId(24055), commandType: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT',
+      idempotencyKey: `incident:${incident}:challenge:${challenge}:response`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 1,
+      correlationId: testId(24032), causationId: testId(24052), requestId: testId(24056),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: incident, challengeId: challenge,
+        deadlineKind: 'CHALLENGE_RESPONSE', surface: 'CHALLENGE_RESPONSE' },
+    } satisfies CommandEnvelope<ApplyIncidentDeadlineImpactPayload>;
+    const impactIds = { impactId: testId(24057), eventId: testId(24058),
+      auditId: testId(24059), outboxMessageId: testId(24060) };
+    const impacted = await applyChallengeResponseIncidentImpact(
+      database, impactCommand, impactIds, () => new Date('2026-09-10T10:18:30.000Z'),
+    );
+    const replay = await applyChallengeResponseIncidentImpact(
+      database, impactCommand, impactIds, () => new Date('2026-09-10T10:19:00.000Z'),
+    );
+    expect(impacted.response).toMatchObject({
+      oldDeadlineAt: '2026-09-10T10:00:00.000Z',
+      newDeadlineAt: '2026-09-10T10:20:00.000Z',
+      overlapMilliseconds: 20 * 60 * 1_000, version: 2,
+    });
+    expect(replay).toMatchObject({ replayed: true, eventId: testId(24058) });
+    await expect(readChallengeTimerSnapshot(database, challenge)).resolves.toEqual({
+      state: 'AWAITING_RESPONSE', version: 2, deadlineAt: '2026-09-10T10:20:00.000Z',
+    });
+    await expect(readPlatformIncidentTimerSuppression(
+      database, { ...timer, expectedVersion: 2, deadlineAt: '2026-09-10T10:20:00.000Z' },
+      new Date('2026-09-10T10:19:00.000Z'),
+    )).resolves.toBeNull();
+
+    const facts = await sql<{
+      readonly impacts: string;
+      readonly extension_events: string;
+      readonly extension_audits: string;
+      readonly extension_outbox: string;
+      readonly sessions: string;
+      readonly cooldowns: string;
+      readonly retentions: string;
+      readonly timer_command: string;
+    }>`select
+      (select count(*)::text from platform.incident_impacts
+        where incident_id = ${incident}::uuid and aggregate_id = ${challenge}::uuid) as impacts,
+      (select count(*)::text from platform.domain_events
+        where event_id = ${testId(24058)}::uuid) as extension_events,
+      (select count(*)::text from platform.audit_events
+        where audit_id = ${testId(24059)}::uuid) as extension_audits,
+      (select count(*)::text from platform.outbox_messages
+        where message_id = ${testId(24060)}::uuid) as extension_outbox,
+      (select count(*)::text from scheduling.sessions) as sessions,
+      (select count(*)::text from competition.pair_cooldowns) as cooldowns,
+      (select count(*)::text from scheduling.booking_training_retentions) as retentions,
+      (select payload->'timer'->>'commandType' from platform.outbox_messages
+        where message_id = ${testId(24060)}::uuid) as timer_command`
+      .execute(database);
+    expect(facts.rows[0]).toEqual({ impacts: '1', extension_events: '1',
+      extension_audits: '1', extension_outbox: '1', sessions: '0', cooldowns: '0',
+      retentions: '0', timer_command: 'EXPIRE_OPTIONAL_CHALLENGE' });
+
+    await expect(detectPlatformIncident(database, {
+      commandId: testId(24070), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-user-complaint-is-not-detection',
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: testId(24071), expectedVersion: 0,
+      correlationId: testId(24072), causationId: null, requestId: testId(24073),
+      source: 'api', payloadVersion: 1,
+      payload: { startedAt: '2026-09-10T09:40:00.000Z',
+        affectedServices: ['CHALLENGE'], affectedSurfaces: ['CHALLENGE_RESPONSE'],
+        severity: 'INFO', monitoringEvidenceReference: 'user:complaint' },
+    }, { eventId: testId(24074), auditId: testId(24075), outboxMessageId: testId(24076) }))
+      .rejects.toEqual(expect.objectContaining<Partial<PlatformIncidentConflictError>>({
+        code: 'PLATFORM_INCIDENT_SYSTEM_REQUIRED',
+      }));
   });
 });
