@@ -172,6 +172,29 @@ export function deriveAgeDivision(birthDate: string, at: Date): AgeDivision {
   return age < 18 ? 'YOUTH' : 'ADULT';
 }
 
+export function adultTransitionAt(birthDate: string): Date {
+  const birth = parseDate(birthDate, 'birthDate');
+  return new Date(Date.UTC(
+    birth.getUTCFullYear() + 18,
+    birth.getUTCMonth(),
+    birth.getUTCDate(),
+  ));
+}
+
+export function assertAgeDivisionCanTransition(input: {
+  readonly currentAgeDivision: AgeDivision;
+  readonly birthDate: string;
+  readonly occurredAt: Date;
+}): 'ADULT' {
+  if (
+    input.currentAgeDivision !== 'YOUTH'
+    || deriveAgeDivision(input.birthDate, input.occurredAt) !== 'ADULT'
+  ) {
+    throw new InvalidIdentityTransitionError('AD-01');
+  }
+  return 'ADULT';
+}
+
 export function normalizeDisplayName(value: string): string {
   const normalized = value.trim();
   if (normalized.length === 0 || normalized.length > 80) {
