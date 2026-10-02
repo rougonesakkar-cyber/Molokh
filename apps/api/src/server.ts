@@ -119,6 +119,10 @@ import {
   readPublicYouthConsent,
   readYouthConsentSummary,
   requestYouthConsent,
+  listPlatformIncidents,
+  confirmPlatformIncident,
+  rejectPlatformIncident,
+  resolvePlatformIncident,
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
@@ -1063,6 +1067,13 @@ const localCentralAuth = new StaticBearerAuthAdapter(
 );
 
 const app = await buildApp({
+  platformIncident: {
+    centralAuth: localCentralAuth,
+    list: (centralUserId) => listPlatformIncidents(database, centralUserId),
+    confirm: (command, ids) => confirmPlatformIncident(database, command, ids),
+    reject: (command, ids) => rejectPlatformIncident(database, command, ids),
+    resolve: (command, ids) => resolvePlatformIncident(database, command, ids),
+  },
   appeal: {
     auth: localAuth,
     centralAuth: localCentralAuth,

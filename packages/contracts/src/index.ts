@@ -565,6 +565,7 @@ const ChallengeConflictCodeSchema = Type.Union([
   Type.Literal('CHALLENGE_SESSION_MISMATCH'),
   Type.Literal('CHALLENGE_COMPETITIVE_SNAPSHOT_MISSING'),
   Type.Literal('CHALLENGE_SCHEDULING_DEADLINE_REACHED'),
+  Type.Literal('CHALLENGE_SCHEDULING_NOT_DUE'),
   Type.Literal('CHALLENGE_PARTICIPANT_REQUIRED'),
   Type.Literal('CHALLENGE_OBLIGATION_MISSING'),
 ]);
@@ -1258,6 +1259,72 @@ export const IntegrityCaseCommandResponseSchema = Type.Object({
   }, { additionalProperties: false }),
 }, { $id: 'IntegrityCaseCommandResponse', additionalProperties: false });
 export type IntegrityCaseCommandResponse = Static<typeof IntegrityCaseCommandResponseSchema>;
+
+export const PlatformIncidentStateSchema = Type.Union([
+  Type.Literal('DETECTED'), Type.Literal('CONFIRMED_ACTIVE'), Type.Literal('RESOLVED'),
+  Type.Literal('COMPENSATED'), Type.Literal('REJECTED'),
+]);
+export const PlatformIncidentServiceSchema = Type.Union([
+  Type.Literal('CHALLENGE'), Type.Literal('BOOKING'), Type.Literal('STATUS_QUEUE'),
+  Type.Literal('COMPETITION'),
+]);
+export const PlatformIncidentSeveritySchema = Type.Union([
+  Type.Literal('INFO'), Type.Literal('MINOR'), Type.Literal('MAJOR'), Type.Literal('CRITICAL'),
+]);
+const NullableUuidSchema = Type.Union([Type.String({ format: 'uuid' }), Type.Null()]);
+const NullableDateTimeSchema = Type.Union([Type.String({ format: 'date-time' }), Type.Null()]);
+const NullableTextSchema = Type.Union([Type.String(), Type.Null()]);
+export const PlatformIncidentProjectionSchema = Type.Object({
+  incidentId: Type.String({ format: 'uuid' }),
+  state: PlatformIncidentStateSchema,
+  affectedServices: Type.Array(PlatformIncidentServiceSchema, { minItems: 1 }),
+  affectedSurfaces: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+  severity: PlatformIncidentSeveritySchema,
+  startedAt: Type.String({ format: 'date-time' }),
+  endedAt: NullableDateTimeSchema,
+  monitoringEvidenceReference: Type.String({ minLength: 1 }),
+  detectedAt: Type.String({ format: 'date-time' }),
+  confirmedBy: NullableUuidSchema,
+  confirmedAt: NullableDateTimeSchema,
+  confirmationReason: NullableTextSchema,
+  rejectedBy: NullableUuidSchema,
+  rejectedAt: NullableDateTimeSchema,
+  rejectionReason: NullableTextSchema,
+  resolvedBy: NullableUuidSchema,
+  resolvedByActorType: Type.Union([Type.Literal('USER'), Type.Literal('SYSTEM'), Type.Null()]),
+  resolvedAt: NullableDateTimeSchema,
+  resolutionReason: NullableTextSchema,
+  compensatedAt: NullableDateTimeSchema,
+  impactCount: Type.Integer({ minimum: 0 }),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'PlatformIncidentProjection', additionalProperties: false });
+export type PlatformIncidentContract = Static<typeof PlatformIncidentProjectionSchema>;
+
+export const PlatformIncidentListResponseSchema = Type.Object({
+  data: Type.Array(PlatformIncidentProjectionSchema),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+}, { $id: 'PlatformIncidentListResponse', additionalProperties: false });
+export type PlatformIncidentListResponse = Static<typeof PlatformIncidentListResponseSchema>;
+
+export const PlatformIncidentCommandResponseSchema = Type.Object({
+  data: PlatformIncidentProjectionSchema,
+  meta: Type.Object({
+    requestId: Type.String({ format: 'uuid' }), eventId: Type.String({ format: 'uuid' }),
+    replayed: Type.Boolean(),
+  }, { additionalProperties: false }),
+}, { $id: 'PlatformIncidentCommandResponse', additionalProperties: false });
+export type PlatformIncidentCommandResponse = Static<typeof PlatformIncidentCommandResponseSchema>;
+
+export const PlatformIncidentReasonBodySchema = Type.Object({
+  reason: Type.String({ minLength: 3, maxLength: 2000 }),
+}, { $id: 'PlatformIncidentReasonBody', additionalProperties: false });
+export type PlatformIncidentReasonBody = Static<typeof PlatformIncidentReasonBodySchema>;
+
+export const ResolvePlatformIncidentBodySchema = Type.Object({
+  endedAt: Type.String({ format: 'date-time' }),
+  reason: Type.String({ minLength: 3, maxLength: 2000 }),
+}, { $id: 'ResolvePlatformIncidentBody', additionalProperties: false });
+export type ResolvePlatformIncidentBody = Static<typeof ResolvePlatformIncidentBodySchema>;
 
 export const OpenIntegrityCaseBodySchema = Type.Object({
   resultId: Type.String({ format: 'uuid' }), category: IntegrityCategorySchema,

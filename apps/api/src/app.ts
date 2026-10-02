@@ -48,6 +48,10 @@ import { registerStatusReleaseRoutes, type StatusReleaseRouteDependencies } from
 import { registerMembershipExitRoutes, type MembershipExitRouteDependencies } from './membership-exit-routes.js';
 import { registerMembershipRemovalRoutes, type MembershipRemovalRouteDependencies } from './membership-removal-routes.js';
 import { registerYouthConsentRoutes, type YouthConsentRouteDependencies } from './youth-consent-routes.js';
+import {
+  registerPlatformIncidentRoutes,
+  type PlatformIncidentRouteDependencies,
+} from './platform-incident-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
@@ -64,6 +68,7 @@ export interface BuildAppOptions extends FastifyServerOptions {
   readonly membershipRemoval?: MembershipRemovalRouteDependencies;
   readonly youthConsent?: YouthConsentRouteDependencies;
   readonly missingResult?: MissingResultRouteDependencies;
+  readonly platformIncident?: PlatformIncidentRouteDependencies;
   readonly roles?: RoleRouteDependencies;
   readonly result?: ResultRouteDependencies;
   readonly scheduling?: SchedulingRouteDependencies;
@@ -87,6 +92,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     membershipRemoval,
     youthConsent,
     missingResult,
+    platformIncident,
     roles,
     result,
     scheduling,
@@ -141,6 +147,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   if (youthConsent) await registerYouthConsentRoutes(app, youthConsent);
   if (appeal) await registerAppealRoutes(app, appeal);
   if (missingResult) await registerMissingResultRoutes(app, missingResult);
+  if (platformIncident) await registerPlatformIncidentRoutes(app, platformIncident);
   if (chat) await registerChatRoutes(app, chat);
   if (challenge) await registerChallengeRoutes(app, challenge);
   if (community) await registerCommunityRoutes(app, community);

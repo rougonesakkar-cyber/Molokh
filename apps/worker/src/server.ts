@@ -28,6 +28,10 @@ import {
   finalizeResult,
   expireSlot,
   expireStatusQueueReconfirmation,
+  applyChallengeResponseIncidentImpact,
+  applyPausableDeadlineIncidentImpact,
+  compensateMandatoryChallengeTimeout,
+  compensatePlatformIncidentImpacts,
   transitionYouthToAdult,
   markOutboxPublished,
   remindMissingResultCoach,
@@ -51,6 +55,9 @@ import {
   readResultTimerSnapshot,
   readMissingResultChallengeTimerSnapshot,
   readPlatformIncidentTimerSuppression,
+  listChallengeResponseIncidentImpactCandidates,
+  listPausableDeadlineImpactCandidates,
+  listMandatoryTimeoutCompensationCandidates,
   readSessionTimerSnapshot,
   readChallengeTimerSnapshot,
   readSlotTimerSnapshot,
@@ -79,6 +86,10 @@ import {
   type ExpireGenesisChallengePayload,
   type ActivateStatusQueueHeadPayload,
   type ExpireStatusQueueReconfirmationPayload,
+  type ApplyIncidentDeadlineImpactPayload,
+  type ApplyPausableDeadlineImpactPayload,
+  type CompensateMandatoryTimeoutPayload,
+  type CompensatePlatformIncidentPayload,
   type MissingResultTimerPayload,
   type RequestStatusQueueReconfirmationPayload,
   type PromoteSingleGenesisCandidatePayload,
@@ -100,6 +111,10 @@ import { createTaskList } from './tasks.js';
 import { processTimer } from './timer-processor.js';
 import { identityTimerFromOutbox } from './identity-timers.js';
 import { incidentTimerFromOutbox } from './incident-timers.js';
+import {
+  platformIncidentIdFromResolvedOutbox,
+  reconcilePlatformIncidentEffects,
+} from './platform-incident-reconciliation.js';
 
 const production = process.env.NODE_ENV === 'production';
 const connectionString =
@@ -877,6 +892,87 @@ const executeAgeDivisionTransition = async (payload: TimerCommandPayload) => {
   });
 };
 
+const reconcileResolvedPlatformIncident = async (
+  incidentId: string,
+  causationId: string,
+): Promise<void> => {
+  const correlationId = randomUUID();
+  const result = await reconcilePlatformIncidentEffects({
+    listChallengeResponseCandidates: () =>
+      listChallengeResponseIncidentImpactCandidates(database, incidentId),
+    applyChallengeResponseImpact: async (candidate) => {
+      const command: CommandEnvelope<ApplyIncidentDeadlineImpactPayload> = {
+        commandId: randomUUID(),
+        commandType: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT',
+        idempotencyKey: `incident:${incidentId}:challenge:${candidate.challengeId}:response`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: candidate.challengeId,
+        expectedVersion: candidate.version, correlationId, causationId,
+        requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+        payload: { incidentId, challengeId: candidate.challengeId,
+          deadlineKind: 'CHALLENGE_RESPONSE', surface: candidate.surface },
+      };
+      await applyChallengeResponseIncidentImpact(database, command, {
+        impactId: randomUUID(), eventId: randomUUID(), auditId: randomUUID(),
+        outboxMessageId: randomUUID(),
+      });
+    },
+    listPausableCandidates: () =>
+      listPausableDeadlineImpactCandidates(database, incidentId),
+    applyPausableImpact: async (candidate) => {
+      const command: CommandEnvelope<ApplyPausableDeadlineImpactPayload> = {
+        commandId: randomUUID(),
+        commandType: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT',
+        idempotencyKey: `incident:${incidentId}:${candidate.deadlineKind}:${candidate.aggregateId}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: candidate.aggregateType, aggregateId: candidate.aggregateId,
+        expectedVersion: candidate.version, correlationId, causationId,
+        requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+        payload: { incidentId, deadlineKind: candidate.deadlineKind,
+          surface: candidate.surface },
+      };
+      await applyPausableDeadlineIncidentImpact(database, command, {
+        impactId: randomUUID(), eventId: randomUUID(), auditId: randomUUID(),
+        outboxMessageId: randomUUID(),
+      });
+    },
+    listMandatoryTimeoutCandidates: () =>
+      listMandatoryTimeoutCompensationCandidates(database, incidentId),
+    applyMandatoryTimeoutCompensation: async (candidate) => {
+      const command: CommandEnvelope<CompensateMandatoryTimeoutPayload> = {
+        commandId: randomUUID(),
+        commandType: 'COMPENSATE_MANDATORY_CHALLENGE_TIMEOUT',
+        idempotencyKey: `incident:${incidentId}:challenge:${candidate.challengeId}:timeout:${candidate.resultId}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: candidate.challengeId,
+        expectedVersion: candidate.version, correlationId, causationId,
+        requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+        payload: { incidentId, challengeId: candidate.challengeId,
+          resultId: candidate.resultId },
+      };
+      await compensateMandatoryChallengeTimeout(database, command, {
+        impactId: randomUUID(), compensationId: randomUUID(), eventId: randomUUID(),
+        auditId: randomUUID(), outboxMessageId: randomUUID(), resultEventId: randomUUID(),
+        competitionEventId: randomUUID(), cooldownEventId: randomUUID(),
+      });
+    },
+    completeIncident: async () => {
+      const command: CommandEnvelope<CompensatePlatformIncidentPayload> = {
+        commandId: randomUUID(), commandType: 'COMPENSATE_INCIDENT_IMPACTS',
+        idempotencyKey: `incident:${incidentId}:complete`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'PlatformIncident', aggregateId: incidentId, expectedVersion: 3,
+        correlationId, causationId, requestId: randomUUID(), source: 'scheduler',
+        payloadVersion: 1, payload: { incidentId },
+      };
+      await compensatePlatformIncidentImpacts(database, command, {
+        eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+      });
+    },
+  });
+  logger.info({ incidentId, ...result }, 'platform incident effects reconciled');
+};
+
 const taskList = createTaskList({
   onRuntimeProbe: (message) => logger.info({ message }, 'runtime probe'),
   onTimer: async (payload) => {
@@ -1018,6 +1114,10 @@ const taskList = createTaskList({
         'notification inbox projection handled',
       );
       return;
+    }
+    const incidentId = platformIncidentIdFromResolvedOutbox(message.topic, message.payload);
+    if (incidentId) {
+      await reconcileResolvedPlatformIncident(incidentId, message.eventId);
     }
     const competitionId = competitionIdFromOutbox(message.topic, message.payload);
     if (competitionId) {

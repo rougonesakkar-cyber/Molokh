@@ -13,6 +13,7 @@ import {
   InvalidRoleGrantTransitionError,
   MembershipExitConflictError,
   MembershipRemovalConflictError,
+  PlatformIncidentConflictError,
   ResultConflictError,
   ResultPermissionDeniedError,
   ResultValidationError,
@@ -314,6 +315,18 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
         message: 'This Membership removal action is no longer available',
         requestId,
       },
+    };
+  }
+  if (error instanceof PlatformIncidentConflictError) {
+    const statusCode = error.code === 'PLATFORM_INCIDENT_CENTRAL_REQUIRED' ? 403
+      : ['PLATFORM_INCIDENT_REASON_REQUIRED', 'PLATFORM_INCIDENT_INVALID_WINDOW',
+          'PLATFORM_INCIDENT_SERVICES_REQUIRED', 'PLATFORM_INCIDENT_SURFACES_REQUIRED',
+          'PLATFORM_INCIDENT_EVIDENCE_REQUIRED'].includes(error.code)
+        ? 422 : 409;
+    return {
+      statusCode,
+      body: { code: error.code,
+        message: 'Platform incident action is not available in the current state', requestId },
     };
   }
   if (error instanceof SchedulingValidationError) {

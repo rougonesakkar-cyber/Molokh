@@ -62,6 +62,7 @@ import {
 } from '../features/discovery/DiscoverySection';
 import { MissingResultReviewSection } from '../features/missing-result/MissingResultReviewSection';
 import { IntegrityCaseSection } from '../features/integrity-case/IntegrityCaseSection';
+import { PlatformIncidentSection } from '../features/platform-incident/PlatformIncidentSection';
 import { MembershipExitSection } from '../features/membership-exit/MembershipExitSection';
 import { StatusQueueSection } from '../features/status-queue/StatusQueueSection';
 import {
@@ -3641,6 +3642,10 @@ export default function IdentityScreen() {
                     void loadIdentity();
                   }}
                 />
+
+                {activeTestAccount.role === 'Central' ? (
+                  <PlatformIncidentSection token={activeTestToken} />
+                ) : null}
 
                 {coachInvites.map((invite) => (
                   <View key={invite.grantId} style={styles.card}>
