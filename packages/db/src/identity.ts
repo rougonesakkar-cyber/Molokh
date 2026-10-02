@@ -1,6 +1,7 @@
 import {
   IdentityPermissionDeniedError,
   IdentityValidationError,
+  adultTransitionAt,
   approveVerificationState,
   activateIdentity,
   normalizeChecklistVersion,
@@ -24,6 +25,7 @@ export interface IdentityEffectIds {
   readonly eventId: string;
   readonly auditId: string;
   readonly outboxMessageId: string;
+  readonly ageTransitionTimerOutboxMessageId?: string;
 }
 
 interface IdentityRow {
@@ -143,14 +145,19 @@ export async function activateUser(
   database: Kysely<Database>,
   command: CommandEnvelope<ActivateIdentityInput>,
   ids: IdentityEffectIds,
+  now?: () => Date,
 ): Promise<ExecutedCommand<IdentityProjection>> {
   if (command.payload.userId !== command.aggregateId) {
     throw new IdentityValidationError('userId');
   }
   return executeCriticalCommand(database, {
     command,
+    ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const identity = activateIdentity(command.payload, context.occurredAt);
+      if (identity.ageDivision === 'YOUTH' && !ids.ageTransitionTimerOutboxMessageId) {
+        throw new TypeError('Youth activation age-transition timer effect ID is required');
+      }
       await sql`
         insert into identity.users (
           user_id, phone_e164, phone_verified_at, birth_date, age_division,
@@ -224,6 +231,25 @@ export async function activateUser(
               version: context.nextVersion,
             },
           },
+          ...(identity.ageDivision === 'YOUTH'
+            ? [{
+                messageId: ids.ageTransitionTimerOutboxMessageId!,
+                topic: 'identity.age-division-timer.v1',
+                payload: {
+                  userId: command.payload.userId,
+                  timer: {
+                    commandType: 'TRANSITION_TO_ADULT',
+                    aggregateType: 'AgeDivisionTransition',
+                    aggregateId: command.payload.userId,
+                    expectedState: 'YOUTH',
+                    expectedVersion: 0,
+                    deadlineAt: adultTransitionAt(identity.birthDate).toISOString(),
+                    policyVersion: 'identity-v1',
+                    idempotencyKey: `age-division:${command.payload.userId}:adult:v1`,
+                  },
+                },
+              }]
+            : []),
         ],
       };
     },

@@ -79,6 +79,7 @@ import {
   readActiveBlocks,
   readDiscoveryCards,
   readIdentityProjection,
+  readAgeDivisionTransitionTimerSnapshot,
   readDiscoverySuppressionTimerSnapshot,
   readLikeTimerSnapshot,
   readMatches,
@@ -166,6 +167,7 @@ import {
   youthConsentTokenHash,
   readIntegrityCase,
   submitResultAppeal,
+  transitionYouthToAdult,
   withdrawAppeal,
   type CreateLikePayload,
   type BlockEffectIds,
@@ -250,6 +252,7 @@ import {
   type ReactivateCommunityPayload,
   type ScheduleCommunityClosurePayload,
   type FinalizeCommunityClosurePayload,
+  type TransitionToAdultPayload,
 } from '../src/index.js';
 
 const ids = {
@@ -1803,6 +1806,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         community.community_closure_session_dispositions,
         community.community_closure_plans,
         community.voluntary_membership_exits,
+        identity.age_division_transitions,
         competition.process_holds,
         community.membership_removal_cases,
         scheduling.booking_training_retention_confirmations,
@@ -2079,6 +2083,212 @@ describePostgres('PostgreSQL critical command transaction', () => {
     timerOutboxMessageId: testId(base + 10),
     notificationOutboxMessageId: testId(base + 11),
     notificationIds: [testId(base + 12), testId(base + 13)] as const,
+  });
+
+  const seedYouthOfficialAtAgeBoundary = async (base: number, started: boolean) => {
+    const seeded = await seedConfirmedTrainingForConversion(base);
+    const athleteC = testId(base + 22);
+    const athleteAMembership = testId(base + 16);
+    const athleteBMembership = testId(base + 18);
+    const athleteCMembership = testId(base + 23);
+    const adultCompetition = testId(base + 24);
+    const rulesetSnapshot = testId(base + 25);
+    const challenge = testId(base + 26);
+    const consent = testId(base + 27);
+    const queueEntry = testId(base + 28);
+    const competitiveSnapshot = testId(base + 29);
+    const chat = testId(base + 7);
+    const communityConfiguration = testId(base + 15);
+    const boundary = '2026-10-02T00:00:00.000Z';
+    const scheduledStart = started
+      ? '2026-10-01T23:30:00.000Z'
+      : '2026-10-03T10:00:00.000Z';
+    const scheduledEnd = started
+      ? '2026-10-02T00:30:00.000Z'
+      : '2026-10-03T11:00:00.000Z';
+
+    await sql`
+      update identity.users set birth_date = '2008-10-02', age_division = 'YOUTH'
+      where user_id = ${seeded.athleteA}::uuid
+    `.execute(database);
+    await sql`
+      update identity.users set birth_date = '2009-01-01', age_division = 'YOUTH'
+      where user_id = ${seeded.athleteB}::uuid
+    `.execute(database);
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${athleteC}::uuid, ${`+7998${String(base).padStart(7, '0')}`},
+        '2026-09-27T10:00:00.000Z', '2009-02-01', 'YOUTH',
+        'Youth Queue Athlete', 'ACTIVE', 'ru-RU', 1, '2026-09-27T10:00:00.000Z'
+      )
+    `.execute(database);
+    await sql`
+      insert into identity.athlete_profiles (
+        user_id, primary_sport, discovery_radius_km
+      ) values (${athleteC}::uuid, 'BOXING', 15)
+    `.execute(database);
+    await sql`
+      update community.community_memberships
+      set age_division = 'YOUTH'
+      where membership_id in (${athleteAMembership}::uuid, ${athleteBMembership}::uuid)
+    `.execute(database);
+    await sql`
+      insert into community.community_memberships (
+        membership_id, community_id, user_id, age_division, state,
+        competition_enabled, join_path, decided_at, decided_by, version
+      ) values (
+        ${athleteCMembership}::uuid, ${seeded.community}::uuid, ${athleteC}::uuid,
+        'YOUTH', 'ACTIVE', true, 'INVITE', '2026-09-27T10:00:00.000Z',
+        ${seeded.athleteA}::uuid, 1
+      )
+    `.execute(database);
+    await sql`
+      update competition.competitions
+      set age_division = 'YOUTH', phase = ${started ? 'FOUNDING_OPEN' : 'RUNNING'},
+        champion_user_id = ${started ? null : seeded.athleteB}::uuid,
+        contender_user_id = ${started ? null : seeded.athleteA}::uuid,
+        status_version = ${started ? 0 : 2}
+      where competition_id = ${seeded.competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into competition.competitions (
+        competition_id, community_id, age_division, phase, availability,
+        status_version, version, created_at, updated_at
+      ) values (
+        ${adultCompetition}::uuid, ${seeded.community}::uuid, 'ADULT',
+        'FOUNDING_OPEN', 'ACTIVE', 0, 1,
+        '2026-09-27T10:00:00.000Z', '2026-09-27T10:00:00.000Z'
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (
+        ${rulesetSnapshot}::uuid, ${seeded.competition}::uuid,
+        ${communityConfiguration}::uuid, 'pilot-boxing-v1',
+        'IMPLICIT_ON_ACCEPT', 'challenge-mvp-v1', '2026-09-27T10:00:00.000Z'
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.challenges (
+        challenge_id, competition_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id,
+        response_deadline_at, accepted_at, scheduling_deadline_at,
+        version, created_at, updated_at
+      ) values (
+        ${challenge}::uuid, ${seeded.competition}::uuid, ${chat}::uuid, ${chat}::uuid,
+        ${seeded.athleteA}::uuid, ${seeded.athleteB}::uuid,
+        least(${seeded.athleteA}::uuid, ${seeded.athleteB}::uuid),
+        greatest(${seeded.athleteA}::uuid, ${seeded.athleteB}::uuid),
+        'MANDATORY', ${started ? 'NONE' : 'TITLE'}, ${started ? 'IN_SESSION' : 'BOOKED'},
+        ${rulesetSnapshot}::uuid, '2026-09-29T10:00:00.000Z',
+        '2026-09-27T10:00:00.000Z', '2026-10-11T10:00:00.000Z',
+        4, '2026-09-27T10:00:00.000Z', '2026-09-27T10:00:00.000Z'
+      )
+    `.execute(database);
+    await sql`
+      update scheduling.slots
+      set start_at = ${scheduledStart}::timestamptz,
+        end_at = ${scheduledEnd}::timestamptz
+      where slot_id = ${seeded.slot}::uuid
+    `.execute(database);
+    await sql`
+      update scheduling.bookings
+      set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challenge}::uuid
+      where booking_id = ${seeded.booking}::uuid
+    `.execute(database);
+    await sql`
+      update scheduling.sessions
+      set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challenge}::uuid,
+        scheduled_start_at = ${scheduledStart}::timestamptz,
+        scheduled_end_at = ${scheduledEnd}::timestamptz,
+        state = ${started ? 'IN_PROGRESS' : 'SCHEDULED'},
+        window_opened_at = ${started ? '2026-10-01T23:30:00.000Z' : null}::timestamptz,
+        actual_start_at = ${started ? '2026-10-01T23:50:00.000Z' : null}::timestamptz
+      where session_id = ${seeded.session}::uuid
+    `.execute(database);
+    await sql`
+      insert into competition.challenge_participant_obligations (
+        obligation_id, challenge_id, user_id, accepted_at
+      ) values
+        (${testId(base + 30)}::uuid, ${challenge}::uuid, ${seeded.athleteA}::uuid,
+          '2026-09-27T10:00:00.000Z'),
+        (${testId(base + 31)}::uuid, ${challenge}::uuid, ${seeded.athleteB}::uuid,
+          '2026-09-27T10:00:00.000Z')
+    `.execute(database);
+    await sql`
+      insert into governance.youth_challenge_consents (
+        consent_id, challenge_id, athlete_user_id, policy_version, state,
+        channel, contact_hash, masked_contact, token_hash,
+        guardian_display_name, relationship, consent_audit_hash,
+        request_event_id, decision_event_id, requested_at, decided_at,
+        expires_at, version
+      ) values (
+        ${consent}::uuid, ${challenge}::uuid, ${seeded.athleteA}::uuid,
+        'youth-consent-mvp-v1', 'GRANTED', 'EMAIL', ${'a'.repeat(64)},
+        'g***@example.test', ${'b'.repeat(64)}, 'Guardian', 'PARENT',
+        ${'c'.repeat(64)}, ${testId(base + 32)}::uuid, ${testId(base + 33)}::uuid,
+        '2026-09-27T09:00:00.000Z', '2026-09-27T10:00:00.000Z',
+        '2026-10-11T10:00:00.000Z', 2
+      )
+    `.execute(database);
+
+    if (started) {
+      await sql`
+        insert into scheduling.session_competitive_snapshots (
+          snapshot_id, session_id, challenge_id, competition_id,
+          ruleset_snapshot_id, community_configuration_id, planned_stake,
+          effective_stake, champion_user_id, contender_user_id,
+          competition_status_version, venue_id, coach_user_id,
+          pair_low_id, pair_high_id, scheduled_start_at, scheduled_end_at, created_at
+        ) values (
+          ${competitiveSnapshot}::uuid, ${seeded.session}::uuid, ${challenge}::uuid,
+          ${seeded.competition}::uuid, ${rulesetSnapshot}::uuid,
+          ${communityConfiguration}::uuid, 'NONE', 'NONE', null, null, 0,
+          ${testId(base + 4)}::uuid, ${seeded.coach}::uuid,
+          least(${seeded.athleteA}::uuid, ${seeded.athleteB}::uuid),
+          greatest(${seeded.athleteA}::uuid, ${seeded.athleteB}::uuid),
+          ${scheduledStart}::timestamptz, ${scheduledEnd}::timestamptz,
+          '2026-10-01T23:30:00.000Z'
+        )
+      `.execute(database);
+    } else {
+      await sql`
+        insert into competition.challenge_queue_entries (
+          queue_entry_id, competition_id, initiator_user_id, target_status,
+          kind, state, bound_holder_user_id, source_type,
+          submitted_at, version, created_at, updated_at
+        ) values (
+          ${queueEntry}::uuid, ${seeded.competition}::uuid, ${athleteC}::uuid,
+          'CONTENDER', 'DIRECT_STATUS', 'WAITING', ${seeded.athleteA}::uuid,
+          'DIRECT', '2026-09-28T10:00:00.000Z', 1,
+          '2026-09-28T10:00:00.000Z', '2026-09-28T10:00:00.000Z'
+        )
+      `.execute(database);
+    }
+
+    return {
+      ...seeded, athleteC, athleteAMembership, adultCompetition, rulesetSnapshot,
+      challenge, consent, queueEntry, competitiveSnapshot, boundary,
+      scheduledStart, scheduledEnd,
+    };
+  };
+
+  const ageTransitionEffects = (base: number) => ({
+    transitionId: testId(base), eventId: testId(base + 1), auditId: testId(base + 2),
+    outboxMessageId: testId(base + 3), notificationOutboxMessageId: testId(base + 4),
+    notificationId: testId(base + 5),
+    relatedEventIds: Array.from({ length: 30 }, (_, index) => testId(base + 10 + index)),
+    retentionIds: Array.from({ length: 4 }, (_, index) => testId(base + 50 + index)),
+    retentionTimerOutboxMessageIds: Array.from(
+      { length: 4 }, (_, index) => testId(base + 60 + index),
+    ),
+    statusOutboxMessageIds: Array.from({ length: 4 }, (_, index) => testId(base + 70 + index)),
   });
 
   const mutate = async (
@@ -8422,5 +8632,268 @@ describePostgres('PostgreSQL critical command transaction', () => {
       booking_challenge_id: null, session_state: 'SCHEDULED', session_purpose: 'TRAINING',
       session_challenge_id: null, slot_state: 'BOOKED', competition_effects: '0',
     });
+  });
+
+  it('[AC-002] schedules one Youth birthday timer and transitions exactly once at its boundary', async () => {
+    const userId = testId(20500);
+    const boundary = '2026-10-02T00:00:00.000Z';
+    const activation = await activateUser(
+      database,
+      {
+        commandId: testId(20501), commandType: 'ACTIVATE_ACCOUNT',
+        idempotencyKey: 'activate-youth-age-transition-20501',
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'User', aggregateId: userId, expectedVersion: 0,
+        correlationId: testId(20502), causationId: null, requestId: testId(20503),
+        source: 'scheduler', payloadVersion: 1,
+        payload: {
+          userId, phoneE164: '+79990020500',
+          phoneVerifiedAt: '2026-09-27T09:00:00.000Z',
+          birthDate: '2008-10-02', displayName: 'Youth Boundary Athlete',
+          locale: 'ru-RU', primarySport: 'BOXING', secondarySport: null,
+          discoveryRadiusKm: 15,
+        },
+      } satisfies CommandEnvelope<ActivateIdentityInput>,
+      {
+        eventId: testId(20504), auditId: testId(20505),
+        outboxMessageId: testId(20506), ageTransitionTimerOutboxMessageId: testId(20507),
+      },
+      () => new Date('2026-09-27T10:00:00.000Z'),
+    );
+    expect(activation.response.ageDivision).toBe('YOUTH');
+    const timerMessage = await sql<{ readonly payload: {
+      readonly timer: { readonly deadlineAt: string; readonly expectedVersion: number };
+    } }>`
+      select payload from platform.outbox_messages
+      where message_id = ${testId(20507)}::uuid
+        and topic = 'identity.age-division-timer.v1'
+    `.execute(database);
+    expect(timerMessage.rows[0]?.payload.timer).toMatchObject({
+      deadlineAt: boundary, expectedVersion: 0,
+    });
+
+    const effects = ageTransitionEffects(20600);
+    const transitioned = await transitionYouthToAdult(
+      database,
+      {
+        commandId: testId(20520), commandType: 'TRANSITION_TO_ADULT',
+        idempotencyKey: `age-division:${userId}:adult:v1`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'AgeDivisionTransition', aggregateId: userId,
+        expectedVersion: 0, correlationId: testId(20521), causationId: testId(20504),
+        requestId: testId(20522), source: 'scheduler', payloadVersion: 1,
+        payload: { userId },
+      } satisfies CommandEnvelope<TransitionToAdultPayload>,
+      effects,
+      () => new Date(boundary),
+    );
+    expect(transitioned.response).toMatchObject({
+      userId, fromAgeDivision: 'YOUTH', toAgeDivision: 'ADULT',
+      affectedMembershipCount: 0, closedChallengeIds: [], retentionIds: [],
+      invalidatedQueueEntryIds: [], expiredConsentIds: [], statusChanges: [],
+    });
+    await expect(readAgeDivisionTransitionTimerSnapshot(database, userId)).resolves.toEqual({
+      state: 'ADULT', version: 1, deadlineAt: boundary,
+    });
+  });
+
+  it('[AC-184] transitions Youth to Adult once and retains a booked Session for B-26 decisions', async () => {
+    const fixture = await seedYouthOfficialAtAgeBoundary(21000, false);
+    await expect(
+      readAgeDivisionTransitionTimerSnapshot(database, fixture.athleteA),
+    ).resolves.toEqual({
+      state: 'YOUTH', version: 0, deadlineAt: fixture.boundary,
+    });
+    const effects = ageTransitionEffects(21300);
+    const command: CommandEnvelope<TransitionToAdultPayload> = {
+      commandId: testId(21280), commandType: 'TRANSITION_TO_ADULT',
+      idempotencyKey: `age-division:${fixture.athleteA}:adult:v1`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AgeDivisionTransition', aggregateId: fixture.athleteA,
+      expectedVersion: 0, correlationId: testId(21281), causationId: null,
+      requestId: testId(21282), source: 'scheduler', payloadVersion: 1,
+      payload: { userId: fixture.athleteA },
+    };
+
+    const transitioned = await transitionYouthToAdult(
+      database, command, effects, () => new Date(fixture.boundary),
+    );
+    const replay = await transitionYouthToAdult(
+      database, command, effects, () => new Date(fixture.boundary),
+    );
+    expect(transitioned).toMatchObject({
+      replayed: false,
+      response: {
+        userId: fixture.athleteA,
+        fromAgeDivision: 'YOUTH', toAgeDivision: 'ADULT',
+        identityVersion: 2, affectedMembershipCount: 1,
+        closedChallengeIds: [fixture.challenge],
+        retentionIds: [effects.retentionIds[0]],
+        invalidatedQueueEntryIds: [fixture.queueEntry],
+        expiredConsentIds: [fixture.consent],
+        statusChanges: [{
+          competitionId: fixture.competition, releasedStatus: 'CONTENDER',
+          beforeChampionUserId: fixture.athleteB,
+          beforeContenderUserId: fixture.athleteA,
+          afterChampionUserId: fixture.athleteB,
+          afterContenderUserId: null,
+          afterPhase: 'CONTENDER_VACANT_OPEN', statusVersion: 3,
+        }],
+      },
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.eventId).toBe(transitioned.eventId);
+
+    const state = await sql<{
+      readonly age_division: string;
+      readonly membership_age_division: string;
+      readonly challenge_state: string;
+      readonly active_obligations: string;
+      readonly booking_state: string;
+      readonly booking_purpose: string;
+      readonly session_state: string;
+      readonly session_purpose: string;
+      readonly retention_state: string;
+      readonly retention_cause: string;
+      readonly consent_state: string;
+      readonly queue_state: string;
+      readonly champion_user_id: string | null;
+      readonly contender_user_id: string | null;
+      readonly phase: string;
+      readonly adult_status_count: string;
+      readonly age_events: string;
+      readonly transition_rows: string;
+    }>`
+      select athlete.age_division,
+        membership.age_division as membership_age_division,
+        challenge.state as challenge_state,
+        (select count(*)::text from competition.challenge_participant_obligations
+          where challenge_id = challenge.challenge_id and released_at is null) as active_obligations,
+        booking.state as booking_state, booking.purpose as booking_purpose,
+        session.state as session_state, session.purpose as session_purpose,
+        retention.state as retention_state, retention.cause as retention_cause,
+        consent.state as consent_state, queue.state as queue_state,
+        youth_competition.champion_user_id, youth_competition.contender_user_id,
+        youth_competition.phase,
+        (select count(*)::text from competition.competitions
+          where competition_id = ${fixture.adultCompetition}::uuid
+            and ${fixture.athleteA}::uuid in (champion_user_id, contender_user_id)) as adult_status_count,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'AgeDivisionTransition'
+            and aggregate_id = ${fixture.athleteA}::uuid
+            and event_name = 'AgeDivisionChanged') as age_events,
+        (select count(*)::text from identity.age_division_transitions
+          where user_id = ${fixture.athleteA}::uuid) as transition_rows
+      from identity.users as athlete
+      join community.community_memberships as membership
+        on membership.membership_id = ${fixture.athleteAMembership}::uuid
+      join competition.challenges as challenge
+        on challenge.challenge_id = ${fixture.challenge}::uuid
+      join scheduling.bookings as booking on booking.booking_id = ${fixture.booking}::uuid
+      join scheduling.sessions as session on session.session_id = ${fixture.session}::uuid
+      join scheduling.booking_training_retentions as retention
+        on retention.booking_id = booking.booking_id
+      join governance.youth_challenge_consents as consent
+        on consent.consent_id = ${fixture.consent}::uuid
+      join competition.challenge_queue_entries as queue
+        on queue.queue_entry_id = ${fixture.queueEntry}::uuid
+      join competition.competitions as youth_competition
+        on youth_competition.competition_id = ${fixture.competition}::uuid
+      where athlete.user_id = ${fixture.athleteA}::uuid
+    `.execute(database);
+    expect(state.rows[0]).toEqual({
+      age_division: 'ADULT', membership_age_division: 'ADULT',
+      challenge_state: 'CANCELLED_NO_FAULT', active_obligations: '0',
+      booking_state: 'OFFICIAL_RELEASE_PENDING', booking_purpose: 'OFFICIAL_CHALLENGE',
+      session_state: 'SCHEDULED', session_purpose: 'OFFICIAL_CHALLENGE',
+      retention_state: 'PENDING', retention_cause: 'AGE_TRANSITION',
+      consent_state: 'EXPIRED', queue_state: 'INVALIDATED',
+      champion_user_id: fixture.athleteB, contender_user_id: null,
+      phase: 'CONTENDER_VACANT_OPEN', adult_status_count: '0',
+      age_events: '1', transition_rows: '1',
+    });
+    await expect(
+      readAgeDivisionTransitionTimerSnapshot(database, fixture.athleteA),
+    ).resolves.toEqual({
+      state: 'ADULT', version: 1, deadlineAt: fixture.boundary,
+    });
+  });
+
+  it('[AC-185] preserves an already-started Youth Session and its frozen competitive snapshot', async () => {
+    const fixture = await seedYouthOfficialAtAgeBoundary(22000, true);
+    const before = await sql<{
+      readonly session_state: string;
+      readonly challenge_state: string;
+      readonly actual_start_at: Date;
+      readonly snapshot: unknown;
+    }>`
+      select session.state as session_state, challenge.state as challenge_state,
+        session.actual_start_at,
+        to_jsonb(snapshot) as snapshot
+      from scheduling.sessions as session
+      join competition.challenges as challenge on challenge.challenge_id = session.challenge_id
+      join scheduling.session_competitive_snapshots as snapshot
+        on snapshot.session_id = session.session_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    const effects = ageTransitionEffects(22300);
+    const transitioned = await transitionYouthToAdult(
+      database,
+      {
+        commandId: testId(22280), commandType: 'TRANSITION_TO_ADULT',
+        idempotencyKey: `age-division:${fixture.athleteA}:adult:v1`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'AgeDivisionTransition', aggregateId: fixture.athleteA,
+        expectedVersion: 0, correlationId: testId(22281), causationId: null,
+        requestId: testId(22282), source: 'scheduler', payloadVersion: 1,
+        payload: { userId: fixture.athleteA },
+      } satisfies CommandEnvelope<TransitionToAdultPayload>,
+      effects,
+      () => new Date(fixture.boundary),
+    );
+    expect(transitioned.response).toMatchObject({
+      userId: fixture.athleteA,
+      closedChallengeIds: [], retentionIds: [],
+      statusChanges: [], expiredConsentIds: [fixture.consent],
+    });
+
+    const after = await sql<{
+      readonly session_state: string;
+      readonly challenge_state: string;
+      readonly actual_start_at: Date;
+      readonly snapshot: unknown;
+      readonly athlete_age_division: string;
+      readonly membership_age_division: string;
+      readonly consent_state: string;
+      readonly active_obligations: string;
+    }>`
+      select session.state as session_state, challenge.state as challenge_state,
+        session.actual_start_at, to_jsonb(snapshot) as snapshot,
+        athlete.age_division as athlete_age_division,
+        membership.age_division as membership_age_division,
+        consent.state as consent_state,
+        (select count(*)::text from competition.challenge_participant_obligations
+          where challenge_id = challenge.challenge_id and released_at is null) as active_obligations
+      from scheduling.sessions as session
+      join competition.challenges as challenge on challenge.challenge_id = session.challenge_id
+      join scheduling.session_competitive_snapshots as snapshot
+        on snapshot.session_id = session.session_id
+      join identity.users as athlete on athlete.user_id = ${fixture.athleteA}::uuid
+      join community.community_memberships as membership
+        on membership.membership_id = ${fixture.athleteAMembership}::uuid
+      join governance.youth_challenge_consents as consent
+        on consent.consent_id = ${fixture.consent}::uuid
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    expect(after.rows[0]).toMatchObject({
+      session_state: 'IN_PROGRESS', challenge_state: 'IN_SESSION',
+      actual_start_at: new Date('2026-10-01T23:50:00.000Z'),
+      athlete_age_division: 'ADULT', membership_age_division: 'ADULT',
+      consent_state: 'EXPIRED', active_obligations: '2',
+    });
+    expect(after.rows[0]?.snapshot).toEqual(before.rows[0]?.snapshot);
+    expect(after.rows[0]?.session_state).toBe(before.rows[0]?.session_state);
+    expect(after.rows[0]?.challenge_state).toBe(before.rows[0]?.challenge_state);
+    expect(after.rows[0]?.actual_start_at).toEqual(before.rows[0]?.actual_start_at);
   });
 });
