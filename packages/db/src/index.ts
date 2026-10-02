@@ -39,6 +39,7 @@ export * from './notifications.js';
 export * from './outbox.js';
 export * from './pair-intent.js';
 export * from './platform-command.js';
+export * from './platform-incident.js';
 export * from './role-grants.js';
 export * from './result.js';
 export * from './scheduling.js';

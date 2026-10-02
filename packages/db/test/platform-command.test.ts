@@ -44,6 +44,12 @@ import {
   claimOutboxBatch,
   claimInboxEvent,
   createDatabase,
+  detectPlatformIncident,
+  confirmPlatformIncident,
+  rejectPlatformIncident,
+  resolvePlatformIncident,
+  compensatePlatformIncidentImpacts,
+  listPlatformIncidents,
   executeCriticalCommand,
   ensureLocalPilotCommunity,
   ensureLocalPilotCompetition,
@@ -174,6 +180,11 @@ import {
   type BlockUserPayload,
   type CriticalCommandEffect,
   type Database,
+  type DetectPlatformIncidentPayload,
+  type ConfirmPlatformIncidentPayload,
+  type RejectPlatformIncidentPayload,
+  type ResolvePlatformIncidentPayload,
+  type CompensatePlatformIncidentPayload,
   type LikeEffectIds,
   type EditChatMessagePayload,
   type HideChatMessagePayload,
@@ -1802,6 +1813,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await sql`
       truncate table
         test_support.probe_aggregates,
+        platform.incident_timeout_compensations,
+        platform.incident_impacts,
+        platform.platform_incidents,
         community.community_closure_status_dispositions,
         community.community_closure_session_dispositions,
         community.community_closure_plans,
@@ -8895,5 +8909,121 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(after.rows[0]?.session_state).toBe(before.rows[0]?.session_state);
     expect(after.rows[0]?.challenge_state).toBe(before.rows[0]?.challenge_state);
     expect(after.rows[0]?.actual_start_at).toEqual(before.rows[0]?.actual_start_at);
+  });
+
+  it('persists PI-01 through PI-05 with Central authorization and idempotent completion', async () => {
+    const central = testId(23000);
+    const grant = testId(23001);
+    const incident = testId(23002);
+    await sql`insert into identity.users (
+      user_id, phone_e164, phone_verified_at, birth_date, age_division,
+      display_name, account_state, locale, version, activated_at
+    ) values (
+      ${central}::uuid, '+79990023000', '2026-10-02T08:00:00.000Z', '1990-01-01',
+      'ADULT', 'Incident Central', 'ACTIVE', 'ru-RU', 1, '2026-10-02T08:00:00.000Z'
+    )`.execute(database);
+    await sql`insert into community.role_grants (
+      grant_id, user_id, role, scope_type, scope_id, state,
+      authorized_by, authorized_at, version
+    ) values (
+      ${grant}::uuid, ${central}::uuid, 'CENTRAL_ADMIN', 'GLOBAL', null,
+      'ACTIVE', ${central}::uuid, '2026-10-02T08:00:00.000Z', 1
+    )`.execute(database);
+
+    const detected = await detectPlatformIncident(database, {
+      commandId: testId(23003), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-detect-23002',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 0,
+      correlationId: testId(23004), causationId: null, requestId: testId(23005),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { startedAt: '2026-10-02T10:00:00.000Z',
+        affectedServices: ['CHALLENGE'], affectedSurfaces: ['api'], severity: 'MAJOR',
+        monitoringEvidenceReference: 'monitor:api:error-rate:23002' },
+    } satisfies CommandEnvelope<DetectPlatformIncidentPayload>, {
+      eventId: testId(23006), auditId: testId(23007), outboxMessageId: testId(23008),
+    }, () => new Date('2026-10-02T10:01:00.000Z'));
+    expect(detected.response).toMatchObject({ state: 'DETECTED', version: 1,
+      affectedServices: ['CHALLENGE'], affectedSurfaces: ['api'] });
+
+    const confirmed = await confirmPlatformIncident(database, {
+      commandId: testId(23009), commandType: 'CONFIRM_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-confirm-23002',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 1,
+      correlationId: testId(23004), causationId: testId(23006), requestId: testId(23010),
+      source: 'admin', payloadVersion: 1,
+      payload: { incidentId: incident, reason: 'Objective API failure confirmed.' },
+    } satisfies CommandEnvelope<ConfirmPlatformIncidentPayload>, {
+      eventId: testId(23011), auditId: testId(23012), outboxMessageId: testId(23013),
+    }, () => new Date('2026-10-02T10:02:00.000Z'));
+    expect(confirmed.response).toMatchObject({ state: 'CONFIRMED_ACTIVE', version: 2,
+      confirmedBy: central });
+
+    const resolved = await resolvePlatformIncident(database, {
+      commandId: testId(23014), commandType: 'RESOLVE_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-resolve-23002',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 2,
+      correlationId: testId(23004), causationId: testId(23011), requestId: testId(23015),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: incident, endedAt: '2026-10-02T10:37:00.000Z',
+        reason: 'Recovery probe remained healthy.' },
+    } satisfies CommandEnvelope<ResolvePlatformIncidentPayload>, {
+      eventId: testId(23016), auditId: testId(23017), outboxMessageId: testId(23018),
+    }, () => new Date('2026-10-02T10:38:00.000Z'));
+    expect(resolved.response).toMatchObject({ state: 'RESOLVED', version: 3,
+      endedAt: '2026-10-02T10:37:00.000Z' });
+
+    const compensationCommand = {
+      commandId: testId(23019), commandType: 'COMPENSATE_INCIDENT_IMPACTS',
+      idempotencyKey: 'incident-compensate-23002',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 3,
+      correlationId: testId(23004), causationId: testId(23016), requestId: testId(23020),
+      source: 'scheduler', payloadVersion: 1, payload: { incidentId: incident },
+    } satisfies CommandEnvelope<CompensatePlatformIncidentPayload>;
+    const compensationIds = {
+      eventId: testId(23021), auditId: testId(23022), outboxMessageId: testId(23023),
+    };
+    const compensated = await compensatePlatformIncidentImpacts(
+      database, compensationCommand, compensationIds,
+      () => new Date('2026-10-02T10:39:00.000Z'),
+    );
+    const replay = await compensatePlatformIncidentImpacts(
+      database, compensationCommand, compensationIds,
+      () => new Date('2026-10-02T10:40:00.000Z'),
+    );
+    expect(compensated.response).toMatchObject({ state: 'COMPENSATED', version: 4,
+      impactCount: 0 });
+    expect(replay).toMatchObject({ replayed: true, eventId: testId(23021) });
+    expect(await listPlatformIncidents(database, central)).toHaveLength(1);
+
+    const rejectedIncident = testId(23030);
+    await detectPlatformIncident(database, {
+      commandId: testId(23031), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-detect-23030',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: rejectedIncident, expectedVersion: 0,
+      correlationId: testId(23032), causationId: null, requestId: testId(23033),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { startedAt: '2026-10-03T10:00:00.000Z',
+        affectedServices: ['BOOKING'], affectedSurfaces: ['web'], severity: 'INFO',
+        monitoringEvidenceReference: 'monitor:false-positive:23030' },
+    } satisfies CommandEnvelope<DetectPlatformIncidentPayload>, {
+      eventId: testId(23034), auditId: testId(23035), outboxMessageId: testId(23036),
+    }, () => new Date('2026-10-03T10:01:00.000Z'));
+    const rejected = await rejectPlatformIncident(database, {
+      commandId: testId(23037), commandType: 'REJECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-reject-23030',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: rejectedIncident, expectedVersion: 1,
+      correlationId: testId(23032), causationId: testId(23034), requestId: testId(23038),
+      source: 'admin', payloadVersion: 1,
+      payload: { incidentId: rejectedIncident, reason: 'Not platform-wide.' },
+    } satisfies CommandEnvelope<RejectPlatformIncidentPayload>, {
+      eventId: testId(23039), auditId: testId(23040), outboxMessageId: testId(23041),
+    }, () => new Date('2026-10-03T10:02:00.000Z'));
+    expect(rejected.response).toMatchObject({ state: 'REJECTED', version: 2 });
   });
 });
