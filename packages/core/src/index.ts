@@ -7,6 +7,7 @@ export * from './identity.js';
 export * from './missing-result.js';
 export * from './membership-exit.js';
 export * from './membership-removal.js';
+export * from './platform-incident.js';
 export * from './integrity-case.js';
 export * from './role-grant.js';
 export * from './result.js';
