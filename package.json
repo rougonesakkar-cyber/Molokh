@@ -7,7 +7,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "audit:prod": "pnpm audit --prod --audit-level high",
+    "audit:prod": "node ./tools/audit-production.mjs",
     "build": "pnpm -r --if-present build",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm coverage:acceptance",
     "coverage:acceptance": "node ./tools/acceptance-coverage.mjs",
