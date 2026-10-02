@@ -27,6 +27,7 @@ import {
   finalizeResult,
   expireSlot,
   expireStatusQueueReconfirmation,
+  transitionYouthToAdult,
   markOutboxPublished,
   remindMissingResultCoach,
   escalateMissingResultAdmin,
@@ -54,6 +55,7 @@ import {
   readStatusQueueActivationCandidate,
   readStatusQueueReconciliationCandidates,
   readStatusQueueTimerSnapshot,
+  readAgeDivisionTransitionTimerSnapshot,
   readVacancyQueueReconciliationCandidate,
   reconcileVacancyQueue,
   requestStatusQueueReconfirmation,
@@ -78,6 +80,7 @@ import {
   type RequestStatusQueueReconfirmationPayload,
   type PromoteSingleGenesisCandidatePayload,
   type ReconcileVacancyQueuePayload,
+  type TransitionToAdultPayload,
 } from '@molokh/db';
 import { makeWorkerUtils, run } from 'graphile-worker';
 import pino from 'pino';
@@ -92,6 +95,7 @@ import { missingResultTimerFromOutbox } from './missing-result-timers.js';
 import { statusQueueTimerFromOutbox } from './status-queue-timers.js';
 import { createTaskList } from './tasks.js';
 import { processTimer } from './timer-processor.js';
+import { identityTimerFromOutbox } from './identity-timers.js';
 
 const production = process.env.NODE_ENV === 'production';
 const connectionString =
@@ -820,11 +824,37 @@ const executeMissingResultTimer = async (payload: TimerCommandPayload) => {
   }
 };
 
+const executeAgeDivisionTransition = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<TransitionToAdultPayload> = {
+    commandId: randomUUID(), commandType: 'TRANSITION_TO_ADULT',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AgeDivisionTransition', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(),
+    causationId: null, requestId: randomUUID(), source: 'scheduler',
+    payloadVersion: 1, payload: { userId: payload.aggregateId },
+  };
+  await transitionYouthToAdult(database, command, {
+    transitionId: randomUUID(), eventId: randomUUID(), auditId: randomUUID(),
+    outboxMessageId: randomUUID(), notificationOutboxMessageId: randomUUID(),
+    notificationId: randomUUID(),
+    relatedEventIds: Array.from({ length: 100 }, () => randomUUID()),
+    retentionIds: Array.from({ length: 20 }, () => randomUUID()),
+    retentionTimerOutboxMessageIds: Array.from({ length: 20 }, () => randomUUID()),
+    statusOutboxMessageIds: Array.from({ length: 20 }, () => randomUUID()),
+  });
+};
+
 const taskList = createTaskList({
   onRuntimeProbe: (message) => logger.info({ message }, 'runtime probe'),
   onTimer: async (payload) => {
     await processTimer(payload, {
       handlers: {
+        TRANSITION_TO_ADULT: {
+          loadSnapshot: (timer) =>
+            readAgeDivisionTransitionTimerSnapshot(database, timer.aggregateId),
+          execute: executeAgeDivisionTransition,
+        },
         EXPIRE_LIKE: {
           loadSnapshot: (timer) => readLikeTimerSnapshot(database, timer.aggregateId),
           execute: executeLikeExpiry,
@@ -1005,6 +1035,7 @@ const outboxPolling = startOutboxPolling({
   deliver: async (message) => {
     const socialTimer = socialTimerFromOutbox(message.topic, message.payload);
     const timer = socialTimer
+      ?? identityTimerFromOutbox(message.topic, message.payload)
       ?? schedulingTimerFromOutbox(message.topic, message.payload)
       ?? challengeTimerFromOutbox(message.topic, message.payload)
       ?? statusQueueTimerFromOutbox(message.topic, message.payload)
