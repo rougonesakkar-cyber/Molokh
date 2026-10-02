@@ -155,7 +155,7 @@ PII, тексты Report и media не копируются в широкий ev
 | `BookingCoachReplaced/SessionCoachReplaced` | Booking/Session | assignment audit, notifications, Result permission |
 | `BookingTrainingRetentionRequested/Confirmed/Closed`, `BookingConvertedToTraining` | Booking | Session, notifications, Competition audit |
 | `TrainingParticipantCancelled/SoloContinuationConfirmed/BookingConvertedToSolo` | Booking | Session, notifications |
-| `SessionScheduled/WindowOpened/Started/Ended/Cancelled/FailedExternal` | Session | Challenge, Result, stats, operational review |
+| `SessionScheduled/WindowOpened/Started/Ended/Cancelled/FailedExternal/ConvertedToSolo/ConvertedToTraining` | Session | Challenge, Result, stats, operational review |
 | `AttendanceRecorded` | Session | stats, Result validation |
 
 ### 3.4. Competition
@@ -614,6 +614,8 @@ BookingRequestWithdrawn
 BookingTrainingRetentionClosed
 BookingTrainingRetentionConfirmed
 BookingTrainingRetentionRequested
+SessionConvertedToSolo
+SessionConvertedToTraining
 BookingConvertedToOfficial
 CaseClosed
 CaseDecided

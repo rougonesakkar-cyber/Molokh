@@ -20,6 +20,9 @@ import {
   assertOfficialConversionDecisionCanBeRecorded,
   assertSoloContinuationCanExpire,
   assertSoloContinuationDecisionCanBeRecorded,
+  assertOfficialTrainingRetentionCanBeOffered,
+  assertTrainingRetentionCanExpire,
+  assertTrainingRetentionDecisionCanBeRecorded,
   assertTrainingParticipantCanCancel,
   assertTrainingOfficialConversionCanBeRequested,
   attendanceCountsAsCompletedTraining,
@@ -27,6 +30,7 @@ import {
   hostConfirmationDeadline,
   officialConversionDeadline,
   soloContinuationDeadline,
+  trainingRetentionDeadline,
   normalizeCommercialPrice,
   normalizeOptionalScheduleText,
   normalizeScheduleMutationReason,
@@ -366,6 +370,41 @@ describe('Scheduling publication policy', () => {
       deadlineAt: occurredAt.toISOString(), occurredAt,
     })).toThrowError(expect.objectContaining({ reason: 'SOLO_CONTINUATION_EXPIRED' }));
     expect(() => assertSoloContinuationCanExpire({
+      state: 'PENDING', deadlineAt: occurredAt.toISOString(), occurredAt,
+    })).not.toThrow();
+  });
+
+  it('AC-170 caps booked Official-to-Training retention at one hour or Session start', () => {
+    expect(trainingRetentionDeadline({
+      occurredAt,
+      scheduledStartAt: '2026-09-07T12:00:00.000Z',
+    }).toISOString()).toBe('2026-09-07T10:00:00.000Z');
+    expect(assertOfficialTrainingRetentionCanBeOffered({
+      bookingState: 'CONFIRMED_PAIR',
+      bookingPurpose: 'OFFICIAL_CHALLENGE',
+      sessionState: 'SCHEDULED',
+      actualStartAt: null,
+      slotState: 'BOOKED',
+      scheduledStartAt: '2026-09-07T09:30:00.000Z',
+      occurredAt,
+    }).toISOString()).toBe('2026-09-07T09:30:00.000Z');
+    expect(() => assertOfficialTrainingRetentionCanBeOffered({
+      bookingState: 'CONFIRMED_PAIR', bookingPurpose: 'TRAINING',
+      sessionState: 'SCHEDULED', actualStartAt: null, slotState: 'BOOKED',
+      scheduledStartAt: '2026-09-07T09:30:00.000Z', occurredAt,
+    })).toThrowError(expect.objectContaining({ reason: 'TRAINING_RETENTION_NOT_ALLOWED' }));
+  });
+
+  it('AC-170 accepts one decision per required party and expires at the exact deadline', () => {
+    expect(() => assertTrainingRetentionDecisionCanBeRecorded({
+      state: 'PENDING', actorRequired: true, actorAlreadyDecided: false,
+      deadlineAt: '2026-09-07T10:00:00.000Z', occurredAt,
+    })).not.toThrow();
+    expect(() => assertTrainingRetentionDecisionCanBeRecorded({
+      state: 'PENDING', actorRequired: true, actorAlreadyDecided: true,
+      deadlineAt: '2026-09-07T10:00:00.000Z', occurredAt,
+    })).toThrowError(expect.objectContaining({ reason: 'TRAINING_RETENTION_ALREADY_DECIDED' }));
+    expect(() => assertTrainingRetentionCanExpire({
       state: 'PENDING', deadlineAt: occurredAt.toISOString(), occurredAt,
     })).not.toThrow();
   });

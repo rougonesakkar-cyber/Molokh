@@ -3,6 +3,7 @@ export const MAX_SLOT_HORIZON_DAYS = 30;
 export const BOOKING_SELECTION_TTL_MILLISECONDS = 60 * 60 * 1_000;
 export const OFFICIAL_CONVERSION_TTL_HOURS = 72;
 export const SOLO_CONTINUATION_TTL_MINUTES = 60;
+export const TRAINING_RETENTION_TTL_MINUTES = 60;
 
 export type SchedulingConflictCode =
   | 'COACH_CONFLICT'
@@ -38,7 +39,12 @@ export type SchedulingConflictCode =
   | 'SOLO_CONTINUATION_NOT_PENDING'
   | 'SOLO_CONTINUATION_ACTOR_NOT_REQUIRED'
   | 'SOLO_CONTINUATION_ALREADY_DECIDED'
-  | 'SOLO_CONTINUATION_EXPIRED';
+  | 'SOLO_CONTINUATION_EXPIRED'
+  | 'TRAINING_RETENTION_NOT_ALLOWED'
+  | 'TRAINING_RETENTION_NOT_PENDING'
+  | 'TRAINING_RETENTION_ACTOR_NOT_REQUIRED'
+  | 'TRAINING_RETENTION_ALREADY_DECIDED'
+  | 'TRAINING_RETENTION_EXPIRED';
 
 export type ScheduleMutationReasonCode =
   | 'COACH_UNAVAILABLE'
@@ -406,6 +412,83 @@ export function assertSoloContinuationCanExpire(input: {
   const deadline = validDate(input.deadlineAt, 'deadlineAt');
   if (!Number.isFinite(input.occurredAt.getTime()) || input.occurredAt < deadline) {
     throw new SchedulingConflictError('SOLO_CONTINUATION_EXPIRED');
+  }
+}
+
+export type TrainingRetentionState = 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'EXPIRED';
+export type TrainingRetentionRequiredRole = 'ATHLETE_LOW' | 'ATHLETE_HIGH' | 'COACH_OR_HOST';
+
+export function trainingRetentionDeadline(input: {
+  readonly occurredAt: Date;
+  readonly scheduledStartAt: string;
+}): Date {
+  const scheduledStartAt = validDate(input.scheduledStartAt, 'scheduledStartAt');
+  if (!Number.isFinite(input.occurredAt.getTime()) || scheduledStartAt <= input.occurredAt) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_ALLOWED');
+  }
+  return new Date(Math.min(
+    scheduledStartAt.getTime(),
+    input.occurredAt.getTime() + TRAINING_RETENTION_TTL_MINUTES * 60 * 1_000,
+  ));
+}
+
+export function assertOfficialTrainingRetentionCanBeOffered(input: {
+  readonly bookingState: string;
+  readonly bookingPurpose: string;
+  readonly sessionState: SessionState;
+  readonly actualStartAt: string | null;
+  readonly slotState: string;
+  readonly scheduledStartAt: string;
+  readonly occurredAt: Date;
+}): Date {
+  if (
+    input.bookingState !== 'CONFIRMED_PAIR'
+    || input.bookingPurpose !== 'OFFICIAL_CHALLENGE'
+    || input.sessionState !== 'SCHEDULED'
+    || input.actualStartAt !== null
+    || input.slotState !== 'BOOKED'
+  ) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_ALLOWED');
+  }
+  return trainingRetentionDeadline({
+    occurredAt: input.occurredAt,
+    scheduledStartAt: input.scheduledStartAt,
+  });
+}
+
+export function assertTrainingRetentionDecisionCanBeRecorded(input: {
+  readonly state: TrainingRetentionState;
+  readonly actorRequired: boolean;
+  readonly actorAlreadyDecided: boolean;
+  readonly deadlineAt: string;
+  readonly occurredAt: Date;
+}): void {
+  if (input.state !== 'PENDING') {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_PENDING');
+  }
+  if (!input.actorRequired) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_ACTOR_NOT_REQUIRED');
+  }
+  if (input.actorAlreadyDecided) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_ALREADY_DECIDED');
+  }
+  const deadline = validDate(input.deadlineAt, 'deadlineAt');
+  if (!Number.isFinite(input.occurredAt.getTime()) || input.occurredAt >= deadline) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_EXPIRED');
+  }
+}
+
+export function assertTrainingRetentionCanExpire(input: {
+  readonly state: TrainingRetentionState;
+  readonly deadlineAt: string;
+  readonly occurredAt: Date;
+}): void {
+  if (input.state !== 'PENDING') {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_PENDING');
+  }
+  const deadline = validDate(input.deadlineAt, 'deadlineAt');
+  if (!Number.isFinite(input.occurredAt.getTime()) || input.occurredAt < deadline) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_EXPIRED');
   }
 }
 
