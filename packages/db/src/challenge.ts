@@ -2,6 +2,7 @@ import {
   CHALLENGE_POLICY_VERSION,
   RESULT_POLICY_VERSION,
   ChallengeConflictError,
+  YouthConsentConflictError,
   acceptedChallengeSchedulingDeadline,
   assertDirectOpenChallengeCanBeCreated,
   assertOptionalChallengeCanBeAccepted,
@@ -25,6 +26,10 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import {
+  assertYouthChallengeConsentReady,
+  assertYouthOfficialAvailableForUsers,
+} from './youth-consent.js';
 
 export interface CreateDirectChallengePayload {
   readonly sourceChatId: string;
@@ -434,6 +439,24 @@ function assertCreationContext(context: CreationContext): void {
   });
 }
 
+async function assertCreationYouthPolicy(
+  database: Kysely<Database> | Transaction<Database>,
+  context: CreationContext,
+): Promise<void> {
+  try {
+    await assertYouthOfficialAvailableForUsers(database, [
+      context.match.pair_low_id,
+      context.match.pair_high_id,
+    ]);
+  } catch (error) {
+    if (error instanceof YouthConsentConflictError
+      && error.code === 'YOUTH_OFFICIAL_DISABLED') {
+      throw new ChallengeConflictError('YOUTH_OFFICIAL_DISABLED');
+    }
+    throw error;
+  }
+}
+
 async function challengeRow(
   database: Kysely<Database> | Transaction<Database>,
   challengeId: string,
@@ -527,7 +550,9 @@ export async function readChatChallenge(
     createDenialCode = 'PAIR_CHALLENGE_EXISTS';
   } else {
     try {
-      assertCreationContext(await creationContext(database, sourceChatId, viewerUserId));
+      const creation = await creationContext(database, sourceChatId, viewerUserId);
+      assertCreationContext(creation);
+      await assertCreationYouthPolicy(database, creation);
     } catch (error) {
       if (!(error instanceof ChallengeConflictError)) throw error;
       createDenialCode = error.code;
@@ -558,6 +583,7 @@ export async function createDirectOpenChallenge(
       await lockSocialPair(transaction, preliminaryMatch.pair_low_id, preliminaryMatch.pair_high_id);
       const creation = await creationContext(transaction, command.payload.sourceChatId, command.actor.id!);
       assertCreationContext(creation);
+      await assertCreationYouthPolicy(transaction, creation);
       const responseDeadline = optionalChallengeResponseDeadline(context.occurredAt);
       const reminderDeadlines = optionalChallengeReminderDeadlines(context.occurredAt);
       const pair = normalizeSocialPair(creation.initiator.user_id, creation.recipient.user_id);
@@ -771,6 +797,12 @@ export async function acceptOptionalChallenge(
         throw new ChallengeConflictError('PAIR_BLOCKED');
       }
       if (pairSafety.rows[0]?.pair_cooldown_active) throw new ChallengeConflictError('PAIR_COOLDOWN_ACTIVE');
+      await assertYouthChallengeConsentReady(
+        transaction,
+        row.challenge_id,
+        [row.pair_low_id, row.pair_high_id],
+        context.occurredAt,
+      );
       const schedulingDeadline = acceptedChallengeSchedulingDeadline(context.occurredAt);
       await sql`
         update competition.challenges
@@ -778,6 +810,12 @@ export async function acceptOptionalChallenge(
           scheduling_deadline_at = ${schedulingDeadline.toISOString()}::timestamptz,
           version = ${context.nextVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
         where challenge_id = ${row.challenge_id}::uuid and state = 'AWAITING_RESPONSE'
+      `.execute(transaction);
+      await sql`
+        update governance.youth_challenge_consents
+        set expires_at = ${schedulingDeadline.toISOString()}::timestamptz,
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid and state = 'GRANTED'
       `.execute(transaction);
       await sql`
         insert into competition.challenge_ruleset_acknowledgments (

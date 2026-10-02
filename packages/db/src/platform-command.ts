@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import {
   IdempotencyKeyReusedError,
+  InvalidCommandEnvelopeError,
   assertCommandEnvelope,
   assertExpectedVersion,
   commandIdempotencyScope,
@@ -116,6 +117,24 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function assertExternalCommandBoundary<TPayload>(command: CommandEnvelope<TPayload>): void {
+  if (command.actor.type !== 'EXTERNAL') return;
+  const allowedCommands = new Set([
+    'GRANT_YOUTH_CHALLENGE_CONSENT',
+    'DECLINE_YOUTH_CHALLENGE_CONSENT',
+    'REVOKE_YOUTH_CHALLENGE_CONSENT',
+  ]);
+  if (
+    command.aggregateType !== 'YouthChallengeConsent'
+    || !allowedCommands.has(command.commandType)
+    || command.actor.roles.length !== 1
+    || command.actor.roles[0] !== 'GUARDIAN_CONSENT'
+    || command.actor.scopeIds.length !== 2
+  ) {
+    throw new InvalidCommandEnvelopeError('actor.externalScope');
+  }
+}
+
 export function hashCommandRequest<TPayload>(
   command: CommandEnvelope<TPayload>,
 ): string {
@@ -196,6 +215,7 @@ export async function executeCriticalCommand<TPayload, TResponse>(
 ): Promise<ExecutedCommand<TResponse>> {
   const { command } = options;
   assertCommandEnvelope(command);
+  assertExternalCommandBoundary(command);
 
   const scope = commandIdempotencyScope(command);
   const idempotencyKeyHash = sha256(command.idempotencyKey);

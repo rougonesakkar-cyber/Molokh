@@ -33,6 +33,10 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import {
+  assertYouthChallengeConsentReady,
+  assertYouthOfficialAvailableForUser,
+} from './youth-consent.js';
 
 export interface SubmitStatusQueueEntryPayload {
   readonly competitionId: string;
@@ -2251,6 +2255,7 @@ export async function submitStatusQueueEntry(
         command.actor.id!,
       );
       if (!viewer) throw new StatusQueueConflictError('MEMBERSHIP_NOT_ACTIVE');
+      await assertYouthOfficialAvailableForUser(transaction, command.actor.id!);
       const intent: StatusQueueIntent = assertStatusQueueEntryCanBeSubmitted(
         eligibility(viewer, command.actor.id!),
       );
@@ -2798,6 +2803,12 @@ export async function respondToGenesisChallenge(
       }
       if (decision === 'ACCEPT') {
         await assertGenesisParticipantsEligible(transaction, row);
+        await assertYouthChallengeConsentReady(
+          transaction,
+          row.challenge_id,
+          [row.initiator_user_id, row.recipient_user_id],
+          context.occurredAt,
+        );
         const obligationLockOrder = [row.initiator_user_id, row.recipient_user_id].sort();
         for (const userId of obligationLockOrder) {
           await sql`
@@ -2868,6 +2879,12 @@ export async function respondToGenesisChallenge(
         if (nextResponses.filter((response) => response.decision === 'ACCEPT').length === 2) {
           afterState = 'ACCEPTED_UNSCHEDULED';
           const schedulingDeadline = acceptedChallengeSchedulingDeadline(context.occurredAt);
+          await sql`
+            update governance.youth_challenge_consents
+            set expires_at = ${schedulingDeadline.toISOString()}::timestamptz,
+              updated_at = ${context.occurredAt.toISOString()}::timestamptz
+            where challenge_id = ${row.challenge_id}::uuid and state = 'GRANTED'
+          `.execute(transaction);
           await sql`
             update competition.challenges
             set state = 'ACCEPTED_UNSCHEDULED',

@@ -2,6 +2,7 @@ import {
   IdempotencyKeyReusedError,
   IdentityPermissionDeniedError,
   IdentityValidationError,
+  InvalidCommandEnvelopeError,
   InvalidRoleGrantTransitionError,
   RoleGrantPermissionDeniedError,
   RoleGrantValidationError,
@@ -10,6 +11,7 @@ import {
   SchedulingPermissionDeniedError,
   VersionConflictError,
   ChatActionDeniedError,
+  YouthConsentConflictError,
   type ActivateIdentityInput,
   type CommandEnvelope,
 } from '@molokh/core';
@@ -155,6 +157,11 @@ import {
   readCommunityClosure,
   startIntegrityReview,
   decideIntegrityCase,
+  assertYouthChallengeConsentReady,
+  decideYouthConsent,
+  readYouthConsentSummary,
+  requestYouthConsent,
+  youthConsentTokenHash,
   readIntegrityCase,
   submitResultAppeal,
   withdrawAppeal,
@@ -200,6 +207,9 @@ import {
   type ReplaceSessionCoachPayload,
   type CancelAfterCoachReplacementPayload,
   type FailSessionExternalPayload,
+  type DecideYouthConsentPayload,
+  type RequestYouthConsentPayload,
+  type YouthConsentEffectIds,
   type RecordSessionResultPayload,
   type SubmitResultAppealPayload,
   type AddAppealResponsePayload,
@@ -1819,6 +1829,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         competition.status_transitions,
         competition.pair_cooldowns,
         competition.results,
+        governance.youth_challenge_consents,
         competition.challenges,
         competition.ruleset_snapshots,
         competition.competitions,
@@ -1853,6 +1864,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         identity.account_verifications,
         identity.athlete_profiles,
         identity.users,
+        platform.feature_flags,
         platform.notifications,
         platform.notification_preferences,
         platform.outbox_messages,
@@ -1860,6 +1872,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
         platform.inbox_receipts,
         platform.audit_events,
         platform.domain_events
+    `.execute(database);
+    await sql`
+      insert into platform.feature_flags (feature_key, enabled, reason, version)
+      values ('YOUTH_OFFICIAL', false, 'Reset by integration test', 1)
     `.execute(database);
   });
 
@@ -7927,6 +7943,307 @@ describePostgres('PostgreSQL critical command transaction', () => {
       membership_state: 'REMOVED', champion_user_id: contender,
       contender_user_id: null, status_version: '2', hold_state: 'RELEASED',
       challenge_state: 'CANCELLED_NO_FAULT',
+    });
+  });
+
+  it('AC-055 AC-169 persists two independent token-scoped Youth consents without guardian accounts or documents', async () => {
+    const athleteA = testId(19000);
+    const athleteB = testId(19001);
+    const venue = testId(19002);
+    const venueConfiguration = testId(19003);
+    const community = testId(19004);
+    const communityConfiguration = testId(19005);
+    const competition = testId(19006);
+    const sourceChat = testId(19007);
+    const serviceChat = testId(19008);
+    const ruleset = testId(19009);
+    const challenge = testId(19010);
+    const consentA = testId(19011);
+    const consentB = testId(19012);
+    const now = new Date('2026-10-02T10:00:00.000Z');
+
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into identity.users (
+          user_id, phone_e164, phone_verified_at, birth_date, age_division,
+          display_name, account_state, locale, version, activated_at
+        ) values
+          (${athleteA}::uuid, '+79991900000', ${now.toISOString()}::timestamptz,
+            '2010-01-10'::date, 'YOUTH', 'Youth A', 'ACTIVE', 'ru-RU', 1,
+            ${now.toISOString()}::timestamptz),
+          (${athleteB}::uuid, '+79991900001', ${now.toISOString()}::timestamptz,
+            '2010-02-10'::date, 'YOUTH', 'Youth B', 'ACTIVE', 'ru-RU', 1,
+            ${now.toISOString()}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into community.venues (
+          venue_id, legal_name, display_name, address, city_code, timezone, state,
+          minimum_booking_notice_hours, slot_publish_horizon_days,
+          configuration_version_id, version
+        ) values (
+          ${venue}::uuid, 'Youth Pilot LLC', 'Youth Pilot', 'Pilot street 1',
+          'MOW', 'Europe/Moscow', 'ACTIVE', 8, 15, ${venueConfiguration}::uuid, 1
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.venue_configuration_versions (
+          configuration_id, venue_id, configuration_version,
+          minimum_booking_notice_hours, slot_publish_horizon_days,
+          contact_payload, created_by, effective_at
+        ) values (
+          ${venueConfiguration}::uuid, ${venue}::uuid, 1, 8, 15,
+          '{}'::jsonb, ${athleteA}::uuid, ${now.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.communities (
+          community_id, venue_id, name, state, configuration_id,
+          created_by_central_id, version
+        ) values (
+          ${community}::uuid, ${venue}::uuid, 'Youth Community', 'ACTIVE',
+          ${communityConfiguration}::uuid, ${athleteA}::uuid, 1
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.community_configuration_versions (
+          configuration_id, community_id, configuration_version,
+          pair_cooldown_days, no_show_grace_minutes, ruleset_ref,
+          ruleset_ack_mode, created_by, effective_at
+        ) values (
+          ${communityConfiguration}::uuid, ${community}::uuid, 1,
+          15, 15, 'youth-pilot-rules-v1', 'IMPLICIT_ON_ACCEPT',
+          ${athleteA}::uuid, ${now.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.competitions (
+          competition_id, community_id, age_division, phase, availability, version
+        ) values (${competition}::uuid, ${community}::uuid, 'YOUTH', 'FOUNDING_OPEN', 'ACTIVE', 1)
+      `.execute(transaction);
+      await sql`
+        insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+        values
+          (${sourceChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+            ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz),
+          (${serviceChat}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1,
+            ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into competition.ruleset_snapshots (
+          ruleset_snapshot_id, competition_id, community_configuration_id,
+          ruleset_ref, ruleset_ack_mode, policy_version, created_at
+        ) values (
+          ${ruleset}::uuid, ${competition}::uuid, ${communityConfiguration}::uuid,
+          'youth-pilot-rules-v1', 'IMPLICIT_ON_ACCEPT', 'challenge-mvp-v1',
+          ${now.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenges (
+          challenge_id, competition_id, source_chat_id, service_chat_id,
+          initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+          response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+          version, created_at, updated_at
+        ) values (
+          ${challenge}::uuid, ${competition}::uuid, ${sourceChat}::uuid, ${serviceChat}::uuid,
+          ${athleteA}::uuid, ${athleteB}::uuid, ${athleteA}::uuid, ${athleteB}::uuid,
+          'OPTIONAL', 'NONE', 'AWAITING_RESPONSE', ${ruleset}::uuid,
+          '2026-10-04T10:00:00.000Z'::timestamptz, 1,
+          ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        update platform.feature_flags
+        set enabled = true, reason = 'Enabled by Youth consent integration test',
+          version = version + 1, updated_at = ${now.toISOString()}::timestamptz
+        where feature_key = 'YOUTH_OFFICIAL'
+      `.execute(transaction);
+    });
+
+    const consentIds = (base: number): YouthConsentEffectIds => ({
+      eventId: testId(base),
+      auditId: testId(base + 1),
+      outboxMessageId: testId(base + 2),
+      notificationOutboxMessageId: testId(base + 3),
+      notificationId: testId(base + 4),
+      challengeEventId: testId(base + 5),
+      challengeOutboxMessageId: testId(base + 6),
+    });
+    const requestCommand = (
+      actorId: string,
+      consentId: string,
+      base: number,
+      guardianContact: string,
+    ): CommandEnvelope<RequestYouthConsentPayload> => ({
+      commandId: testId(base),
+      commandType: 'REQUEST_YOUTH_CHALLENGE_CONSENT',
+      idempotencyKey: `youth-consent-request-${base}`,
+      actor: { type: 'USER', id: actorId, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'YouthChallengeConsent',
+      aggregateId: consentId,
+      expectedVersion: 0,
+      correlationId: testId(base + 1),
+      causationId: null,
+      requestId: testId(base + 2),
+      source: 'api',
+      payloadVersion: 1,
+      payload: { challengeId: challenge, channel: 'EMAIL', guardianContact },
+    });
+    const tokenA = 'a'.repeat(43);
+    const tokenB = 'b'.repeat(43);
+    await requestYouthConsent(
+      database,
+      requestCommand(athleteA, consentA, 19100, 'parent-a@example.com'),
+      consentIds(19110),
+      tokenA,
+      () => now,
+    );
+    await requestYouthConsent(
+      database,
+      requestCommand(athleteB, consentB, 19200, 'parent-b@example.com'),
+      consentIds(19210),
+      tokenB,
+      () => now,
+    );
+
+    await expect(decideYouthConsent(
+      database,
+      {
+        commandId: testId(19250), commandType: 'GRANT_YOUTH_CHALLENGE_CONSENT',
+        idempotencyKey: 'invalid-external-youth-consent-scope',
+        actor: {
+          type: 'EXTERNAL', id: consentA, roles: ['ATHLETE'],
+          scopeIds: [challenge, athleteA],
+        },
+        aggregateType: 'YouthChallengeConsent', aggregateId: consentA,
+        expectedVersion: 1, correlationId: testId(19251), causationId: null,
+        requestId: testId(19252), source: 'api', payloadVersion: 1,
+        payload: {
+          consentId: consentA,
+          tokenHash: youthConsentTokenHash(tokenA),
+          decision: 'GRANT', guardianDisplayName: 'Test Guardian',
+          relationship: 'parent', consentTextAccepted: true,
+        },
+      } satisfies CommandEnvelope<DecideYouthConsentPayload>,
+      consentIds(19260),
+      () => new Date('2026-10-02T10:05:00.000Z'),
+    )).rejects.toBeInstanceOf(InvalidCommandEnvelopeError);
+
+    const grant = async (input: {
+      readonly athleteId: string;
+      readonly consentId: string;
+      readonly token: string;
+      readonly base: number;
+    }) => decideYouthConsent(
+      database,
+      {
+        commandId: testId(input.base),
+        commandType: 'GRANT_YOUTH_CHALLENGE_CONSENT',
+        idempotencyKey: `youth-consent-grant-${input.base}`,
+        actor: {
+          type: 'EXTERNAL', id: input.consentId, roles: ['GUARDIAN_CONSENT'],
+          scopeIds: [challenge, input.athleteId],
+        },
+        aggregateType: 'YouthChallengeConsent', aggregateId: input.consentId,
+        expectedVersion: 1, correlationId: testId(input.base + 1), causationId: null,
+        requestId: testId(input.base + 2), source: 'api', payloadVersion: 1,
+        payload: {
+          consentId: input.consentId,
+          tokenHash: youthConsentTokenHash(input.token),
+          decision: 'GRANT', guardianDisplayName: 'Test Guardian',
+          relationship: 'parent', consentTextAccepted: true,
+        },
+      } satisfies CommandEnvelope<DecideYouthConsentPayload>,
+      consentIds(input.base + 10),
+      () => new Date('2026-10-02T10:10:00.000Z'),
+    );
+
+    await grant({ athleteId: athleteA, consentId: consentA, token: tokenA, base: 19300 });
+    await expect(assertYouthChallengeConsentReady(
+      database,
+      challenge,
+      [athleteA, athleteB],
+      new Date('2026-10-02T10:11:00.000Z'),
+    )).rejects.toMatchObject<Partial<YouthConsentConflictError>>({
+      code: 'YOUTH_CONSENT_REQUIRED',
+    });
+
+    await grant({ athleteId: athleteB, consentId: consentB, token: tokenB, base: 19400 });
+    await expect(assertYouthChallengeConsentReady(
+      database,
+      challenge,
+      [athleteA, athleteB],
+      new Date('2026-10-02T10:11:00.000Z'),
+    )).resolves.toBeUndefined();
+    const summary = await readYouthConsentSummary(database, challenge, athleteA, now);
+    expect(summary).toMatchObject({
+      featureEnabled: true, viewerAgeDivision: 'YOUTH',
+      requiredCount: 2, grantedCount: 2, ready: true,
+    });
+    expect(summary.consents).toHaveLength(2);
+    expect(summary.consents.find((item) => item.athleteUserId === athleteB)?.maskedContact).toBeNull();
+    const identities = await sql<{ readonly count: string }>`
+      select count(*)::text as count from identity.users
+    `.execute(database);
+    expect(identities.rows[0]?.count).toBe('2');
+
+    await sql`
+      update competition.challenges
+      set state = 'ACCEPTED_UNSCHEDULED', accepted_at = '2026-10-02T10:12:00.000Z',
+        scheduling_deadline_at = '2026-10-16T10:12:00.000Z', version = 2,
+        updated_at = '2026-10-02T10:12:00.000Z'
+      where challenge_id = ${challenge}::uuid
+    `.execute(database);
+    await sql`
+      insert into competition.challenge_participant_obligations (
+        obligation_id, challenge_id, user_id, accepted_at
+      ) values
+        (${testId(19550)}::uuid, ${challenge}::uuid, ${athleteA}::uuid,
+          '2026-10-02T10:12:00.000Z'),
+        (${testId(19551)}::uuid, ${challenge}::uuid, ${athleteB}::uuid,
+          '2026-10-02T10:12:00.000Z')
+    `.execute(database);
+    const revoked = await decideYouthConsent(
+      database,
+      {
+        commandId: testId(19500), commandType: 'REVOKE_YOUTH_CHALLENGE_CONSENT',
+        idempotencyKey: 'youth-consent-revoke-19500',
+        actor: {
+          type: 'EXTERNAL', id: consentB, roles: ['GUARDIAN_CONSENT'],
+          scopeIds: [challenge, athleteB],
+        },
+        aggregateType: 'YouthChallengeConsent', aggregateId: consentB,
+        expectedVersion: 2, correlationId: testId(19501), causationId: null,
+        requestId: testId(19502), source: 'api', payloadVersion: 1,
+        payload: {
+          consentId: consentB,
+          tokenHash: youthConsentTokenHash(tokenB),
+          decision: 'REVOKE',
+        },
+      } satisfies CommandEnvelope<DecideYouthConsentPayload>,
+      consentIds(19510),
+      () => new Date('2026-10-02T10:15:00.000Z'),
+    );
+    expect(revoked.response).toMatchObject({
+      state: 'REVOKED', challengeState: 'CANCELLED_NO_FAULT', canRevoke: false,
+    });
+    const closure = await sql<{
+      readonly state: string;
+      readonly active_obligations: string;
+      readonly challenge_events: string;
+    }>`
+      select challenge.state,
+        (select count(*)::text from competition.challenge_participant_obligations
+          where challenge_id = challenge.challenge_id and released_at is null) as active_obligations,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Challenge' and aggregate_id = challenge.challenge_id
+            and event_name = 'ChallengeCancelledNoFault') as challenge_events
+      from competition.challenges as challenge
+      where challenge.challenge_id = ${challenge}::uuid
+    `.execute(database);
+    expect(closure.rows[0]).toEqual({
+      state: 'CANCELLED_NO_FAULT', active_obligations: '0', challenge_events: '1',
     });
   });
 });

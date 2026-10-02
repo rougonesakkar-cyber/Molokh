@@ -19,6 +19,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertYouthChallengeConsentReady } from './youth-consent.js';
 
 export type BookingIntentState =
   | 'SELECTING'
@@ -618,6 +619,12 @@ export async function selectSlot(
           throw new ChallengeConflictError('MATCH_REQUIRED');
         }
         assertChallengeEligibility(challenge);
+        await assertYouthChallengeConsentReady(
+          transaction,
+          challenge.challenge_id,
+          [challenge.pair_low_id, challenge.pair_high_id],
+          context.occurredAt,
+        );
         assertAcceptedChallengeCanStartBooking({
           state: challenge.state,
           actorUserId: command.actor.id!,
@@ -804,6 +811,12 @@ export async function selectSameSlot(
           throw new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING');
         }
         assertChallengeEligibility(challenge);
+        await assertYouthChallengeConsentReady(
+          transaction,
+          challenge.challenge_id,
+          [challenge.pair_low_id, challenge.pair_high_id],
+          context.occurredAt,
+        );
         assertChallengeBookingCanBeConfirmed({
           state: challenge.state,
           activeObligationCount: Number(challenge.active_obligation_count),
@@ -951,6 +964,12 @@ export async function confirmBookingHost(
           throw new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING');
         }
         assertChallengeEligibility(challenge);
+        await assertYouthChallengeConsentReady(
+          transaction,
+          challenge.challenge_id,
+          [challenge.pair_low_id, challenge.pair_high_id],
+          context.occurredAt,
+        );
         assertChallengeBookingCanBeConfirmed({
           state: challenge.state,
           activeObligationCount: Number(challenge.active_obligation_count),
@@ -1097,6 +1116,12 @@ export async function confirmBookingHost(
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
           where challenge_id = ${challenge.challenge_id}::uuid
             and state = 'BOOKING_PENDING'
+        `.execute(transaction);
+        await sql`
+          update governance.youth_challenge_consents
+          set expires_at = ${slot.start_at.toISOString()}::timestamptz,
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where challenge_id = ${challenge.challenge_id}::uuid and state = 'GRANTED'
         `.execute(transaction);
       }
       await sql`

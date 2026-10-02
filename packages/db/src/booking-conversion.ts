@@ -145,6 +145,8 @@ interface ConversionContextRow {
   readonly community_state: string;
   readonly low_account_active: boolean;
   readonly high_account_active: boolean;
+  readonly low_age_division: 'YOUTH' | 'ADULT';
+  readonly high_age_division: 'YOUTH' | 'ADULT';
   readonly low_verified: boolean;
   readonly high_verified: boolean;
   readonly low_membership_active: boolean;
@@ -219,6 +221,8 @@ async function conversionContext(
       community.state as community_state,
       low_user.account_state = 'ACTIVE' as low_account_active,
       high_user.account_state = 'ACTIVE' as high_account_active,
+      low_user.age_division as low_age_division,
+      high_user.age_division as high_age_division,
       exists (
         select 1 from identity.account_verifications verification
         where verification.user_id = session.pair_low_id
@@ -328,6 +332,7 @@ function contextEligibilityFailure(
     || !context.low_account_active || !context.high_account_active
     || !context.low_verified || !context.high_verified
     || !context.low_membership_active || !context.high_membership_active
+    || context.low_age_division === 'YOUTH' || context.high_age_division === 'YOUTH'
     || !context.coach_authorized
     || Number(context.active_obligation_count) > 0
     || context.live_pair_challenge

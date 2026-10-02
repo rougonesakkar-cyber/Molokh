@@ -285,6 +285,9 @@ export async function sendChatMessage(
       await lockParticipantPair(transaction, participants);
       const chat = await lockedChat(transaction, command.payload.chatId);
       const type = payloadType(content);
+      if (command.actor.type === 'EXTERNAL') {
+        throw new ChatActionDeniedError('CHAT_PARTICIPANT_REQUIRED');
+      }
       assertChatAcceptsPayload(chat.scope, chat.state, type, command.actor.type);
       if (command.actor.type === 'USER') {
         if (!command.actor.id) throw new ChatActionDeniedError('CHAT_PARTICIPANT_REQUIRED');
