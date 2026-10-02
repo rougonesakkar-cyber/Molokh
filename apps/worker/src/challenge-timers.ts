@@ -6,7 +6,8 @@ export function challengeTimerFromOutbox(
 ): TimerCommandPayload | null {
   const optionalChallenge = topic === 'competition.challenge.created.v1';
   const mandatoryChallenge = topic === 'competition.challenge.mandatory-response-timer.v1';
-  const schedulingChallenge = topic === 'competition.challenge.accepted.v1';
+  const schedulingChallenge = topic === 'competition.challenge.accepted.v1'
+    || topic === 'competition.challenge.scheduling-extended.v1';
   const genesisChallenge = topic === 'competition.genesis.response-timer.v1'
     || topic === 'competition.genesis.accepted.v1';
   if (!optionalChallenge && !mandatoryChallenge && !schedulingChallenge && !genesisChallenge) {

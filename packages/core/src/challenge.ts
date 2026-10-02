@@ -6,6 +6,7 @@ export const MANDATORY_CHALLENGE_REMINDER_HOURS = [48] as const;
 export const OPTIONAL_CHALLENGE_PAIR_QUIET_HOURS = 48;
 export const OPTIONAL_CHALLENGE_OUTGOING_LIMIT = 3;
 export const ACCEPTED_CHALLENGE_SCHEDULING_DAYS = 14;
+export const CHALLENGE_SCHEDULING_EXTENSION_DAYS = 7;
 export const CHALLENGE_RESULT_REMINDER_HOURS = [2, 12, 24] as const;
 
 export type ChallengeState =
@@ -112,8 +113,9 @@ export function acceptedChallengeSchedulingDeadline(acceptedAt: Date): Date {
 export function assertAcceptedChallengeSchedulingCanExpire(input: {
   readonly state: ChallengeState;
   readonly schedulingDeadlineAt: Date | null;
+  readonly schedulingExtensionCount: number;
   readonly occurredAt: Date;
-}): void {
+}): 'EXTEND' | 'EXPIRE_NO_CAPACITY' {
   if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING'].includes(input.state)) {
     throw new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED');
   }
@@ -125,6 +127,17 @@ export function assertAcceptedChallengeSchedulingCanExpire(input: {
   ) {
     throw new ChallengeConflictError('CHALLENGE_SCHEDULING_NOT_DUE');
   }
+  if (!Number.isInteger(input.schedulingExtensionCount)
+    || input.schedulingExtensionCount < 0 || input.schedulingExtensionCount > 1) {
+    throw new RangeError('schedulingExtensionCount must be 0 or 1');
+  }
+  return input.schedulingExtensionCount === 0 ? 'EXTEND' : 'EXPIRE_NO_CAPACITY';
+}
+
+export function extendedChallengeSchedulingDeadline(currentDeadlineAt: Date): Date {
+  assertValidDate(currentDeadlineAt, 'currentDeadlineAt');
+  return new Date(currentDeadlineAt.getTime()
+    + CHALLENGE_SCHEDULING_EXTENSION_DAYS * 24 * 60 * 60 * 1_000);
 }
 
 export function challengeResultReminderDeadlines(endedAt: Date): readonly [Date, Date, Date] {

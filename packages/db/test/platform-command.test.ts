@@ -9377,7 +9377,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       bookingOutboxMessageId: testId(24133),
     }, () => new Date('2026-09-24T10:38:59.999Z')))
       .rejects.toMatchObject({ code: 'CHALLENGE_SCHEDULING_NOT_DUE' });
-    const expiredScheduling = await expireChallengeScheduling(database, {
+    const extendedScheduling = await expireChallengeScheduling(database, {
       commandId: testId(24134), commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
       idempotencyKey: 'incident-ac195-scheduling-expire-final',
       actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
@@ -9390,7 +9390,43 @@ describePostgres('PostgreSQL critical command transaction', () => {
       notificationIds: [testId(24141), testId(24142)], bookingEventId: testId(24143),
       bookingOutboxMessageId: testId(24144),
     }, () => new Date('2026-09-24T10:39:00.000Z'));
-    expect(expiredScheduling.response).toMatchObject({ state: 'EXPIRED_NO_FAULT', version: 5 });
+    expect(extendedScheduling.response).toMatchObject({
+      state: 'ACCEPTED_UNSCHEDULED', version: 5,
+      schedulingDeadlineAt: '2026-10-01T10:39:00.000Z',
+    });
+    const activeObligationsAfterExtension = await sql<{ readonly active: string }>`
+      select count(*)::text as active
+      from competition.challenge_participant_obligations
+      where challenge_id = ${challenge}::uuid and released_at is null
+    `.execute(database);
+    expect(activeObligationsAfterExtension.rows[0]?.active).toBe('2');
+    const expiredScheduling = await expireChallengeScheduling(database, {
+      commandId: testId(24145), commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+      idempotencyKey: 'incident-ac195-scheduling-expire-after-extension',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 5,
+      correlationId: testId(24102), causationId: testId(24136), requestId: testId(24146),
+      source: 'scheduler', payloadVersion: 1, payload: { challengeId: challenge },
+    } satisfies CommandEnvelope<ExpireChallengeSchedulingPayload>, {
+      eventId: testId(24147), auditId: testId(24148), outboxMessageId: testId(24149),
+      notificationId: testId(24150), notificationOutboxMessageId: testId(24151),
+      notificationIds: [testId(24152), testId(24153)], bookingEventId: testId(24154),
+      bookingOutboxMessageId: testId(24155),
+    }, () => new Date('2026-10-01T10:39:00.000Z'));
+    expect(expiredScheduling.response).toMatchObject({ state: 'CANCELLED_NO_FAULT', version: 6 });
+    const schedulingEvents = await sql<{
+      readonly event_name: string;
+      readonly transition_id: string | null;
+    }>`
+      select event_name, transition_id
+      from platform.domain_events
+      where event_id in (${testId(24136)}::uuid, ${testId(24147)}::uuid)
+      order by aggregate_version
+    `.execute(database);
+    expect(schedulingEvents.rows).toEqual([
+      { event_name: 'ChallengeSchedulingExtended', transition_id: 'CH-24' },
+      { event_name: 'ChallengeCancelledNoCapacity', transition_id: 'CH-25' },
+    ]);
     const obligationFacts = await sql<{ readonly active: string }>`
       select count(*)::text as active
       from competition.challenge_participant_obligations

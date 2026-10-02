@@ -13,6 +13,7 @@ import {
   assertMandatoryChallengeCanBeDeclined,
   assertMandatoryChallengeCanBeExpired,
   deriveProvisionalStatusTransition,
+  extendedChallengeSchedulingDeadline,
   normalizeSocialPair,
   optionalChallengePairQuietEndsAt,
   optionalChallengeReminderDeadlines,
@@ -178,6 +179,7 @@ interface ChallengeRow {
   readonly response_deadline_at: Date;
   readonly accepted_at: Date | null;
   readonly scheduling_deadline_at: Date | null;
+  readonly scheduling_extension_count: number;
   readonly quiet_until: Date | null;
   readonly cycle_no: number;
   readonly version: string;
@@ -483,7 +485,8 @@ async function challengeRow(
       challenge.response_policy, challenge.stake, challenge.state,
       challenge.ruleset_snapshot_id, snapshot.ruleset_ref, snapshot.ruleset_ack_mode,
       challenge.response_deadline_at, challenge.accepted_at,
-      challenge.scheduling_deadline_at, challenge.cycle_no,
+      challenge.scheduling_deadline_at, challenge.scheduling_extension_count,
+      challenge.cycle_no,
       (select max(quiet.ends_at) from competition.optional_pair_quiet_periods as quiet
         where quiet.source_challenge_id = challenge.challenge_id) as quiet_until,
       challenge.version::text as version
@@ -1342,9 +1345,10 @@ export async function expireChallengeScheduling(
         aggregateId: command.aggregateId,
         occurredAt: context.occurredAt,
       });
-      assertAcceptedChallengeSchedulingCanExpire({
+      const outcome = assertAcceptedChallengeSchedulingCanExpire({
         state: row.state,
         schedulingDeadlineAt: row.scheduling_deadline_at,
+        schedulingExtensionCount: row.scheduling_extension_count,
         occurredAt: context.occurredAt,
       });
       const bookingResult = await sql<{
@@ -1362,19 +1366,36 @@ export async function expireChallengeScheduling(
       `.execute(transaction);
       const booking = bookingResult.rows[0] ?? null;
       const occurredAt = context.occurredAt.toISOString();
-      await sql`
-        update competition.challenges
-        set state = 'EXPIRED_NO_FAULT', decided_at = ${occurredAt}::timestamptz,
-          version = ${context.nextVersion}, updated_at = ${occurredAt}::timestamptz
-        where challenge_id = ${row.challenge_id}::uuid
-          and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
-      `.execute(transaction);
-      await sql`
-        update competition.challenge_participant_obligations
-        set released_at = ${occurredAt}::timestamptz,
-          release_reason = 'SCHEDULING_DEADLINE_EXPIRED'
-        where challenge_id = ${row.challenge_id}::uuid and released_at is null
-      `.execute(transaction);
+      const extendedDeadline = outcome === 'EXTEND'
+        ? extendedChallengeSchedulingDeadline(row.scheduling_deadline_at!)
+        : null;
+      if (extendedDeadline) {
+        await sql`
+          update competition.challenges
+          set state = 'ACCEPTED_UNSCHEDULED',
+            scheduling_deadline_at = ${extendedDeadline.toISOString()}::timestamptz,
+            scheduling_extension_count = 1, version = ${context.nextVersion},
+            updated_at = ${occurredAt}::timestamptz
+          where challenge_id = ${row.challenge_id}::uuid
+            and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+            and scheduling_extension_count = 0
+        `.execute(transaction);
+      } else {
+        await sql`
+          update competition.challenges
+          set state = 'CANCELLED_NO_FAULT', decided_at = ${occurredAt}::timestamptz,
+            version = ${context.nextVersion}, updated_at = ${occurredAt}::timestamptz
+          where challenge_id = ${row.challenge_id}::uuid
+            and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+            and scheduling_extension_count = 1
+        `.execute(transaction);
+        await sql`
+          update competition.challenge_participant_obligations
+          set released_at = ${occurredAt}::timestamptz,
+            release_reason = 'NO_CAPACITY_AFTER_SCHEDULING_EXTENSION'
+          where challenge_id = ${row.challenge_id}::uuid and released_at is null
+        `.execute(transaction);
+      }
       if (booking) {
         await sql`
           update scheduling.bookings
@@ -1394,13 +1415,16 @@ export async function expireChallengeScheduling(
         response,
         event: {
           eventId: ids.eventId,
-          eventName: 'ChallengeSchedulingExpiredNoFault',
+          eventName: extendedDeadline
+            ? 'ChallengeSchedulingExtended'
+            : 'ChallengeCancelledNoCapacity',
           schemaVersion: 1,
-          transitionId: 'CH-27',
+          transitionId: extendedDeadline ? 'CH-24' : 'CH-25',
           payload: {
             challengeId: row.challenge_id,
             bookingId: booking?.booking_id ?? null,
-            reason: 'SCHEDULING_DEADLINE_EXPIRED',
+            reason: extendedDeadline ? 'SCHEDULING_OPTIONS_EXPANDED' : 'NO_CAPACITY',
+            schedulingDeadlineAt: extendedDeadline?.toISOString() ?? null,
             noForfeit: true,
           },
           metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
@@ -1413,7 +1437,7 @@ export async function expireChallengeScheduling(
             aggregateType: 'Booking',
             aggregateId: booking.booking_id,
             aggregateVersion: Number(booking.version) + 1,
-            transitionId: 'B-21',
+            transitionId: null,
             payload: {
               bookingId: booking.booking_id,
               challengeId: row.challenge_id,
@@ -1426,20 +1450,30 @@ export async function expireChallengeScheduling(
         audit: {
           auditId: ids.auditId,
           action: 'EXPIRE_CHALLENGE_SCHEDULING',
-          transitionId: 'CH-27',
-          reasonCode: 'SCHEDULING_DEADLINE_EXPIRED',
+          transitionId: extendedDeadline ? 'CH-24' : 'CH-25',
+          reasonCode: extendedDeadline ? 'SCHEDULING_OPTIONS_EXPANDED' : 'NO_CAPACITY',
           beforeState: row.state,
-          afterState: 'EXPIRED_NO_FAULT',
-          metadata: { bookingId: booking?.booking_id ?? null, noForfeit: true },
+          afterState: extendedDeadline ? 'ACCEPTED_UNSCHEDULED' : 'CANCELLED_NO_FAULT',
+          metadata: { bookingId: booking?.booking_id ?? null,
+            schedulingDeadlineAt: extendedDeadline?.toISOString() ?? null, noForfeit: true },
         },
         outbox: [
           {
             messageId: ids.outboxMessageId,
-            topic: 'competition.challenge.scheduling-expired-no-fault.v1',
+            topic: extendedDeadline
+              ? 'competition.challenge.scheduling-extended.v1'
+              : 'competition.challenge.cancelled-no-capacity.v1',
             payload: {
               challengeId: row.challenge_id,
               competitionId: row.competition_id,
               bookingId: booking?.booking_id ?? null,
+              ...(extendedDeadline ? { timer: {
+                commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+                aggregateType: 'Challenge', aggregateId: row.challenge_id,
+                expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: context.nextVersion,
+                deadlineAt: extendedDeadline.toISOString(), policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${row.challenge_id}:expire-scheduling:v${context.nextVersion}`,
+              } } : {}),
               noForfeit: true,
             },
           },
@@ -1463,10 +1497,12 @@ export async function expireChallengeScheduling(
                   notificationId: ids.notificationIds[index]!,
                   recipientUserId,
                   category: 'MANDATORY',
-                  renderKey: 'challenge.scheduling-expired-no-fault',
+                  renderKey: extendedDeadline
+                    ? 'challenge.scheduling-extended'
+                    : 'challenge.cancelled-no-capacity',
                   actionTarget: { type: 'CHAT', chatId: row.source_chat_id },
                   payload: { challengeId: row.challenge_id, noForfeit: true },
-                  deadlineAt: null,
+                  deadlineAt: extendedDeadline?.toISOString() ?? null,
                 }),
               ),
             },

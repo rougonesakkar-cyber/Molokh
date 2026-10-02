@@ -35,6 +35,16 @@ describe('Challenge timer projection', () => {
       'competition.challenge.accepted.v1',
       { timer: schedulingTimer },
     )).toEqual(schedulingTimer);
+    expect(challengeTimerFromOutbox(
+      'competition.challenge.scheduling-extended.v1',
+      { timer: { ...schedulingTimer, expectedVersion: 3,
+        deadlineAt: '2026-09-29T10:00:00.000Z',
+        idempotencyKey: 'challenge:0199a1b2-1234-7000-8000-000000001201:expire-scheduling:v3' } },
+    )).toMatchObject({
+      commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+      expectedVersion: 3,
+      deadlineAt: '2026-09-29T10:00:00.000Z',
+    });
   });
 
   it('[AC-191] projects the current GENESIS response timer version', () => {

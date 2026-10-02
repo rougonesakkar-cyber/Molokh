@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACCEPTED_CHALLENGE_SCHEDULING_DAYS,
+  CHALLENGE_SCHEDULING_EXTENSION_DAYS,
   ChallengeConflictError,
   assertAcceptedChallengeCanStartBooking,
   assertAcceptedChallengeSchedulingCanExpire,
@@ -16,6 +17,7 @@ import {
   assertOptionalChallengeCanBeDeclined,
   assertOptionalChallengeCanBeExpired,
   assertOptionalChallengeCanBeWithdrawn,
+  extendedChallengeSchedulingDeadline,
   challengeResultReminderDeadlines,
   effectiveChallengeStakeAtSessionWindow,
   mandatoryChallengeReminderDeadlines,
@@ -185,19 +187,29 @@ describe('Official Challenge policy', () => {
 
   it('expires accepted scheduling only at its stored deadline and without a participant action', () => {
     const deadline = new Date('2026-09-22T11:00:00.000Z');
-    expect(() => assertAcceptedChallengeSchedulingCanExpire({
+    expect(assertAcceptedChallengeSchedulingCanExpire({
       state: 'BOOKING_PENDING',
       schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 0,
       occurredAt: deadline,
-    })).not.toThrow();
+    })).toBe('EXTEND');
+    expect(assertAcceptedChallengeSchedulingCanExpire({
+      state: 'ACCEPTED_UNSCHEDULED', schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 1, occurredAt: deadline,
+    })).toBe('EXPIRE_NO_CAPACITY');
+    expect(CHALLENGE_SCHEDULING_EXTENSION_DAYS).toBe(7);
+    expect(extendedChallengeSchedulingDeadline(deadline).toISOString())
+      .toBe('2026-09-29T11:00:00.000Z');
     expect(() => assertAcceptedChallengeSchedulingCanExpire({
       state: 'ACCEPTED_UNSCHEDULED',
       schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 0,
       occurredAt: new Date('2026-09-22T10:59:59.999Z'),
     })).toThrowError(new ChallengeConflictError('CHALLENGE_SCHEDULING_NOT_DUE'));
     expect(() => assertAcceptedChallengeSchedulingCanExpire({
       state: 'BOOKED',
       schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 0,
       occurredAt: deadline,
     })).toThrowError(new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED'));
   });
