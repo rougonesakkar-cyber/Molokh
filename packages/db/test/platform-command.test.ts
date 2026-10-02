@@ -54,6 +54,9 @@ import {
   listChallengeResponseIncidentImpactCandidates,
   applyChallengeResponseIncidentImpact,
   readPlatformIncidentTimerSuppression,
+  listMandatoryTimeoutCompensationCandidates,
+  compensateMandatoryChallengeTimeout,
+  replayCompetitionStatusExcludingResults,
   executeCriticalCommand,
   ensureLocalPilotCommunity,
   ensureLocalPilotCompetition,
@@ -191,6 +194,7 @@ import {
   type ResolvePlatformIncidentPayload,
   type CompensatePlatformIncidentPayload,
   type ApplyIncidentDeadlineImpactPayload,
+  type CompensateMandatoryTimeoutPayload,
   type LikeEffectIds,
   type EditChatMessagePayload,
   type HideChatMessagePayload,
@@ -9283,5 +9287,309 @@ describePostgres('PostgreSQL critical command transaction', () => {
       .rejects.toEqual(expect.objectContaining<Partial<PlatformIncidentConflictError>>({
         code: 'PLATFORM_INCIDENT_SYSTEM_REQUIRED',
       }));
+  });
+
+  it('[AC-196] compensates one already-final mandatory timeout append-only with deterministic replay', async () => {
+    const challenger = testId(25000);
+    const contender = testId(25001);
+    const champion = testId(25002);
+    const central = testId(25003);
+    const venue = testId(25004);
+    const venueConfig = testId(25005);
+    const community = testId(25006);
+    const communityConfig = testId(25007);
+    const competition = testId(25008);
+    const sourceChat = testId(25009);
+    const serviceChat = testId(25010);
+    const ruleset = testId(25011);
+    const challenge = testId(25012);
+    const challengeCreatedEvent = testId(25013);
+    const resultId = testId(25020);
+    const timeoutEventId = testId(25021);
+    const resultEventId = testId(25022);
+    const statusTransitionId = testId(25023);
+    const statusEventId = testId(25024);
+    const cooldownId = testId(25025);
+    await sql`insert into identity.users (
+      user_id, phone_e164, phone_verified_at, birth_date, age_division,
+      display_name, account_state, locale, version, activated_at
+    ) values
+      (${challenger}::uuid, '+79990025000', '2026-09-01T09:00:00Z', '1995-01-01',
+        'ADULT', 'Timeout Challenger', 'ACTIVE', 'ru-RU', 1, '2026-09-01T09:00:00Z'),
+      (${contender}::uuid, '+79990025001', '2026-09-01T09:00:00Z', '1994-01-01',
+        'ADULT', 'Timeout Contender', 'ACTIVE', 'ru-RU', 1, '2026-09-01T09:00:00Z'),
+      (${champion}::uuid, '+79990025002', '2026-09-01T09:00:00Z', '1993-01-01',
+        'ADULT', 'Timeout Champion', 'ACTIVE', 'ru-RU', 1, '2026-09-01T09:00:00Z'),
+      (${central}::uuid, '+79990025003', '2026-09-01T09:00:00Z', '1985-01-01',
+        'ADULT', 'Timeout Central', 'ACTIVE', 'ru-RU', 1, '2026-09-01T09:00:00Z')`
+      .execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: venueConfig,
+      communityId: community, communityConfigurationId: communityConfig,
+      membershipId: testId(25014), centralGrantId: testId(25015),
+      athleteUserId: challenger, centralActorId: central,
+      legalName: 'Timeout Gym LLC', venueDisplayName: 'Timeout Gym',
+      communityName: 'Timeout Community', address: 'Москва', cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow', contactPayload: {}, occurredAt: '2026-09-01T09:00:00Z',
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community, centralActorId: central,
+      occurredAt: '2026-09-01T09:00:00Z', memberships: [
+        { membershipId: testId(25014), userId: challenger },
+        { membershipId: testId(25016), userId: contender },
+        { membershipId: testId(25017), userId: champion },
+      ],
+    });
+    await database.transaction().execute(async (transaction) => {
+      await sql`update competition.competitions set phase = 'RUNNING',
+        champion_user_id = ${champion}::uuid, contender_user_id = ${contender}::uuid,
+        status_version = 2, version = 2,
+        updated_at = '2026-09-28T10:00:00Z'
+        where competition_id = ${competition}::uuid`.execute(transaction);
+      await sql`insert into social.chats (
+        chat_id, scope, state, version, created_at, updated_at
+      ) values
+        (${sourceChat}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1,
+          '2026-09-28T10:00:00Z', '2026-09-28T10:00:00Z'),
+        (${serviceChat}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1,
+          '2026-09-28T10:00:00Z', '2026-09-28T10:00:00Z')`.execute(transaction);
+      await sql`insert into social.chat_participants (chat_id, user_id) values
+        (${sourceChat}::uuid, ${challenger}::uuid), (${sourceChat}::uuid, ${contender}::uuid),
+        (${serviceChat}::uuid, ${challenger}::uuid), (${serviceChat}::uuid, ${contender}::uuid)`
+        .execute(transaction);
+      await sql`insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (${ruleset}::uuid, ${competition}::uuid, ${communityConfig}::uuid,
+        'MOLOKH_RECOMMENDED_V1', 'IMPLICIT_ON_ACCEPT', 'challenge-mvp-v1',
+        '2026-09-28T10:00:00Z')`.execute(transaction);
+      await sql`insert into competition.challenges (
+        challenge_id, competition_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+        version, created_at, updated_at
+      ) values (${challenge}::uuid, ${competition}::uuid, ${sourceChat}::uuid,
+        ${serviceChat}::uuid, ${challenger}::uuid, ${contender}::uuid,
+        ${challenger}::uuid, ${contender}::uuid, 'MANDATORY', 'CONTENDER',
+        'AWAITING_RESPONSE', ${ruleset}::uuid, '2026-10-01T10:00:00Z', 1,
+        '2026-09-28T10:00:00Z', '2026-09-28T10:00:00Z')`.execute(transaction);
+      await sql`insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+        actor_type, actor_roles, actor_scope_ids, occurred_at, idempotency_key_hash,
+        payload, metadata
+      ) values (${challengeCreatedEvent}::uuid, 'ChallengeCreated', 1, 'Challenge',
+        ${challenge}::uuid, 1, 'CH-01', ${testId(25018)}::uuid, null, null,
+        'SYSTEM', '[]'::jsonb, '{}'::uuid[], '2026-09-28T10:00:00Z',
+        'seed-ac196-challenge', ${JSON.stringify({ challengeId: challenge })}::jsonb,
+        '{}'::jsonb)`.execute(transaction);
+    });
+
+    const expired = await expireOptionalChallenge(database, {
+      commandId: testId(25026), commandType: 'EXPIRE_MANDATORY_CHALLENGE',
+      idempotencyKey: `challenge:${challenge}:expire-mandatory:v1`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 1,
+      correlationId: testId(25018), causationId: challengeCreatedEvent,
+      requestId: testId(25027), source: 'scheduler', payloadVersion: 1,
+      payload: { challengeId: challenge },
+    }, {
+      eventId: timeoutEventId, auditId: testId(25028), outboxMessageId: testId(25029),
+      notificationId: testId(25030), notificationOutboxMessageId: testId(25031),
+      resultId, resultEventId, statusTransitionId, statusEventId, cooldownId,
+      cooldownEventId: testId(25032), timerOutboxMessageId: testId(25033),
+      notificationIds: [testId(25034), testId(25035)],
+    }, () => new Date('2026-10-01T10:05:00.000Z'));
+    expect(expired.response).toMatchObject({ state: 'RESULT_RECORDED', version: 2 });
+
+    await finalizeResult(database, {
+      commandId: testId(25040), commandType: 'FINALIZE_RESULT',
+      idempotencyKey: `result:${resultId}:finalize:v1`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Result', aggregateId: resultId, expectedVersion: 1,
+      correlationId: testId(25018), causationId: resultEventId, requestId: testId(25041),
+      source: 'scheduler', payloadVersion: 1, payload: { resultId },
+    }, {
+      eventId: testId(25042), auditId: testId(25043), outboxMessageId: testId(25044),
+      challengeEventId: testId(25045), statusFinalizationId: testId(25046),
+      statusEventId: testId(25047), notificationOutboxMessageId: testId(25048),
+      notificationIds: [testId(25049), testId(25050)],
+    }, () => new Date('2026-10-03T10:05:00.000Z'));
+
+    const incident = testId(25060);
+    await detectPlatformIncident(database, {
+      commandId: testId(25061), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac196-detect',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 0,
+      correlationId: testId(25062), causationId: null, requestId: testId(25063),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { startedAt: '2026-10-01T09:40:00.000Z',
+        affectedServices: ['CHALLENGE'], affectedSurfaces: ['CHALLENGE_RESPONSE'],
+        severity: 'MAJOR', monitoringEvidenceReference: 'monitor:historical-ac196' },
+    }, { eventId: testId(25064), auditId: testId(25065), outboxMessageId: testId(25066) },
+    () => new Date('2026-10-03T11:00:00.000Z'));
+    await confirmPlatformIncident(database, {
+      commandId: testId(25067), commandType: 'CONFIRM_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac196-confirm',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 1,
+      correlationId: testId(25062), causationId: testId(25064), requestId: testId(25068),
+      source: 'admin', payloadVersion: 1,
+      payload: { incidentId: incident, reason: 'Historical outage confirmed.' },
+    }, { eventId: testId(25069), auditId: testId(25070), outboxMessageId: testId(25071) },
+    () => new Date('2026-10-03T11:01:00.000Z'));
+    await resolvePlatformIncident(database, {
+      commandId: testId(25072), commandType: 'RESOLVE_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac196-resolve',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: incident, expectedVersion: 2,
+      correlationId: testId(25062), causationId: testId(25069), requestId: testId(25073),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: incident, endedAt: '2026-10-01T10:17:00.000Z',
+        reason: 'Historical recovery boundary confirmed.' },
+    }, { eventId: testId(25074), auditId: testId(25075), outboxMessageId: testId(25076) },
+    () => new Date('2026-10-03T11:02:00.000Z'));
+    await expect(listMandatoryTimeoutCompensationCandidates(database, incident)).resolves.toEqual([{
+      challengeId: challenge, resultId, version: 3,
+    }]);
+
+    const replayBefore = await database.transaction().execute((transaction) =>
+      replayCompetitionStatusExcludingResults({ transaction,
+        sourceTransitionId: statusTransitionId, excludedResultIds: [resultId] }));
+    const compensationPayload = { incidentId: incident, challengeId: challenge, resultId };
+    const command = (commandId: string, requestId: string) => ({
+      commandId, commandType: 'COMPENSATE_MANDATORY_CHALLENGE_TIMEOUT',
+      idempotencyKey: `incident:${incident}:challenge:${challenge}:timeout-compensation`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 3,
+      correlationId: testId(25062), causationId: testId(25074), requestId,
+      source: 'scheduler', payloadVersion: 1, payload: compensationPayload,
+    }) satisfies CommandEnvelope<CompensateMandatoryTimeoutPayload>;
+    const firstIds = { impactId: testId(25080), compensationId: testId(25081),
+      eventId: testId(25082), auditId: testId(25083), outboxMessageId: testId(25084),
+      resultEventId: testId(25085), competitionEventId: testId(25086),
+      cooldownEventId: testId(25087) };
+    const secondIds = { impactId: testId(25090), compensationId: testId(25091),
+      eventId: testId(25092), auditId: testId(25093), outboxMessageId: testId(25094),
+      resultEventId: testId(25095), competitionEventId: testId(25096),
+      cooldownEventId: testId(25097) };
+    const results = await Promise.all([
+      compensateMandatoryChallengeTimeout(database,
+        command(testId(25078), testId(25079)), firstIds,
+        () => new Date('2026-10-03T11:03:00.000Z')),
+      compensateMandatoryChallengeTimeout(database,
+        command(testId(25088), testId(25089)), secondIds,
+        () => new Date('2026-10-03T11:03:00.000Z')),
+    ]);
+    expect(results.filter((result) => !result.replayed)).toHaveLength(1);
+    expect(results.filter((result) => result.replayed)).toHaveLength(1);
+    const committed = results.find((result) => !result.replayed)!;
+    expect(new Set(results.map((result) => result.eventId))).toEqual(
+      new Set([committed.eventId]),
+    );
+    expect([testId(25082), testId(25092)]).toContain(committed.eventId);
+    expect(results[0]?.response).toMatchObject({
+      challengeState: 'CANCELLED_NO_FAULT', resultState: 'ANNULLED',
+      championUserId: champion, contenderUserId: contender,
+      replayHash: replayBefore.replayHash, overlapMilliseconds: 20 * 60 * 1_000,
+    });
+
+    const replayAfter = await database.transaction().execute((transaction) =>
+      replayCompetitionStatusExcludingResults({ transaction,
+        sourceTransitionId: statusTransitionId, excludedResultIds: [resultId] }));
+    expect(replayAfter).toEqual(replayBefore);
+    const facts = await sql<{
+      readonly challenge_state: string;
+      readonly result_state: string;
+      readonly recorded_outcome_code: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_lock_result_id: string | null;
+      readonly transition_count: string;
+      readonly timeout_event_count: string;
+      readonly result_event_count: string;
+      readonly impact_count: string;
+      readonly compensation_count: string;
+      readonly cooldown_count: string;
+      readonly cooldown_effective: boolean;
+      readonly active_obligations: string;
+      readonly compensation_event_count: string;
+    }>`select challenge.state as challenge_state, result.state as result_state,
+      result.recorded_outcome_code, competition.champion_user_id,
+      competition.contender_user_id, competition.status_lock_result_id,
+      (select count(*)::text from competition.status_transitions
+        where source_result_id = result.result_id) as transition_count,
+      (select count(*)::text from platform.domain_events
+        where event_id = ${timeoutEventId}::uuid and event_name = 'MandatoryChallengeExpired')
+        as timeout_event_count,
+      (select count(*)::text from platform.domain_events
+        where event_id = ${resultEventId}::uuid and event_name = 'ResultRecorded')
+        as result_event_count,
+      (select count(*)::text from platform.incident_impacts
+        where incident_id = ${incident}::uuid and aggregate_id = challenge.challenge_id)
+        as impact_count,
+      (select count(*)::text from platform.incident_timeout_compensations
+        where incident_id = ${incident}::uuid and challenge_id = challenge.challenge_id)
+        as compensation_count,
+      (select count(*)::text from competition.pair_cooldowns
+        where source_result_id = result.result_id) as cooldown_count,
+      exists (select 1 from competition.pair_cooldowns
+        where source_result_id = result.result_id and invalidated_at is null) as cooldown_effective,
+      (select count(*)::text from competition.challenge_participant_obligations
+        where challenge_id = challenge.challenge_id and released_at is null) as active_obligations,
+      (select count(*)::text from platform.domain_events
+        where aggregate_type = 'Challenge' and aggregate_id = challenge.challenge_id
+          and event_name = 'IncidentTimeoutCompensatedNoFault') as compensation_event_count
+    from competition.challenges as challenge
+    join competition.results as result on result.challenge_id = challenge.challenge_id
+    join competition.competitions as competition
+      on competition.competition_id = challenge.competition_id
+    where challenge.challenge_id = ${challenge}::uuid`.execute(database);
+    expect(facts.rows[0]).toEqual({
+      challenge_state: 'CANCELLED_NO_FAULT', result_state: 'ANNULLED',
+      recorded_outcome_code: 'FORFEIT', champion_user_id: champion,
+      contender_user_id: contender, status_lock_result_id: null,
+      transition_count: '1', timeout_event_count: '1', result_event_count: '1',
+      impact_count: '1', compensation_count: '1', cooldown_count: '1',
+      cooldown_effective: false, active_obligations: '0', compensation_event_count: '1',
+    });
+
+    const outsideIncident = testId(25100);
+    await detectPlatformIncident(database, {
+      commandId: testId(25101), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac196-outside-detect',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: outsideIncident, expectedVersion: 0,
+      correlationId: testId(25102), causationId: null, requestId: testId(25103),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { startedAt: '2026-10-02T09:40:00.000Z',
+        affectedServices: ['CHALLENGE'], affectedSurfaces: ['CHALLENGE_RESPONSE'],
+        severity: 'MINOR', monitoringEvidenceReference: 'monitor:outside-window' },
+    }, { eventId: testId(25104), auditId: testId(25105), outboxMessageId: testId(25106) },
+    () => new Date('2026-10-03T12:00:00.000Z'));
+    await confirmPlatformIncident(database, {
+      commandId: testId(25107), commandType: 'CONFIRM_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac196-outside-confirm',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: outsideIncident, expectedVersion: 1,
+      correlationId: testId(25102), causationId: testId(25104), requestId: testId(25108),
+      source: 'admin', payloadVersion: 1,
+      payload: { incidentId: outsideIncident, reason: 'Separate later outage.' },
+    }, { eventId: testId(25109), auditId: testId(25110), outboxMessageId: testId(25111) },
+    () => new Date('2026-10-03T12:01:00.000Z'));
+    await resolvePlatformIncident(database, {
+      commandId: testId(25112), commandType: 'RESOLVE_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac196-outside-resolve',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: outsideIncident, expectedVersion: 2,
+      correlationId: testId(25102), causationId: testId(25109), requestId: testId(25113),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: outsideIncident, endedAt: '2026-10-02T10:17:00.000Z',
+        reason: 'Later outage recovered.' },
+    }, { eventId: testId(25114), auditId: testId(25115), outboxMessageId: testId(25116) },
+    () => new Date('2026-10-03T12:02:00.000Z'));
+    await expect(listMandatoryTimeoutCompensationCandidates(database, outsideIncident))
+      .resolves.toEqual([]);
   });
 });

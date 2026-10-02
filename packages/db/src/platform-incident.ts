@@ -18,7 +18,12 @@ import {
 import { type Kysely, type Transaction, sql } from 'kysely';
 
 import type { Database } from './index.js';
-import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import {
+  executeCriticalCommand,
+  type ExecutedCommand,
+  type RelatedDomainEventDraft,
+} from './platform-command.js';
+import { replayCompetitionStatusExcludingResults } from './status-replay.js';
 
 export interface DetectPlatformIncidentPayload {
   readonly startedAt: string;
@@ -81,6 +86,41 @@ export interface ChallengeResponseIncidentImpactCandidate {
   readonly challengeId: string;
   readonly version: number;
   readonly surface: string;
+}
+
+export interface MandatoryTimeoutCompensationCandidate {
+  readonly challengeId: string;
+  readonly resultId: string;
+  readonly version: number;
+}
+
+export interface CompensateMandatoryTimeoutPayload {
+  readonly incidentId: string;
+  readonly challengeId: string;
+  readonly resultId: string;
+}
+
+export interface MandatoryTimeoutCompensationEffectIds extends PlatformIncidentEffectIds {
+  readonly impactId: string;
+  readonly compensationId: string;
+  readonly resultEventId: string;
+  readonly competitionEventId: string;
+  readonly cooldownEventId: string;
+}
+
+export interface MandatoryTimeoutCompensationProjection {
+  readonly incidentId: string;
+  readonly impactId: string;
+  readonly compensationId: string;
+  readonly challengeId: string;
+  readonly resultId: string;
+  readonly challengeState: 'CANCELLED_NO_FAULT';
+  readonly resultState: 'ANNULLED';
+  readonly championUserId: string | null;
+  readonly contenderUserId: string | null;
+  readonly replayHash: string;
+  readonly overlapMilliseconds: number;
+  readonly version: number;
 }
 
 export interface PlatformIncidentProjection {
@@ -622,6 +662,255 @@ export async function applyChallengeResponseIncidentImpact(
               idempotencyKey: `incident:${command.payload.incidentId}:challenge:${command.aggregateId}:deadline`,
             },
           } }],
+      };
+    },
+  });
+}
+
+export async function listMandatoryTimeoutCompensationCandidates(
+  database: Kysely<Database>, incidentId: string,
+): Promise<MandatoryTimeoutCompensationCandidate[]> {
+  const result = await sql<{
+    readonly challenge_id: string;
+    readonly result_id: string;
+    readonly version: string;
+  }>`
+    select challenge.challenge_id, result.result_id, challenge.version::text
+    from platform.platform_incidents as incident
+    join competition.challenges as challenge
+      on challenge.created_at < incident.ended_at
+      and incident.started_at < challenge.response_deadline_at
+    join competition.results as result on result.challenge_id = challenge.challenge_id
+      and result.origin = 'ADMINISTRATIVE_FORFEIT'
+      and result.reason_code = 'MANDATORY_RESPONSE_EXPIRED'
+    join platform.domain_events as timeout_event
+      on timeout_event.aggregate_type = 'Challenge'
+      and timeout_event.aggregate_id = challenge.challenge_id
+      and timeout_event.event_name = 'MandatoryChallengeExpired'
+      and timeout_event.payload->>'resultId' = result.result_id::text
+      and timeout_event.occurred_at >= incident.started_at
+      and timeout_event.occurred_at < incident.ended_at
+    where incident.incident_id = ${incidentId}::uuid
+      and incident.state = 'RESOLVED'
+      and 'CHALLENGE' = any(incident.affected_services)
+      and 'CHALLENGE_RESPONSE' = any(incident.affected_surfaces)
+      and challenge.state in ('RESULT_RECORDED', 'COMPLETED')
+      and not exists (
+        select 1 from platform.incident_impacts as impact
+        where impact.incident_id = incident.incident_id
+          and impact.aggregate_type = 'Challenge'
+          and impact.aggregate_id = challenge.challenge_id
+          and impact.deadline_kind = 'CHALLENGE_RESPONSE'
+      )
+    order by timeout_event.occurred_at, challenge.challenge_id
+  `.execute(database);
+  return result.rows.map((row) => ({ challengeId: row.challenge_id,
+    resultId: row.result_id, version: Number(row.version) }));
+}
+
+interface MandatoryTimeoutRow {
+  readonly challenge_id: string;
+  readonly challenge_state: string;
+  readonly challenge_version: string;
+  readonly created_at: Date;
+  readonly response_deadline_at: Date;
+  readonly result_id: string;
+  readonly result_state: string;
+  readonly result_version: string;
+  readonly recorded_at: Date;
+  readonly source_timeout_event_id: string;
+  readonly timeout_occurred_at: Date;
+  readonly status_transition_id: string;
+  readonly status_transition_event_id: string;
+  readonly competition_id: string;
+  readonly competition_version: string;
+  readonly competition_status_version: string;
+  readonly status_lock_result_id: string | null;
+  readonly cooldown_id: string;
+}
+
+export async function compensateMandatoryChallengeTimeout(
+  database: Kysely<Database>, command: CommandEnvelope<CompensateMandatoryTimeoutPayload>,
+  ids: MandatoryTimeoutCompensationEffectIds, now?: () => Date,
+): Promise<ExecutedCommand<MandatoryTimeoutCompensationProjection>> {
+  if (command.actor.type !== 'SYSTEM' || command.actor.id !== null
+    || command.commandType !== 'COMPENSATE_MANDATORY_CHALLENGE_TIMEOUT'
+    || command.aggregateType !== 'Challenge'
+    || command.aggregateId !== command.payload.challengeId) {
+    throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_SYSTEM_REQUIRED');
+  }
+  return executeCriticalCommand(database, {
+    command, ...(now ? { now } : {}), mutate: async (transaction, context) => {
+      await lockIncidentServices(transaction, ['CHALLENGE']);
+      const incidentResult = await sql<{
+        readonly state: PlatformIncidentState;
+        readonly started_at: Date;
+        readonly ended_at: Date | null;
+        readonly affected_services: string[];
+        readonly affected_surfaces: string[];
+      }>`select state, started_at, ended_at, affected_services, affected_surfaces
+        from platform.platform_incidents
+        where incident_id = ${command.payload.incidentId}::uuid for update`
+        .execute(transaction);
+      const incident = incidentResult.rows[0];
+      if (!incident || incident.state !== 'RESOLVED' || !incident.ended_at
+        || !incident.affected_services.includes('CHALLENGE')
+        || !incident.affected_surfaces.includes('CHALLENGE_RESPONSE')) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      }
+      const sourceResult = await sql<MandatoryTimeoutRow>`
+        select challenge.challenge_id, challenge.state as challenge_state,
+          challenge.version::text as challenge_version, challenge.created_at,
+          challenge.response_deadline_at, result.result_id,
+          result.state as result_state, result.version::text as result_version,
+          result.recorded_at, timeout_event.event_id as source_timeout_event_id,
+          timeout_event.occurred_at as timeout_occurred_at,
+          transition.transition_id as status_transition_id,
+          result.status_transition_event_id,
+          competition.competition_id,
+          competition.version::text as competition_version,
+          competition.status_version::text as competition_status_version,
+          competition.status_lock_result_id, cooldown.cooldown_id
+        from competition.challenges as challenge
+        join competition.results as result on result.challenge_id = challenge.challenge_id
+          and result.result_id = ${command.payload.resultId}::uuid
+          and result.origin = 'ADMINISTRATIVE_FORFEIT'
+          and result.reason_code = 'MANDATORY_RESPONSE_EXPIRED'
+        join competition.status_transitions as transition
+          on transition.source_result_id = result.result_id
+        join competition.competitions as competition
+          on competition.competition_id = challenge.competition_id
+        join competition.pair_cooldowns as cooldown
+          on cooldown.source_result_id = result.result_id
+        join platform.domain_events as timeout_event
+          on timeout_event.aggregate_type = 'Challenge'
+          and timeout_event.aggregate_id = challenge.challenge_id
+          and timeout_event.event_name = 'MandatoryChallengeExpired'
+          and timeout_event.payload->>'resultId' = result.result_id::text
+        where challenge.challenge_id = ${command.aggregateId}::uuid
+        for update of challenge, result, competition
+      `.execute(transaction);
+      const row = sourceResult.rows[0];
+      if (!row || !['RESULT_RECORDED', 'COMPLETED'].includes(row.challenge_state)
+        || !['RECORDED', 'FINAL'].includes(row.result_state)
+        || row.timeout_occurred_at < incident.started_at
+        || row.timeout_occurred_at >= incident.ended_at
+        || Number(row.challenge_version) !== command.expectedVersion) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      }
+      const overlap = calculateExactIncidentOverlap({ clockStartedAt: row.created_at,
+        deadlineAt: row.response_deadline_at, incidentStartedAt: incident.started_at,
+        incidentEndedAt: incident.ended_at });
+      if (overlap.overlapMilliseconds === 0 || !overlap.overlapStartedAt || !overlap.overlapEndedAt) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_WINDOW');
+      }
+      const replay = await replayCompetitionStatusExcludingResults({ transaction,
+        sourceTransitionId: row.status_transition_id, excludedResultIds: [row.result_id] });
+      const resultNextVersion = Number(row.result_version) + 1;
+      const competitionNextVersion = Number(row.competition_version) + 1;
+      const competitionStatusVersion = Number(row.competition_status_version) + 1;
+
+      await sql`insert into platform.incident_impacts (
+        impact_id, incident_id, aggregate_type, aggregate_id, service, surface,
+        deadline_kind, impact_type, clock_started_at, old_deadline_at, new_deadline_at,
+        overlap_started_at, overlap_ended_at, overlap_milliseconds,
+        source_timeout_event_id, source_result_id, source_status_event_id,
+        compensating_event_id
+      ) values (
+        ${ids.impactId}::uuid, ${command.payload.incidentId}::uuid, 'Challenge',
+        ${row.challenge_id}::uuid, 'CHALLENGE', 'CHALLENGE_RESPONSE',
+        'CHALLENGE_RESPONSE', 'TIMEOUT_COMPENSATED', ${row.created_at.toISOString()}::timestamptz,
+        ${row.response_deadline_at.toISOString()}::timestamptz,
+        ${overlap.newDeadlineAt.toISOString()}::timestamptz,
+        ${overlap.overlapStartedAt.toISOString()}::timestamptz,
+        ${overlap.overlapEndedAt.toISOString()}::timestamptz, ${overlap.overlapMilliseconds},
+        ${row.source_timeout_event_id}::uuid, ${row.result_id}::uuid,
+        ${row.status_transition_event_id}::uuid, ${ids.eventId}::uuid
+      )`.execute(transaction);
+      await sql`insert into platform.incident_timeout_compensations (
+        compensation_id, impact_id, incident_id, challenge_id,
+        source_timeout_event_id, source_result_id, source_status_transition_id,
+        replay_hash, compensating_event_id, compensated_at, policy_version
+      ) values (
+        ${ids.compensationId}::uuid, ${ids.impactId}::uuid,
+        ${command.payload.incidentId}::uuid, ${row.challenge_id}::uuid,
+        ${row.source_timeout_event_id}::uuid, ${row.result_id}::uuid,
+        ${row.status_transition_id}::uuid, ${replay.replayHash}, ${ids.eventId}::uuid,
+        ${context.occurredAt.toISOString()}::timestamptz,
+        ${PLATFORM_INCIDENT_POLICY_VERSION}
+      )`.execute(transaction);
+      await sql`update competition.challenges set state = 'CANCELLED_NO_FAULT',
+        version = ${context.nextVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid
+          and state in ('RESULT_RECORDED', 'COMPLETED')`.execute(transaction);
+      await sql`update competition.results set state = 'ANNULLED',
+        finalized_at = coalesce(finalized_at, ${context.occurredAt.toISOString()}::timestamptz),
+        version = ${resultNextVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where result_id = ${row.result_id}::uuid and state in ('RECORDED', 'FINAL')`
+        .execute(transaction);
+      await sql`update competition.competitions set
+        champion_user_id = ${replay.championUserId}::uuid,
+        contender_user_id = ${replay.contenderUserId}::uuid,
+        status_version = ${competitionStatusVersion},
+        status_lock_result_id = case when status_lock_result_id = ${row.result_id}::uuid
+          then null else status_lock_result_id end,
+        version = ${competitionNextVersion},
+        updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where competition_id = ${row.competition_id}::uuid`.execute(transaction);
+      await sql`update competition.pair_cooldowns
+        set invalidated_at = coalesce(invalidated_at, ${context.occurredAt.toISOString()}::timestamptz)
+        where cooldown_id = ${row.cooldown_id}::uuid`.execute(transaction);
+      await sql`update competition.challenge_participant_obligations
+        set released_at = ${context.occurredAt.toISOString()}::timestamptz,
+          release_reason = 'INCIDENT_TIMEOUT_COMPENSATED_NO_FAULT'
+        where challenge_id = ${row.challenge_id}::uuid and released_at is null`
+        .execute(transaction);
+
+      const response: MandatoryTimeoutCompensationProjection = {
+        incidentId: command.payload.incidentId, impactId: ids.impactId,
+        compensationId: ids.compensationId, challengeId: row.challenge_id,
+        resultId: row.result_id, challengeState: 'CANCELLED_NO_FAULT',
+        resultState: 'ANNULLED', championUserId: replay.championUserId,
+        contenderUserId: replay.contenderUserId, replayHash: replay.replayHash,
+        overlapMilliseconds: overlap.overlapMilliseconds, version: context.nextVersion,
+      };
+      const relatedEvents: RelatedDomainEventDraft[] = [
+        { eventId: ids.resultEventId, eventName: 'IncidentResultCompensatedNoFault',
+          schemaVersion: 1, aggregateType: 'Result', aggregateId: row.result_id,
+          aggregateVersion: resultNextVersion, transitionId: null,
+          payload: { incidentId: command.payload.incidentId, impactId: ids.impactId,
+            sourceTimeoutEventId: row.source_timeout_event_id,
+            sourceOutcomeCode: 'FORFEIT', effectiveOutcomeCode: null },
+          metadata: { policyVersion: PLATFORM_INCIDENT_POLICY_VERSION } },
+        { eventId: ids.competitionEventId,
+          eventName: 'CompetitionStatusReplayedAfterPlatformIncident', schemaVersion: 1,
+          aggregateType: 'Competition', aggregateId: row.competition_id,
+          aggregateVersion: competitionNextVersion, transitionId: null,
+          payload: { incidentId: command.payload.incidentId, sourceResultId: row.result_id,
+            championUserId: replay.championUserId, contenderUserId: replay.contenderUserId,
+            statusVersion: competitionStatusVersion, replayHash: replay.replayHash },
+          metadata: { policyVersion: PLATFORM_INCIDENT_POLICY_VERSION } },
+        { eventId: ids.cooldownEventId, eventName: 'PairCooldownCompensatedNoFault',
+          schemaVersion: 1, aggregateType: 'PairCooldown', aggregateId: row.cooldown_id,
+          aggregateVersion: 2, transitionId: 'CD-03',
+          payload: { incidentId: command.payload.incidentId,
+            sourceResultId: row.result_id, cooldownId: row.cooldown_id },
+          metadata: { policyVersion: PLATFORM_INCIDENT_POLICY_VERSION } },
+      ];
+      return {
+        responseStatus: 200, response,
+        event: { eventId: ids.eventId, eventName: 'IncidentTimeoutCompensatedNoFault',
+          schemaVersion: 1, transitionId: null, payload: response,
+          metadata: { policyVersion: PLATFORM_INCIDENT_POLICY_VERSION,
+            sourceTimeoutEventId: row.source_timeout_event_id } },
+        relatedEvents,
+        audit: { auditId: ids.auditId,
+          action: 'COMPENSATE_MANDATORY_CHALLENGE_TIMEOUT', transitionId: null,
+          reasonCode: 'CONFIRMED_PLATFORM_INCIDENT', beforeState: row.challenge_state,
+          afterState: 'CANCELLED_NO_FAULT', metadata: { replayHash: replay.replayHash,
+            sourceResultId: row.result_id, impactId: ids.impactId } },
+        outbox: [{ messageId: ids.outboxMessageId,
+          topic: 'platform.incident.timeout-compensated-no-fault.v1', payload: response }],
       };
     },
   });

@@ -47,4 +47,5 @@ export * from './session.js';
 export * from './social.js';
 export * from './status-queue.js';
 export * from './status-release.js';
+export * from './status-replay.js';
 export * from './youth-consent.js';
