@@ -114,6 +114,10 @@ import {
   finalizeCommunityClosure,
   startIntegrityReview,
   decideIntegrityCase,
+  decideYouthConsent,
+  readPublicYouthConsent,
+  readYouthConsentSummary,
+  requestYouthConsent,
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
@@ -135,6 +139,9 @@ if (!connectionString) throw new Error('DATABASE_URL is required');
 if (production) {
   throw new Error('A production AuthAdapter must be configured before production startup');
 }
+
+const youthConsentTokenSecret = process.env.YOUTH_CONSENT_TOKEN_SECRET
+  ?? 'molokh-local-youth-consent-token-secret-v1';
 
 const localUserId = '0199a1b2-1234-7000-8000-000000000101';
 const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
@@ -1162,6 +1169,18 @@ const app = await buildApp({
       declineOptionalChallenge(database, command, ids),
     withdrawOptionalChallenge: (command, ids) =>
       withdrawOptionalChallenge(database, command, ids),
+  },
+  youthConsent: {
+    auth: localAuth,
+    tokenSecret: youthConsentTokenSecret,
+    publicBaseUrl: 'http://localhost:8081',
+    exposeDevelopmentActionUrl: true,
+    readSummary: (challengeId, viewerUserId) =>
+      readYouthConsentSummary(database, challengeId, viewerUserId),
+    request: (command, ids, deliveryToken) =>
+      requestYouthConsent(database, command, ids, deliveryToken),
+    readPublic: (token) => readPublicYouthConsent(database, token),
+    decide: (command, ids) => decideYouthConsent(database, command, ids),
   },
   community: {
     auth: localAuth,

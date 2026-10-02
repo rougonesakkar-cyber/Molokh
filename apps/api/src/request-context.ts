@@ -25,6 +25,8 @@ import {
   StatusQueueConflictError,
   StatusReleaseConflictError,
   VersionConflictError,
+  YouthConsentConflictError,
+  YouthConsentValidationError,
 } from '@molokh/core';
 import type { ApiError } from '@molokh/contracts';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -189,6 +191,35 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: {
         code: error.code,
         message: 'This Official Challenge action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof YouthConsentValidationError) {
+    return {
+      statusCode: 422,
+      body: {
+        code: error.code,
+        message: `Youth consent input is not valid: ${error.field}`,
+        requestId,
+      },
+    };
+  }
+  if (error instanceof YouthConsentConflictError) {
+    const statusCode = error.code === 'YOUTH_CONSENT_NOT_FOUND'
+        || error.code === 'YOUTH_CONSENT_TOKEN_INVALID'
+      ? 404
+      : error.code === 'YOUTH_CONSENT_SUBJECT_REQUIRED'
+        ? 403
+        : error.code === 'YOUTH_CONSENT_SMS_OPT_IN_REQUIRED'
+          || error.code === 'YOUTH_CONSENT_CHANNEL_NOT_VERIFIED'
+        ? 422
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Youth consent action is no longer available',
         requestId,
       },
     };

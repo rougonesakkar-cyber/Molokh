@@ -7,6 +7,8 @@ import type {
   ChatMessagesResponse,
   GroupPlanCommandResponse,
   TrainingOptionsResponse,
+  YouthConsentCommandResponse,
+  YouthConsentSummaryResponse,
 } from '@molokh/contracts';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,6 +31,7 @@ type ChatMessage = ChatMessagesResponse['data'][number];
 type TrainingOptions = TrainingOptionsResponse['data'];
 type ChatChallenge = ChatChallengeResponse['data'];
 type ChatState = ChatMessagesResponse['meta']['chatState'];
+type YouthConsentSummary = YouthConsentSummaryResponse['data'];
 type PendingMessageAction = {
   readonly action: 'hide' | 'report';
   readonly messageId: string;
@@ -69,6 +72,10 @@ export default function ChatScreen() {
   const [chatChallenge, setChatChallenge] = useState<ChatChallenge | null>(null);
   const [challengeLoading, setChallengeLoading] = useState(false);
   const [actingChallenge, setActingChallenge] = useState(false);
+  const [youthConsent, setYouthConsent] = useState<YouthConsentSummary | null>(null);
+  const [guardianEmail, setGuardianEmail] = useState('');
+  const [requestingYouthConsent, setRequestingYouthConsent] = useState(false);
+  const [developmentConsentUrl, setDevelopmentConsentUrl] = useState<string | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [actingTrainingId, setActingTrainingId] = useState<string | null>(null);
@@ -138,6 +145,30 @@ export default function ChatScreen() {
   useEffect(() => {
     void loadChallenge();
   }, [loadChallenge]);
+
+  const activeChallengeId = chatChallenge?.challenge?.challengeId ?? '';
+  const loadYouthConsent = useCallback(async () => {
+    if (!activeChallengeId) {
+      setYouthConsent(null);
+      return;
+    }
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${activeChallengeId}/youth-consents`,
+        { headers: { Authorization: `Bearer ${localToken}` } },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as YouthConsentSummaryResponse;
+      setYouthConsent(result.data);
+    } catch (caught) {
+      setYouthConsent(null);
+      setError(caught instanceof Error ? caught.message : 'Не удалось загрузить согласие представителя');
+    }
+  }, [activeChallengeId]);
+
+  useEffect(() => {
+    void loadYouthConsent();
+  }, [loadYouthConsent]);
 
   const loadTrainingOptions = useCallback(async () => {
     if (!chatId) {
@@ -274,6 +305,42 @@ export default function ChatScreen() {
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Official Challenge');
     } finally {
       setActingChallenge(false);
+    }
+  };
+
+  const requestGuardianConsent = async () => {
+    const challengeId = chatChallenge?.challenge?.challengeId;
+    const normalizedEmail = guardianEmail.trim();
+    if (!challengeId || requestingYouthConsent || !normalizedEmail) return;
+    const operation = `youth-consent:request:${challengeId}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setRequestingYouthConsent(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challengeId}/youth-consents`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': '0',
+          },
+          body: JSON.stringify({ channel: 'EMAIL', guardianContact: normalizedEmail }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as YouthConsentCommandResponse;
+      setDevelopmentConsentUrl(result.meta.developmentActionUrl ?? null);
+      actionKeys.current.delete(operation);
+      await loadYouthConsent();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отправить ссылку представителю');
+    } finally {
+      setRequestingYouthConsent(false);
     }
   };
 
@@ -535,6 +602,13 @@ export default function ChatScreen() {
                   )}
                 </Pressable>
               ) : null}
+              {!challengeLoading && !chatChallenge?.challenge && chatChallenge?.canCreate === false ? (
+                <Text style={styles.trainingTerms}>
+                  {chatChallenge.createDenialCode === 'YOUTH_OFFICIAL_DISABLED'
+                    ? 'Youth Challenge пока выключен до утверждения пилотного процесса согласия.'
+                    : 'Официальный вызов сейчас недоступен для этой пары.'}
+                </Text>
+              ) : null}
               {chatChallenge?.challenge ? (
                 <View style={styles.challengeCard}>
                   <Text style={styles.challengeBadge}>
@@ -543,6 +617,55 @@ export default function ChatScreen() {
                   <Text style={styles.trainingTitle}>
                     {chatChallenge.challenge.initiatorDisplayName} → {chatChallenge.challenge.recipientDisplayName}
                   </Text>
+                  {youthConsent && youthConsent.requiredCount > 0 ? (
+                    <View style={styles.youthConsentCard}>
+                      <Text style={styles.youthConsentTitle}>Согласие представителя</Text>
+                      <Text style={styles.trainingTerms}>
+                        Получено {youthConsent.grantedCount} из {youthConsent.requiredCount}. У каждого Youth-спортсмена — отдельная защищённая ссылка; аккаунт и документы представителя не нужны.
+                      </Text>
+                      {youthConsent.viewerAgeDivision === 'YOUTH'
+                        && youthConsent.consents.find((item) => item.athleteUserId === viewerUserId)?.state === 'NOT_REQUESTED' ? (
+                        <View style={styles.challengeActions}>
+                          <TextInput
+                            accessibilityLabel="E-mail представителя"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            inputMode="email"
+                            onChangeText={setGuardianEmail}
+                            placeholder="E-mail представителя"
+                            style={styles.guardianInput}
+                            value={guardianEmail}
+                          />
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={requestingYouthConsent || guardianEmail.trim().length === 0}
+                            onPress={() => void requestGuardianConsent()}
+                            style={({ pressed }) => [
+                              styles.challengeButton,
+                              (requestingYouthConsent || guardianEmail.trim().length === 0) && styles.disabled,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.trainingButtonText}>
+                              {requestingYouthConsent ? 'Отправляем…' : 'Отправить защищённую ссылку'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                      {youthConsent.viewerAgeDivision === 'YOUTH'
+                        && youthConsent.consents.find((item) => item.athleteUserId === viewerUserId)?.state === 'PENDING' ? (
+                        <Text style={styles.youthConsentPending}>Ссылка отправлена. Ожидаем решение представителя.</Text>
+                      ) : null}
+                      {developmentConsentUrl ? (
+                        <Pressable
+                          accessibilityRole="link"
+                          onPress={() => void Linking.openURL(developmentConsentUrl)}
+                        >
+                          <Text style={styles.developmentLink}>Открыть тестовую ссылку представителя</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
                   {chatChallenge.challenge.state === 'AWAITING_RESPONSE'
                     && chatChallenge.challenge.responsePolicy === 'OPTIONAL' ? (
                     <>
@@ -553,9 +676,9 @@ export default function ChatScreen() {
                         <View style={styles.challengeActions}>
                           <Pressable
                             accessibilityRole="button"
-                            disabled={actingChallenge}
+                            disabled={actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true}
                             onPress={() => void runChallengeAction('accept')}
-                            style={({ pressed }) => [styles.challengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
+                            style={({ pressed }) => [styles.challengeButton, (actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true) && styles.disabled, pressed && styles.pressed]}
                           >
                             <Text style={styles.trainingButtonText}>Принять Challenge</Text>
                           </Pressable>
@@ -591,7 +714,7 @@ export default function ChatScreen() {
                             accessibilityRole="button"
                             disabled={actingChallenge}
                             onPress={() => void runChallengeAction('accept')}
-                            style={({ pressed }) => [styles.challengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
+                            style={({ pressed }) => [styles.challengeButton, (actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true) && styles.disabled, pressed && styles.pressed]}
                           >
                             <Text style={styles.trainingButtonText}>Принять Challenge</Text>
                           </Pressable>
@@ -1117,6 +1240,11 @@ const styles = StyleSheet.create({
   secondaryChallengeText: { color: '#8b2f22', fontSize: 14, fontWeight: '800' },
   acceptedChallengeText: { color: '#2f6846', fontSize: 14, fontWeight: '900' },
   challengeUnavailable: { color: '#777168', fontSize: 13, lineHeight: 19 },
+  youthConsentCard: { backgroundColor: '#fff7e8', borderColor: '#e7c98d', borderRadius: 12, borderWidth: 1, gap: 8, padding: 12 },
+  youthConsentTitle: { color: '#5e451b', fontSize: 14, fontWeight: '900' },
+  youthConsentPending: { color: '#7a5b23', fontSize: 13, fontWeight: '700' },
+  guardianInput: { backgroundColor: '#fff', borderColor: '#cfc6b8', borderRadius: 10, borderWidth: 1, minHeight: 44, paddingHorizontal: 12 },
+  developmentLink: { color: '#8b2f22', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
   optionsHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   optionsRefreshButton: {
     alignItems: 'center',
