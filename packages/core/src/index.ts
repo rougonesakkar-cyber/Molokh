@@ -16,3 +16,4 @@ export * from './status-queue.js';
 export * from './status-release.js';
 export * from './timer.js';
 export * from './version.js';
+export * from './youth-consent.js';

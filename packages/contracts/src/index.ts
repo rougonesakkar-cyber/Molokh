@@ -551,6 +551,7 @@ const ChallengeConflictCodeSchema = Type.Union([
   Type.Literal('OPTIONAL_INVITATION_LIMIT'),
   Type.Literal('OPTIONAL_PAIR_QUIET'),
   Type.Literal('OFFICIAL_OBLIGATION_LIMIT'),
+  Type.Literal('YOUTH_OFFICIAL_DISABLED'),
   Type.Literal('RULESET_ACK_REQUIRED'),
   Type.Literal('CHALLENGE_NOT_AWAITING_RESPONSE'),
   Type.Literal('CHALLENGE_INITIATOR_REQUIRED'),
@@ -659,6 +660,148 @@ export const ChallengeCommandResponseSchema = Type.Object(
 );
 
 export type ChallengeCommandResponse = Static<typeof ChallengeCommandResponseSchema>;
+
+export const YouthConsentStateSchema = Type.Union([
+  Type.Literal('PENDING'),
+  Type.Literal('GRANTED'),
+  Type.Literal('DECLINED'),
+  Type.Literal('REVOKED'),
+  Type.Literal('EXPIRED'),
+]);
+
+export const YouthConsentProjectionSchema = Type.Object(
+  {
+    consentId: Type.String({ format: 'uuid' }),
+    challengeId: Type.String({ format: 'uuid' }),
+    athleteUserId: Type.String({ format: 'uuid' }),
+    policyVersion: Type.Literal('youth-consent-mvp-v1'),
+    state: YouthConsentStateSchema,
+    channel: Type.Union([Type.Literal('EMAIL'), Type.Literal('SMS')]),
+    maskedContact: Type.String({ minLength: 3, maxLength: 160 }),
+    expiresAt: Type.String({ format: 'date-time' }),
+    decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    revokedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'YouthConsentProjection', additionalProperties: false },
+);
+
+export type YouthConsentContract = Static<typeof YouthConsentProjectionSchema>;
+
+export const YouthConsentSummaryResponseSchema = Type.Object(
+  {
+    data: Type.Object(
+      {
+        challengeId: Type.String({ format: 'uuid' }),
+        featureEnabled: Type.Boolean(),
+        viewerAgeDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+        requiredCount: Type.Integer({ minimum: 0, maximum: 2 }),
+        grantedCount: Type.Integer({ minimum: 0, maximum: 2 }),
+        ready: Type.Boolean(),
+        consents: Type.Array(Type.Object(
+          {
+            athleteUserId: Type.String({ format: 'uuid' }),
+            state: Type.Union([YouthConsentStateSchema, Type.Literal('NOT_REQUESTED')]),
+            maskedContact: Type.Union([Type.String({ minLength: 3, maxLength: 160 }), Type.Null()]),
+            expiresAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+            version: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+          },
+          { additionalProperties: false },
+        )),
+        policyVersion: Type.Literal('youth-consent-mvp-v1'),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Type.Object(
+      { requestId: Type.String({ format: 'uuid' }) },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'YouthConsentSummaryResponse', additionalProperties: false },
+);
+
+export type YouthConsentSummaryResponse = Static<typeof YouthConsentSummaryResponseSchema>;
+
+export const RequestYouthConsentBodySchema = Type.Object(
+  {
+    channel: Type.Union([Type.Literal('EMAIL'), Type.Literal('SMS')]),
+    guardianContact: Type.String({ minLength: 3, maxLength: 160 }),
+    smsOptIn: Type.Optional(Type.Boolean()),
+  },
+  { $id: 'RequestYouthConsentBody', additionalProperties: false },
+);
+
+export type RequestYouthConsentBody = Static<typeof RequestYouthConsentBodySchema>;
+
+export const YouthConsentCommandResponseSchema = Type.Object(
+  {
+    data: YouthConsentProjectionSchema,
+    meta: Type.Object(
+      {
+        requestId: Type.String({ format: 'uuid' }),
+        eventId: Type.String({ format: 'uuid' }),
+        replayed: Type.Boolean(),
+        developmentActionUrl: Type.Optional(Type.String({ minLength: 1 })),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'YouthConsentCommandResponse', additionalProperties: false },
+);
+
+export type YouthConsentCommandResponse = Static<typeof YouthConsentCommandResponseSchema>;
+
+export const PublicYouthConsentProjectionSchema = Type.Object(
+  {
+    consentId: Type.String({ format: 'uuid' }),
+    challengeId: Type.String({ format: 'uuid' }),
+    athleteUserId: Type.String({ format: 'uuid' }),
+    policyVersion: Type.Literal('youth-consent-mvp-v1'),
+    state: YouthConsentStateSchema,
+    channel: Type.Union([Type.Literal('EMAIL'), Type.Literal('SMS')]),
+    maskedContact: Type.String({ minLength: 3, maxLength: 160 }),
+    expiresAt: Type.String({ format: 'date-time' }),
+    decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    revokedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    version: Type.Integer({ minimum: 1 }),
+    athleteDisplayName: Type.String({ minLength: 1, maxLength: 80 }),
+    challengeState: Type.String({ minLength: 1, maxLength: 80 }),
+    canGrant: Type.Boolean(),
+    canDecline: Type.Boolean(),
+    canRevoke: Type.Boolean(),
+  },
+  { $id: 'PublicYouthConsentProjection', additionalProperties: false },
+);
+
+export type PublicYouthConsentContract = Static<typeof PublicYouthConsentProjectionSchema>;
+
+export const PublicYouthConsentResponseSchema = Type.Object(
+  {
+    data: PublicYouthConsentProjectionSchema,
+    meta: Type.Object(
+      {
+        requestId: Type.String({ format: 'uuid' }),
+        eventId: Type.Optional(Type.String({ format: 'uuid' })),
+        replayed: Type.Optional(Type.Boolean()),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'PublicYouthConsentResponse', additionalProperties: false },
+);
+
+export type PublicYouthConsentResponse = Static<typeof PublicYouthConsentResponseSchema>;
+
+export const DecideYouthConsentBodySchema = Type.Object(
+  {
+    guardianDisplayName: Type.Optional(Type.String({ minLength: 2, maxLength: 120 })),
+    relationship: Type.Optional(Type.String({ minLength: 2, maxLength: 80 })),
+    consentTextAccepted: Type.Optional(Type.Boolean()),
+  },
+  { $id: 'DecideYouthConsentBody', additionalProperties: false },
+);
+
+export type DecideYouthConsentBody = Static<typeof DecideYouthConsentBodySchema>;
 
 export const ResultOutcomeCodeSchema = Type.Union([
   Type.Literal('WIN_A'),
