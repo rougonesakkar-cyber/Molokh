@@ -180,6 +180,7 @@ export function assertSingleGenesisCandidateCanBePromoted(input: {
   readonly kind: QueueEntryKind;
   readonly isOnlyCandidate: boolean;
   readonly singleCandidateSinceAt: Date | null;
+  readonly singleCandidateDeadlineAt?: Date | null;
   readonly occurredAt: Date;
 }): void {
   if (input.state !== 'WAITING' || input.kind !== 'GENESIS_CANDIDATE') {
@@ -191,7 +192,9 @@ export function assertSingleGenesisCandidateCanBePromoted(input: {
   if (input.singleCandidateSinceAt === null) {
     throw new StatusQueueConflictError('GENESIS_SINGLE_WINDOW_NOT_STARTED');
   }
-  if (input.occurredAt < genesisSingleCandidateDeadline(input.singleCandidateSinceAt)) {
+  const deadline = input.singleCandidateDeadlineAt
+    ?? genesisSingleCandidateDeadline(input.singleCandidateSinceAt);
+  if (input.occurredAt < deadline) {
     throw new StatusQueueConflictError('GENESIS_SINGLE_PROMOTION_NOT_DUE');
   }
 }

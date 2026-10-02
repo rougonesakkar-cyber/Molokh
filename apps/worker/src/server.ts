@@ -22,6 +22,7 @@ import {
   expireGroupOffering,
   expireGroupPlan,
   expireOptionalChallenge,
+  expireChallengeScheduling,
   expireGenesisChallenge,
   expireLike,
   finalizeResult,
@@ -74,6 +75,7 @@ import {
   type ExpireSlotPayload,
   type OpenSessionWindowPayload,
   type ExpireOptionalChallengePayload,
+  type ExpireChallengeSchedulingPayload,
   type ExpireGenesisChallengePayload,
   type ActivateStatusQueueHeadPayload,
   type ExpireStatusQueueReconfirmationPayload,
@@ -97,6 +99,7 @@ import { statusQueueTimerFromOutbox } from './status-queue-timers.js';
 import { createTaskList } from './tasks.js';
 import { processTimer } from './timer-processor.js';
 import { identityTimerFromOutbox } from './identity-timers.js';
+import { incidentTimerFromOutbox } from './incident-timers.js';
 
 const production = process.env.NODE_ENV === 'production';
 const connectionString =
@@ -630,6 +633,34 @@ const executeOptionalChallengeExpiry = async (payload: TimerCommandPayload) => {
   });
 };
 
+const executeChallengeSchedulingExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireChallengeSchedulingPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Challenge',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { challengeId: payload.aggregateId },
+  };
+  await expireChallengeScheduling(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    notificationId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID()],
+    bookingEventId: randomUUID(),
+    bookingOutboxMessageId: randomUUID(),
+  });
+};
+
 const executeGenesisChallengeExpiry = async (payload: TimerCommandPayload) => {
   const command: CommandEnvelope<ExpireGenesisChallengePayload> = {
     commandId: randomUUID(),
@@ -908,6 +939,11 @@ const taskList = createTaskList({
             readChallengeTimerSnapshot(database, timer.aggregateId),
           execute: executeGenesisChallengeExpiry,
         },
+        EXPIRE_CHALLENGE_SCHEDULING: {
+          loadSnapshot: (timer) =>
+            readChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeChallengeSchedulingExpiry,
+        },
         EXPIRE_STATUS_QUEUE_RECONFIRMATION: {
           loadSnapshot: (timer) =>
             readStatusQueueTimerSnapshot(database, timer.aggregateId),
@@ -1038,6 +1074,7 @@ const outboxPolling = startOutboxPolling({
   deliver: async (message) => {
     const socialTimer = socialTimerFromOutbox(message.topic, message.payload);
     const timer = socialTimer
+      ?? incidentTimerFromOutbox(message.topic, message.payload)
       ?? identityTimerFromOutbox(message.topic, message.payload)
       ?? schedulingTimerFromOutbox(message.topic, message.payload)
       ?? challengeTimerFromOutbox(message.topic, message.payload)

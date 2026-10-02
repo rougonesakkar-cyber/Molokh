@@ -4,6 +4,7 @@ import {
   ChallengeConflictError,
   YouthConsentConflictError,
   acceptedChallengeSchedulingDeadline,
+  assertAcceptedChallengeSchedulingCanExpire,
   assertDirectOpenChallengeCanBeCreated,
   assertOptionalChallengeCanBeAccepted,
   assertOptionalChallengeCanBeDeclined,
@@ -45,6 +46,10 @@ export interface ExpireOptionalChallengePayload {
   readonly challengeId: string;
 }
 
+export interface ExpireChallengeSchedulingPayload {
+  readonly challengeId: string;
+}
+
 export interface ChallengeEffectIds {
   readonly eventId: string;
   readonly auditId: string;
@@ -59,6 +64,12 @@ export interface ChallengeEffectIds {
   readonly cooldownEventId?: string;
   readonly timerOutboxMessageId?: string;
   readonly notificationIds?: readonly [string, string];
+}
+
+export interface ExpireChallengeSchedulingEffectIds extends ChallengeEffectIds {
+  readonly bookingEventId: string;
+  readonly bookingOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string];
 }
 
 export interface CreateChallengeEffectIds extends ChallengeEffectIds {
@@ -842,7 +853,7 @@ export async function acceptOptionalChallenge(
         event: { eventId: ids.eventId, eventName: 'ChallengeAccepted', schemaVersion: 1, transitionId: 'CH-02', payload: { challengeId: response.challengeId, acceptedAt: response.acceptedAt, schedulingDeadlineAt: response.schedulingDeadlineAt, participants: [row.pair_low_id, row.pair_high_id] }, metadata: { policyVersion: CHALLENGE_POLICY_VERSION, rulesetSnapshotId: row.ruleset_snapshot_id } },
         audit: { auditId: ids.auditId, action: row.response_policy === 'MANDATORY' ? 'ACCEPT_MANDATORY_CHALLENGE' : 'ACCEPT_OPTIONAL_CHALLENGE', transitionId: 'CH-02', reasonCode: null, beforeState: row.state, afterState: 'ACCEPTED_UNSCHEDULED', metadata: { schedulingDeadlineAt: response.schedulingDeadlineAt } },
         outbox: [
-          { messageId: ids.outboxMessageId, topic: 'competition.challenge.accepted.v1', payload: { challengeId: response.challengeId, timer: { commandType: 'EXPIRE_CHALLENGE_SCHEDULING', deadlineAt: response.schedulingDeadlineAt, expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: response.version } } },
+          { messageId: ids.outboxMessageId, topic: 'competition.challenge.accepted.v1', payload: { challengeId: response.challengeId, timer: { commandType: 'EXPIRE_CHALLENGE_SCHEDULING', aggregateType: 'Challenge', aggregateId: response.challengeId, deadlineAt: response.schedulingDeadlineAt, expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: response.version, policyVersion: CHALLENGE_POLICY_VERSION, idempotencyKey: `challenge:${response.challengeId}:expire-scheduling:v${response.version}` } } },
           { messageId: ids.notificationOutboxMessageId, topic: 'notification.in_app.v1', payload: { notifications: [{ notificationId: ids.notificationId, recipientUserId: row.initiator_user_id, category: 'MANDATORY', renderKey: row.response_policy === 'MANDATORY' ? 'challenge.mandatory-accepted' : 'challenge.optional-accepted', actionTarget: { type: 'CHALLENGE', challengeId: response.challengeId }, payload: { recipientDisplayName: row.recipient_display_name }, deadlineAt: response.schedulingDeadlineAt }] } },
         ],
       };
@@ -1304,6 +1315,166 @@ export async function readChallengeTimerSnapshot(
           : {}),
       }
     : { state: 'MISSING', version: 0 };
+}
+
+export async function expireChallengeScheduling(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ExpireChallengeSchedulingPayload>,
+  ids: ExpireChallengeSchedulingEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ChallengeProjection>> {
+  if (
+    command.actor.type !== 'SYSTEM'
+    || command.actor.id !== null
+    || command.aggregateType !== 'Challenge'
+    || command.aggregateId !== command.payload.challengeId
+    || command.commandType !== 'EXPIRE_CHALLENGE_SCHEDULING'
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED');
+  }
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await challengeRow(transaction, command.aggregateId, true);
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
+      assertAcceptedChallengeSchedulingCanExpire({
+        state: row.state,
+        schedulingDeadlineAt: row.scheduling_deadline_at,
+        occurredAt: context.occurredAt,
+      });
+      const bookingResult = await sql<{
+        readonly booking_id: string;
+        readonly state: string;
+        readonly version: string;
+      }>`
+        select booking_id, state, version::text
+        from scheduling.bookings
+        where challenge_id = ${row.challenge_id}::uuid
+          and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        order by created_at desc, booking_id desc
+        limit 1
+        for update
+      `.execute(transaction);
+      const booking = bookingResult.rows[0] ?? null;
+      const occurredAt = context.occurredAt.toISOString();
+      await sql`
+        update competition.challenges
+        set state = 'EXPIRED_NO_FAULT', decided_at = ${occurredAt}::timestamptz,
+          version = ${context.nextVersion}, updated_at = ${occurredAt}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid
+          and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+      `.execute(transaction);
+      await sql`
+        update competition.challenge_participant_obligations
+        set released_at = ${occurredAt}::timestamptz,
+          release_reason = 'SCHEDULING_DEADLINE_EXPIRED'
+        where challenge_id = ${row.challenge_id}::uuid and released_at is null
+      `.execute(transaction);
+      if (booking) {
+        await sql`
+          update scheduling.bookings
+          set state = 'CANCELLED', cancelled_at = ${occurredAt}::timestamptz,
+            cancel_actor = null, cancel_reason = 'CHALLENGE_SCHEDULING_DEADLINE',
+            version = version + 1, updated_at = ${occurredAt}::timestamptz
+          where booking_id = ${booking.booking_id}::uuid
+            and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        `.execute(transaction);
+      }
+      const response = projection(
+        await challengeRow(transaction, row.challenge_id),
+        row.initiator_user_id,
+      );
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'ChallengeSchedulingExpiredNoFault',
+          schemaVersion: 1,
+          transitionId: 'CH-27',
+          payload: {
+            challengeId: row.challenge_id,
+            bookingId: booking?.booking_id ?? null,
+            reason: 'SCHEDULING_DEADLINE_EXPIRED',
+            noForfeit: true,
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        },
+        ...(booking ? {
+          relatedEvents: [{
+            eventId: ids.bookingEventId,
+            eventName: 'BookingCancelledNoFault',
+            schemaVersion: 1,
+            aggregateType: 'Booking',
+            aggregateId: booking.booking_id,
+            aggregateVersion: Number(booking.version) + 1,
+            transitionId: 'B-21',
+            payload: {
+              bookingId: booking.booking_id,
+              challengeId: row.challenge_id,
+              reason: 'CHALLENGE_SCHEDULING_DEADLINE',
+              noForfeit: true,
+            },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          }],
+        } : {}),
+        audit: {
+          auditId: ids.auditId,
+          action: 'EXPIRE_CHALLENGE_SCHEDULING',
+          transitionId: 'CH-27',
+          reasonCode: 'SCHEDULING_DEADLINE_EXPIRED',
+          beforeState: row.state,
+          afterState: 'EXPIRED_NO_FAULT',
+          metadata: { bookingId: booking?.booking_id ?? null, noForfeit: true },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'competition.challenge.scheduling-expired-no-fault.v1',
+            payload: {
+              challengeId: row.challenge_id,
+              competitionId: row.competition_id,
+              bookingId: booking?.booking_id ?? null,
+              noForfeit: true,
+            },
+          },
+          ...(booking ? [{
+            messageId: ids.bookingOutboxMessageId,
+            topic: 'scheduling.booking.cancelled-no-fault.v1',
+            sourceEventId: ids.bookingEventId,
+            payload: {
+              bookingId: booking.booking_id,
+              challengeId: row.challenge_id,
+              reason: 'CHALLENGE_SCHEDULING_DEADLINE',
+              noForfeit: true,
+            },
+          }] : []),
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: {
+              notifications: [row.pair_low_id, row.pair_high_id].map(
+                (recipientUserId, index) => ({
+                  notificationId: ids.notificationIds[index]!,
+                  recipientUserId,
+                  category: 'MANDATORY',
+                  renderKey: 'challenge.scheduling-expired-no-fault',
+                  actionTarget: { type: 'CHAT', chatId: row.source_chat_id },
+                  payload: { challengeId: row.challenge_id, noForfeit: true },
+                  deadlineAt: null,
+                }),
+              ),
+            },
+          },
+        ],
+      };
+    },
+  });
 }
 
 export async function expireOptionalChallenge(

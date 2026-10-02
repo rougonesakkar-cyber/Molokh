@@ -7,6 +7,7 @@ import {
   calculateExactIncidentOverlap,
   normalizePlatformIncidentDetection,
   normalizePlatformIncidentResolution,
+  pausableTimerRegistry,
   timerPolicyForCommand,
   type CommandEnvelope,
   type PlatformIncidentSeverity,
@@ -119,6 +120,33 @@ export interface MandatoryTimeoutCompensationProjection {
   readonly championUserId: string | null;
   readonly contenderUserId: string | null;
   readonly replayHash: string;
+  readonly overlapMilliseconds: number;
+  readonly version: number;
+}
+
+export interface PausableDeadlineImpactCandidate {
+  readonly aggregateType: 'Challenge' | 'Booking' | 'ChallengeQueueEntry' | 'BookingOfficialConversion';
+  readonly aggregateId: string;
+  readonly commandType: string;
+  readonly deadlineKind: Exclude<PausableDeadlineKind, 'CHALLENGE_RESPONSE'>;
+  readonly surface: string;
+  readonly version: number;
+}
+
+export interface ApplyPausableDeadlineImpactPayload {
+  readonly incidentId: string;
+  readonly deadlineKind: Exclude<PausableDeadlineKind, 'CHALLENGE_RESPONSE'>;
+  readonly surface: string;
+}
+
+export interface PausableDeadlineImpactProjection {
+  readonly impactId: string;
+  readonly incidentId: string;
+  readonly aggregateType: string;
+  readonly aggregateId: string;
+  readonly deadlineKind: PausableDeadlineKind;
+  readonly oldDeadlineAt: string;
+  readonly newDeadlineAt: string;
   readonly overlapMilliseconds: number;
   readonly version: number;
 }
@@ -455,6 +483,60 @@ function transitionEffect(
   } as const;
 }
 
+interface PausableTimerWindow {
+  readonly clock_started_at: Date;
+  readonly deadline_at: Date;
+}
+
+async function pausableTimerWindow(
+  database: Kysely<Database> | Transaction<Database>,
+  deadlineKind: PausableDeadlineKind, aggregateId: string,
+): Promise<PausableTimerWindow | null> {
+  if (deadlineKind === 'CHALLENGE_RESPONSE') {
+    const result = await sql<PausableTimerWindow>`select created_at as clock_started_at,
+      response_deadline_at as deadline_at from competition.challenges
+      where challenge_id = ${aggregateId}::uuid and state = 'AWAITING_RESPONSE'`
+      .execute(database);
+    return result.rows[0] ?? null;
+  }
+  if (deadlineKind === 'CHALLENGE_SCHEDULING') {
+    const result = await sql<PausableTimerWindow>`select accepted_at as clock_started_at,
+      scheduling_deadline_at as deadline_at from competition.challenges
+      where challenge_id = ${aggregateId}::uuid
+        and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+        and accepted_at is not null and scheduling_deadline_at is not null`
+      .execute(database);
+    return result.rows[0] ?? null;
+  }
+  if (deadlineKind === 'BOOKING_SELECTION') {
+    const result = await sql<PausableTimerWindow>`select created_at as clock_started_at,
+      selection_expires_at as deadline_at from scheduling.bookings
+      where booking_id = ${aggregateId}::uuid and state = 'SELECTING'`
+      .execute(database);
+    return result.rows[0] ?? null;
+  }
+  if (deadlineKind === 'STATUS_QUEUE_RECONFIRMATION') {
+    const result = await sql<PausableTimerWindow>`select updated_at as clock_started_at,
+      reconfirmation_deadline_at as deadline_at from competition.challenge_queue_entries
+      where queue_entry_id = ${aggregateId}::uuid and state = 'RECONFIRMATION_REQUIRED'
+        and reconfirmation_deadline_at is not null`.execute(database);
+    return result.rows[0] ?? null;
+  }
+  if (deadlineKind === 'BOOKING_CONVERSION_CONFIRMATION') {
+    const result = await sql<PausableTimerWindow>`select updated_at as clock_started_at,
+      confirmation_deadline_at as deadline_at from scheduling.booking_official_conversions
+      where conversion_id = ${aggregateId}::uuid and state = 'PENDING_CONFIRMATION'
+        and confirmation_deadline_at is not null`.execute(database);
+    return result.rows[0] ?? null;
+  }
+  const result = await sql<PausableTimerWindow>`select single_candidate_since_at as clock_started_at,
+    coalesce(single_candidate_deadline_at, single_candidate_since_at + interval '3 days') as deadline_at
+    from competition.challenge_queue_entries where queue_entry_id = ${aggregateId}::uuid
+      and kind = 'GENESIS_CANDIDATE' and state = 'WAITING'
+      and single_candidate_since_at is not null`.execute(database);
+  return result.rows[0] ?? null;
+}
+
 async function activeTimerIncident(
   database: Kysely<Database> | Transaction<Database>, input: {
     readonly commandType: string;
@@ -464,13 +546,15 @@ async function activeTimerIncident(
   },
 ): Promise<{ readonly incident_id: string } | null> {
   const policy = timerPolicyForCommand(input.commandType);
-  if (!policy || policy.deadlineKind !== 'CHALLENGE_RESPONSE') return null;
+  if (!policy) return null;
   const surface = input.surface ?? policy.deadlineKind;
+  const window = await pausableTimerWindow(
+    database, policy.deadlineKind, input.aggregateId,
+  );
+  if (!window) return null;
   const result = await sql<{ readonly incident_id: string }>`
     select incident.incident_id
     from platform.platform_incidents as incident
-    join competition.challenges as challenge
-      on challenge.challenge_id = ${input.aggregateId}::uuid
     where (
         incident.state = 'CONFIRMED_ACTIVE'
         or (
@@ -478,16 +562,17 @@ async function activeTimerIncident(
           and not exists (
             select 1 from platform.incident_impacts as impact
             where impact.incident_id = incident.incident_id
-              and impact.aggregate_type = 'Challenge'
-              and impact.aggregate_id = challenge.challenge_id
+              and impact.aggregate_type = ${policy.aggregateType}
+              and impact.aggregate_id = ${input.aggregateId}::uuid
               and impact.deadline_kind = ${policy.deadlineKind}
           )
         )
       )
       and ${policy.service} = any(incident.affected_services)
       and ${surface} = any(incident.affected_surfaces)
-      and challenge.created_at < coalesce(incident.ended_at, 'infinity'::timestamptz)
-      and incident.started_at < challenge.response_deadline_at
+      and ${window.clock_started_at.toISOString()}::timestamptz
+        < coalesce(incident.ended_at, 'infinity'::timestamptz)
+      and incident.started_at < ${window.deadline_at.toISOString()}::timestamptz
       and ${input.now.toISOString()}::timestamptz >= incident.started_at
     order by incident.started_at, incident.incident_id
     limit 1
@@ -662,6 +747,271 @@ export async function applyChallengeResponseIncidentImpact(
               idempotencyKey: `incident:${command.payload.incidentId}:challenge:${command.aggregateId}:deadline`,
             },
           } }],
+      };
+    },
+  });
+}
+
+export async function listPausableDeadlineImpactCandidates(
+  database: Kysely<Database>, incidentId: string,
+): Promise<PausableDeadlineImpactCandidate[]> {
+  const result = await sql<{
+    readonly aggregate_type: PausableDeadlineImpactCandidate['aggregateType'];
+    readonly aggregate_id: string;
+    readonly command_type: string;
+    readonly deadline_kind: PausableDeadlineImpactCandidate['deadlineKind'];
+    readonly surface: string;
+    readonly version: string;
+  }>`
+    with incident as (
+      select * from platform.platform_incidents
+      where incident_id = ${incidentId}::uuid and state = 'RESOLVED'
+    ), candidates as (
+      select 'Challenge'::text as aggregate_type, challenge.challenge_id as aggregate_id,
+        'EXPIRE_CHALLENGE_SCHEDULING'::text as command_type,
+        'CHALLENGE_SCHEDULING'::text as deadline_kind,
+        challenge.accepted_at as clock_started_at,
+        challenge.scheduling_deadline_at as deadline_at, challenge.version
+      from incident, competition.challenges as challenge
+      where challenge.state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+        and challenge.accepted_at is not null and challenge.scheduling_deadline_at is not null
+        and 'CHALLENGE' = any(incident.affected_services)
+        and 'CHALLENGE_SCHEDULING' = any(incident.affected_surfaces)
+      union all
+      select 'Booking', booking.booking_id, 'EXPIRE_BOOKING_SELECTION',
+        'BOOKING_SELECTION', booking.created_at, booking.selection_expires_at, booking.version
+      from incident, scheduling.bookings as booking
+      where booking.state = 'SELECTING' and 'BOOKING' = any(incident.affected_services)
+        and 'BOOKING_SELECTION' = any(incident.affected_surfaces)
+      union all
+      select 'ChallengeQueueEntry', entry.queue_entry_id,
+        'EXPIRE_STATUS_QUEUE_RECONFIRMATION', 'STATUS_QUEUE_RECONFIRMATION',
+        entry.updated_at, entry.reconfirmation_deadline_at, entry.version
+      from incident, competition.challenge_queue_entries as entry
+      where entry.state = 'RECONFIRMATION_REQUIRED'
+        and entry.reconfirmation_deadline_at is not null
+        and 'STATUS_QUEUE' = any(incident.affected_services)
+        and 'STATUS_QUEUE_RECONFIRMATION' = any(incident.affected_surfaces)
+      union all
+      select 'BookingOfficialConversion', conversion.conversion_id,
+        'EXPIRE_BOOKING_OFFICIAL_CONVERSION', 'BOOKING_CONVERSION_CONFIRMATION',
+        conversion.updated_at, conversion.confirmation_deadline_at, conversion.version
+      from incident, scheduling.booking_official_conversions as conversion
+      where conversion.state = 'PENDING_CONFIRMATION'
+        and conversion.confirmation_deadline_at is not null
+        and 'BOOKING' = any(incident.affected_services)
+        and 'BOOKING_CONVERSION_CONFIRMATION' = any(incident.affected_surfaces)
+      union all
+      select 'ChallengeQueueEntry', entry.queue_entry_id,
+        'PROMOTE_SINGLE_GENESIS_CANDIDATE', 'GENESIS_PUBLIC_WINDOW',
+        entry.single_candidate_since_at,
+        coalesce(entry.single_candidate_deadline_at,
+          entry.single_candidate_since_at + interval '3 days'), entry.version
+      from incident, competition.challenge_queue_entries as entry
+      where entry.kind = 'GENESIS_CANDIDATE' and entry.state = 'WAITING'
+        and entry.single_candidate_since_at is not null
+        and 'COMPETITION' = any(incident.affected_services)
+        and 'GENESIS_PUBLIC_WINDOW' = any(incident.affected_surfaces)
+    )
+    select candidate.aggregate_type, candidate.aggregate_id,
+      candidate.command_type, candidate.deadline_kind,
+      candidate.deadline_kind as surface, candidate.version::text
+    from candidates as candidate, incident
+    where candidate.clock_started_at < incident.ended_at
+      and incident.started_at < candidate.deadline_at
+      and not exists (
+        select 1 from platform.incident_impacts as impact
+        where impact.incident_id = incident.incident_id
+          and impact.aggregate_type = candidate.aggregate_type
+          and impact.aggregate_id = candidate.aggregate_id
+          and impact.deadline_kind = candidate.deadline_kind
+      )
+    order by candidate.deadline_kind, candidate.aggregate_id
+  `.execute(database);
+  return result.rows.map((row) => ({ aggregateType: row.aggregate_type,
+    aggregateId: row.aggregate_id, commandType: row.command_type,
+    deadlineKind: row.deadline_kind, surface: row.surface, version: Number(row.version) }));
+}
+
+interface LockedDeadlineRow extends PausableTimerWindow {
+  readonly state: string;
+  readonly version: string;
+}
+
+async function lockPausableDeadlineRow(
+  transaction: Transaction<Database>, deadlineKind: ApplyPausableDeadlineImpactPayload['deadlineKind'],
+  aggregateId: string,
+): Promise<LockedDeadlineRow | null> {
+  if (deadlineKind === 'CHALLENGE_SCHEDULING') {
+    const result = await sql<LockedDeadlineRow>`select state, version::text,
+      accepted_at as clock_started_at, scheduling_deadline_at as deadline_at
+      from competition.challenges where challenge_id = ${aggregateId}::uuid
+        and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+        and accepted_at is not null and scheduling_deadline_at is not null for update`
+      .execute(transaction);
+    return result.rows[0] ?? null;
+  }
+  if (deadlineKind === 'BOOKING_SELECTION') {
+    const result = await sql<LockedDeadlineRow>`select state, version::text,
+      created_at as clock_started_at, selection_expires_at as deadline_at
+      from scheduling.bookings where booking_id = ${aggregateId}::uuid
+        and state = 'SELECTING' for update`.execute(transaction);
+    return result.rows[0] ?? null;
+  }
+  if (deadlineKind === 'STATUS_QUEUE_RECONFIRMATION') {
+    const result = await sql<LockedDeadlineRow>`select state, version::text,
+      updated_at as clock_started_at, reconfirmation_deadline_at as deadline_at
+      from competition.challenge_queue_entries where queue_entry_id = ${aggregateId}::uuid
+        and state = 'RECONFIRMATION_REQUIRED' and reconfirmation_deadline_at is not null
+        for update`.execute(transaction);
+    return result.rows[0] ?? null;
+  }
+  if (deadlineKind === 'BOOKING_CONVERSION_CONFIRMATION') {
+    const result = await sql<LockedDeadlineRow>`select state, version::text,
+      updated_at as clock_started_at, confirmation_deadline_at as deadline_at
+      from scheduling.booking_official_conversions where conversion_id = ${aggregateId}::uuid
+        and state = 'PENDING_CONFIRMATION' and confirmation_deadline_at is not null
+        for update`.execute(transaction);
+    return result.rows[0] ?? null;
+  }
+  const result = await sql<LockedDeadlineRow>`select state, version::text,
+    single_candidate_since_at as clock_started_at,
+    coalesce(single_candidate_deadline_at, single_candidate_since_at + interval '3 days')
+      as deadline_at
+    from competition.challenge_queue_entries where queue_entry_id = ${aggregateId}::uuid
+      and kind = 'GENESIS_CANDIDATE' and state = 'WAITING'
+      and single_candidate_since_at is not null for update`.execute(transaction);
+  return result.rows[0] ?? null;
+}
+
+async function updatePausableDeadline(input: {
+  readonly transaction: Transaction<Database>;
+  readonly deadlineKind: ApplyPausableDeadlineImpactPayload['deadlineKind'];
+  readonly aggregateId: string;
+  readonly newDeadlineAt: Date;
+  readonly nextVersion: number;
+  readonly occurredAt: Date;
+}): Promise<void> {
+  const { transaction, deadlineKind, aggregateId, newDeadlineAt, nextVersion, occurredAt } = input;
+  if (deadlineKind === 'CHALLENGE_SCHEDULING') {
+    await sql`update competition.challenges set
+      scheduling_deadline_at = ${newDeadlineAt.toISOString()}::timestamptz,
+      version = ${nextVersion}, updated_at = ${occurredAt.toISOString()}::timestamptz
+      where challenge_id = ${aggregateId}::uuid
+        and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')`.execute(transaction);
+  } else if (deadlineKind === 'BOOKING_SELECTION') {
+    await sql`update scheduling.bookings set
+      selection_expires_at = ${newDeadlineAt.toISOString()}::timestamptz,
+      version = ${nextVersion}, updated_at = ${occurredAt.toISOString()}::timestamptz
+      where booking_id = ${aggregateId}::uuid and state = 'SELECTING'`.execute(transaction);
+  } else if (deadlineKind === 'STATUS_QUEUE_RECONFIRMATION') {
+    await sql`update competition.challenge_queue_entries set
+      reconfirmation_deadline_at = ${newDeadlineAt.toISOString()}::timestamptz,
+      version = ${nextVersion}, updated_at = ${occurredAt.toISOString()}::timestamptz
+      where queue_entry_id = ${aggregateId}::uuid and state = 'RECONFIRMATION_REQUIRED'`
+      .execute(transaction);
+  } else if (deadlineKind === 'BOOKING_CONVERSION_CONFIRMATION') {
+    await sql`update scheduling.booking_official_conversions set
+      confirmation_deadline_at = ${newDeadlineAt.toISOString()}::timestamptz,
+      version = ${nextVersion}, updated_at = ${occurredAt.toISOString()}::timestamptz
+      where conversion_id = ${aggregateId}::uuid and state = 'PENDING_CONFIRMATION'`
+      .execute(transaction);
+  } else {
+    await sql`update competition.challenge_queue_entries set
+      single_candidate_deadline_at = ${newDeadlineAt.toISOString()}::timestamptz,
+      version = ${nextVersion}, updated_at = ${occurredAt.toISOString()}::timestamptz
+      where queue_entry_id = ${aggregateId}::uuid
+        and kind = 'GENESIS_CANDIDATE' and state = 'WAITING'`.execute(transaction);
+  }
+}
+
+export async function applyPausableDeadlineIncidentImpact(
+  database: Kysely<Database>, command: CommandEnvelope<ApplyPausableDeadlineImpactPayload>,
+  ids: IncidentDeadlineImpactEffectIds, now?: () => Date,
+): Promise<ExecutedCommand<PausableDeadlineImpactProjection>> {
+  const policy = pausableTimerRegistry().find((entry) =>
+    entry.deadlineKind === command.payload.deadlineKind);
+  if (!policy || command.actor.type !== 'SYSTEM' || command.actor.id !== null
+    || command.commandType !== 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT'
+    || command.aggregateType !== policy.aggregateType) {
+    throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_SYSTEM_REQUIRED');
+  }
+  return executeCriticalCommand(database, {
+    command, ...(now ? { now } : {}), mutate: async (transaction, context) => {
+      await lockIncidentServices(transaction, [policy.service]);
+      const incidentResult = await sql<{
+        readonly state: PlatformIncidentState;
+        readonly started_at: Date;
+        readonly ended_at: Date | null;
+        readonly affected_services: string[];
+        readonly affected_surfaces: string[];
+      }>`select state, started_at, ended_at, affected_services, affected_surfaces
+        from platform.platform_incidents where incident_id = ${command.payload.incidentId}::uuid
+        for update`.execute(transaction);
+      const incident = incidentResult.rows[0];
+      if (!incident || incident.state !== 'RESOLVED' || !incident.ended_at
+        || !incident.affected_services.includes(policy.service)
+        || !incident.affected_surfaces.includes(command.payload.surface)) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      }
+      const aggregate = await lockPausableDeadlineRow(
+        transaction, command.payload.deadlineKind, command.aggregateId,
+      );
+      if (!aggregate || Number(aggregate.version) !== command.expectedVersion) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_STATE');
+      }
+      const overlap = calculateExactIncidentOverlap({
+        clockStartedAt: aggregate.clock_started_at, deadlineAt: aggregate.deadline_at,
+        incidentStartedAt: incident.started_at, incidentEndedAt: incident.ended_at,
+      });
+      if (overlap.overlapMilliseconds === 0 || !overlap.overlapStartedAt || !overlap.overlapEndedAt) {
+        throw new PlatformIncidentConflictError('PLATFORM_INCIDENT_INVALID_WINDOW');
+      }
+      await sql`insert into platform.incident_impacts (
+        impact_id, incident_id, aggregate_type, aggregate_id, service, surface,
+        deadline_kind, impact_type, clock_started_at, old_deadline_at, new_deadline_at,
+        overlap_started_at, overlap_ended_at, overlap_milliseconds, compensating_event_id
+      ) values (
+        ${ids.impactId}::uuid, ${command.payload.incidentId}::uuid,
+        ${policy.aggregateType}, ${command.aggregateId}::uuid, ${policy.service},
+        ${command.payload.surface}, ${command.payload.deadlineKind}, 'DEADLINE_EXTENDED',
+        ${aggregate.clock_started_at.toISOString()}::timestamptz,
+        ${aggregate.deadline_at.toISOString()}::timestamptz,
+        ${overlap.newDeadlineAt.toISOString()}::timestamptz,
+        ${overlap.overlapStartedAt.toISOString()}::timestamptz,
+        ${overlap.overlapEndedAt.toISOString()}::timestamptz,
+        ${overlap.overlapMilliseconds}, ${ids.eventId}::uuid
+      )`.execute(transaction);
+      await updatePausableDeadline({ transaction, deadlineKind: command.payload.deadlineKind,
+        aggregateId: command.aggregateId, newDeadlineAt: overlap.newDeadlineAt,
+        nextVersion: context.nextVersion, occurredAt: context.occurredAt });
+      const response: PausableDeadlineImpactProjection = {
+        impactId: ids.impactId, incidentId: command.payload.incidentId,
+        aggregateType: policy.aggregateType, aggregateId: command.aggregateId,
+        deadlineKind: command.payload.deadlineKind,
+        oldDeadlineAt: aggregate.deadline_at.toISOString(),
+        newDeadlineAt: overlap.newDeadlineAt.toISOString(),
+        overlapMilliseconds: overlap.overlapMilliseconds, version: context.nextVersion,
+      };
+      return {
+        responseStatus: 200, response,
+        event: { eventId: ids.eventId,
+          eventName: 'PausableDeadlineExtendedByPlatformIncident', schemaVersion: 1,
+          transitionId: null, payload: response,
+          metadata: { policyVersion: PLATFORM_INCIDENT_POLICY_VERSION } },
+        audit: { auditId: ids.auditId,
+          action: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT', transitionId: null,
+          reasonCode: 'CONFIRMED_PLATFORM_INCIDENT', beforeState: aggregate.state,
+          afterState: aggregate.state, metadata: { ...response } },
+        outbox: [{ messageId: ids.outboxMessageId,
+          topic: 'platform.incident.deadline-extended.v1', payload: { ...response,
+            timer: { commandType: policy.commandType, aggregateType: policy.aggregateType,
+              aggregateId: command.aggregateId, expectedState: aggregate.state,
+              expectedVersion: context.nextVersion,
+              deadlineAt: overlap.newDeadlineAt.toISOString(),
+              policyVersion: PLATFORM_INCIDENT_POLICY_VERSION,
+              idempotencyKey: `incident:${command.payload.incidentId}:${policy.deadlineKind}:${command.aggregateId}`,
+            } } }],
       };
     },
   });

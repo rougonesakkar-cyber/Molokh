@@ -32,6 +32,7 @@ export type ClockPolicy = 'PAUSABLE' | 'CONTINUOUS';
 
 export interface TimerPolicyRegistration {
   readonly commandType: string;
+  readonly aggregateType: 'Challenge' | 'Booking' | 'ChallengeQueueEntry' | 'BookingOfficialConversion';
   readonly service: PlatformService;
   readonly deadlineKind: PausableDeadlineKind;
   readonly clockPolicy: 'PAUSABLE';
@@ -39,35 +40,35 @@ export interface TimerPolicyRegistration {
 
 const PAUSABLE_TIMER_REGISTRY = {
   EXPIRE_OPTIONAL_CHALLENGE: {
-    commandType: 'EXPIRE_OPTIONAL_CHALLENGE', service: 'CHALLENGE',
+    commandType: 'EXPIRE_OPTIONAL_CHALLENGE', aggregateType: 'Challenge', service: 'CHALLENGE',
     deadlineKind: 'CHALLENGE_RESPONSE', clockPolicy: 'PAUSABLE',
   },
   EXPIRE_MANDATORY_CHALLENGE: {
-    commandType: 'EXPIRE_MANDATORY_CHALLENGE', service: 'CHALLENGE',
+    commandType: 'EXPIRE_MANDATORY_CHALLENGE', aggregateType: 'Challenge', service: 'CHALLENGE',
     deadlineKind: 'CHALLENGE_RESPONSE', clockPolicy: 'PAUSABLE',
   },
   EXPIRE_GENESIS_CHALLENGE: {
-    commandType: 'EXPIRE_GENESIS_CHALLENGE', service: 'CHALLENGE',
+    commandType: 'EXPIRE_GENESIS_CHALLENGE', aggregateType: 'Challenge', service: 'CHALLENGE',
     deadlineKind: 'CHALLENGE_RESPONSE', clockPolicy: 'PAUSABLE',
   },
   EXPIRE_CHALLENGE_SCHEDULING: {
-    commandType: 'EXPIRE_CHALLENGE_SCHEDULING', service: 'CHALLENGE',
+    commandType: 'EXPIRE_CHALLENGE_SCHEDULING', aggregateType: 'Challenge', service: 'CHALLENGE',
     deadlineKind: 'CHALLENGE_SCHEDULING', clockPolicy: 'PAUSABLE',
   },
   EXPIRE_BOOKING_SELECTION: {
-    commandType: 'EXPIRE_BOOKING_SELECTION', service: 'BOOKING',
+    commandType: 'EXPIRE_BOOKING_SELECTION', aggregateType: 'Booking', service: 'BOOKING',
     deadlineKind: 'BOOKING_SELECTION', clockPolicy: 'PAUSABLE',
   },
   EXPIRE_STATUS_QUEUE_RECONFIRMATION: {
-    commandType: 'EXPIRE_STATUS_QUEUE_RECONFIRMATION', service: 'STATUS_QUEUE',
+    commandType: 'EXPIRE_STATUS_QUEUE_RECONFIRMATION', aggregateType: 'ChallengeQueueEntry', service: 'STATUS_QUEUE',
     deadlineKind: 'STATUS_QUEUE_RECONFIRMATION', clockPolicy: 'PAUSABLE',
   },
   EXPIRE_BOOKING_OFFICIAL_CONVERSION: {
-    commandType: 'EXPIRE_BOOKING_OFFICIAL_CONVERSION', service: 'BOOKING',
+    commandType: 'EXPIRE_BOOKING_OFFICIAL_CONVERSION', aggregateType: 'BookingOfficialConversion', service: 'BOOKING',
     deadlineKind: 'BOOKING_CONVERSION_CONFIRMATION', clockPolicy: 'PAUSABLE',
   },
   PROMOTE_SINGLE_GENESIS_CANDIDATE: {
-    commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE', service: 'COMPETITION',
+    commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE', aggregateType: 'ChallengeQueueEntry', service: 'COMPETITION',
     deadlineKind: 'GENESIS_PUBLIC_WINDOW', clockPolicy: 'PAUSABLE',
   },
 } as const satisfies Record<string, TimerPolicyRegistration>;

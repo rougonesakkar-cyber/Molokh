@@ -16,6 +16,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
 
 export interface RequestBookingOfficialConversionPayload {
   readonly sessionId: string;
@@ -1488,6 +1489,11 @@ export async function expireBookingOfficialConversion(
       if (!existing || !existing.confirmation_deadline_at) {
         throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_PENDING');
       }
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: eventContext.occurredAt,
+      });
       assertOfficialConversionCanExpire({ state: existing.state,
         confirmationDeadlineAt: existing.confirmation_deadline_at.toISOString(),
         occurredAt: eventContext.occurredAt });

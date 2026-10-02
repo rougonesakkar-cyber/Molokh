@@ -4,6 +4,7 @@ import {
   ACCEPTED_CHALLENGE_SCHEDULING_DAYS,
   ChallengeConflictError,
   assertAcceptedChallengeCanStartBooking,
+  assertAcceptedChallengeSchedulingCanExpire,
   assertChallengeBookingCanBeConfirmed,
   assertChallengeSessionCanEnd,
   assertChallengeSessionCanStart,
@@ -180,6 +181,25 @@ describe('Official Challenge policy', () => {
       state: 'ACCEPTED_UNSCHEDULED',
       activeObligationCount: 2,
     })).toThrowError(new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING'));
+  });
+
+  it('expires accepted scheduling only at its stored deadline and without a participant action', () => {
+    const deadline = new Date('2026-09-22T11:00:00.000Z');
+    expect(() => assertAcceptedChallengeSchedulingCanExpire({
+      state: 'BOOKING_PENDING',
+      schedulingDeadlineAt: deadline,
+      occurredAt: deadline,
+    })).not.toThrow();
+    expect(() => assertAcceptedChallengeSchedulingCanExpire({
+      state: 'ACCEPTED_UNSCHEDULED',
+      schedulingDeadlineAt: deadline,
+      occurredAt: new Date('2026-09-22T10:59:59.999Z'),
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_SCHEDULING_NOT_DUE'));
+    expect(() => assertAcceptedChallengeSchedulingCanExpire({
+      state: 'BOOKED',
+      schedulingDeadlineAt: deadline,
+      occurredAt: deadline,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED'));
   });
 
   it('freezes the effective stake from status holders at the Session window', () => {

@@ -101,8 +101,20 @@ describe('PlatformIncident policy', () => {
   it('registers only canonical pausable timers and requires matching service and surface', () => {
     expect(pausableTimerRegistry()).toHaveLength(8);
     expect(timerPolicyForCommand('EXPIRE_MANDATORY_CHALLENGE')).toMatchObject({
-      service: 'CHALLENGE', deadlineKind: 'CHALLENGE_RESPONSE', clockPolicy: 'PAUSABLE',
+      aggregateType: 'Challenge', service: 'CHALLENGE',
+      deadlineKind: 'CHALLENGE_RESPONSE', clockPolicy: 'PAUSABLE',
     });
+    expect(pausableTimerRegistry().map((entry) => [entry.commandType, entry.aggregateType]))
+      .toEqual([
+        ['EXPIRE_OPTIONAL_CHALLENGE', 'Challenge'],
+        ['EXPIRE_MANDATORY_CHALLENGE', 'Challenge'],
+        ['EXPIRE_GENESIS_CHALLENGE', 'Challenge'],
+        ['EXPIRE_CHALLENGE_SCHEDULING', 'Challenge'],
+        ['EXPIRE_BOOKING_SELECTION', 'Booking'],
+        ['EXPIRE_STATUS_QUEUE_RECONFIRMATION', 'ChallengeQueueEntry'],
+        ['EXPIRE_BOOKING_OFFICIAL_CONVERSION', 'BookingOfficialConversion'],
+        ['PROMOTE_SINGLE_GENESIS_CANDIDATE', 'ChallengeQueueEntry'],
+      ]);
     expect(timerPolicyForCommand('EXPIRE_HOST_CONFIRMATION')).toBeNull();
     expect(timerPolicyForCommand('EXPIRE_BOOKING_TRAINING_RETENTION')).toBeNull();
     expect(incidentAffectsTimer({

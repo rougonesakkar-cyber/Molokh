@@ -268,6 +268,7 @@ interface QueueEntryRow {
   readonly submitted_at: Date;
   readonly reconfirmation_deadline_at: Date | null;
   readonly single_candidate_since_at: Date | null;
+  readonly single_candidate_deadline_at: Date | null;
   readonly position: string | null;
   readonly version: string;
 }
@@ -278,6 +279,7 @@ interface GenesisCandidateRow {
   readonly target_status: QueueTargetStatus;
   readonly submitted_at: Date;
   readonly single_candidate_since_at: Date | null;
+  readonly single_candidate_deadline_at: Date | null;
   readonly version: string;
 }
 
@@ -379,9 +381,10 @@ function entryProjection(row: QueueEntryRow, viewerUserId: string): StatusQueueE
     boundHolderUserId: row.bound_holder_user_id,
     submittedAt: row.submitted_at.toISOString(),
     reconfirmationDeadlineAt: row.reconfirmation_deadline_at?.toISOString() ?? null,
-    singleCandidateDeadlineAt: row.single_candidate_since_at
-      ? genesisSingleCandidateDeadline(row.single_candidate_since_at).toISOString()
-      : null,
+    singleCandidateDeadlineAt: (row.single_candidate_deadline_at
+      ?? (row.single_candidate_since_at
+        ? genesisSingleCandidateDeadline(row.single_candidate_since_at)
+        : null))?.toISOString() ?? null,
     position: row.position === null ? null : Number(row.position),
     isViewerEntry: row.initiator_user_id === viewerUserId,
     version: Number(row.version),
@@ -514,6 +517,7 @@ async function queueEntries(
       entry.submitted_at,
       entry.reconfirmation_deadline_at,
       entry.single_candidate_since_at,
+      entry.single_candidate_deadline_at,
       row_number() over (order by entry.submitted_at, entry.queue_entry_id)::text as position,
       entry.version::text
     from competition.challenge_queue_entries as entry
@@ -538,6 +542,7 @@ async function queueEntry(
           athlete.display_name as initiator_display_name, entry.target_status, entry.kind,
           entry.state, entry.bound_holder_user_id, entry.submitted_at,
           entry.reconfirmation_deadline_at, entry.single_candidate_since_at,
+          entry.single_candidate_deadline_at,
           null::text as position, entry.version::text
         from competition.challenge_queue_entries as entry
         join identity.users as athlete on athlete.user_id = entry.initiator_user_id
@@ -549,6 +554,7 @@ async function queueEntry(
           athlete.display_name as initiator_display_name, entry.target_status, entry.kind,
           entry.state, entry.bound_holder_user_id, entry.submitted_at,
           entry.reconfirmation_deadline_at, entry.single_candidate_since_at,
+          entry.single_candidate_deadline_at,
           case when entry.state in (
             'WAITING', 'PAIRED_PENDING_ACCEPTANCE', 'RECONFIRMATION_REQUIRED', 'ACTIVATED'
           ) then 1 + (
@@ -827,7 +833,7 @@ async function vacancyCandidates(
   const result = lock
     ? await sql<GenesisCandidateRow>`
         select queue_entry_id, initiator_user_id, target_status, submitted_at,
-          single_candidate_since_at, version::text
+          single_candidate_since_at, single_candidate_deadline_at, version::text
         from competition.challenge_queue_entries
         where competition_id = ${competition.competition_id}::uuid
           and target_status = ${targetStatus}
@@ -838,7 +844,7 @@ async function vacancyCandidates(
       `.execute(database)
     : await sql<GenesisCandidateRow>`
         select queue_entry_id, initiator_user_id, target_status, submitted_at,
-          single_candidate_since_at, version::text
+          single_candidate_since_at, single_candidate_deadline_at, version::text
         from competition.challenge_queue_entries
         where competition_id = ${competition.competition_id}::uuid
           and target_status = ${targetStatus}
@@ -1370,6 +1376,11 @@ export async function expireStatusQueueReconfirmation(
     mutate: async (transaction, context) => {
       const existing = await queueEntry(transaction, command.payload.queueEntryId, true);
       if (!existing) throw new StatusQueueConflictError('QUEUE_ENTRY_NOT_FOUND');
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
       assertStatusQueueReconfirmationCanExpire({
         state: existing.state,
         reconfirmationDeadlineAt: existing.reconfirmation_deadline_at,
@@ -1869,6 +1880,7 @@ export async function reconcileVacancyQueue(
         await sql`
           update competition.challenge_queue_entries
           set state = 'INVALIDATED', single_candidate_since_at = null,
+            single_candidate_deadline_at = null,
             decided_at = ${context.occurredAt.toISOString()}::timestamptz,
             terminal_reason = ${reason}, version = ${context.nextVersion},
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -1937,6 +1949,7 @@ export async function reconcileVacancyQueue(
         await sql`
           update competition.challenge_queue_entries
           set single_candidate_since_at = ${context.occurredAt.toISOString()}::timestamptz,
+            single_candidate_deadline_at = ${deadline.toISOString()}::timestamptz,
             version = ${context.nextVersion},
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
           where queue_entry_id = ${command.aggregateId}::uuid
@@ -2092,7 +2105,7 @@ export async function reconcileVacancyQueue(
       await sql`
         update competition.challenge_queue_entries
         set state = 'PAIRED_PENDING_ACCEPTANCE', linked_challenge_id = ${ids.challengeId}::uuid,
-          single_candidate_since_at = null,
+          single_candidate_since_at = null, single_candidate_deadline_at = null,
           version = case when queue_entry_id = ${first.queue_entry_id}::uuid
             then ${context.nextVersion} else version + 1 end,
           updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -2276,7 +2289,7 @@ export async function submitStatusQueueEntry(
       const candidatesResult = intent.kind === 'GENESIS_CANDIDATE'
         ? await sql<GenesisCandidateRow>`
             select queue_entry_id, initiator_user_id, target_status, submitted_at,
-              single_candidate_since_at, version::text
+              single_candidate_since_at, single_candidate_deadline_at, version::text
             from competition.challenge_queue_entries
             where competition_id = ${command.payload.competitionId}::uuid
               and target_status = ${intent.targetStatus}
@@ -2326,6 +2339,7 @@ export async function submitStatusQueueEntry(
             update competition.challenge_queue_entries
             set state = 'INVALIDATED', decided_at = ${context.occurredAt.toISOString()}::timestamptz,
               terminal_reason = ${invalidationReason}, single_candidate_since_at = null,
+              single_candidate_deadline_at = null,
               version = version + 1,
               updated_at = ${context.occurredAt.toISOString()}::timestamptz
             where queue_entry_id = ${previousCandidate.queue_entry_id}::uuid
@@ -2405,7 +2419,7 @@ export async function submitStatusQueueEntry(
         await sql`
           update competition.challenge_queue_entries
           set state = 'PAIRED_PENDING_ACCEPTANCE', linked_challenge_id = ${ids.challengeId}::uuid,
-            single_candidate_since_at = null,
+            single_candidate_since_at = null, single_candidate_deadline_at = null,
             version = case when queue_entry_id = ${command.aggregateId}::uuid
               then version else version + 1 end,
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -2847,6 +2861,7 @@ export async function respondToGenesisChallenge(
         await sql`
           update competition.challenge_queue_entries
           set state = 'WITHDRAWN', single_candidate_since_at = null,
+            single_candidate_deadline_at = null,
             decided_at = ${context.occurredAt.toISOString()}::timestamptz,
             terminal_reason = 'GENESIS_DECLINED', version = version + 1,
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -2855,7 +2870,8 @@ export async function respondToGenesisChallenge(
         await sql`
           update competition.challenge_queue_entries
           set state = 'WAITING', linked_challenge_id = null,
-            single_candidate_since_at = null, version = version + 1,
+            single_candidate_since_at = null, single_candidate_deadline_at = null,
+            version = version + 1,
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
           where queue_entry_id = ${survivorQueue.queue_entry_id}::uuid
         `.execute(transaction);
@@ -3092,7 +3108,8 @@ export async function expireGenesisChallenge(
           await sql`
             update competition.challenge_queue_entries
             set state = 'WAITING', linked_challenge_id = null,
-              single_candidate_since_at = null, version = version + 1,
+              single_candidate_since_at = null, single_candidate_deadline_at = null,
+              version = version + 1,
               updated_at = ${context.occurredAt.toISOString()}::timestamptz
             where queue_entry_id = ${entry.queue_entry_id}::uuid
           `.execute(transaction);
@@ -3100,6 +3117,7 @@ export async function expireGenesisChallenge(
           await sql`
             update competition.challenge_queue_entries
             set state = 'EXPIRED', single_candidate_since_at = null,
+              single_candidate_deadline_at = null,
               decided_at = ${context.occurredAt.toISOString()}::timestamptz,
               terminal_reason = 'GENESIS_RESPONSE_TIMEOUT', version = version + 1,
               updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -3221,6 +3239,11 @@ export async function promoteSingleGenesisCandidate(
       if (!existing) {
         throw new StatusQueueConflictError('QUEUE_ENTRY_NOT_FOUND');
       }
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
       const competition = await vacancyCompetition(
         transaction,
         existing.competition_id,
@@ -3242,6 +3265,7 @@ export async function promoteSingleGenesisCandidate(
         isOnlyCandidate: candidates.length === 1
           && candidates[0]?.queue_entry_id === existing.queue_entry_id,
         singleCandidateSinceAt: existing.single_candidate_since_at,
+        singleCandidateDeadlineAt: existing.single_candidate_deadline_at,
         occurredAt: context.occurredAt,
       });
       const invalidationReason = await genesisCandidateInvalidationReason(
@@ -3253,6 +3277,7 @@ export async function promoteSingleGenesisCandidate(
         await sql`
           update competition.challenge_queue_entries
           set state = 'INVALIDATED', single_candidate_since_at = null,
+            single_candidate_deadline_at = null,
             decided_at = ${context.occurredAt.toISOString()}::timestamptz,
             terminal_reason = ${invalidationReason}, version = ${context.nextVersion},
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -3337,6 +3362,7 @@ export async function promoteSingleGenesisCandidate(
       await sql`
         update competition.challenge_queue_entries
         set state = 'CONSUMED', single_candidate_since_at = null,
+          single_candidate_deadline_at = null,
           decided_at = ${context.occurredAt.toISOString()}::timestamptz,
           terminal_reason = 'SINGLE_CANDIDATE_PROMOTED', version = ${context.nextVersion},
           updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -3476,7 +3502,7 @@ export async function withdrawStatusQueueEntry(
       await sql`
         update competition.challenge_queue_entries
         set state = 'WITHDRAWN', reconfirmation_deadline_at = null,
-          single_candidate_since_at = null,
+          single_candidate_since_at = null, single_candidate_deadline_at = null,
           decided_at = ${context.occurredAt.toISOString()}::timestamptz,
           terminal_reason = 'ATHLETE_WITHDREW', version = ${context.nextVersion},
           updated_at = ${context.occurredAt.toISOString()}::timestamptz

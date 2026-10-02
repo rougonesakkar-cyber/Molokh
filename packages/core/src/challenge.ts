@@ -59,6 +59,7 @@ export type ChallengeConflictCode =
   | 'CHALLENGE_SESSION_MISMATCH'
   | 'CHALLENGE_COMPETITIVE_SNAPSHOT_MISSING'
   | 'CHALLENGE_SCHEDULING_DEADLINE_REACHED'
+  | 'CHALLENGE_SCHEDULING_NOT_DUE'
   | 'CHALLENGE_PARTICIPANT_REQUIRED'
   | 'CHALLENGE_OBLIGATION_MISSING';
 
@@ -106,6 +107,24 @@ export function optionalChallengePairQuietEndsAt(decidedAt: Date): Date {
 export function acceptedChallengeSchedulingDeadline(acceptedAt: Date): Date {
   assertValidDate(acceptedAt, 'acceptedAt');
   return new Date(acceptedAt.getTime() + ACCEPTED_CHALLENGE_SCHEDULING_DAYS * 24 * 60 * 60 * 1_000);
+}
+
+export function assertAcceptedChallengeSchedulingCanExpire(input: {
+  readonly state: ChallengeState;
+  readonly schedulingDeadlineAt: Date | null;
+  readonly occurredAt: Date;
+}): void {
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED');
+  }
+  if (
+    input.schedulingDeadlineAt === null
+    || !Number.isFinite(input.schedulingDeadlineAt.getTime())
+    || !Number.isFinite(input.occurredAt.getTime())
+    || input.occurredAt < input.schedulingDeadlineAt
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_SCHEDULING_NOT_DUE');
+  }
 }
 
 export function challengeResultReminderDeadlines(endedAt: Date): readonly [Date, Date, Date] {

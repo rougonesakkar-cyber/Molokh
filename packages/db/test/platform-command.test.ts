@@ -53,6 +53,8 @@ import {
   listPlatformIncidents,
   listChallengeResponseIncidentImpactCandidates,
   applyChallengeResponseIncidentImpact,
+  listPausableDeadlineImpactCandidates,
+  applyPausableDeadlineIncidentImpact,
   readPlatformIncidentTimerSuppression,
   listMandatoryTimeoutCompensationCandidates,
   compensateMandatoryChallengeTimeout,
@@ -147,6 +149,7 @@ import {
   failSessionExternal,
   createDirectOpenChallenge,
   expireOptionalChallenge,
+  expireChallengeScheduling,
   acceptOptionalChallenge,
   activateStatusQueueHead,
   declineOptionalChallenge,
@@ -194,6 +197,7 @@ import {
   type ResolvePlatformIncidentPayload,
   type CompensatePlatformIncidentPayload,
   type ApplyIncidentDeadlineImpactPayload,
+  type ApplyPausableDeadlineImpactPayload,
   type CompensateMandatoryTimeoutPayload,
   type LikeEffectIds,
   type EditChatMessagePayload,
@@ -223,6 +227,7 @@ import {
   type InvalidateActiveBookingOfficialConversionPayload,
   type ExpireGroupPlanPayload,
   type ExpireBookingIntentPayload,
+  type ExpireChallengeSchedulingPayload,
   type ProposeGroupPlanPayload,
   type SelectSameSlotPayload,
   type SelectSlotPayload,
@@ -9272,6 +9277,294 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(facts.rows[0]).toEqual({ impacts: '1', extension_events: '1',
       extension_audits: '1', extension_outbox: '1', sessions: '0', cooldowns: '0',
       retentions: '0', timer_command: 'EXPIRE_OPTIONAL_CHALLENGE' });
+
+    const accepted = await acceptOptionalChallenge(database, {
+      commandId: testId(24080), commandType: 'ACCEPT_OPTIONAL_CHALLENGE',
+      idempotencyKey: 'incident-ac195-accept-for-scheduling',
+      actor: { type: 'USER', id: athleteB, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 2,
+      correlationId: testId(24017), causationId: testId(24058), requestId: testId(24081),
+      source: 'api', payloadVersion: 1, payload: { challengeId: challenge },
+    }, {
+      eventId: testId(24082), auditId: testId(24083), outboxMessageId: testId(24084),
+      notificationId: testId(24085), notificationOutboxMessageId: testId(24086),
+      acknowledgmentId: testId(24087),
+      obligationIds: [testId(24088), testId(24089)],
+    }, () => new Date('2026-09-10T10:19:00.000Z'));
+    expect(accepted.response).toMatchObject({
+      state: 'ACCEPTED_UNSCHEDULED', version: 3,
+      schedulingDeadlineAt: '2026-09-24T10:19:00.000Z',
+    });
+
+    const schedulingIncident = testId(24100);
+    await detectPlatformIncident(database, {
+      commandId: testId(24101), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac195-scheduling-detect',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: schedulingIncident, expectedVersion: 0,
+      correlationId: testId(24102), causationId: null, requestId: testId(24103),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { startedAt: '2026-09-24T09:59:00.000Z',
+        affectedServices: ['CHALLENGE'], affectedSurfaces: ['CHALLENGE_SCHEDULING'],
+        severity: 'MAJOR', monitoringEvidenceReference: 'monitor:ac195:scheduling' },
+    }, { eventId: testId(24104), auditId: testId(24105), outboxMessageId: testId(24106) },
+    () => new Date('2026-09-24T10:00:00.000Z'));
+    await confirmPlatformIncident(database, {
+      commandId: testId(24107), commandType: 'CONFIRM_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac195-scheduling-confirm',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: schedulingIncident, expectedVersion: 1,
+      correlationId: testId(24102), causationId: testId(24104), requestId: testId(24108),
+      source: 'admin', payloadVersion: 1,
+      payload: { incidentId: schedulingIncident, reason: 'Scheduling surface unavailable.' },
+    }, { eventId: testId(24109), auditId: testId(24110), outboxMessageId: testId(24111) },
+    () => new Date('2026-09-24T10:01:00.000Z'));
+    const schedulingTimer = {
+      commandType: 'EXPIRE_CHALLENGE_SCHEDULING', aggregateType: 'Challenge',
+      aggregateId: challenge, expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: 3,
+      deadlineAt: '2026-09-24T10:19:00.000Z', policyVersion: 'challenge-mvp-v1',
+      idempotencyKey: 'incident-ac195-expire-scheduling:v3',
+    } as const;
+    await expect(readPlatformIncidentTimerSuppression(
+      database, schedulingTimer, new Date(schedulingTimer.deadlineAt),
+    )).resolves.toMatchObject({ incidentId: schedulingIncident });
+    await resolvePlatformIncident(database, {
+      commandId: testId(24112), commandType: 'RESOLVE_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-ac195-scheduling-resolve',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: schedulingIncident, expectedVersion: 2,
+      correlationId: testId(24102), causationId: testId(24109), requestId: testId(24113),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: schedulingIncident, endedAt: '2026-09-24T10:29:00.000Z',
+        reason: 'Scheduling recovery confirmed.' },
+    }, { eventId: testId(24114), auditId: testId(24115), outboxMessageId: testId(24116) },
+    () => new Date('2026-09-24T10:30:00.000Z'));
+    await expect(listPausableDeadlineImpactCandidates(database, schedulingIncident))
+      .resolves.toEqual([{
+        aggregateType: 'Challenge', aggregateId: challenge,
+        commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+        deadlineKind: 'CHALLENGE_SCHEDULING', surface: 'CHALLENGE_SCHEDULING', version: 3,
+      }]);
+    const schedulingImpact = await applyPausableDeadlineIncidentImpact(database, {
+      commandId: testId(24117), commandType: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT',
+      idempotencyKey: `incident:${schedulingIncident}:CHALLENGE_SCHEDULING:${challenge}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 3,
+      correlationId: testId(24102), causationId: testId(24114), requestId: testId(24118),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: schedulingIncident,
+        deadlineKind: 'CHALLENGE_SCHEDULING', surface: 'CHALLENGE_SCHEDULING' },
+    } satisfies CommandEnvelope<ApplyPausableDeadlineImpactPayload>, {
+      impactId: testId(24119), eventId: testId(24120), auditId: testId(24121),
+      outboxMessageId: testId(24122),
+    }, () => new Date('2026-09-24T10:30:30.000Z'));
+    expect(schedulingImpact.response).toMatchObject({
+      oldDeadlineAt: '2026-09-24T10:19:00.000Z',
+      newDeadlineAt: '2026-09-24T10:39:00.000Z',
+      overlapMilliseconds: 20 * 60 * 1_000, version: 4,
+    });
+    await expect(expireChallengeScheduling(database, {
+      commandId: testId(24123), commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+      idempotencyKey: 'incident-ac195-scheduling-too-early',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 4,
+      correlationId: testId(24102), causationId: testId(24120), requestId: testId(24124),
+      source: 'scheduler', payloadVersion: 1, payload: { challengeId: challenge },
+    } satisfies CommandEnvelope<ExpireChallengeSchedulingPayload>, {
+      eventId: testId(24125), auditId: testId(24126), outboxMessageId: testId(24127),
+      notificationId: testId(24128), notificationOutboxMessageId: testId(24129),
+      notificationIds: [testId(24130), testId(24131)], bookingEventId: testId(24132),
+      bookingOutboxMessageId: testId(24133),
+    }, () => new Date('2026-09-24T10:38:59.999Z')))
+      .rejects.toMatchObject({ code: 'CHALLENGE_SCHEDULING_NOT_DUE' });
+    const expiredScheduling = await expireChallengeScheduling(database, {
+      commandId: testId(24134), commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+      idempotencyKey: 'incident-ac195-scheduling-expire-final',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 4,
+      correlationId: testId(24102), causationId: testId(24120), requestId: testId(24135),
+      source: 'scheduler', payloadVersion: 1, payload: { challengeId: challenge },
+    } satisfies CommandEnvelope<ExpireChallengeSchedulingPayload>, {
+      eventId: testId(24136), auditId: testId(24137), outboxMessageId: testId(24138),
+      notificationId: testId(24139), notificationOutboxMessageId: testId(24140),
+      notificationIds: [testId(24141), testId(24142)], bookingEventId: testId(24143),
+      bookingOutboxMessageId: testId(24144),
+    }, () => new Date('2026-09-24T10:39:00.000Z'));
+    expect(expiredScheduling.response).toMatchObject({ state: 'EXPIRED_NO_FAULT', version: 5 });
+    const obligationFacts = await sql<{ readonly active: string }>`
+      select count(*)::text as active
+      from competition.challenge_participant_obligations
+      where challenge_id = ${challenge}::uuid and released_at is null
+    `.execute(database);
+    expect(obligationFacts.rows[0]?.active).toBe('0');
+
+    const selectionSlot = testId(24200);
+    const selectionBooking = testId(24201);
+    const conversionSlot = testId(24202);
+    const conversionBooking = testId(24203);
+    const conversionSession = testId(24204);
+    const conversion = testId(24205);
+    const reconfirmationEntry = testId(24206);
+    const genesisEntry = testId(24207);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`insert into scheduling.slots (
+        slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+        commercial_version, booking_id, published_by, version, created_at, updated_at
+      ) values
+        (${selectionSlot}::uuid, ${venue}::uuid, ${central}::uuid,
+          '2026-09-28T10:00:00Z', '2026-09-28T11:00:00Z', 'PERSONAL', 'PUBLISHED',
+          1, null, ${central}::uuid, 1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z'),
+        (${conversionSlot}::uuid, ${venue}::uuid, ${central}::uuid,
+          '2026-09-28T12:00:00Z', '2026-09-28T13:00:00Z', 'PERSONAL', 'BOOKED',
+          1, ${conversionBooking}::uuid, ${central}::uuid, 1,
+          '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z')`.execute(transaction);
+      await sql`insert into scheduling.bookings (
+        booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+        purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+        selection_expires_at, host_confirmation_deadline_at, commercial_terms_snapshot,
+        version, created_at, updated_at
+      ) values
+        (${selectionBooking}::uuid, ${sourceChat}::uuid, ${match}::uuid,
+          ${selectionSlot}::uuid, ${athleteA}::uuid, ${athleteB}::uuid, 'TRAINING',
+          'SELECTING', ${athleteA}::uuid, '2026-09-26T10:00:00Z', null,
+          '2026-09-26T11:00:00Z', '2026-09-26T12:00:00Z', null,
+          1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z'),
+        (${conversionBooking}::uuid, ${sourceChat}::uuid, ${match}::uuid,
+          ${conversionSlot}::uuid, ${athleteA}::uuid, ${athleteB}::uuid, 'TRAINING',
+          'OFFICIAL_CONVERSION_PENDING', ${athleteA}::uuid,
+          '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z',
+          '2026-09-26T11:00:00Z', '2026-09-26T12:00:00Z', '{}'::jsonb,
+          1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z')`.execute(transaction);
+      await sql`insert into scheduling.sessions (
+        session_id, booking_id, venue_id, coach_user_id, pair_low_id, pair_high_id,
+        purpose, state, scheduled_start_at, scheduled_end_at, commercial_terms_snapshot,
+        version, created_at, updated_at
+      ) values (${conversionSession}::uuid, ${conversionBooking}::uuid, ${venue}::uuid,
+        ${central}::uuid, ${athleteA}::uuid, ${athleteB}::uuid, 'TRAINING', 'SCHEDULED',
+        '2026-09-28T12:00:00Z', '2026-09-28T13:00:00Z', '{}'::jsonb,
+        1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z')`.execute(transaction);
+      await sql`insert into scheduling.booking_official_conversions (
+        conversion_id, booking_id, session_id, competition_id, requested_by_user_id,
+        stake, state, confirmation_deadline_at, version, created_at, updated_at
+      ) values (${conversion}::uuid, ${conversionBooking}::uuid, ${conversionSession}::uuid,
+        ${competition}::uuid, ${athleteA}::uuid, 'NONE', 'PENDING_CONFIRMATION',
+        '2026-09-26T11:00:00Z', 1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z')`
+        .execute(transaction);
+      await sql`insert into competition.challenge_queue_entries (
+        queue_entry_id, competition_id, initiator_user_id, target_status, kind, state,
+        bound_holder_user_id, source_type, submitted_at, reconfirmation_deadline_at,
+        single_candidate_since_at, single_candidate_deadline_at,
+        version, created_at, updated_at
+      ) values
+        (${reconfirmationEntry}::uuid, ${competition}::uuid, ${athleteA}::uuid,
+          'CONTENDER', 'DIRECT_STATUS', 'RECONFIRMATION_REQUIRED', ${athleteB}::uuid,
+          'DIRECT', '2026-09-26T10:00:00Z', '2026-09-26T11:00:00Z', null, null,
+          1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z'),
+        (${genesisEntry}::uuid, ${competition}::uuid, ${athleteB}::uuid,
+          'CHAMPION', 'GENESIS_CANDIDATE', 'WAITING', null, 'DIRECT',
+          '2026-09-26T10:00:00Z', null, '2026-09-26T10:00:00Z',
+          '2026-09-26T11:00:00Z', 1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z')`
+        .execute(transaction);
+      await sql`insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, correlation_id, occurred_at, payload, idempotency_key_hash
+      ) values
+        (${testId(24210)}::uuid, 'FixtureSeeded', 1, 'Booking',
+          ${selectionBooking}::uuid, 1, ${testId(24214)}::uuid,
+          '2026-09-26T10:00:00Z', '{}'::jsonb, 'fixture:adapter:booking'),
+        (${testId(24211)}::uuid, 'FixtureSeeded', 1, 'BookingOfficialConversion',
+          ${conversion}::uuid, 1, ${testId(24214)}::uuid,
+          '2026-09-26T10:00:00Z', '{}'::jsonb, 'fixture:adapter:conversion'),
+        (${testId(24212)}::uuid, 'FixtureSeeded', 1, 'ChallengeQueueEntry',
+          ${reconfirmationEntry}::uuid, 1, ${testId(24214)}::uuid,
+          '2026-09-26T10:00:00Z', '{}'::jsonb, 'fixture:adapter:reconfirmation'),
+        (${testId(24213)}::uuid, 'FixtureSeeded', 1, 'ChallengeQueueEntry',
+          ${genesisEntry}::uuid, 1, ${testId(24214)}::uuid,
+          '2026-09-26T10:00:00Z', '{}'::jsonb, 'fixture:adapter:genesis')`.execute(transaction);
+    });
+    const adapterIncident = testId(24220);
+    await detectPlatformIncident(database, {
+      commandId: testId(24221), commandType: 'DETECT_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-pausable-adapter-matrix-detect',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: adapterIncident, expectedVersion: 0,
+      correlationId: testId(24222), causationId: null, requestId: testId(24223),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { startedAt: '2026-09-26T10:20:00.000Z',
+        affectedServices: ['BOOKING', 'STATUS_QUEUE', 'COMPETITION'],
+        affectedSurfaces: ['BOOKING_SELECTION', 'STATUS_QUEUE_RECONFIRMATION',
+          'BOOKING_CONVERSION_CONFIRMATION', 'GENESIS_PUBLIC_WINDOW'],
+        severity: 'MAJOR', monitoringEvidenceReference: 'monitor:adapter-matrix' },
+    }, { eventId: testId(24224), auditId: testId(24225), outboxMessageId: testId(24226) },
+    () => new Date('2026-09-26T10:21:00.000Z'));
+    await confirmPlatformIncident(database, {
+      commandId: testId(24227), commandType: 'CONFIRM_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-pausable-adapter-matrix-confirm',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: adapterIncident, expectedVersion: 1,
+      correlationId: testId(24222), causationId: testId(24224), requestId: testId(24228),
+      source: 'admin', payloadVersion: 1,
+      payload: { incidentId: adapterIncident, reason: 'All pausable surfaces unavailable.' },
+    }, { eventId: testId(24229), auditId: testId(24230), outboxMessageId: testId(24231) },
+    () => new Date('2026-09-26T10:22:00.000Z'));
+    await resolvePlatformIncident(database, {
+      commandId: testId(24232), commandType: 'RESOLVE_PLATFORM_INCIDENT',
+      idempotencyKey: 'incident-pausable-adapter-matrix-resolve',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'PlatformIncident', aggregateId: adapterIncident, expectedVersion: 2,
+      correlationId: testId(24222), causationId: testId(24229), requestId: testId(24233),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { incidentId: adapterIncident, endedAt: '2026-09-26T10:50:00.000Z',
+        reason: 'All surfaces recovered.' },
+    }, { eventId: testId(24234), auditId: testId(24235), outboxMessageId: testId(24236) },
+    () => new Date('2026-09-26T10:51:00.000Z'));
+    const adapterCandidates = await listPausableDeadlineImpactCandidates(database, adapterIncident);
+    expect(adapterCandidates.map((candidate) => candidate.deadlineKind)).toEqual([
+      'BOOKING_CONVERSION_CONFIRMATION', 'BOOKING_SELECTION',
+      'GENESIS_PUBLIC_WINDOW', 'STATUS_QUEUE_RECONFIRMATION',
+    ]);
+    for (const [index, candidate] of adapterCandidates.entries()) {
+      const effectBase = 24250 + index * 10;
+      const result = await applyPausableDeadlineIncidentImpact(database, {
+        commandId: testId(effectBase),
+        commandType: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT',
+        idempotencyKey: `incident:${adapterIncident}:${candidate.deadlineKind}:${candidate.aggregateId}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: candidate.aggregateType, aggregateId: candidate.aggregateId,
+        expectedVersion: candidate.version, correlationId: testId(24222),
+        causationId: testId(24234), requestId: testId(effectBase + 1),
+        source: 'scheduler', payloadVersion: 1,
+        payload: { incidentId: adapterIncident, deadlineKind: candidate.deadlineKind,
+          surface: candidate.surface },
+      } satisfies CommandEnvelope<ApplyPausableDeadlineImpactPayload>, {
+        impactId: testId(effectBase + 2), eventId: testId(effectBase + 3),
+        auditId: testId(effectBase + 4), outboxMessageId: testId(effectBase + 5),
+      }, () => new Date('2026-09-26T10:52:00.000Z'));
+      expect(result.response).toMatchObject({
+        oldDeadlineAt: '2026-09-26T11:00:00.000Z',
+        newDeadlineAt: '2026-09-26T11:30:00.000Z',
+        overlapMilliseconds: 30 * 60 * 1_000,
+        version: 2,
+      });
+    }
+    const adapterDeadlines = await sql<{
+      readonly selection_deadline: Date;
+      readonly conversion_deadline: Date;
+      readonly reconfirmation_deadline: Date;
+      readonly genesis_deadline: Date;
+    }>`select
+      (select selection_expires_at from scheduling.bookings
+        where booking_id = ${selectionBooking}::uuid) as selection_deadline,
+      (select confirmation_deadline_at from scheduling.booking_official_conversions
+        where conversion_id = ${conversion}::uuid) as conversion_deadline,
+      (select reconfirmation_deadline_at from competition.challenge_queue_entries
+        where queue_entry_id = ${reconfirmationEntry}::uuid) as reconfirmation_deadline,
+      (select single_candidate_deadline_at from competition.challenge_queue_entries
+        where queue_entry_id = ${genesisEntry}::uuid) as genesis_deadline`
+      .execute(database);
+    expect(Object.values(adapterDeadlines.rows[0]!).map((value) => value.toISOString()))
+      .toEqual(Array(4).fill('2026-09-26T11:30:00.000Z'));
 
     await expect(detectPlatformIncident(database, {
       commandId: testId(24070), commandType: 'DETECT_PLATFORM_INCIDENT',

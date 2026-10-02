@@ -19,6 +19,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
 import { assertYouthChallengeConsentReady } from './youth-consent.js';
 
 export type BookingIntentState =
@@ -1831,6 +1832,13 @@ export async function expireBookingIntent(
         from scheduling.bookings where booking_id = ${command.aggregateId}::uuid for update
       `.execute(transaction);
       const booking = result.rows[0];
+      if (command.commandType === 'EXPIRE_BOOKING_SELECTION') {
+        await assertNoActivePlatformIncidentForTimer(transaction, {
+          commandType: command.commandType,
+          aggregateId: command.aggregateId,
+          occurredAt: context.occurredAt,
+        });
+      }
       const deadline = expectedState === 'SELECTING'
         ? booking?.selection_expires_at
         : booking?.host_confirmation_deadline_at;
