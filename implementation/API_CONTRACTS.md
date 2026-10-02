@@ -202,6 +202,12 @@ ordinary Training Sessions.
 | GET | `/competitions/{id}/queue` | future administrative/public-by-id alias of the filtered projection |
 | POST | `/status-releases/preview` | implemented status-only consequence snapshot; returns a 15-minute confirmation token |
 | POST | `/status-releases/{id}/confirm` | implemented token/version-bound confirmation; Membership stays active and no Result/loss/Cooldown is created |
+| GET | `/challenges/{id}/youth-consents` | participant view of independent consent readiness; the other Athlete's contact stays hidden |
+| POST | `/challenges/{id}/youth-consents` | Youth Athlete request through e-mail or explicit SMS opt-in |
+| GET | `/youth-consents/by-token/{token}` | public token-scoped guardian projection; no account required |
+| POST | `/youth-consents/by-token/{token}/grant` | declared name/relationship plus explicit consent text acceptance |
+| POST | `/youth-consents/by-token/{token}/decline` | token-scoped refusal and no-fault Challenge closure |
+| POST | `/youth-consents/by-token/{token}/revoke` | pre-Booking revocation and no-fault accepted-Challenge cancellation |
 
 The implemented direct slice returns the frozen ruleset reference/mode, response policy, stake,
 deadlines, state/version and viewer role. Its accepted state is linked through Booking to one
@@ -226,6 +232,12 @@ Forfeit/waiver consequences; confirmation finalizes the administrative Result an
 the same transaction. Once Session actual start is recorded, only the Coach/frozen-ruleset path may
 finish it. Waiting direct entries are converted to GENESIS candidates without changing their FIFO
 ID or timestamp.
+
+Youth consent routes are present but the `YOUTH_OFFICIAL` feature flag defaults to false. Two
+Youth participants produce two independent records; acceptance and every implemented Booking
+boundary require both unexpired grants. Guardian commands use the constrained `EXTERNAL` actor,
+the consent aggregate UUID as actor identity and only the exact Challenge/Athlete scope IDs. Raw
+contact and action token are omitted from projections and audit metadata.
 
 ## 9. Session, Attendance and Result
 

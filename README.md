@@ -8,11 +8,13 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **300**;
 - registered events: **283**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **97/213** (`91/195 P0`);
+- executable acceptance traceability: **99/213** (`93/195 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, Gym Admin removal of Ordinary and Central-reviewed Champion/Contender removal;
-- database gate: PostgreSQL migrations `0001`–`0045` and **31/31** integration scenarios pass locally;
-- dependency gate: Expo patch releases are aligned and the production audit has no high/critical advisories;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal and the disabled-by-default Youth consent foundation;
+- database gate: PostgreSQL migrations `0001`–`0046` and **32/32** integration scenarios pass locally;
+- dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
+  sole unresolved upstream `node-forge` advisory is covered by a narrow regression-tested local
+  backport that expires on 2026-10-16 and rejects every other high/critical advisory;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -316,8 +318,20 @@ deadlines are retained and an already booked Official Session cannot start; an i
 Result-pending Session must first complete its Coach-governed path. Migration
 `0045_membership_removal_governance.sql` stores the immutable case and reusable ProcessHold.
 
+Youth Official now has an isolated consent foundation behind the disabled `YOUTH_OFFICIAL`
+feature flag. Every Youth Athlete needs a separate Challenge-scoped consent. The Athlete supplies
+an e-mail (or explicitly opts into SMS), and the guardian uses a token-scoped web page to grant,
+decline or revoke without creating an account or uploading documents. The domain table stores a
+keyed contact hash/mask, declared name/relationship and an audit hash; the raw destination exists only
+in the transactional delivery outbox. Missing or revoked consent blocks Challenge acceptance,
+Slot selection and host confirmation. Adult flows are unchanged. Migration
+`0046_youth_consent_foundation.sql` also introduces the constrained `EXTERNAL` event actor. The
+flag must remain off until pilot legal wording, privacy/retention and delivery operations are
+approved.
+
 ## Next executable action
 
-Implement Youth consent and the age-18 transition. Then continue with platform-incident
-compensation and account closure/export/retention.
+Complete the booked-Session Training-retention path after Youth consent revocation (`B-26`) and
+the age-18 transition. Then continue with platform-incident compensation and account
+closure/export/retention.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

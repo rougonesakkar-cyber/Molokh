@@ -1,7 +1,7 @@
 # Technical Spike Status
 
-**Date:** 2026-09-30
-**Scope:** stack baseline through transparent FIFO, Training conversion and no-fault Training-to-solo continuation.
+**Date:** 2026-10-02
+**Scope:** stack baseline through governed Membership removal and the disabled-by-default Youth consent foundation.
 
 ## Gates
 
@@ -29,7 +29,7 @@
 | Scheduling publication slice | role-scoped Slot/GroupOffering publish, overlap guard, expiry timers and active-Match Chat cards | Pass in Core/API/client/worker and real PostgreSQL |
 | API edge baseline | official CORS/Helmet/rate-limit plugins, DB-backed readiness and secret log redaction | Pass |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 92/213 mapped (`86/195 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 99/213 mapped (`93/195 P0`) as implementation grows |
 | Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
 | Final Result integrity | evidence-scoped Central review, Competition hold, immutable decision and deterministic status replay | Pass in Core/API/client and real PostgreSQL |
 | Status queue foundation | explicit GENESIS/status intent, server-time FIFO, member/outsider projection and no-loss withdrawal | Pass in Core/API/client and real PostgreSQL |
@@ -41,10 +41,11 @@
 | Vacancy succession | Worker revalidation, atomic first-two pairing, visible three-day solo deadline and stale-safe C-03/C-08 promotion | Pass in Core/client/worker and real PostgreSQL |
 | Training conversion | ordinary/Contender conversion, strict FIFO, three-party confirmation and no-fault fallback | Pass in Core/API/client/worker and real PostgreSQL |
 | Training cancellation/solo | Athlete no-fault withdrawal, two-party one-hour decision, solo conversion or atomic resource release | Pass in Core/API/client/worker and real PostgreSQL |
-| Dependency severity gate | CI rejects high/critical production advisories; production audit reports zero high/critical and five moderate advisories | Pass |
+| Youth consent foundation | disabled policy flag, independent Challenge-scoped grants, guardian token page, privacy-minimized persistence and acceptance/Booking guards | Pass in Core/API/client and real PostgreSQL; B-26 and age-18 transition remain |
+| Dependency severity gate | CI rejects unknown high/critical production advisories; published fixes are installed and the exact Expo-CLI `node-forge` advisory has a regression-tested, expiring local backport | Pass with time-bounded upstream exception through 2026-10-16 |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
-| Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
+| Source control | isolated branch, remote PR and CI | Pass on `codex/gym-admin-dashboard`; branch protection remains an external repository setting |
 
 ## Installed host toolchain
 
@@ -184,19 +185,19 @@ recovery/duplicate cases, Membership/account lifecycle and incident hardening re
 
 ## Verification result
 
-Verified on 2026-10-01:
+Verified on 2026-10-02:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 164 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 27 integration scenarios, including MissingResultReview, Appeal, IntegrityCase compensation, direct mandatory status activation/Forfeit, holder-change reconfirmation/expiry, vacancy succession, Training conversion and Training cancellation/solo continuation;
+- 188 non-database automated tests pass across Core, DB, API, worker and testkit;
+- the current PostgreSQL gate passes all 32 integration scenarios, including the two-independent-grant Youth consent boundary;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/chat`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.8.1 and PostgreSQL 18 are healthy after moving only the inaccessible transient host runtime-socket directory into quarantine; no project, WSL disk or Docker data volume was reset;
-- migrations `0001`–`0040`, including Training-to-Official conversion and Training solo continuation, apply successfully with checksum verification;
+- migrations `0001`–`0046` apply successfully with checksum verification; `YOUTH_OFFICIAL` remains disabled by default;
 - the live universal client renders the empty GENESIS state, submits a position-1 status intent and withdraws it without loss; the queue immediately returns to empty and no browser error is produced by the flow;
 - the live Worker revalidates a fresh GENESIS intent, records the exact three-day single-candidate deadline, projects its mandatory notification and makes the pending timer stale after a no-loss withdrawal; the visible queue returns to empty;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
@@ -213,6 +214,6 @@ Verified on 2026-10-01:
 - live Athlete Training withdrawal followed by remaining-Athlete and Coach acceptance preserves
   the same Session as `CONFIRMED_SOLO` and keeps the Slot booked without a loss or Challenge;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 86 scenarios (`80/195 P0`) and distinguishes traceability from complete coverage;
-- Expo dependency compatibility passes at 57.0.26/57.0.24, and the production dependency gate reports no high or critical advisories;
+- the generated acceptance matrix maps 99 scenarios (`93/195 P0`) and distinguishes traceability from complete coverage;
+- Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all patchable transitive advisories are updated. The still-unreleased `node-forge` CVE-2026-85393 fix is backported to `1.4.0`; the audit gate verifies the published regression vector, permits only Expo CLI paths, checks that `1.4.1` is not yet published and expires automatically on 2026-10-16;
 - the Core specification validator reports 300 transitions, 213 acceptance scenarios, zero open questions and zero errors.

@@ -327,6 +327,8 @@ Critical constraints:
 
 - reviewer conflict checks stored and enforced in command layer;
 - one consent per Challenge/Youth Athlete/policy version;
+- Youth consent persists only a token-keyed contact hash/mask plus consent audit hash; the raw delivery
+  destination is transient outbox data and guardian accounts/documents remain absent;
 - evidence count/aggregate size enforced transactionally before upload intent;
 - disclosure references exact safe derivative/version/recipient/expiry;
 - raw identity documents and Result attachments have no tables/endpoints.
