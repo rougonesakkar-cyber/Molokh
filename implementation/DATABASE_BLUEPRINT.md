@@ -86,6 +86,7 @@ Critical constraints:
 - `booking_commercial_snapshots`
 - `booking_official_conversions`
 - `booking_conversion_confirmations`
+- `booking_training_retentions`
 - `booking_training_retention_confirmations`
 - `booking_coach_replacements`
 - `booking_host_rejections`
@@ -99,6 +100,7 @@ Critical constraints:
 - optional Venue resource exclusion;
 - commercial snapshot immutable after mutual selection;
 - one live Official conversion per Booking and one immutable decision per required role;
+- one retention process per booked Official lineage and one immutable decision per Athlete/Coach-host role;
 - Booking/Session Coach assignment updated in one transaction.
 
 Example exclusion shape:
@@ -137,6 +139,12 @@ schedule aggregate before a mutation can commit.
 facts. The original Appeal deadlines remain source facts; projections expose the extension as the
 effective due date. One `(Appeal,responder)` response, one withdrawal and one reasoned 24h/48h
 extension are database-enforced for the pilot.
+
+`0047_booking_training_retention.sql` records the B-26…B-29 bridge after a booked Official
+Challenge closes before start. It preserves the original Challenge ID outside the converted
+Booking/Session, requires three immutable role decisions, and bounds `PENDING` by the earlier of
+one hour or scheduled start. Confirmation converts purpose to `TRAINING`; decline/expiry cancels
+the physical resources without Competition effects.
 
 `0023_competition_challenge_foundation.sql` creates the first Competition contour and direct
 optional Challenge persistence: immutable ruleset snapshots and acknowledgments, one live

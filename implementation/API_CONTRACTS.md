@@ -207,7 +207,7 @@ ordinary Training Sessions.
 | GET | `/youth-consents/by-token/{token}` | public token-scoped guardian projection; no account required |
 | POST | `/youth-consents/by-token/{token}/grant` | declared name/relationship plus explicit consent text acceptance |
 | POST | `/youth-consents/by-token/{token}/decline` | token-scoped refusal and no-fault Challenge closure |
-| POST | `/youth-consents/by-token/{token}/revoke` | pre-Booking revocation and no-fault accepted-Challenge cancellation |
+| POST | `/youth-consents/by-token/{token}/revoke` | pre-start revocation; closes Challenge no-fault and may open explicit Training retention for a booked Session |
 
 The implemented direct slice returns the frozen ruleset reference/mode, response policy, stake,
 deadlines, state/version and viewer role. Its accepted state is linked through Booking to one
@@ -247,6 +247,7 @@ contact and action token are omitted from projections and audit metadata.
 | GET | `/me/sessions` | Athlete/Coach/Gym Admin list plus derived completed Training count |
 | POST | `/sessions/{id}/official-conversion` | either Athlete proposes conversion of confirmed Training; requester acceptance is recorded |
 | POST | `/booking-official-conversions/{id}/decision` | required peer Athlete or assigned Coach accepts/declines with aggregate `If-Match` |
+| POST | `/booking-training-retentions/{id}/decision` | either Athlete or Coach/Venue host accepts or declines booked Official-to-Training retention |
 | POST | `/sessions/{id}/start` | Coach confirms actual start |
 | POST | `/sessions/{id}/attendance` | Coach; first record may atomically start READY Session |
 | POST | `/sessions/{id}/end` | Coach/fallback policy after actual start |

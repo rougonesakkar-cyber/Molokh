@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **300**;
 - registered events: **283**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **99/213** (`93/195 P0`);
+- executable acceptance traceability: **101/213** (`95/195 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal and the disabled-by-default Youth consent foundation;
-- database gate: PostgreSQL migrations `0001`–`0046` and **32/32** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0047` and **32/32** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   sole unresolved upstream `node-forge` advisory is covered by a narrow regression-tested local
   backport that expires on 2026-10-16 and rejects every other high/critical advisory;
@@ -329,9 +329,16 @@ Slot selection and host confirmation. Adult flows are unchanged. Migration
 flag must remain off until pilot legal wording, privacy/retention and delivery operations are
 approved.
 
+A guardian revocation after an Official Session is booked now closes only the competitive
+Challenge and releases its obligations. Migration `0047_booking_training_retention.sql` holds the
+physical Slot for at most one hour or until scheduled start. The same Session becomes ordinary
+Training only after both Athletes and the assigned Coach or Venue host explicitly accept; decline
+or timeout cancels the Booking/Session no-fault. The retained lineage stays auditable while no
+Result, status, loss or Cooldown is created.
+
 ## Next executable action
 
-Complete the booked-Session Training-retention path after Youth consent revocation (`B-26`) and
-the age-18 transition. Then continue with platform-incident compensation and account
+Complete the age-18 transition, reusing the booked-Session Training-retention path. Then continue
+with platform-incident compensation and account
 closure/export/retention.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

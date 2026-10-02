@@ -293,11 +293,12 @@ This sprint produces a demonstrable Training slice while establishing the same f
   can open. AC-022/AC-131/AC-132/AC-133/AC-134 pass.
 - M7 Youth consent foundation: complete and disabled by default. Per-Challenge/per-Athlete records,
   token-scoped external guardian actions, independent two-Youth readiness, privacy-minimized
-  contact storage, API/client flows and acceptance/Booking guards pass. Direct accepted-unscheduled
-  revocation closes no-fault; booked physical Training retention and the age-18 transition remain
-  the next lifecycle slice. AC-055/AC-169 are mapped.
-  Acceptance traceability is 99/213 (`93/195 P0`).
-- Next increment: implement B-26 retention after booked Youth consent revocation and the age-18 transition.
+  contact storage, API/client flows and acceptance/Booking guards pass. Revocation closes the
+  Official context no-fault; a booked physical Session is held for three explicit Athlete/Athlete/
+  Coach-host decisions and either becomes Training or cancels without Competition effects under
+  migration `0047`. AC-055/AC-149/AC-169/AC-170 are mapped.
+  Acceptance traceability is 101/213 (`95/195 P0`).
+- Next increment: implement the age-18 transition and reuse B-26 retention for its booked case.
 
 ## 5. Work that needs product/external input later
 
