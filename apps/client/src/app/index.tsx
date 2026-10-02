@@ -5,6 +5,7 @@ import type {
   BlockedUsersResponse,
   BookingOfficialConversionCommandResponse,
   BookingSoloContinuationCommandResponse,
+  BookingTrainingRetentionCommandResponse,
   CommunityLifecycleCommandResponse,
   CommunityLifecycleResponse,
   CommunityClosureCandidatesResponse,
@@ -1530,6 +1531,52 @@ export default function IdentityScreen() {
           : 'Ваш ответ принят. Ожидаем второе подтверждение.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось ответить на соло-запрос');
+    } finally {
+      setActingSessionKey(null);
+    }
+  };
+
+  const decideTrainingRetention = async (
+    session: Session,
+    decision: 'ACCEPT' | 'DECLINE',
+  ) => {
+    const retention = session.trainingRetention;
+    if (!retention || actingSessionKey !== null) return;
+    const operation = `${retention.retentionId}:training-retention:${decision}:v${retention.version}`;
+    const idempotencyKey = sessionActionKeys.current.get(operation)
+      ?? `training-retention:${operation}`;
+    sessionActionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/booking-training-retentions/${retention.retentionId}/decision`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(retention.version),
+          },
+          body: JSON.stringify({ decision }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as BookingTrainingRetentionCommandResponse;
+      sessionActionKeys.current.delete(operation);
+      await loadIdentity();
+      setSessionNotice(result.data.state === 'CONFIRMED'
+        ? 'Все подтвердили. Время и Coach сохранены, а Session продолжится как обычная тренировка.'
+        : result.data.state === 'DECLINED'
+          ? 'Продолжение отклонено. Session отменена без поражения и спортивных последствий.'
+          : 'Ваш ответ принят. Ожидаем подтверждения остальных участников.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось ответить по сохранению тренировки');
     } finally {
       setActingSessionKey(null);
     }
@@ -4548,6 +4595,60 @@ export default function IdentityScreen() {
                               <Text style={styles.label}>Соло-тренировка подтверждена</Text>
                               <Text style={styles.hint}>
                                 Оставшийся спортсмен и Coach подтвердили продолжение. Время и слот сохранены.
+                              </Text>
+                            </View>
+                          ) : null}
+                          {session.trainingRetention?.state === 'PENDING' ? (
+                            <View style={styles.attendanceCard}>
+                              <Text style={styles.label}>Сохранить время как обычную тренировку?</Text>
+                              <Text style={styles.hint}>
+                                Official Challenge закрыт без поражения. Слот пока сохранён.
+                                Чтобы продолжить как Training, нужны ответы обоих спортсменов
+                                и Coach/зала. Подтверждено{' '}
+                                {session.trainingRetention.confirmations.filter(
+                                  (item) => item.decision === 'ACCEPT',
+                                ).length} из 3 · до {formatDateTime(session.trainingRetention.deadlineAt)}.
+                              </Text>
+                              {session.trainingRetention.viewerHasDecided ? (
+                                <Text style={styles.hint}>Ваш ответ уже записан.</Text>
+                              ) : null}
+                              {session.trainingRetention.viewerCanConfirm ? (
+                                <View style={styles.attendanceActions}>
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled: sessionActionBlocked }}
+                                    disabled={sessionActionBlocked}
+                                    onPress={() => void decideTrainingRetention(session, 'ACCEPT')}
+                                    style={({ pressed }) => [
+                                      styles.button,
+                                      sessionActionBlocked && styles.buttonDisabled,
+                                      pressed && !sessionActionBlocked && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={styles.buttonText}>Сохранить как Training</Text>
+                                  </Pressable>
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled: sessionActionBlocked }}
+                                    disabled={sessionActionBlocked}
+                                    onPress={() => void decideTrainingRetention(session, 'DECLINE')}
+                                    style={({ pressed }) => [
+                                      styles.secondaryButton,
+                                      sessionActionBlocked && styles.buttonDisabled,
+                                      pressed && !sessionActionBlocked && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={styles.secondaryButtonText}>Отменить Session</Text>
+                                  </Pressable>
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
+                          {session.trainingRetention?.state === 'CONFIRMED' ? (
+                            <View style={styles.attendanceCard}>
+                              <Text style={styles.label}>Session сохранена как Training</Text>
+                              <Text style={styles.hint}>
+                                Время, зал и Coach не изменились. Результат не влияет на Competition.
                               </Text>
                             </View>
                           ) : null}

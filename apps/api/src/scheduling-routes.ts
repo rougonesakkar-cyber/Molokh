@@ -2,6 +2,8 @@ import {
   ApiErrorSchema,
   BookingOfficialConversionCommandResponseSchema,
   BookingSoloContinuationCommandResponseSchema,
+  BookingTrainingRetentionCommandResponseSchema,
+  DecideBookingTrainingRetentionBodySchema,
   DecideBookingSoloContinuationBodySchema,
   DecideBookingOfficialConversionBodySchema,
   BookingIntentCommandResponseSchema,
@@ -36,6 +38,8 @@ import {
   type BookingIntentCommandResponse,
   type BookingOfficialConversionCommandResponse,
   type BookingSoloContinuationCommandResponse,
+  type BookingTrainingRetentionCommandResponse,
+  type DecideBookingTrainingRetentionBody,
   type DecideBookingSoloContinuationBody,
   type DecideBookingOfficialConversionBody,
   type BookingIntentContract,
@@ -80,9 +84,12 @@ import type {
   BookingOfficialConversionProjection,
   BookingSoloContinuationEffectIds,
   BookingSoloContinuationProjection,
+  BookingTrainingRetentionEffectIds,
+  BookingTrainingRetentionProjection,
   BookingIntentProjection,
   DecideBookingOfficialConversionPayload,
   DecideBookingSoloContinuationPayload,
+  DecideBookingTrainingRetentionPayload,
   ConfirmBookingHostPayload,
   ConfirmGroupPlanPayload,
   GroupOfferingProjection,
@@ -166,6 +173,10 @@ interface ConversionParams {
 
 interface SoloContinuationParams {
   readonly continuationId: string;
+}
+
+interface TrainingRetentionParams {
+  readonly retentionId: string;
 }
 
 export interface SchedulingRouteDependencies {
@@ -266,6 +277,10 @@ export interface SchedulingRouteDependencies {
     command: CommandEnvelope<DecideBookingSoloContinuationPayload>,
     ids: BookingSoloContinuationEffectIds,
   ) => Promise<ExecutedCommand<BookingSoloContinuationProjection>>;
+  readonly decideBookingTrainingRetention: (
+    command: CommandEnvelope<DecideBookingTrainingRetentionPayload>,
+    ids: BookingTrainingRetentionEffectIds,
+  ) => Promise<ExecutedCommand<BookingTrainingRetentionProjection>>;
   readonly proposeGroupPlan: (
     command: CommandEnvelope<ProposeGroupPlanPayload>,
     ids: PairIntentNotificationEffectIds,
@@ -451,6 +466,21 @@ function bookingSoloContinuationEffectIds(input: {
   };
 }
 
+function bookingTrainingRetentionEffectIds(input: {
+  readonly aggregateId: string;
+  readonly actorId: string;
+}): BookingTrainingRetentionEffectIds {
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    confirmationId: idempotentResourceId(
+      'training-retention-confirmation', input.aggregateId, input.actorId,
+    ),
+    bookingEventId: newUuidV7(), sessionEventId: newUuidV7(), slotEventId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+  };
+}
+
 function slotContract(slot: SlotProjection): SlotContract {
   return { ...slot };
 }
@@ -562,6 +592,12 @@ function sessionContract(session: SessionLifecycleProjection): SessionLifecycleC
           confirmations: session.soloContinuation.confirmations.map((item) => ({ ...item })),
         }
       : null,
+    trainingRetention: session.trainingRetention
+      ? {
+          ...session.trainingRetention,
+          confirmations: session.trainingRetention.confirmations.map((item) => ({ ...item })),
+        }
+      : null,
     athleteUserIds: [...session.athleteUserIds] as [string, string],
     athleteDisplayNames: [...session.athleteDisplayNames] as [string, string],
     activeAthleteUserIds: [...session.activeAthleteUserIds],
@@ -598,6 +634,19 @@ function bookingSoloContinuationCommandResponse(
   executed: ExecutedCommand<BookingSoloContinuationProjection>,
   requestId: string,
 ): BookingSoloContinuationCommandResponse {
+  return {
+    data: {
+      ...executed.response,
+      confirmations: executed.response.confirmations.map((item) => ({ ...item })),
+    },
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  };
+}
+
+function bookingTrainingRetentionCommandResponse(
+  executed: ExecutedCommand<BookingTrainingRetentionProjection>,
+  requestId: string,
+): BookingTrainingRetentionCommandResponse {
   return {
     data: {
       ...executed.response,
@@ -683,6 +732,66 @@ export async function registerSchedulingRoutes(
         data: sessionContract(session),
         meta: { requestId: requestContext(request).requestId },
       };
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: TrainingRetentionParams;
+    Body: DecideBookingTrainingRetentionBody;
+  }>(
+    '/api/v1/booking-training-retentions/:retentionId/decision',
+    {
+      schema: {
+        operationId: 'decideBookingTrainingRetention',
+        params: Type.Object(
+          { retentionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: DecideBookingTrainingRetentionBodySchema,
+        response: {
+          200: BookingTrainingRetentionCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<BookingTrainingRetentionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.decideBookingTrainingRetention(
+        {
+          commandId: newUuidV7(),
+          commandType: 'DECIDE_BOOKING_TRAINING_RETENTION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'BookingTrainingRetention',
+          aggregateId: request.params.retentionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId,
+          causationId: context.causationId,
+          requestId: context.requestId,
+          source: 'api',
+          payloadVersion: 1,
+          payload: {
+            retentionId: request.params.retentionId,
+            decision: request.body.decision,
+          },
+        },
+        bookingTrainingRetentionEffectIds({
+          aggregateId: request.params.retentionId,
+          actorId: authenticated.userId,
+        }),
+      );
+      reply.status(executed.responseStatus);
+      return bookingTrainingRetentionCommandResponse(executed, context.requestId);
     },
   );
 

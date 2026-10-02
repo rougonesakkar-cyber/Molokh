@@ -30,6 +30,11 @@ export function schedulingTimerFromOutbox(
                           aggregateType: 'BookingSoloContinuation',
                           commandType: 'EXPIRE_BOOKING_SOLO_CONTINUATION',
                         }
+                      : topic === 'scheduling.booking.training-retention-timer.v1'
+                        ? {
+                            aggregateType: 'BookingTrainingRetention',
+                            commandType: 'EXPIRE_BOOKING_TRAINING_RETENTION',
+                          }
         : null;
   if (!expected) return null;
   if (typeof payload !== 'object' || payload === null || !('timer' in payload)) {

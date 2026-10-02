@@ -13,6 +13,7 @@ import {
   confirmBookingHost,
   decideBookingOfficialConversion,
   decideBookingSoloContinuation,
+  decideBookingTrainingRetention,
   rejectBookingHost,
   cancelSessionAfterCoachReplacement,
   endSession,
@@ -1282,6 +1283,8 @@ const app = await buildApp({
       requestTrainingParticipantCancellation(database, command, ids),
     decideBookingSoloContinuation: (command, ids) =>
       decideBookingSoloContinuation(database, command, ids),
+    decideBookingTrainingRetention: (command, ids) =>
+      decideBookingTrainingRetention(database, command, ids),
     proposeGroupPlan: (command, ids) => proposeGroupPlan(database, command, ids),
     confirmGroupPlan: (command, ids) => confirmGroupPlan(database, command, ids),
   },

@@ -1579,6 +1579,51 @@ export type BookingSoloContinuationContract = Static<
   typeof BookingSoloContinuationProjectionSchema
 >;
 
+export const BookingTrainingRetentionConfirmationSchema = Type.Object(
+  {
+    actorUserId: Type.String({ format: 'uuid' }),
+    requiredRole: Type.Union([
+      Type.Literal('ATHLETE_LOW'),
+      Type.Literal('ATHLETE_HIGH'),
+      Type.Literal('COACH_OR_HOST'),
+    ]),
+    decision: Type.Union([Type.Literal('ACCEPT'), Type.Literal('DECLINE')]),
+    decidedAt: Type.String({ format: 'date-time' }),
+  },
+  { additionalProperties: false },
+);
+
+export const BookingTrainingRetentionProjectionSchema = Type.Object(
+  {
+    retentionId: Type.String({ format: 'uuid' }),
+    bookingId: Type.String({ format: 'uuid' }),
+    sessionId: Type.String({ format: 'uuid' }),
+    challengeId: Type.String({ format: 'uuid' }),
+    cause: Type.Union([
+      Type.Literal('YOUTH_CONSENT_REVOKED'), Type.Literal('AGE_TRANSITION'),
+    ]),
+    state: Type.Union([
+      Type.Literal('PENDING'), Type.Literal('CONFIRMED'),
+      Type.Literal('DECLINED'), Type.Literal('EXPIRED'),
+    ]),
+    deadlineAt: Type.String({ format: 'date-time' }),
+    confirmations: Type.Array(BookingTrainingRetentionConfirmationSchema, { maxItems: 3 }),
+    viewerRequiredRole: Type.Union([
+      Type.Literal('ATHLETE_LOW'), Type.Literal('ATHLETE_HIGH'),
+      Type.Literal('COACH_OR_HOST'), Type.Null(),
+    ]),
+    viewerHasDecided: Type.Boolean(),
+    viewerCanConfirm: Type.Boolean(),
+    viewerCanDecline: Type.Boolean(),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'BookingTrainingRetentionProjection', additionalProperties: false },
+);
+
+export type BookingTrainingRetentionContract = Static<
+  typeof BookingTrainingRetentionProjectionSchema
+>;
+
 export const SessionLifecycleProjectionSchema = Type.Object(
   {
     sessionId: Type.String({ format: 'uuid' }),
@@ -1635,6 +1680,7 @@ export const SessionLifecycleProjectionSchema = Type.Object(
     viewerCanCancelTraining: Type.Boolean(),
     officialConversion: Type.Union([BookingOfficialConversionProjectionSchema, Type.Null()]),
     soloContinuation: Type.Union([BookingSoloContinuationProjectionSchema, Type.Null()]),
+    trainingRetention: Type.Union([BookingTrainingRetentionProjectionSchema, Type.Null()]),
     replacementCoachOptions: Type.Array(
       Type.Object(
         {
@@ -1776,6 +1822,31 @@ export const BookingSoloContinuationCommandResponseSchema = Type.Object(
 
 export type BookingSoloContinuationCommandResponse = Static<
   typeof BookingSoloContinuationCommandResponseSchema
+>;
+
+export const DecideBookingTrainingRetentionBodySchema = Type.Object(
+  { decision: Type.Union([Type.Literal('ACCEPT'), Type.Literal('DECLINE')]) },
+  { $id: 'DecideBookingTrainingRetentionBody', additionalProperties: false },
+);
+
+export type DecideBookingTrainingRetentionBody = Static<
+  typeof DecideBookingTrainingRetentionBodySchema
+>;
+
+export const BookingTrainingRetentionCommandResponseSchema = Type.Object(
+  {
+    data: BookingTrainingRetentionProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }, { additionalProperties: false }),
+  },
+  { $id: 'BookingTrainingRetentionCommandResponse', additionalProperties: false },
+);
+
+export type BookingTrainingRetentionCommandResponse = Static<
+  typeof BookingTrainingRetentionCommandResponseSchema
 >;
 
 export const ReplaceSessionCoachBodySchema = Type.Object(

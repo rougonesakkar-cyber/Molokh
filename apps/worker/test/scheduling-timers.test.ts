@@ -151,4 +151,21 @@ describe('Scheduling timer projection', () => {
       { timer },
     )).toEqual(timer);
   });
+
+  it('AC-170 routes the booked Official-to-Training retention timer', () => {
+    const timer = {
+      commandType: 'EXPIRE_BOOKING_TRAINING_RETENTION',
+      aggregateType: 'BookingTrainingRetention',
+      aggregateId: '0199a1b2-1234-7000-8000-000000000708',
+      expectedState: 'PENDING',
+      expectedVersion: 1,
+      deadlineAt: '2026-09-10T15:00:00.000Z',
+      policyVersion: 'scheduling-mvp-v1',
+      idempotencyKey: 'booking-training-retention:test:expire:v1',
+    };
+    expect(schedulingTimerFromOutbox(
+      'scheduling.booking.training-retention-timer.v1',
+      { timer },
+    )).toEqual(timer);
+  });
 });

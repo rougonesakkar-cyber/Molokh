@@ -56,8 +56,11 @@ import type {
   BookingOfficialConversionProjection,
   BookingSoloContinuationEffectIds,
   BookingSoloContinuationProjection,
+  BookingTrainingRetentionEffectIds,
+  BookingTrainingRetentionProjection,
   DecideBookingOfficialConversionPayload,
   DecideBookingSoloContinuationPayload,
+  DecideBookingTrainingRetentionPayload,
   ConfirmBookingHostPayload,
   ConfirmGroupPlanPayload,
   GroupOfferingProjection,
@@ -1803,6 +1806,7 @@ describe('runtime contract', () => {
       viewerCanCancelTraining: false,
       officialConversion: null,
       soloContinuation: null,
+      trainingRetention: null,
       replacementCoachOptions: [],
       version: 2,
     };
@@ -2014,6 +2018,37 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     }));
+    const trainingRetentionId = '0199a1b2-1234-7000-8000-000000000734';
+    const trainingRetention: BookingTrainingRetentionProjection = {
+      retentionId: trainingRetentionId,
+      bookingId: booking.bookingId,
+      sessionId,
+      challengeId: '0199a1b2-1234-7000-8000-000000000735',
+      cause: 'YOUTH_CONSENT_REVOKED',
+      state: 'PENDING',
+      deadlineAt: '2026-09-07T11:00:00.000Z',
+      confirmations: [],
+      viewerRequiredRole: 'ATHLETE_LOW',
+      viewerHasDecided: false,
+      viewerCanConfirm: true,
+      viewerCanDecline: true,
+      version: 1,
+    };
+    const decideBookingTrainingRetention = vi.fn(async (
+      _command: CommandEnvelope<DecideBookingTrainingRetentionPayload>,
+      _ids: BookingTrainingRetentionEffectIds,
+    ): Promise<ExecutedCommand<BookingTrainingRetentionProjection>> => ({
+      responseStatus: 200,
+      response: {
+        ...trainingRetention,
+        confirmations: [{ actorUserId: userId, requiredRole: 'ATHLETE_LOW',
+          decision: 'ACCEPT', decidedAt: '2026-09-07T10:05:00.000Z' }],
+        viewerHasDecided: true, viewerCanConfirm: false, viewerCanDecline: false, version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000736',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
     const app = await buildApp({
       scheduling: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -2042,6 +2077,7 @@ describe('runtime contract', () => {
         decideBookingOfficialConversion,
         requestTrainingParticipantCancellation,
         decideBookingSoloContinuation,
+        decideBookingTrainingRetention,
         proposeGroupPlan: proposedGroupPlan,
         confirmGroupPlan: confirmedGroupPlan,
       },
@@ -2447,6 +2483,26 @@ describe('runtime contract', () => {
       aggregateId: soloContinuationId,
       expectedVersion: 1,
       payload: { continuationId: soloContinuationId, decision: 'ACCEPT' },
+    });
+
+    const retentionDecisionRecorded = await app.inject({
+      method: 'POST',
+      url: `/api/v1/booking-training-retentions/${trainingRetentionId}/decision`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'confirm-training-retention-api-1',
+        'if-match': '1',
+      },
+      payload: { decision: 'ACCEPT' },
+    });
+    expect(retentionDecisionRecorded.statusCode).toBe(200);
+    expect(retentionDecisionRecorded.json()).toMatchObject({ data: { version: 2 } });
+    expect(decideBookingTrainingRetention.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'DECIDE_BOOKING_TRAINING_RETENTION',
+      aggregateType: 'BookingTrainingRetention',
+      aggregateId: trainingRetentionId,
+      expectedVersion: 1,
+      payload: { retentionId: trainingRetentionId, decision: 'ACCEPT' },
     });
 
     const sessionStarted = await app.inject({

@@ -93,6 +93,13 @@ function effectIds(): YouthConsentEffectIds {
     notificationId: newUuidV7(),
     challengeEventId: newUuidV7(),
     challengeOutboxMessageId: newUuidV7(),
+    trainingRetentionId: newUuidV7(),
+    trainingRetentionEventId: newUuidV7(),
+    trainingRetentionBookingEventId: newUuidV7(),
+    trainingRetentionOutboxMessageId: newUuidV7(),
+    trainingRetentionTimerOutboxMessageId: newUuidV7(),
+    trainingRetentionNotificationOutboxMessageId: newUuidV7(),
+    trainingRetentionNotificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
   };
 }
 

@@ -18,6 +18,7 @@ import {
   expireBookingIntent,
   expireBookingOfficialConversion,
   expireBookingSoloContinuation,
+  expireBookingTrainingRetention,
   expireGroupOffering,
   expireGroupPlan,
   expireOptionalChallenge,
@@ -41,6 +42,7 @@ import {
   readInvalidBookingOfficialConversionCandidate,
   readBookingOfficialConversionTimerSnapshot,
   readBookingSoloContinuationTimerSnapshot,
+  readBookingTrainingRetentionTimerSnapshot,
   readGroupOfferingTimerSnapshot,
   readGroupPlanTimerSnapshot,
   readLikeTimerSnapshot,
@@ -61,6 +63,7 @@ import {
   type ExpireBookingOfficialConversionPayload,
   type InvalidateActiveBookingOfficialConversionPayload,
   type ExpireBookingSoloContinuationPayload,
+  type ExpireBookingTrainingRetentionPayload,
   type ExpireGroupOfferingPayload,
   type ExpireGroupPlanPayload,
   type ExpireLikePayload,
@@ -746,6 +749,24 @@ const executeBookingSoloContinuationExpiry = async (payload: TimerCommandPayload
   });
 };
 
+const executeBookingTrainingRetentionExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireBookingTrainingRetentionPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_BOOKING_TRAINING_RETENTION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'BookingTrainingRetention', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { retentionId: payload.aggregateId },
+  };
+  await expireBookingTrainingRetention(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+    bookingEventId: randomUUID(), sessionEventId: randomUUID(), slotEventId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+  });
+};
+
 const executeResultFinalization = async (payload: TimerCommandPayload) => {
   const command: CommandEnvelope<FinalizeResultPayload> = {
     commandId: randomUUID(),
@@ -875,6 +896,11 @@ const taskList = createTaskList({
           loadSnapshot: (timer) =>
             readBookingSoloContinuationTimerSnapshot(database, timer.aggregateId),
           execute: executeBookingSoloContinuationExpiry,
+        },
+        EXPIRE_BOOKING_TRAINING_RETENTION: {
+          loadSnapshot: (timer) =>
+            readBookingTrainingRetentionTimerSnapshot(database, timer.aggregateId),
+          execute: executeBookingTrainingRetentionExpiry,
         },
         FINALIZE_RESULT: {
           loadSnapshot: (timer) => readResultTimerSnapshot(database, timer.aggregateId),
