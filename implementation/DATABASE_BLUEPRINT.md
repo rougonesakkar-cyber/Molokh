@@ -361,6 +361,7 @@ Critical constraints:
 - `notification_preferences`
 - `platform_incidents`
 - `incident_impacts`
+- `incident_timeout_compensations`
 - `system_configuration_versions`
 
 Critical constraints:
@@ -368,8 +369,17 @@ Critical constraints:
 - unique event ID and idempotency key per command scope;
 - unique consumer/event InboxReceipt;
 - one IncidentImpact per incident/aggregate/deadline kind;
+- immutable timeout compensation linked to the source timeout event, Result, optional status
+  transition, exact replay hash and compensating event;
 - append-only audit/domain-event permissions;
 - outbox inserted in the same transaction as business change.
+
+Migrations `0049`–`0052` materialize the incident contour. Pausable deadlines remain on their
+own aggregates and are updated under the same optimistic version lock as their
+`IncidentImpact`: Challenge response/scheduling, Booking selection, status-queue reconfirmation,
+Training-conversion confirmation and persisted GENESIS `single_candidate_deadline_at`.
+`competition.challenges.scheduling_extension_count` is constrained to `0..1`, making CH-24's
+single seven-day extension and CH-25's later no-capacity cancellation database-observable.
 
 ## 4. Event envelope columns
 

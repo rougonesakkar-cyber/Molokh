@@ -152,6 +152,12 @@ In staging/CI simulate:
 
 Business state must remain deterministic and recoverable.
 
+The executable PlatformIncident suite covers AC-195/AC-196 with a real PostgreSQL clock and
+append-only facts: exact partial overlap, no-overlap exclusion, duplicate impact replay, active
+timer suppression, every pausable-deadline adapter, mandatory timeout compensation and PI-05
+only after a zero-candidate rescan. Challenge scheduling separately proves the CH-24 first
+deadline extension and CH-25 second-deadline no-fault cancellation.
+
 Official Session lifecycle integration additionally proves that the scheduled boundary creates
 one immutable competitive snapshot without actual attendance, actual Start creates `CH-13` once,
 End creates `CH-14` once, and the resulting Challenge stays `RESULT_PENDING` until a separate

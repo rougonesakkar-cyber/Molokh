@@ -302,8 +302,17 @@ This sprint produces a demonstrable Training slice while establishing the same f
   a loss and closes not-started Youth Official work no-fault. A confirmed future Booking reuses
   B-26; a started Session keeps the field-identical competitive snapshot, Challenge state and
   obligations. Migration `0048` and PostgreSQL scenarios AC-002/AC-184/AC-185 pass.
-  Acceptance traceability is 104/213 (`98/195 P0`).
-- Next increment: implement exact-overlap PlatformIncident compensation.
+- M7 PlatformIncident increment: complete. PI-01…PI-05 persist objective detection, Central
+  confirmation/rejection, exact resolution window and automatic idempotent reconciliation.
+  Active incidents suppress only registered affected timers. Resolution extends Challenge
+  response/scheduling, Booking selection, queue reconfirmation, conversion confirmation and
+  GENESIS public-window deadlines by exact overlap. An already-fired mandatory timeout retains
+  its immutable Forfeit and receives append-only no-fault Result/status/Cooldown compensation.
+  Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
+  Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
+  one 7-day extension before CH-25 no-capacity cancellation.
+  Acceptance traceability is 106/213 (`100/195 P0`).
+- Next increment: implement account closure/export/retention jobs.
 
 ## 5. Work that needs product/external input later
 

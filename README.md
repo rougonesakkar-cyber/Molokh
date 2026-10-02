@@ -6,12 +6,12 @@ Molokh — mobile-first продукт для поиска партнёров п
 
 - Core Engine: **v1.0, product decisions closed**;
 - state transitions: **302**;
-- registered events: **288**;
+- registered events: **293**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **104/213** (`98/195 P0`);
+- executable acceptance traceability: **106/213** (`100/195 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation and the deterministic age-18 transition;
-- database gate: PostgreSQL migrations `0001`–`0048` and **35/35** integration scenarios pass locally;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition and full PlatformIncident reconciliation;
+- database gate: PostgreSQL migrations `0001`–`0052` and **38/38** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   sole unresolved upstream `node-forge` advisory is covered by a narrow regression-tested local
   backport that expires on 2026-10-16 and rejects every other high/critical advisory;
@@ -344,8 +344,16 @@ confirmed future Booking reuses B-26 instead of discarding the physical training
 started Youth Session, its competitive snapshot, Challenge and obligations remain untouched and
 finish under the frozen Youth rules.
 
+The PlatformIncident contour now runs PI-01…PI-05 end to end. An objectively detected incident
+requires Central confirmation, suppresses only registered affected timers while active and, after
+resolution, extends each pausable deadline by its exact overlap. A mandatory timeout that already
+created a Forfeit is preserved in history and receives append-only no-fault Result/status/Cooldown
+compensation. Worker reconciliation is idempotent and marks the incident `COMPENSATED` only after
+all candidates are exhausted. Central has a role-gated incident queue and confirm/reject/resolve
+actions. Challenge scheduling follows CH-24/CH-25: 14 days, one visible 7-day extension with
+expanded options, then `CANCELLED_NO_FAULT` if capacity is still unavailable.
+
 ## Next executable action
 
-Continue with exact-overlap platform-incident compensation and account
-closure/export/retention.
+Continue with account closure/export/retention, then the remaining pilot-hardening walkthroughs.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

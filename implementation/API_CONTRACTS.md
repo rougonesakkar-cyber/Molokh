@@ -336,6 +336,21 @@ Central endpoints are capability-scoped and require reason:
 - PlatformIncident confirmation/compensation;
 - deterministic Competition replay with expected hash.
 
+PlatformIncident exposes a deliberately small Central surface:
+
+- `GET /api/v1/central/platform-incidents` returns the authorized operational queue;
+- `POST /api/v1/central/platform-incidents/{incidentId}/confirm` requires `Idempotency-Key`,
+  `If-Match` and a reason;
+- `POST /api/v1/central/platform-incidents/{incidentId}/reject` has the same concurrency and
+  audit requirements and never changes business deadlines;
+- `POST /api/v1/central/platform-incidents/{incidentId}/resolve` additionally requires the
+  objective `endedAt`; its outbox event starts Worker reconciliation.
+
+Detection and PI-05 completion are internal SYSTEM commands. Central cannot directly edit an
+impact, deadline, Forfeit, Result, status or Cooldown. The Worker derives candidates from the
+resolved incident window, uses stable per-impact idempotency keys, rescans, and completes PI-05
+only when no candidate remains.
+
 Generic endpoints such as `PATCH /users/{id}` or `PATCH /competitions/{id}/status` are prohibited for Central too.
 
 ## 12. Realtime and notifications
