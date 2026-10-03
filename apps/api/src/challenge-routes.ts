@@ -153,7 +153,8 @@ export async function registerChallengeRoutes(
       },
     },
     async (request, reply): Promise<ChatChallengeResponse | undefined> => {
-      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization, 'SERVICE_RESPONSE');
       if (!authenticated) {
         await reply.status(401).send(unauthorized(request));
         return;
@@ -224,7 +225,10 @@ export async function registerChallengeRoutes(
         },
       },
       async (request, reply): Promise<undefined> => {
-        const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+        const authenticated = await dependencies.auth.authenticate(
+          request.headers.authorization,
+          suffix === 'accept' || suffix === 'decline' ? 'SERVICE_RESPONSE' : 'FULL',
+        );
         if (!authenticated) {
           await reply.status(401).send(unauthorized(request));
           return;

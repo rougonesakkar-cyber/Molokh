@@ -22,6 +22,100 @@ export const ApiErrorSchema = Type.Object(
 
 export type ApiError = Static<typeof ApiErrorSchema>;
 
+const AuthOtpTransportSchema = Type.Union([
+  Type.Literal('LOCAL_DEVELOPMENT'),
+  Type.Literal('SMS_OPT_IN'),
+]);
+
+export const RequestAuthOtpBodySchema = Type.Object({
+  phoneE164: Type.String({ pattern: '^\\+[1-9][0-9]{7,14}$' }),
+  transport: AuthOtpTransportSchema,
+  smsOptIn: Type.Boolean({ default: false }),
+}, { $id: 'RequestAuthOtpBody', additionalProperties: false });
+export type RequestAuthOtpBody = Static<typeof RequestAuthOtpBodySchema>;
+
+export const AuthOtpChallengeSchema = Type.Object({
+  challengeId: Type.String({ format: 'uuid' }),
+  transport: AuthOtpTransportSchema,
+  state: Type.Union([
+    Type.Literal('PENDING'), Type.Literal('VERIFIED'),
+    Type.Literal('EXPIRED'), Type.Literal('LOCKED'),
+  ]),
+  attempts: Type.Integer({ minimum: 0, maximum: 5 }),
+  maxAttempts: Type.Literal(5),
+  expiresAt: Type.String({ format: 'date-time' }),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'AuthOtpChallenge', additionalProperties: false });
+
+export const RequestAuthOtpResponseSchema = Type.Object({
+  data: Type.Intersect([
+    AuthOtpChallengeSchema,
+    Type.Object({ developmentCode: Type.Optional(Type.String({ pattern: '^[0-9]{6}$' })) }),
+  ]),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }), replayed: Type.Boolean() },
+  { additionalProperties: false }),
+}, { $id: 'RequestAuthOtpResponse', additionalProperties: false });
+export type RequestAuthOtpResponse = Static<typeof RequestAuthOtpResponseSchema>;
+
+export const VerifyAuthOtpBodySchema = Type.Object({
+  challengeId: Type.String({ format: 'uuid' }),
+  challengeVersion: Type.Integer({ minimum: 1 }),
+  code: Type.String({ pattern: '^[0-9]{6}$' }),
+  deviceLabel: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+}, { $id: 'VerifyAuthOtpBody', additionalProperties: false });
+export type VerifyAuthOtpBody = Static<typeof VerifyAuthOtpBodySchema>;
+
+export const AuthSessionTokensSchema = Type.Object({
+  userId: Type.String({ format: 'uuid' }),
+  familyId: Type.String({ format: 'uuid' }),
+  generation: Type.Integer({ minimum: 1 }),
+  tokenType: Type.Literal('Bearer'),
+  accessToken: Type.String({ minLength: 32 }),
+  refreshToken: Type.String({ minLength: 32 }),
+  accessExpiresAt: Type.String({ format: 'date-time' }),
+  refreshExpiresAt: Type.String({ format: 'date-time' }),
+  accessMode: Type.Literal('FULL'),
+}, { $id: 'AuthSessionTokens', additionalProperties: false });
+export type AuthSessionTokens = Static<typeof AuthSessionTokensSchema>;
+
+export const VerifyAuthOtpResponseSchema = Type.Object({
+  data: Type.Object({
+    outcome: Type.Union([
+      Type.Literal('VERIFIED'), Type.Literal('INVALID_CODE'),
+      Type.Literal('LOCKED'), Type.Literal('EXPIRED'),
+    ]),
+    challenge: AuthOtpChallengeSchema,
+    session: Type.Union([AuthSessionTokensSchema, Type.Null()]),
+  }, { additionalProperties: false }),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }), replayed: Type.Boolean() },
+  { additionalProperties: false }),
+}, { $id: 'VerifyAuthOtpResponse', additionalProperties: false });
+export type VerifyAuthOtpResponse = Static<typeof VerifyAuthOtpResponseSchema>;
+
+export const RefreshAuthSessionBodySchema = Type.Object({
+  refreshToken: Type.String({ minLength: 32 }),
+}, { $id: 'RefreshAuthSessionBody', additionalProperties: false });
+export type RefreshAuthSessionBody = Static<typeof RefreshAuthSessionBodySchema>;
+
+export const AuthSessionResponseSchema = Type.Object({
+  data: AuthSessionTokensSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }), replayed: Type.Boolean() },
+  { additionalProperties: false }),
+}, { $id: 'AuthSessionResponse', additionalProperties: false });
+export type AuthSessionResponse = Static<typeof AuthSessionResponseSchema>;
+
+export const LogoutAuthSessionResponseSchema = Type.Object({
+  data: Type.Object({ familyId: Type.String({ format: 'uuid' }),
+    state: Type.Literal('REVOKED') }, { additionalProperties: false }),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }), replayed: Type.Boolean() },
+  { additionalProperties: false }),
+}, { $id: 'LogoutAuthSessionResponse', additionalProperties: false });
+export type LogoutAuthSessionResponse = Static<typeof LogoutAuthSessionResponseSchema>;
+
 export const RuntimeProjectionSchema = Type.Object(
   {
     architecture: Type.Literal('modular-monolith'),

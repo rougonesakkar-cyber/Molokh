@@ -82,6 +82,13 @@ HTTP mapping:
 Sensitive-action hold is represented in the account-access projection and enforced again by every
 sensitive command. A trusted old session receives only service-response capabilities.
 
+Authentication uses a 10-minute, five-attempt OTP challenge, a 15-minute opaque access token and a
+rotating 30-day opaque refresh token. PostgreSQL stores only the HMAC OTP verifier and SHA-256 token
+hashes. Reuse of a rotated refresh token revokes its entire session family. `LOCAL_DEVELOPMENT` may
+return a six-digit development code only outside production; `SMS_OPT_IN` requires explicit opt-in
+and an available provider adapter. During a phone-change security hold, a pre-change trusted session
+may read and accept/decline its existing Challenge but cannot create or mutate unrelated resources.
+
 ## 5. Discovery, Match and Chat
 
 | Method | Path | Command/query |

@@ -11,6 +11,17 @@ Molokh использует phone-first access, но SMS отправляетс�
 
 Использовать сменный OTP transport adapter и собственную server session model: short-lived access token, opaque rotating refresh token, hash в базе и session-family revocation. Web хранит refresh в Secure/HttpOnly/SameSite cookie; native — в Expo SecureStore.
 
+## Реализация MVP
+
+- OTP challenge: 10 минут, максимум 5 попыток; в БД сохраняется только HMAC verifier.
+- Access token: opaque, 15 минут; refresh token: opaque, 30 дней с одноразовой ротацией.
+- Повторное использование rotated refresh token отзывает всё session family.
+- `LOCAL_DEVELOPMENT` возвращает код только вне production; SMS остаётся opt-in adapter.
+- Session, созданная до подтверждённой смены телефона, во время 24-часового hold имеет только
+  `SERVICE_RESPONSE_ONLY`; для Challenge это чтение и accept/decline существующего обязательства.
+- Серверная модель и API реализованы. Web HttpOnly cookie и native SecureStore остаются отдельным
+  клиентским release gate; до него refresh token нельзя считать production-safe на клиенте.
+
 ## Consequences
 
 - Auth transport можно заменить без изменения Identity Core.

@@ -141,10 +141,18 @@ import {
   openDuplicateAccountReview,
   clearDuplicateAccountReview,
   resolveDuplicateAccountReview,
+  authenticateAccessToken,
+  readRefreshTokenContext,
+  requestAuthOtp,
+  revokeAuthSession,
+  rotateAuthSession,
+  verifyAuthOtp,
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
 import {
+  CompositeAuthAdapter,
+  DatabaseBearerAuthAdapter,
   StaticBearerAuthAdapter,
   StaticBearerAuthRegistryAdapter,
 } from './auth.js';
@@ -165,6 +173,8 @@ if (production) {
 
 const youthConsentTokenSecret = process.env.YOUTH_CONSENT_TOKEN_SECRET
   ?? 'molokh-local-youth-consent-token-secret-v1';
+const authSessionSecret = process.env.AUTH_SESSION_SECRET
+  ?? 'molokh-local-auth-session-secret-v1-change-in-production';
 
 const localUserId = '0199a1b2-1234-7000-8000-000000000101';
 const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
@@ -1066,7 +1076,7 @@ if (!localAdminAlreadyActive && !(await readRoleGrant(database, localAdminGrantI
   );
 }
 
-const localAuth = new StaticBearerAuthRegistryAdapter([
+const localStaticAuth = new StaticBearerAuthRegistryAdapter([
   { token: localToken, userId: localUserId },
   { token: localCentralToken, userId: localCentralUserId },
   { token: localCoachToken, userId: localCoachUserId },
@@ -1079,12 +1089,30 @@ const localAuth = new StaticBearerAuthRegistryAdapter([
     userId: fixture.activation.payload.userId,
   })),
 ]);
+const databaseAuth = new DatabaseBearerAuthAdapter(
+  (tokenHash) => authenticateAccessToken(database, tokenHash),
+);
+const localAuth = new CompositeAuthAdapter([databaseAuth, localStaticAuth]);
 const localCentralAuth = new StaticBearerAuthAdapter(
   localCentralToken,
   localCentralUserId,
 );
 
 const app = await buildApp({
+  authentication: {
+    auth: databaseAuth,
+    secret: authSessionSecret,
+    localDevelopmentTransportEnabled: !production,
+    smsTransportAvailable: false,
+    requestOtp: (command, ids, codeVerifierHash) =>
+      requestAuthOtp(database, command, ids, codeVerifierHash),
+    verifyOtp: (command, ids, secrets) =>
+      verifyAuthOtp(database, command, ids, secrets),
+    readRefreshContext: (tokenHash) => readRefreshTokenContext(database, tokenHash),
+    rotateSession: (command, ids, hashes) =>
+      rotateAuthSession(database, command, ids, hashes),
+    revokeSession: (command, ids) => revokeAuthSession(database, command, ids),
+  },
   accountAccess: {
     auth: localAuth,
     centralAuth: localCentralAuth,

@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 import {
   ChatActionDeniedError,
+  AccountAccessConflictError,
   AccountLifecycleConflictError,
+  AuthSessionConflictError,
   ChallengeConflictError,
   CommunityLifecycleConflictError,
   IdempotencyKeyReusedError,
@@ -65,6 +67,24 @@ export interface HttpErrorMapping {
 }
 
 export function mapApiError(error: unknown, requestId: string): HttpErrorMapping {
+  if (error instanceof AuthSessionConflictError) {
+    const unauthenticated = error.code === 'AUTH_SESSION_INVALID_STATE'
+      || error.code === 'AUTH_REFRESH_EXPIRED';
+    return { statusCode: unauthenticated ? 401 : 409,
+      body: { code: error.code,
+        message: unauthenticated
+          ? 'Authentication session is invalid or expired'
+          : 'Authentication state no longer allows this action', requestId } };
+  }
+  if (error instanceof AccountAccessConflictError) {
+    const forbidden = error.code === 'ACCOUNT_ACCESS_CENTRAL_REQUIRED'
+      || error.code === 'ACCOUNT_ACCESS_SYSTEM_REQUIRED'
+      || error.code === 'ACCOUNT_ACCESS_USER_OR_CENTRAL_REQUIRED';
+    return { statusCode: forbidden ? 403 : 409,
+      body: { code: error.code,
+        message: forbidden ? 'This account-access action is not permitted'
+          : 'Account-access state no longer allows this action', requestId } };
+  }
   if (error instanceof VersionConflictError) {
     return {
       statusCode: 409,

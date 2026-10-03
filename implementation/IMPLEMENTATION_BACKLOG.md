@@ -170,11 +170,19 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - M1 exit: complete at the platform layer.
 - Story 4 Sprint 1 increment: complete. The 14+ User/AthleteProfile activation, arbitrary display name, private name audit, local replaceable auth adapter, public capability projection, typed API and minimal universal client run end to end. Phone-confirmed but Central-unverified Athletes can use Discovery and ordinary Training but receive an explicit Official Challenge denial.
 - Story 4 verification increment: complete. V-01 start, permission-protected Central FIFO queue and V-02 approval use checklist/version only, store no document/evidence, and immediately recompute Identity/Community capabilities.
-- Story 4 remaining production work: real OTP and rotating session adapter, avatar malware/scan port and account recovery/duplicate cases. These do not block local Story 5 work.
+- Story 4 authentication/account-access hardening: complete in code. A replaceable OTP transport
+  boundary, five-attempt/10-minute challenge, opaque 15-minute access token, rotating 30-day refresh
+  family, hash-only persistence, reuse-triggered family revocation, logout, trusted-session linkage
+  and the 24-hour pre-change service-response mode now run through Core, PostgreSQL and typed API.
+  Local development exposes its deterministic OTP only outside production; an external SMS provider
+  remains optional and unconfigured. Account recovery and duplicate-account Central cases are also
+  complete. Remaining Story 4 production work is the avatar malware/scan port and secure client
+  refresh-token storage/cookie integration.
 - Story 5 foundation: complete. One deterministic pilot Venue/Community and active Membership render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and at most one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
 - Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
-- Story 5 remaining: no local pilot blocker. Production authentication, account recovery and duplicate-account cases remain separate M2 hardening.
+- Story 5 remaining: no local pilot blocker. Role-aware production session wiring and the avatar
+  scan adapter remain M2 release hardening; recovery and duplicate-account governance are complete.
 - M3 Discovery read increment: complete. A versioned, lexicographic ranking policy exhausts the selected radius before city expansion, highlights inbound interest inside each geography tier, treats sport as a soft signal and uses a stable ID tie-break. PostgreSQL source tables and hard gates exclude self, inactive/paused accounts, cross-age candidates, Block, active suppression and active/archived Match without computing a reliability score. The API and universal client render the second deterministic Athlete.
 - M3 social mutation increment: complete in code. Idempotent Like/Skip commands use a normalized pair lock; mutual Like creates both terminal Like states, exactly one Match and one personal Chat in one transaction. State/version-guarded worker timers expire one-sided Likes after 30 days and Skip suppression after 15 days. The universal client shows only Like/Skip and adds Match after mutual intent.
 - M3 Block/Unmatch increment: complete. Unmatch atomically closes the personal Chat and starts the 15-day pair suppression; directed Block closes any personal Match/contact and withdraws a pending pair Like. Both commands expose and audit the invariant that accepted obligations and status paths are preserved. Unblock never restores the old Match. Core, API, universal client and real PostgreSQL scenarios pass.
