@@ -37,7 +37,7 @@ import type {
   RotateAuthSessionPayload,
   VerifyAuthOtpPayload,
 } from '@molokh/db';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { deriveOpaqueToken, deriveOtpCode, deriveUuid, otpVerifierHash } from './auth-crypto.js';
 import { hashBearerToken, type AuthAdapter } from './auth.js';
@@ -46,6 +46,7 @@ import { newUuidV7 } from './uuid-v7.js';
 
 interface IdempotentHeaders {
   readonly authorization?: string;
+  readonly cookie?: string;
   readonly 'idempotency-key'?: string;
 }
 
@@ -54,6 +55,7 @@ export interface AuthRouteDependencies {
   readonly secret: string;
   readonly localDevelopmentTransportEnabled: boolean;
   readonly smsTransportAvailable: boolean;
+  readonly secureCookies: boolean;
   readonly requestOtp: (command: CommandEnvelope<RequestAuthOtpPayload>,
     ids: AuthOtpRequestEffectIds, codeVerifierHash: string) =>
     Promise<ExecutedCommand<AuthOtpChallengeProjection>>;
@@ -112,12 +114,56 @@ function challengeData(challenge: AuthOtpChallengeProjection) {
 function tokens(
   projection: AuthSessionProjection,
   accessToken: string,
-  refreshToken: string,
+  refreshToken: string | null,
 ): AuthSessionTokens {
   return { userId: projection.userId, familyId: projection.familyId,
     generation: projection.generation, tokenType: 'Bearer', accessToken, refreshToken,
     accessExpiresAt: projection.accessExpiresAt,
     refreshExpiresAt: projection.refreshExpiresAt, accessMode: 'FULL' };
+}
+
+const refreshCookieName = 'molokh_refresh';
+const refreshCookieMaxAgeSeconds = 30 * 24 * 60 * 60;
+
+function cookieValue(header: string | undefined, name: string): string | null {
+  if (!header) return null;
+  for (const pair of header.split(';')) {
+    const separator = pair.indexOf('=');
+    if (separator < 0) continue;
+    if (pair.slice(0, separator).trim() === name) {
+      const value = pair.slice(separator + 1).trim();
+      return value.length > 0 ? value : null;
+    }
+  }
+  return null;
+}
+
+function setRefreshCookie(
+  reply: FastifyReply,
+  token: string,
+  secure: boolean,
+): void {
+  const attributes = [
+    `${refreshCookieName}=${token}`,
+    'Path=/api/v1/auth',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${refreshCookieMaxAgeSeconds}`,
+    ...(secure ? ['Secure'] : []),
+  ];
+  void reply.header('set-cookie', attributes.join('; '));
+}
+
+function clearRefreshCookie(reply: FastifyReply, secure: boolean): void {
+  const attributes = [
+    `${refreshCookieName}=`,
+    'Path=/api/v1/auth',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+    ...(secure ? ['Secure'] : []),
+  ];
+  void reply.header('set-cookie', attributes.join('; '));
 }
 
 export async function registerAuthRoutes(
@@ -163,7 +209,7 @@ export async function registerAuthRoutes(
         response: { 200: VerifyAuthOtpResponseSchema, 400: ApiErrorSchema,
           409: ApiErrorSchema, 429: ApiErrorSchema } },
       config: { rateLimit: { max: 20, timeWindow: 60_000 } },
-    }, async (request): Promise<VerifyAuthOtpResponse> => {
+    }, async (request, reply): Promise<VerifyAuthOtpResponse> => {
       const key = idempotencyKey(request.headers['idempotency-key']);
       const accessToken = deriveOpaqueToken(dependencies.secret, 'access-token-v1',
         [request.body.challengeId, key]);
@@ -187,10 +233,14 @@ export async function registerAuthRoutes(
         accessTokenHash: hashBearerToken(accessToken),
         refreshTokenHash: hashBearerToken(refreshToken),
       });
+      if (executed.response.session && request.body.clientKind === 'WEB') {
+        setRefreshCookie(reply, refreshToken, dependencies.secureCookies);
+      }
       return { data: { outcome: executed.response.outcome,
         challenge: challengeData(executed.response.challenge),
         session: executed.response.session
-          ? tokens(executed.response.session, accessToken, refreshToken) : null },
+          ? tokens(executed.response.session, accessToken,
+            request.body.clientKind === 'NATIVE' ? refreshToken : null) : null },
       meta: { requestId: requestContext(request).requestId, eventId: executed.eventId,
         replayed: executed.replayed } };
     });
@@ -203,7 +253,16 @@ export async function registerAuthRoutes(
       config: { rateLimit: { max: 30, timeWindow: 60_000 } },
     }, async (request, reply): Promise<AuthSessionResponse | undefined> => {
       const key = idempotencyKey(request.headers['idempotency-key']);
-      const currentHash = hashBearerToken(request.body.refreshToken);
+      const suppliedRefreshToken = request.body.clientKind === 'WEB'
+        ? cookieValue(request.headers.cookie, refreshCookieName)
+        : request.body.refreshToken ?? null;
+      if (!suppliedRefreshToken) {
+        await reply.status(401).send({ code: 'AUTH_REFRESH_INVALID',
+          message: 'Refresh token is invalid or expired',
+          requestId: requestContext(request).requestId });
+        return;
+      }
+      const currentHash = hashBearerToken(suppliedRefreshToken);
       const refresh = await dependencies.readRefreshContext(currentHash);
       if (!refresh || refresh.familyState !== 'ACTIVE'
         || refresh.refreshTokenState === 'REVOKED'
@@ -244,7 +303,11 @@ export async function registerAuthRoutes(
         }), { eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7() });
         throw new AuthSessionConflictError('AUTH_REFRESH_REUSE_DETECTED');
       }
-      return { data: tokens(executed.response, nextAccessToken, nextRefreshToken),
+      if (request.body.clientKind === 'WEB') {
+        setRefreshCookie(reply, nextRefreshToken, dependencies.secureCookies);
+      }
+      return { data: tokens(executed.response, nextAccessToken,
+        request.body.clientKind === 'NATIVE' ? nextRefreshToken : null),
         meta: { requestId: requestContext(request).requestId, eventId: executed.eventId,
           replayed: executed.replayed } };
     });
@@ -270,6 +333,7 @@ export async function registerAuthRoutes(
       expectedVersion: authenticated.familyVersion, request,
       payload: { familyId: authenticated.familyId, reason: 'LOGOUT' },
     }), { eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7() });
+    clearRefreshCookie(reply, dependencies.secureCookies);
     return { data: executed.response, meta: { requestId: requestContext(request).requestId,
       eventId: executed.eventId, replayed: executed.replayed } };
   });

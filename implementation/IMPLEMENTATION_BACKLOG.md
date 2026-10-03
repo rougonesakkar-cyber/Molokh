@@ -176,8 +176,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   and the 24-hour pre-change service-response mode now run through Core, PostgreSQL and typed API.
   Local development exposes its deterministic OTP only outside production; an external SMS provider
   remains optional and unconfigured. Account recovery and duplicate-account Central cases are also
-  complete. Remaining Story 4 production work is the avatar malware/scan port and secure client
-  refresh-token storage/cookie integration.
+  complete. Web refresh is kept in an HttpOnly/SameSite cookie, native refresh in Expo SecureStore,
+  and the universal client restores/rotates the managed session without persisting a Web refresh or
+  access token. Remaining Story 4 production work is the avatar malware/scan port, external opt-in
+  SMS provider and role-aware production bootstrap.
 - Story 5 foundation: complete. One deterministic pilot Venue/Community and active Membership render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and at most one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
 - Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
@@ -319,7 +321,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 106/213 (`100/195 P0`).
+  Acceptance traceability is 109/213 (`103/195 P0`).
 - M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
   exact 30-day recovery, owner cancellation and reasoned Central execution only after all
   obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one

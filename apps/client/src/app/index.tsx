@@ -42,6 +42,7 @@ import type {
   StatusReleaseCommandResponse,
   VenueAdminDashboardResponse,
   VenueMemberListResponse,
+  AuthSessionTokens,
 } from '@molokh/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Href, useRouter } from 'expo-router';
@@ -73,6 +74,7 @@ import {
 } from '../features/account-access/AccountAccessSection';
 import { MembershipExitSection } from '../features/membership-exit/MembershipExitSection';
 import { StatusQueueSection } from '../features/status-queue/StatusQueueSection';
+import { LocalPhoneAuthPanel } from '../features/auth/LocalPhoneAuthPanel';
 import {
   apiErrorMessage,
   apiUrl,
@@ -81,6 +83,10 @@ import {
   setLocalToken,
   type LocalTestAccount,
 } from '../lib/api';
+import {
+  logoutManagedAuthSession,
+  refreshManagedAuthSession,
+} from '../lib/auth-session';
 import { sportLabel, sportOptions } from '../lib/sports';
 
 type Identity = MeResponse['data'];
@@ -390,6 +396,9 @@ export default function IdentityScreen() {
     localTestAccounts.find((account) => account.token === localToken)?.startSection
       ?? 'DISCOVERY');
   const [activeTestToken, setActiveTestToken] = useState(localToken);
+  const [managedAccessExpiresAt, setManagedAccessExpiresAt] = useState<string | null>(null);
+  const [authBootstrapped, setAuthBootstrapped] = useState(false);
+  const [managedLoginRequired, setManagedLoginRequired] = useState(!__DEV__);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [communityContext, setCommunityContext] = useState<CommunityContext | null>(null);
@@ -749,8 +758,54 @@ export default function IdentityScreen() {
   }, []);
 
   useEffect(() => {
-    void loadIdentity();
+    let cancelled = false;
+    void (async () => {
+      let canLoadIdentity = __DEV__;
+      try {
+        const session = await refreshManagedAuthSession();
+        if (session && !cancelled) {
+          setLocalToken(session.accessToken, false);
+          setActiveTestToken(session.accessToken);
+          setManagedAccessExpiresAt(session.accessExpiresAt);
+          setManagedLoginRequired(false);
+          canLoadIdentity = true;
+        }
+      } catch {
+        // A missing/stale managed session falls back to the explicit local test account.
+      }
+      if (!cancelled && canLoadIdentity) await loadIdentity();
+      if (!cancelled) setAuthBootstrapped(true);
+    })();
+    return () => { cancelled = true; };
   }, [loadIdentity]);
+
+  useEffect(() => {
+    if (!managedAccessExpiresAt) return;
+    const delay = Math.max(1_000,
+      new Date(managedAccessExpiresAt).getTime() - Date.now() - 60_000);
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const session = await refreshManagedAuthSession();
+          if (!session) {
+            setManagedAccessExpiresAt(null);
+            if (!__DEV__) setManagedLoginRequired(true);
+            return;
+          }
+          setLocalToken(session.accessToken, false);
+          setActiveTestToken(session.accessToken);
+          setManagedAccessExpiresAt(session.accessExpiresAt);
+        } catch (caught) {
+          if (!__DEV__) {
+            setManagedAccessExpiresAt(null);
+            setManagedLoginRequired(true);
+          }
+          setError(caught instanceof Error ? caught.message : 'Не удалось обновить session');
+        }
+      })();
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [managedAccessExpiresAt]);
 
   const normalizedName = displayName.trim();
   const officialChallengeDenial = communityContext?.access.denials.find(
@@ -852,12 +907,20 @@ export default function IdentityScreen() {
     }
   };
 
-  const switchLocalAccount = (account: LocalTestAccount) => {
+  const switchLocalAccount = (
+    account: LocalTestAccount,
+    persistToken = true,
+    closeManagedSession = true,
+  ) => {
     if (account.token === activeTestToken) {
       setAccountMenuOpen(false);
       return;
     }
-    setLocalToken(account.token);
+    if (closeManagedSession && managedAccessExpiresAt) {
+      void logoutManagedAuthSession(activeTestToken).catch(() => undefined);
+      setManagedAccessExpiresAt(null);
+    }
+    setLocalToken(account.token, persistToken);
     setActiveTestToken(account.token);
     setAccountMenuOpen(false);
     openSection(account.startSection);
@@ -933,6 +996,23 @@ export default function IdentityScreen() {
     setCentralDecisionAppealId(null);
     setCentralDecisionReason('');
     void loadIdentity();
+  };
+
+  const useManagedSession = (session: AuthSessionTokens) => {
+    setManagedAccessExpiresAt(session.accessExpiresAt);
+    setManagedLoginRequired(false);
+    switchLocalAccount({ id: 'managed-session', label: 'OTP session', role: 'Athlete',
+      token: session.accessToken, startSection: 'PROFILE' }, false);
+  };
+
+  const logoutManagedSession = async () => {
+    await logoutManagedAuthSession(activeTestToken);
+    setManagedAccessExpiresAt(null);
+    if (__DEV__) switchLocalAccount(localTestAccounts[0]!, true, false);
+    else {
+      setIdentity(null);
+      setManagedLoginRequired(true);
+    }
   };
 
   const publishAdminSchedule = async () => {
@@ -2662,6 +2742,31 @@ export default function IdentityScreen() {
     }
   };
 
+  if (!authBootstrapped) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.container}>
+          <Text style={styles.eyebrow}>MOLOKH</Text>
+          <ActivityIndicator color="#221f1a" />
+          <Text style={styles.hint}>Восстанавливаем защищённую session…</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (managedLoginRequired) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+          <Text style={styles.eyebrow}>MOLOKH</Text>
+          <Text style={styles.title}>Вход</Text>
+          <LocalPhoneAuthPanel activeSession={false} onAuthenticated={useManagedSession}
+            onLogout={async () => undefined} />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -2716,6 +2821,11 @@ export default function IdentityScreen() {
                     );
                   })}
                 </View>
+                <LocalPhoneAuthPanel
+                  activeSession={managedAccessExpiresAt !== null}
+                  onAuthenticated={useManagedSession}
+                  onLogout={logoutManagedSession}
+                />
               </>
             ) : null}
           </View>

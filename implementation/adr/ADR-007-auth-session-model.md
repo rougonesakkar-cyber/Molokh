@@ -19,8 +19,9 @@ Molokh использует phone-first access, но SMS отправляетс�
 - `LOCAL_DEVELOPMENT` возвращает код только вне production; SMS остаётся opt-in adapter.
 - Session, созданная до подтверждённой смены телефона, во время 24-часового hold имеет только
   `SERVICE_RESPONSE_ONLY`; для Challenge это чтение и accept/decline существующего обязательства.
-- Серверная модель и API реализованы. Web HttpOnly cookie и native SecureStore остаются отдельным
-  клиентским release gate; до него refresh token нельзя считать production-safe на клиенте.
+- Web получает refresh только через `HttpOnly; SameSite=Lax` cookie (`Secure` в production), native
+  хранит refresh в Expo SecureStore. Universal client восстанавливает session при старте и ротирует
+  access за минуту до истечения; Web access token остаётся только в памяти.
 
 ## Consequences
 

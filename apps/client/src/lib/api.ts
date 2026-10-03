@@ -44,9 +44,9 @@ function tokenStorage(): LocalTokenStorage | null {
 
 export let localToken = tokenStorage()?.getItem(localTokenStorageKey) ?? defaultLocalToken;
 
-export function setLocalToken(token: string): void {
+export function setLocalToken(token: string, persist = true): void {
   localToken = token;
-  tokenStorage()?.setItem(localTokenStorageKey, token);
+  if (persist) tokenStorage()?.setItem(localTokenStorageKey, token);
 }
 
 const localizedApiErrors: Readonly<Record<string, string>> = {

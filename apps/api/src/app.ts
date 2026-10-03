@@ -135,6 +135,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     ],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     origin: allowedOrigins.length > 0 ? [...allowedOrigins] : false,
+    credentials: true,
     strictPreflight: true,
   });
   await app.register(rateLimit, {

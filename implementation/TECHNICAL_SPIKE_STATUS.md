@@ -29,7 +29,7 @@
 | Scheduling publication slice | role-scoped Slot/GroupOffering publish, overlap guard, expiry timers and active-Match Chat cards | Pass in Core/API/client/worker and real PostgreSQL |
 | API edge baseline | official CORS/Helmet/rate-limit plugins, DB-backed readiness and secret log redaction | Pass |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 106/213 mapped (`100/195 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 109/213 mapped (`103/195 P0`) as implementation grows |
 | Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
 | Final Result integrity | evidence-scoped Central review, Competition hold, immutable decision and deterministic status replay | Pass in Core/API/client and real PostgreSQL |
 | Status queue foundation | explicit GENESIS/status intent, server-time FIFO, member/outsider projection and no-loss withdrawal | Pass in Core/API/client and real PostgreSQL |
@@ -202,7 +202,7 @@ Verified on 2026-10-03:
 - Expo produces a static Web export for `/chat`, `/guardian-consent`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.8.1 and PostgreSQL 18 are healthy after moving only the inaccessible transient host runtime-socket directory into quarantine; no project, WSL disk or Docker data volume was reset;
-- migrations `0001`–`0053` apply successfully with checksum verification; `YOUTH_OFFICIAL` remains disabled by default;
+- migrations `0001`–`0056` apply successfully with checksum verification; `YOUTH_OFFICIAL` remains disabled by default;
 - the live universal client renders the empty GENESIS state, submits a position-1 status intent and withdraws it without loss; the queue immediately returns to empty and no browser error is produced by the flow;
 - the live Worker revalidates a fresh GENESIS intent, records the exact three-day single-candidate deadline, projects its mandatory notification and makes the pending timer stale after a no-loss withdrawal; the visible queue returns to empty;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
@@ -219,6 +219,6 @@ Verified on 2026-10-03:
 - live Athlete Training withdrawal followed by remaining-Athlete and Coach acceptance preserves
   the same Session as `CONFIRMED_SOLO` and keeps the Slot booked without a loss or Challenge;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 106 scenarios (`100/195 P0`) and distinguishes traceability from complete coverage;
+- the generated acceptance matrix maps 109 scenarios (`103/195 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;
-- the Core specification validator reports 308 transitions, 299 registered events, 213 acceptance scenarios, zero open questions and zero errors.
+- the Core specification validator reports 308 transitions, 308 registered events, 213 acceptance scenarios, zero open questions and zero errors.

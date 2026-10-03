@@ -30,6 +30,7 @@ describe('authentication session routes', () => {
       secret,
       localDevelopmentTransportEnabled: true,
       smsTransportAvailable: false,
+      secureCookies: false,
       requestOtp: async (command, _ids, verifierHash) => {
         commands.push(command); verifierHashes.push(verifierHash);
         return executed({ challengeId: command.aggregateId, userId,
@@ -81,7 +82,8 @@ describe('authentication session routes', () => {
     const verified = await app.inject({ method: 'POST', url: '/api/v1/auth/otp/verify',
       headers: { 'idempotency-key': 'verify-login-1' }, payload: {
         challengeId: requestBody.data.challengeId, challengeVersion: 1,
-        code: requestBody.data.developmentCode, deviceLabel: 'Pilot browser',
+        code: requestBody.data.developmentCode, clientKind: 'NATIVE',
+        deviceLabel: 'Pilot browser',
       } });
     expect(verified.statusCode).toBe(200);
     const verifiedBody = verified.json();
@@ -93,9 +95,29 @@ describe('authentication session routes', () => {
     expect(JSON.stringify(commands)).not.toContain(verifiedBody.data.session.accessToken);
     expect(JSON.stringify(commands)).not.toContain(verifiedBody.data.session.refreshToken);
 
+    const webVerified = await app.inject({ method: 'POST', url: '/api/v1/auth/otp/verify',
+      headers: { 'idempotency-key': 'verify-login-web-1' }, payload: {
+        challengeId: requestBody.data.challengeId, challengeVersion: 1,
+        code: requestBody.data.developmentCode, clientKind: 'WEB',
+        deviceLabel: 'Pilot web browser',
+      } });
+    expect(webVerified.statusCode).toBe(200);
+    expect(webVerified.json().data.session.refreshToken).toBeNull();
+    const rawWebCookie = webVerified.headers['set-cookie'];
+    const webCookie = Array.isArray(rawWebCookie) ? rawWebCookie[0] : rawWebCookie;
+    expect(webCookie).toContain('molokh_refresh=');
+    expect(webCookie).toContain('HttpOnly');
+    expect(webCookie).toContain('SameSite=Lax');
+    const webRefreshed = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh',
+      headers: { 'idempotency-key': 'refresh-login-web-1',
+        cookie: webCookie!.split(';')[0]! }, payload: { clientKind: 'WEB' } });
+    expect(webRefreshed.statusCode).toBe(200);
+    expect(webRefreshed.json().data.refreshToken).toBeNull();
+    expect(webRefreshed.headers['set-cookie']).toContain('HttpOnly');
+
     const refreshed = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh',
       headers: { 'idempotency-key': 'refresh-login-1' },
-      payload: { refreshToken: verifiedBody.data.session.refreshToken } });
+      payload: { clientKind: 'NATIVE', refreshToken: verifiedBody.data.session.refreshToken } });
     expect(refreshed.statusCode).toBe(200);
     expect(refreshed.json().data).toMatchObject({ familyId, generation: 2,
       tokenType: 'Bearer' });
@@ -123,6 +145,7 @@ describe('authentication session routes', () => {
     const app = await buildApp({ authentication: {
       auth: { authenticate: async () => null }, secret,
       localDevelopmentTransportEnabled: true, smsTransportAvailable: false,
+      secureCookies: false,
       requestOtp: unavailable,
       verifyOtp: unavailable,
       readRefreshContext: async () => ({ userId, familyId, familyState: 'ACTIVE',
@@ -137,7 +160,8 @@ describe('authentication session routes', () => {
     apps.push(app);
     const response = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh',
       headers: { 'idempotency-key': 'attacker-reuse-key' },
-      payload: { refreshToken: 'rotated-refresh-token-with-enough-entropy' } });
+      payload: { clientKind: 'NATIVE',
+        refreshToken: 'rotated-refresh-token-with-enough-entropy' } });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: 'AUTH_REFRESH_REUSE_DETECTED' });
     expect(revokedReason).toBe('REFRESH_REUSE');

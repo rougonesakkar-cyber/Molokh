@@ -1104,6 +1104,7 @@ const app = await buildApp({
     secret: authSessionSecret,
     localDevelopmentTransportEnabled: !production,
     smsTransportAvailable: false,
+    secureCookies: production,
     requestOtp: (command, ids, codeVerifierHash) =>
       requestAuthOtp(database, command, ids, codeVerifierHash),
     verifyOtp: (command, ids, secrets) =>

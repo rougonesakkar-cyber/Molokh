@@ -26,6 +26,10 @@ const AuthOtpTransportSchema = Type.Union([
   Type.Literal('LOCAL_DEVELOPMENT'),
   Type.Literal('SMS_OPT_IN'),
 ]);
+const AuthClientKindSchema = Type.Union([
+  Type.Literal('WEB'),
+  Type.Literal('NATIVE'),
+]);
 
 export const RequestAuthOtpBodySchema = Type.Object({
   phoneE164: Type.String({ pattern: '^\\+[1-9][0-9]{7,14}$' }),
@@ -62,6 +66,7 @@ export const VerifyAuthOtpBodySchema = Type.Object({
   challengeId: Type.String({ format: 'uuid' }),
   challengeVersion: Type.Integer({ minimum: 1 }),
   code: Type.String({ pattern: '^[0-9]{6}$' }),
+  clientKind: AuthClientKindSchema,
   deviceLabel: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
 }, { $id: 'VerifyAuthOtpBody', additionalProperties: false });
 export type VerifyAuthOtpBody = Static<typeof VerifyAuthOtpBodySchema>;
@@ -72,7 +77,7 @@ export const AuthSessionTokensSchema = Type.Object({
   generation: Type.Integer({ minimum: 1 }),
   tokenType: Type.Literal('Bearer'),
   accessToken: Type.String({ minLength: 32 }),
-  refreshToken: Type.String({ minLength: 32 }),
+  refreshToken: Type.Union([Type.String({ minLength: 32 }), Type.Null()]),
   accessExpiresAt: Type.String({ format: 'date-time' }),
   refreshExpiresAt: Type.String({ format: 'date-time' }),
   accessMode: Type.Literal('FULL'),
@@ -95,7 +100,8 @@ export const VerifyAuthOtpResponseSchema = Type.Object({
 export type VerifyAuthOtpResponse = Static<typeof VerifyAuthOtpResponseSchema>;
 
 export const RefreshAuthSessionBodySchema = Type.Object({
-  refreshToken: Type.String({ minLength: 32 }),
+  clientKind: AuthClientKindSchema,
+  refreshToken: Type.Optional(Type.String({ minLength: 32 })),
 }, { $id: 'RefreshAuthSessionBody', additionalProperties: false });
 export type RefreshAuthSessionBody = Static<typeof RefreshAuthSessionBodySchema>;
 
