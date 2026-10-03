@@ -132,6 +132,7 @@ interface AccessCaseRow {
   readonly recovery_signals: AccountRecoverySignal[];
   readonly requested_phone_e164: string | null;
   readonly requested_at: Date;
+  readonly decision_at: Date | null;
   readonly security_hold_until: Date | null;
   readonly incident_started_at: Date | null;
   readonly incident_ended_at: Date | null;
@@ -206,7 +207,7 @@ async function accessCaseRow(
   database: Kysely<Database> | Transaction<Database>, caseId: string, lock = false,
 ): Promise<AccessCaseRow | null> {
   const result = await sql<AccessCaseRow>`select case_id, user_id, state, recovery_route,
-      recovery_signals, requested_phone_e164, requested_at, security_hold_until,
+      recovery_signals, requested_phone_e164, requested_at, decision_at, security_hold_until,
       incident_started_at, incident_ended_at, affected_process_ids, completed_at,
       version::text as version
     from identity.account_access_cases where case_id = ${caseId}::uuid
@@ -466,9 +467,25 @@ export async function expirePhoneChangeSecurityHold(
           released_at = ${occurredAt}::timestamptz, version = version + 1,
           updated_at = ${occurredAt}::timestamptz
         where source_case_id = ${recovery.case_id}::uuid and state = 'ACTIVE'`.execute(transaction);
+      await sql`update identity.auth_access_tokens token set state = 'REVOKED',
+          revoked_at = ${occurredAt}::timestamptz
+        from identity.auth_session_families family, identity.trusted_sessions trusted
+        where token.family_id = family.family_id
+          and family.trusted_session_id = trusted.trusted_session_id
+          and trusted.user_id = ${recovery.user_id}::uuid
+          and trusted.trusted_at <= ${recovery.decision_at!.toISOString()}::timestamptz
+          and token.state = 'ACTIVE'`.execute(transaction);
+      await sql`update identity.auth_refresh_tokens token set state = 'REVOKED'
+        from identity.auth_session_families family, identity.trusted_sessions trusted
+        where token.family_id = family.family_id
+          and family.trusted_session_id = trusted.trusted_session_id
+          and trusted.user_id = ${recovery.user_id}::uuid
+          and trusted.trusted_at <= ${recovery.decision_at!.toISOString()}::timestamptz
+          and token.state = 'ACTIVE'`.execute(transaction);
       await sql`update identity.trusted_sessions set state = 'REVOKED',
           revoked_at = ${occurredAt}::timestamptz, updated_at = ${occurredAt}::timestamptz
-        where user_id = ${recovery.user_id}::uuid and state = 'TRUSTED'`.execute(transaction);
+        where user_id = ${recovery.user_id}::uuid and state = 'TRUSTED'
+          and trusted_at <= ${recovery.decision_at!.toISOString()}::timestamptz`.execute(transaction);
       const response = accessProjection((await accessCaseRow(transaction, recovery.case_id))!);
       return { responseStatus: 200, response,
         event: { eventId: ids.eventId, eventName: 'AccountRecoveryCompleted',

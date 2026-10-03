@@ -204,6 +204,12 @@ import {
   submitResultAppeal,
   transitionYouthToAdult,
   withdrawAppeal,
+  authenticateAccessToken,
+  readRefreshTokenContext,
+  requestAuthOtp,
+  revokeAuthSession,
+  rotateAuthSession,
+  verifyAuthOtp,
   type CreateLikePayload,
   type BlockEffectIds,
   type BlockUserPayload,
@@ -1856,6 +1862,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
         identity.duplicate_account_case_users,
         identity.duplicate_account_cases,
         identity.user_sensitive_action_holds,
+        identity.auth_access_tokens,
+        identity.auth_refresh_tokens,
+        identity.auth_session_families,
+        identity.auth_otp_challenges,
         identity.trusted_sessions,
         identity.account_access_cases,
         community.community_closure_status_dispositions,
@@ -10333,5 +10343,174 @@ describePostgres('PostgreSQL critical command transaction', () => {
     }, { eventId: testId(27081), auditId: testId(27082),
       outboxMessageId: testId(27083) }))
       .rejects.toBeInstanceOf(AccountAccessConflictError);
+  });
+
+  it('stores only auth verifiers, rotates refresh tokens and revokes the session family', async () => {
+    const userId = testId(28001);
+    const challengeId = testId(28002);
+    const familyId = testId(28003);
+    const firstAccessTokenId = testId(28004);
+    const firstRefreshTokenId = testId(28005);
+    const trustedSessionId = testId(28006);
+    const issuedAt = new Date('2026-10-04T10:00:00.000Z');
+    const otpVerifierHash = 'a'.repeat(64);
+    const firstAccessHash = 'b'.repeat(64);
+    const firstRefreshHash = 'c'.repeat(64);
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${userId}::uuid, '+79992800001', '2026-10-01T10:00:00.000Z'::timestamptz,
+        '1995-01-01', 'ADULT', 'Auth Athlete', 'ACTIVE', 'ru-RU', 1,
+        '2026-10-01T10:00:00.000Z'::timestamptz
+      )
+    `.execute(database);
+
+    const requested = await requestAuthOtp(database, {
+      commandId: testId(28007), commandType: 'REQUEST_AUTH_OTP',
+      idempotencyKey: 'auth-otp-request-28001',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AuthOtpChallenge', aggregateId: challengeId, expectedVersion: 0,
+      correlationId: testId(28008), causationId: null, requestId: testId(28009),
+      source: 'api', payloadVersion: 1,
+      payload: { phoneE164: '+79992800001', transport: 'LOCAL_DEVELOPMENT',
+        localDevelopmentTransportEnabled: true, smsTransportAvailable: false,
+        smsOptedIn: false },
+    }, { eventId: testId(28010), auditId: testId(28011),
+      outboxMessageId: testId(28012), expiredChallengeEventId: testId(28043) },
+    otpVerifierHash, () => issuedAt);
+    expect(requested.response).toMatchObject({ challengeId, state: 'PENDING', version: 1 });
+
+    const rejected = await verifyAuthOtp(database, {
+      commandId: testId(28013), commandType: 'VERIFY_AUTH_OTP',
+      idempotencyKey: 'auth-otp-wrong-28001',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AuthOtpChallenge', aggregateId: challengeId, expectedVersion: 1,
+      correlationId: testId(28008), causationId: testId(28010), requestId: testId(28014),
+      source: 'api', payloadVersion: 1,
+      payload: { challengeId, deviceLabel: 'Pilot browser' },
+    }, { eventId: testId(28015), auditId: testId(28016), outboxMessageId: testId(28017),
+      trustedSessionId: testId(28018), familyId: testId(28019),
+      refreshTokenId: testId(28020), accessTokenId: testId(28021),
+      sessionEventId: testId(28022) }, {
+      suppliedCodeVerifierHash: 'd'.repeat(64), sessionReferenceHash: 'e'.repeat(64),
+      accessTokenHash: firstAccessHash, refreshTokenHash: firstRefreshHash,
+    }, () => new Date('2026-10-04T10:01:00.000Z'));
+    expect(rejected.response).toMatchObject({ outcome: 'INVALID_CODE',
+      challenge: { attempts: 1, version: 2 }, session: null });
+
+    const verified = await verifyAuthOtp(database, {
+      commandId: testId(28023), commandType: 'VERIFY_AUTH_OTP',
+      idempotencyKey: 'auth-otp-correct-28001',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AuthOtpChallenge', aggregateId: challengeId, expectedVersion: 2,
+      correlationId: testId(28008), causationId: testId(28015), requestId: testId(28024),
+      source: 'api', payloadVersion: 1,
+      payload: { challengeId, deviceLabel: 'Pilot browser' },
+    }, { eventId: testId(28025), auditId: testId(28026), outboxMessageId: testId(28027),
+      trustedSessionId, familyId, refreshTokenId: firstRefreshTokenId,
+      accessTokenId: firstAccessTokenId, sessionEventId: testId(28028) }, {
+      suppliedCodeVerifierHash: otpVerifierHash, sessionReferenceHash: 'e'.repeat(64),
+      accessTokenHash: firstAccessHash, refreshTokenHash: firstRefreshHash,
+    }, () => new Date('2026-10-04T10:02:00.000Z'));
+    expect(verified.response).toMatchObject({ outcome: 'VERIFIED',
+      session: { familyId, generation: 1 } });
+    await expect(authenticateAccessToken(database, firstAccessHash,
+      new Date('2026-10-04T10:03:00.000Z'))).resolves.toMatchObject({
+      userId, familyId, accessMode: 'FULL',
+    });
+
+    const refreshContext = await readRefreshTokenContext(database, firstRefreshHash);
+    expect(refreshContext).toMatchObject({ familyId, generation: 1,
+      refreshTokenState: 'ACTIVE', familyVersion: 1 });
+    const secondAccessHash = 'f'.repeat(64);
+    const secondRefreshHash = '1'.repeat(64);
+    const rotated = await rotateAuthSession(database, {
+      commandId: testId(28029), commandType: 'ROTATE_AUTH_SESSION',
+      idempotencyKey: 'auth-refresh-28001',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AuthSessionFamily', aggregateId: familyId, expectedVersion: 1,
+      correlationId: testId(28008), causationId: testId(28028), requestId: testId(28030),
+      source: 'api', payloadVersion: 1,
+      payload: { familyId, refreshTokenId: firstRefreshTokenId, generation: 1 },
+    }, { eventId: testId(28031), auditId: testId(28032), outboxMessageId: testId(28033),
+      refreshTokenId: testId(28034), accessTokenId: testId(28035) }, {
+      currentRefreshTokenHash: firstRefreshHash, nextRefreshTokenHash: secondRefreshHash,
+      nextAccessTokenHash: secondAccessHash,
+    }, () => new Date('2026-10-04T10:04:00.000Z'));
+    expect(rotated.response).toMatchObject({ familyId, generation: 2 });
+    await expect(authenticateAccessToken(database, firstAccessHash,
+      new Date('2026-10-04T10:05:00.000Z'))).resolves.toBeNull();
+    await expect(authenticateAccessToken(database, secondAccessHash,
+      new Date('2026-10-04T10:05:00.000Z'))).resolves.toMatchObject({ userId, familyId });
+
+    const accessCaseId = testId(28041);
+    await sql`
+      insert into identity.account_access_cases (
+        case_id, user_id, state, recovery_route, recovery_signals,
+        requested_phone_e164, request_reason, requested_by, requested_at,
+        reviewed_by, decision_reason, decision_at, security_hold_until,
+        completed_at, policy_version, version
+      ) values (
+        ${accessCaseId}::uuid, ${userId}::uuid, 'SECURITY_HOLD', 'PHONE_CHANGE',
+        array['TRUSTED_SESSION']::text[], '+79992800999',
+        'Trusted session confirms the requested phone change', ${userId}::uuid,
+        '2026-10-04T09:55:00.000Z'::timestamptz, ${userId}::uuid,
+        'Central approved the verified recovery signals',
+        '2026-10-04T10:05:00.000Z'::timestamptz,
+        '2026-10-05T10:05:00.000Z'::timestamptz, null,
+        'account-access-mvp-v1', 2
+      )
+    `.execute(database);
+    await sql`
+      insert into identity.user_sensitive_action_holds (
+        hold_id, user_id, source_case_id, state, starts_at, ends_at, version
+      ) values (
+        ${testId(28042)}::uuid, ${userId}::uuid, ${accessCaseId}::uuid, 'ACTIVE',
+        '2026-10-04T10:05:00.000Z'::timestamptz,
+        '2026-10-05T10:05:00.000Z'::timestamptz, 1
+      )
+    `.execute(database);
+    await expect(authenticateAccessToken(database, secondAccessHash,
+      new Date('2026-10-04T10:06:00.000Z'))).resolves.toMatchObject({
+      userId, familyId, accessMode: 'SERVICE_RESPONSE_ONLY',
+    });
+
+    const revoked = await revokeAuthSession(database, {
+      commandId: testId(28036), commandType: 'REVOKE_AUTH_SESSION',
+      idempotencyKey: 'auth-logout-28001',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AuthSessionFamily', aggregateId: familyId, expectedVersion: 2,
+      correlationId: testId(28008), causationId: testId(28031), requestId: testId(28037),
+      source: 'api', payloadVersion: 1,
+      payload: { familyId, reason: 'LOGOUT' },
+    }, { eventId: testId(28038), auditId: testId(28039),
+      outboxMessageId: testId(28040) }, () => new Date('2026-10-04T10:07:00.000Z'));
+    expect(revoked.response).toEqual({ familyId, state: 'REVOKED' });
+    await expect(authenticateAccessToken(database, secondAccessHash,
+      new Date('2026-10-04T10:08:00.000Z'))).resolves.toBeNull();
+
+    const stored = await sql<{ readonly code_hash: string; readonly access_hash: string;
+      readonly refresh_hash: string; readonly family_state: string;
+      readonly trusted_state: string }>`
+      select challenge.code_verifier_hash as code_hash,
+        access_token.token_hash as access_hash,
+        refresh_token.token_hash as refresh_hash,
+        family.state as family_state, trusted.state as trusted_state
+      from identity.auth_otp_challenges challenge
+      join identity.auth_session_families family on family.user_id = challenge.user_id
+      join identity.trusted_sessions trusted
+        on trusted.trusted_session_id = family.trusted_session_id
+      join identity.auth_access_tokens access_token
+        on access_token.family_id = family.family_id and access_token.generation = 2
+      join identity.auth_refresh_tokens refresh_token
+        on refresh_token.family_id = family.family_id and refresh_token.generation = 2
+      where challenge.challenge_id = ${challengeId}::uuid
+    `.execute(database);
+    expect(stored.rows[0]).toEqual({ code_hash: otpVerifierHash,
+      access_hash: secondAccessHash, refresh_hash: secondRefreshHash,
+      family_state: 'REVOKED', trusted_state: 'REVOKED' });
   });
 });

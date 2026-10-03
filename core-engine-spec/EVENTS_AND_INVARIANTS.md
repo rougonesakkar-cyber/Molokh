@@ -819,6 +819,13 @@ AccountRecoveryApproved
 AccountRecoveryCompleted
 AccountRecoveryRejected
 AccountRecoveryRequested
+AuthOtpClosed
+AuthOtpRequested
+AuthOtpVerificationFailed
+AuthOtpVerified
+AuthSessionEstablished
+AuthSessionRevoked
+AuthSessionRotated
 VerifiedPhoneChanged
 BlockCreated
 BlockRevoked
