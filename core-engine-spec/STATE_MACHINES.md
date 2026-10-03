@@ -463,6 +463,26 @@ States: `ACTIVE`, `RESTRICTED`, `CLOSED`.
 
 Account closure follows the OQ-207 policy: 30-day recovery, then public pseudonymization with immutable competition/audit history preserved. Raw `DELETE User` is prohibited.
 
+### 22.1. Account closure request
+
+States: `REQUESTED`, `CANCELLED`, `EXECUTED`.
+
+| ID | From | Command / actor | Guards | To | Event | Side effects | Timeout | Terminal outcome |
+|---|---|---|---|---|---|---|---|---|
+| ACR-01 | — | `REQUEST_ACCOUNT_CLOSURE` / OWN User | User not CLOSED; no other live request | REQUESTED | `AccountClosureRequested` | record policy version and recovery_until=+30d; request or reuse one live self-export when selected | 30d recovery | no |
+| ACR-02 | REQUESTED | `CANCEL_ACCOUNT_CLOSURE` / OWN User | strictly before recovery_until | CANCELLED | `AccountClosureCancelled` | retain any independently prepared export until its own retention deadline | — | yes |
+| ACR-03 | REQUESTED | `CLOSE_ACCOUNT` / CENTRAL | recovery elapsed; no accepted obligation, held status, active Session/Membership/role/FIFO entry; reason required | EXECUTED | `AccountClosureExecuted` | apply U-04 atomically; revoke current verification/session projection; preserve minimized lineage | — | yes |
+
+### 22.2. Account data export
+
+States: `REQUESTED`, `READY`, `EXPIRED`.
+
+| ID | From | Command / actor | Guards | To | Event | Side effects | Timeout | Terminal outcome |
+|---|---|---|---|---|---|---|---|---|
+| ADE-01 | — | `REQUEST_ACCOUNT_EXPORT` / OWN User | User not CLOSED; no live export | REQUESTED | `AccountDataExportRequested` | enqueue asynchronous preparation; closure flow reuses an existing live export | worker | no |
+| ADE-02 | REQUESTED | `PREPARE_ACCOUNT_EXPORT` / SYSTEM | exact state/version | READY | `AccountDataExportPrepared` | store private JSON payload and SHA-256; schedule expiry at ready_at+48h | 48h | no |
+| ADE-03 | READY | `EXPIRE_ACCOUNT_EXPORT` / SYSTEM | expires_at reached; exact state/version | EXPIRED | `AccountDataExportExpired` | delete payload; retain checksum, policy version and audit/event lineage | — | yes |
+
 ## 23. Venue and Community
 
 ### 23.1. Venue

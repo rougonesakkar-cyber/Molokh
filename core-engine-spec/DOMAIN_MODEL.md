@@ -85,12 +85,14 @@ User ── AthleteProfile ── AccountVerification
 
 `ACCOUNT_VERIFIED` — derived capability, не роль. В MVP `method=CENTRAL_MODERATION`; document upload/storage отсутствует, `expires_at=null`, пока fraud/duplicate/material-data review не создаст revoke/reverification workflow.
 
-### 3.4. Account access and duplicate identity
+### 3.4. Account access, duplicate identity and closure
 
 Before Social records, Identity also owns two governed support records:
 
 - `AccountAccessCase`: User, request/trusted-session/phone-change signals, `state=PENDING/SECURITY_HOLD/COMPLETED/REJECTED`, Central actor, confirmed-access-incident flag, 24h `sensitive_hold_until` and affected deadline references. No identity document/blob is accepted. Obligations remain linked to the same User; a trusted old session during hold may execute only service responses required by existing obligations.
 - `DuplicateAccountCase`: suspected User IDs, signal references, `state=UNDER_REVIEW/CLEARED/RESOLVED`, canonical User ID, duplicate User IDs, private alias relation, per-obligation/status disposition and reviewer. It never rewrites/deletes immutable history or transfers status merely by choosing canonical account.
+- `AccountClosureRequest`: owner-requested `REQUESTED/CANCELLED/EXECUTED` record with immutable policy version, `recovery_until=requested_at+30d`, optional export intent and final pseudonymization-event reference. Central can execute only after recovery and when obligation/status/Session/Membership/role/FIFO blocker counts are zero.
+- `AccountDataExport`: one live `REQUESTED/READY` record per User with optional closure lineage, private JSON payload, SHA-256 and `expires_at=ready_at+48h`. A closure request reuses an existing live export. Expiry deletes only the payload and retains minimal audit/checksum metadata.
 
 ### 3.5. `Like`
 
@@ -493,7 +495,11 @@ User-scoped settings: social/promotional push, quiet presentation и `event_sms_
 
 ### 9.3.2. Retention and account closure
 
-`RetentionPolicy` — versioned global configuration по record class. `AccountClosureRequest` хранит `REQUESTED/CANCELLED/EXECUTED`, `recover_until=+30d`, export request и pseudonymization event. Result media entity/foreign key отсутствует в MVP schema.
+`RetentionPolicy` — versioned global configuration по record class. В MVP `ACCOUNT_EXPORT`
+хранит private payload 48 часов после подготовки; personal Chat — 12 месяцев после последней
+активности; service Chat/Appeal и Safety evidence — 3 года; immutable sporting/audit history —
+без автоматического удаления. `AccountClosureRequest` и `AccountDataExport` описаны в §3.4.
+Result media entity/foreign key отсутствует в MVP schema.
 
 ### 9.4. `PlatformIncident` and `IncidentImpact`
 

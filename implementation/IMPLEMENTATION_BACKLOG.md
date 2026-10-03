@@ -312,7 +312,16 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
   Acceptance traceability is 106/213 (`100/195 P0`).
-- Next increment: implement account closure/export/retention jobs.
+- M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
+  exact 30-day recovery, owner cancellation and reasoned Central execution only after all
+  obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one
+  private JSON export asynchronously, keep it for exactly 48 hours and then delete only the
+  payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
+  public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
+  Worker and PostgreSQL migration `0053` pass.
+- Next increment: implement recovery/duplicate-account cases, then complete the remaining
+  role-switch and pilot-operations walkthroughs. General Chat/evidence cleanup workers remain M8
+  release-hardening work; the versioned policies are already persisted.
 
 ## 5. Work that needs product/external input later
 

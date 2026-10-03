@@ -72,8 +72,11 @@ HTTP mapping:
 | PATCH | `/me/profile` | display name; never accepts state/status |
 | PATCH | `/me/sports` | primary and optional secondary sport; versioned critical command |
 | POST | `/me/recovery-cases` | account recovery/phone change request |
-| POST | `/me/export-requests` | privacy export |
-| POST | `/me/account-closure` | two-step closure preview/confirm token flow |
+| GET | `/me/account-lifecycle` | latest closure/export state and retention deadlines |
+| POST | `/me/account-exports` | request one asynchronous private export |
+| GET | `/me/account-exports/{export_id}/download` | owner-only download while READY and before 48h expiry |
+| POST | `/me/account-closure` | self-request closure and optional immediate/reused export; starts 30d recovery |
+| POST | `/me/account-closures/{closure_id}/cancel` | owner cancellation strictly before recovery deadline |
 
 Sensitive-action hold is represented in `/me.capability_denials[]`; trusted old session receives only service-response capabilities.
 
@@ -334,6 +337,7 @@ Central endpoints are capability-scoped and require reason:
 - Appeal/Integrity decision;
 - role/Primary Admin/Venue lifecycle;
 - PlatformIncident confirmation/compensation;
+- account-closure queue and reasoned final pseudonymization;
 - deterministic Competition replay with expected hash.
 
 PlatformIncident exposes a deliberately small Central surface:
@@ -350,6 +354,15 @@ Detection and PI-05 completion are internal SYSTEM commands. Central cannot dire
 impact, deadline, Forfeit, Result, status or Cooldown. The Worker derives candidates from the
 resolved incident window, uses stable per-impact idempotency keys, rescans, and completes PI-05
 only when no candidate remains.
+
+Account lifecycle exposes a deliberately separate Central surface:
+
+- `GET /api/v1/central/account-closures` returns live requests with recovery deadline, public
+  display name, User version, exact blocker counts and derived `executable` flag;
+- `POST /api/v1/central/account-closures/{closureId}/execute` requires `Idempotency-Key`,
+  `If-Match` for the User version and a reason. The command atomically changes User to `CLOSED`,
+  pseudonymizes public identity, invalidates current verification and marks the request executed;
+- Central cannot request/cancel an owner's closure or download the private export payload.
 
 Generic endpoints such as `PATCH /users/{id}` or `PATCH /competitions/{id}/status` are prohibited for Central too.
 

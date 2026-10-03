@@ -58,6 +58,8 @@ Mandatory database-level races:
 8. PlatformIncident compensation worker retries;
 9. Appeal/Integrity decision races ordinary finalizer;
 10. Block/Unmatch cleanup races optional Challenge acceptance.
+11. closure request with export races a standalone export request; at most one live payload exists
+    and the closure path reuses it without a duplicate event/timer.
 
 Expected result is not merely one HTTP success: exact aggregate/event/audit/outbox counts and final projection must be asserted.
 
@@ -79,6 +81,7 @@ Boundaries to test at `t-1ms`, `t`, `t+1ms`:
 - phone-change hold;
 - evidence URL/retention;
 - exact PlatformIncident overlap.
+- account closure cancellation at the 30-day boundary and export payload deletion at +48h.
 
 DST tests use Venue IANA timezone for display while business comparisons remain UTC.
 

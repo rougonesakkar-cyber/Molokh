@@ -33,6 +33,8 @@ Schemas are organizational boundaries inside one database, not permission to cre
 - `trusted_sessions`
 - `display_name_audit`
 - `age_division_transitions`
+- `account_closure_requests`
+- `account_data_exports`
 
 Critical constraints:
 
@@ -41,6 +43,8 @@ Critical constraints:
 - duplicate alias cannot self-reference;
 - one unresolved access/duplicate case per configured subject scope;
 - one immutable `YOUTH→ADULT` transition per User; its timer aggregate advances only `0→1`.
+- one live `REQUESTED` closure and one live `REQUESTED/READY` data export per User;
+- closure pseudonymization event is immutable; export expiry nulls payload but preserves SHA-256.
 
 ### social
 
@@ -381,6 +385,13 @@ Training-conversion confirmation and persisted GENESIS `single_candidate_deadlin
 `competition.challenges.scheduling_extension_count` is constrained to `0..1`, making CH-24's
 single seven-day extension and CH-25's later no-capacity cancellation database-observable.
 
+Migration `0053_account_closure_export_retention.sql` adds versioned retention policies,
+`identity.account_closure_requests` and `identity.account_data_exports`. Closure and optional
+export request commit atomically; an existing live export is reused. Worker preparation stores a
+private JSONB snapshot and schedules exact +48h expiry. Expiry nulls only `export_payload`, while
+SHA-256, policy version, domain event and audit lineage remain. Final closure locks the User and
+request, rechecks every blocker and pseudonymizes public identity in the same transaction as U-04.
+
 ## 4. Event envelope columns
 
 ```text
@@ -410,6 +421,7 @@ Payload schemas live in code/version registry. Sensitive payload is separated/en
 - Result/CompetitionEvent/StatusTenure/AuditEvent: indefinite for sporting integrity;
 - evidence payload deletion preserves minimal checksum/audit metadata;
 - account closure pseudonymizes public identity after 30-day recovery while preserving lineage.
+- account-export payload: 48 hours after READY; checksum and audit/event lineage remain.
 
 Use time partitioning only after measured volume. Early partitioning is appropriate for `audit_events`, `domain_events`, `outbox_messages` and `notifications`, not every aggregate table.
 

@@ -125,6 +125,18 @@ event/outbox не копируются; PII class — `INTERNAL_IDENTIFIER`, ret
 аудит-линия Identity. Consumers: Membership, Competition vacancy/FIFO, Scheduling retention,
 Discovery и notification projection.
 
+### 2.9. Account closure and export events
+
+`AccountClosureRequested.v1` содержит closure/User IDs, `recovery_until`, `export_requested` и
+policy version, но не копирует телефон или иные raw PII. `AccountClosureExecuted.v1` ссылается на
+атомарный `UserAccountClosed.v1`/pseudonymization event. Исполнение доступно Central только после
+30 дней и при нулевых active blockers.
+
+`AccountDataExportRequested.v1` запускает подготовку Worker. `AccountDataExportPrepared.v1`
+содержит export/User IDs, `expires_at=ready_at+48h` и SHA-256, но не сам private payload.
+`AccountDataExportExpired.v1` подтверждает физическое удаление payload; checksum, policy version
+и минимальная audit-lineage остаются. Retention clock не останавливается PlatformIncident.
+
 Транзакция выпускает ровно один канонический `AgeDivisionChanged`. Технические связанные
 события `UserAgeDivisionChanged` и `MembershipAgeDivisionChanged` двигают версии своих
 агрегатов; `ChallengeCancelledNoFault`, `BookingTrainingRetentionRequested` и status events
@@ -234,6 +246,8 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 - `INV-ID-11`: account/device/SIM loss and phone change never delete or silently cancel an accepted obligation. A 24h phone-change hold denies sensitive actions but permits minimum existing-obligation service responses from a trusted old session.
 - `INV-ID-12`: account recovery stores no identity documents. No-fault deadline effect requires a Central-confirmed access incident with exact affected interval/process.
 - `INV-ID-13`: duplicate accounts are never automatically merged. Canonical selection creates private alias lineage; immutable Results remain attributable and status changes only through a separately governed disposition.
+- `INV-ID-14`: account closure is self-requested and reversible for exactly 30 days. Central executes it only after all accepted obligations, status, active Sessions, Memberships, roles and FIFO entries are resolved; immutable sporting/audit lineage is pseudonymized, never deleted.
+- `INV-ID-15`: at most one `REQUESTED/READY` account export exists per User. Its private payload is downloadable only by that User, expires exactly 48h after preparation and is then deleted while checksum/audit lineage remains.
 
 ### Social
 
@@ -794,6 +808,12 @@ Registry continuation for auxiliary lifecycle machines:
 ```text
 AccountRestrictionApplied
 AccountRestrictionRevoked
+AccountClosureCancelled
+AccountClosureExecuted
+AccountClosureRequested
+AccountDataExportExpired
+AccountDataExportPrepared
+AccountDataExportRequested
 AccountAccessIncidentConfirmed
 AccountRecoveryApproved
 AccountRecoveryCompleted
