@@ -100,6 +100,101 @@ export const MeResponseSchema = Type.Object(
 
 export type MeResponse = Static<typeof MeResponseSchema>;
 
+export const AccountClosureProjectionSchema = Type.Object({
+  closureId: Type.String({ format: 'uuid' }),
+  userId: Type.String({ format: 'uuid' }),
+  state: Type.Union([
+    Type.Literal('REQUESTED'), Type.Literal('CANCELLED'), Type.Literal('EXECUTED'),
+  ]),
+  exportRequested: Type.Boolean(),
+  requestedAt: Type.String({ format: 'date-time' }),
+  recoveryUntil: Type.String({ format: 'date-time' }),
+  cancelledAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  executedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'AccountClosureProjection', additionalProperties: false });
+export type AccountClosureContract = Static<typeof AccountClosureProjectionSchema>;
+
+export const AccountExportProjectionSchema = Type.Object({
+  exportId: Type.String({ format: 'uuid' }),
+  userId: Type.String({ format: 'uuid' }),
+  closureId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  state: Type.Union([Type.Literal('REQUESTED'), Type.Literal('READY'), Type.Literal('EXPIRED')]),
+  requestedAt: Type.String({ format: 'date-time' }),
+  readyAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  expiresAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  payloadSha256: Type.Union([Type.String({ pattern: '^[0-9a-f]{64}$' }), Type.Null()]),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'AccountExportProjection', additionalProperties: false });
+export type AccountExportContract = Static<typeof AccountExportProjectionSchema>;
+
+export const AccountLifecycleProjectionSchema = Type.Object({
+  closure: Type.Union([AccountClosureProjectionSchema, Type.Null()]),
+  dataExport: Type.Union([AccountExportProjectionSchema, Type.Null()]),
+}, { $id: 'AccountLifecycleProjection', additionalProperties: false });
+export type AccountLifecycleContract = Static<typeof AccountLifecycleProjectionSchema>;
+
+export const AccountLifecycleResponseSchema = Type.Object({
+  data: AccountLifecycleProjectionSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.Optional(Type.String({ format: 'uuid' })),
+    replayed: Type.Optional(Type.Boolean()) },
+    { additionalProperties: false }),
+}, { $id: 'AccountLifecycleResponse', additionalProperties: false });
+export type AccountLifecycleResponse = Static<typeof AccountLifecycleResponseSchema>;
+
+export const RequestAccountClosureBodySchema = Type.Object({
+  exportRequested: Type.Boolean({ default: true }),
+}, { $id: 'RequestAccountClosureBody', additionalProperties: false });
+export type RequestAccountClosureBody = Static<typeof RequestAccountClosureBodySchema>;
+
+export const AccountExportResponseSchema = Type.Object({
+  data: AccountExportProjectionSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }), replayed: Type.Boolean() },
+  { additionalProperties: false }),
+}, { $id: 'AccountExportResponse', additionalProperties: false });
+export type AccountExportResponse = Static<typeof AccountExportResponseSchema>;
+
+export const AccountExportDownloadResponseSchema = Type.Object({
+  data: Type.Unknown(),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    payloadSha256: Type.String({ pattern: '^[0-9a-f]{64}$' }) },
+  { additionalProperties: false }),
+}, { $id: 'AccountExportDownloadResponse', additionalProperties: false });
+export type AccountExportDownloadResponse = Static<typeof AccountExportDownloadResponseSchema>;
+
+export const AccountClosureBlockersSchema = Type.Object({
+  activeObligationCount: Type.Integer({ minimum: 0 }),
+  heldStatusCount: Type.Integer({ minimum: 0 }),
+  activeSessionCount: Type.Integer({ minimum: 0 }),
+  activeMembershipCount: Type.Integer({ minimum: 0 }),
+  activeRoleCount: Type.Integer({ minimum: 0 }),
+  activeQueueEntryCount: Type.Integer({ minimum: 0 }),
+}, { additionalProperties: false });
+
+export const CentralAccountClosureProjectionSchema = Type.Intersect([
+  AccountClosureProjectionSchema,
+  Type.Object({ displayName: Type.String(),
+    accountState: Type.Union([Type.Literal('ACTIVE'), Type.Literal('RESTRICTED'),
+      Type.Literal('CLOSED')]), userVersion: Type.Integer({ minimum: 1 }),
+    blockers: AccountClosureBlockersSchema, executable: Type.Boolean() },
+  { additionalProperties: false }),
+], { $id: 'CentralAccountClosureProjection' });
+export type CentralAccountClosureContract = Static<typeof CentralAccountClosureProjectionSchema>;
+
+export const CentralAccountClosuresResponseSchema = Type.Object({
+  data: Type.Array(CentralAccountClosureProjectionSchema),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) },
+    { additionalProperties: false }),
+}, { $id: 'CentralAccountClosuresResponse', additionalProperties: false });
+export type CentralAccountClosuresResponse = Static<typeof CentralAccountClosuresResponseSchema>;
+
+export const ExecuteAccountClosureBodySchema = Type.Object({
+  reason: Type.String({ minLength: 3, maxLength: 500 }),
+}, { $id: 'ExecuteAccountClosureBody', additionalProperties: false });
+export type ExecuteAccountClosureBody = Static<typeof ExecuteAccountClosureBodySchema>;
+
 const DiscoveryRankingReasonSchema = Type.Union([
   Type.Literal('WITHIN_RADIUS'),
   Type.Literal('CITY_EXPANSION'),

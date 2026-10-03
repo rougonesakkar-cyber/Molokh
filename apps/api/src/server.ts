@@ -1,4 +1,4 @@
-import type { CommandEnvelope } from '@molokh/core';
+import { AccountLifecycleConflictError, type CommandEnvelope } from '@molokh/core';
 import {
   activateUser,
   addAppealResponse,
@@ -123,6 +123,13 @@ import {
   confirmPlatformIncident,
   rejectPlatformIncident,
   resolvePlatformIncident,
+  readMyAccountLifecycle,
+  requestAccountClosure,
+  cancelAccountClosure,
+  requestAccountExport,
+  readAccountExportPayload,
+  listAccountClosuresForCentral,
+  executeAccountClosure,
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
@@ -1067,6 +1074,25 @@ const localCentralAuth = new StaticBearerAuthAdapter(
 );
 
 const app = await buildApp({
+  accountLifecycle: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    read: (userId) => readMyAccountLifecycle(database, userId),
+    requestClosure: (command, ids) => requestAccountClosure(database, command, ids),
+    cancelClosure: (command, ids) => cancelAccountClosure(database, command, ids),
+    requestExport: (command, ids) => requestAccountExport(database, command, ids),
+    downloadExport: async (userId, exportId) => {
+      const lifecycle = await readMyAccountLifecycle(database, userId);
+      if (lifecycle.dataExport?.exportId !== exportId
+        || lifecycle.dataExport.payloadSha256 === null) {
+        throw new AccountLifecycleConflictError('ACCOUNT_EXPORT_INVALID_STATE');
+      }
+      return { payload: await readAccountExportPayload(database, userId, exportId),
+        payloadSha256: lifecycle.dataExport.payloadSha256 };
+    },
+    listCentral: (centralUserId) => listAccountClosuresForCentral(database, centralUserId),
+    executeClosure: (command, ids) => executeAccountClosure(database, command, ids),
+  },
   platformIncident: {
     centralAuth: localCentralAuth,
     list: (centralUserId) => listPlatformIncidents(database, centralUserId),

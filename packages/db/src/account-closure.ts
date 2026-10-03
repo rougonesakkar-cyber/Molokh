@@ -92,6 +92,7 @@ export interface AccountLifecycleProjection {
 export interface CentralAccountClosureProjection extends AccountClosureProjection {
   readonly displayName: string;
   readonly accountState: IdentityProjection['accountState'];
+  readonly userVersion: number;
   readonly blockers: AccountClosureBlockers;
   readonly executable: boolean;
 }
@@ -602,10 +603,11 @@ export async function listAccountClosuresForCentral(database: Kysely<Database>,
   centralUserId: string, occurredAt = new Date()): Promise<readonly CentralAccountClosureProjection[]> {
   await assertCentralGrant(database, centralUserId);
   const result = await sql<(ClosureRow & { readonly display_name: string;
-    readonly account_state: IdentityProjection['accountState'] })>`
+    readonly account_state: IdentityProjection['accountState']; readonly user_version: string })>`
     select closure.closure_id, closure.user_id, closure.state, closure.export_requested,
       closure.requested_at, closure.recovery_until, closure.cancelled_at, closure.executed_at,
-      closure.version::text as version, users.display_name, users.account_state
+      closure.version::text as version, users.display_name, users.account_state,
+      users.version::text as user_version
     from identity.account_closure_requests as closure
     join identity.users as users on users.user_id = closure.user_id
     where closure.state = 'REQUESTED'
@@ -614,7 +616,7 @@ export async function listAccountClosuresForCentral(database: Kysely<Database>,
   return Promise.all(result.rows.map(async (row) => {
     const blockers = await closureBlockers(database, row.user_id);
     return { ...closureProjection(row), displayName: row.display_name,
-      accountState: row.account_state, blockers,
+      accountState: row.account_state, userVersion: Number(row.user_version), blockers,
       executable: occurredAt >= row.recovery_until && Object.values(blockers).every((v) => v === 0) };
   }));
 }

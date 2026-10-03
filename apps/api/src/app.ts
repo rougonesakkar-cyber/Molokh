@@ -52,6 +52,10 @@ import {
   registerPlatformIncidentRoutes,
   type PlatformIncidentRouteDependencies,
 } from './platform-incident-routes.js';
+import {
+  registerAccountLifecycleRoutes,
+  type AccountLifecycleRouteDependencies,
+} from './account-lifecycle-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
@@ -69,6 +73,7 @@ export interface BuildAppOptions extends FastifyServerOptions {
   readonly youthConsent?: YouthConsentRouteDependencies;
   readonly missingResult?: MissingResultRouteDependencies;
   readonly platformIncident?: PlatformIncidentRouteDependencies;
+  readonly accountLifecycle?: AccountLifecycleRouteDependencies;
   readonly roles?: RoleRouteDependencies;
   readonly result?: ResultRouteDependencies;
   readonly scheduling?: SchedulingRouteDependencies;
@@ -93,6 +98,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     youthConsent,
     missingResult,
     platformIncident,
+    accountLifecycle,
     roles,
     result,
     scheduling,
@@ -148,6 +154,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   if (appeal) await registerAppealRoutes(app, appeal);
   if (missingResult) await registerMissingResultRoutes(app, missingResult);
   if (platformIncident) await registerPlatformIncidentRoutes(app, platformIncident);
+  if (accountLifecycle) await registerAccountLifecycleRoutes(app, accountLifecycle);
   if (chat) await registerChatRoutes(app, chat);
   if (challenge) await registerChallengeRoutes(app, challenge);
   if (community) await registerCommunityRoutes(app, community);

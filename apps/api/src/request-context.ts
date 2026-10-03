@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   ChatActionDeniedError,
+  AccountLifecycleConflictError,
   ChallengeConflictError,
   CommunityLifecycleConflictError,
   IdempotencyKeyReusedError,
@@ -328,6 +329,12 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: { code: error.code,
         message: 'Platform incident action is not available in the current state', requestId },
     };
+  }
+  if (error instanceof AccountLifecycleConflictError) {
+    const statusCode = error.code === 'ACCOUNT_LIFECYCLE_CENTRAL_REQUIRED'
+      || error.code === 'ACCOUNT_LIFECYCLE_USER_REQUIRED' ? 403 : 409;
+    return { statusCode, body: { code: error.code,
+      message: 'Account lifecycle action is not available in the current state', requestId } };
   }
   if (error instanceof SchedulingValidationError) {
     return {
