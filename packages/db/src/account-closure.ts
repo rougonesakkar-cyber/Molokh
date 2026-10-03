@@ -215,6 +215,20 @@ async function exportRow(database: Kysely<Database> | Transaction<Database>, exp
   return result.rows[0] ?? null;
 }
 
+async function liveExportRow(database: Kysely<Database> | Transaction<Database>, userId: string,
+  lock = false): Promise<ExportRow | null> {
+  const result = await sql<ExportRow>`
+    select export_id, user_id, closure_id, state, requested_at, ready_at, expires_at,
+      payload_sha256, version::text as version
+    from identity.account_data_exports
+    where user_id = ${userId}::uuid and state in ('REQUESTED', 'READY')
+    order by requested_at desc, export_id desc
+    limit 1
+    ${lock ? sql`for update` : sql``}
+  `.execute(database);
+  return result.rows[0] ?? null;
+}
+
 async function assertCentralGrant(database: Kysely<Database> | Transaction<Database>,
   actorId: string): Promise<void> {
   const result = await sql<{ readonly allowed: boolean }>`
@@ -313,14 +327,21 @@ export async function requestAccountClosure(database: Kysely<Database>,
         ${occurredAt}::timestamptz, ${ACCOUNT_LIFECYCLE_POLICY_VERSION},
         ${context.nextVersion}, ${occurredAt}::timestamptz)`.execute(transaction);
       let dataExport: AccountExportProjection | null = null;
+      let createdExport = false;
       if (command.payload.exportRequested) {
-        const exportId = requiredId(ids, 'exportId');
-        await sql`insert into identity.account_data_exports (
-          export_id, user_id, closure_id, state, requested_at, policy_version, version, updated_at
-        ) values (${exportId}::uuid, ${user.user_id}::uuid, ${command.aggregateId}::uuid,
-          'REQUESTED', ${occurredAt}::timestamptz, ${ACCOUNT_LIFECYCLE_POLICY_VERSION}, 1,
-          ${occurredAt}::timestamptz)`.execute(transaction);
-        dataExport = exportProjection((await exportRow(transaction, exportId))!);
+        const existingExport = await liveExportRow(transaction, user.user_id, true);
+        if (existingExport) {
+          dataExport = exportProjection(existingExport);
+        } else {
+          const exportId = requiredId(ids, 'exportId');
+          await sql`insert into identity.account_data_exports (
+            export_id, user_id, closure_id, state, requested_at, policy_version, version, updated_at
+          ) values (${exportId}::uuid, ${user.user_id}::uuid, ${command.aggregateId}::uuid,
+            'REQUESTED', ${occurredAt}::timestamptz, ${ACCOUNT_LIFECYCLE_POLICY_VERSION}, 1,
+            ${occurredAt}::timestamptz)`.execute(transaction);
+          dataExport = exportProjection((await exportRow(transaction, exportId))!);
+          createdExport = true;
+        }
       }
       const closure = closureProjection((await closureRow(transaction, command.aggregateId))!);
       return { responseStatus: 201, response: { closure, dataExport },
@@ -328,7 +349,7 @@ export async function requestAccountClosure(database: Kysely<Database>,
           transitionId: null, payload: { closureId: closure.closureId, userId: closure.userId,
             recoveryUntil: closure.recoveryUntil, exportRequested: closure.exportRequested },
           metadata: { policyVersion: ACCOUNT_LIFECYCLE_POLICY_VERSION } },
-        ...(dataExport ? { relatedEvents: [{ eventId: requiredId(ids, 'exportEventId'),
+        ...(dataExport && createdExport ? { relatedEvents: [{ eventId: requiredId(ids, 'exportEventId'),
           eventName: 'AccountDataExportRequested', schemaVersion: 1,
           aggregateType: 'AccountDataExport', aggregateId: dataExport.exportId,
           aggregateVersion: 1, transitionId: null,
@@ -340,7 +361,7 @@ export async function requestAccountClosure(database: Kysely<Database>,
           metadata: { recoveryUntil, exportRequested: command.payload.exportRequested } },
         outbox: [{ messageId: ids.outboxMessageId, topic: 'identity.account-closure.requested.v1',
           payload: { closureId: closure.closureId, userId: user.user_id, recoveryUntil } },
-        ...(dataExport ? [{ messageId: requiredId(ids, 'exportOutboxMessageId'),
+        ...(dataExport && createdExport ? [{ messageId: requiredId(ids, 'exportOutboxMessageId'),
           sourceEventId: requiredId(ids, 'exportEventId'),
           topic: 'identity.account-export.requested.v1', payload: { exportId: dataExport.exportId,
             userId: user.user_id } }] : [])] };
@@ -391,6 +412,9 @@ export async function requestAccountExport(database: Kysely<Database>,
       if (!user) throw new AccountLifecycleConflictError('ACCOUNT_NOT_CLOSABLE');
       assertAccountExportCanBeRequested({ accountState: user.account_state,
         actor: command.actor, userId: user.user_id });
+      if (await liveExportRow(transaction, user.user_id, true)) {
+        throw new AccountLifecycleConflictError('ACCOUNT_EXPORT_INVALID_STATE');
+      }
       if (command.payload.closureId) {
         const closure = await closureRow(transaction, command.payload.closureId);
         if (!closure || closure.user_id !== user.user_id) {

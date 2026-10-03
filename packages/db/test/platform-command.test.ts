@@ -23,6 +23,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   activateUser,
   requestAccountClosure,
+  requestAccountExport,
   cancelAccountClosure,
   executeAccountClosure,
   prepareAccountExport,
@@ -9961,6 +9962,18 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ) values (${testId(26014)}::uuid, ${central}::uuid, 'CENTRAL_ADMIN', 'GLOBAL', null,
       'ACTIVE', ${central}::uuid, '2026-10-03T09:00:00Z', 1)`.execute(database);
 
+    const standaloneExport = await requestAccountExport(database, {
+      commandId: testId(26069), commandType: 'REQUEST_ACCOUNT_EXPORT',
+      idempotencyKey: 'account-export-standalone',
+      actor: { type: 'USER', id: athlete, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountDataExport', aggregateId: exportId, expectedVersion: 0,
+      correlationId: testId(26023), causationId: null, requestId: testId(26070),
+      source: 'api', payloadVersion: 1,
+      payload: { userId: athlete, closureId: null },
+    }, { eventId: testId(26071), auditId: testId(26072), outboxMessageId: testId(26073) },
+    () => new Date('2026-10-03T09:59:00.000Z'));
+    expect(standaloneExport.response).toMatchObject({ exportId, state: 'REQUESTED', version: 1 });
+
     const requested = await requestAccountClosure(database, {
       commandId: testId(26022), commandType: 'REQUEST_ACCOUNT_CLOSURE',
       idempotencyKey: 'account-closure-with-export',
@@ -9977,6 +9990,17 @@ describePostgres('PostgreSQL critical command transaction', () => {
         recoveryUntil: '2026-11-02T10:00:00.000Z', version: 1 },
       dataExport: { exportId, state: 'REQUESTED', version: 1 },
     });
+    await expect(requestAccountExport(database, {
+      commandId: testId(26074), commandType: 'REQUEST_ACCOUNT_EXPORT',
+      idempotencyKey: 'account-export-duplicate-live',
+      actor: { type: 'USER', id: athlete, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountDataExport', aggregateId: testId(26075), expectedVersion: 0,
+      correlationId: testId(26023), causationId: testId(26025), requestId: testId(26076),
+      source: 'api', payloadVersion: 1,
+      payload: { userId: athlete, closureId: closure },
+    }, { eventId: testId(26077), auditId: testId(26078), outboxMessageId: testId(26079) },
+    () => new Date('2026-10-03T10:00:30.000Z')))
+      .rejects.toMatchObject({ code: 'ACCOUNT_EXPORT_INVALID_STATE' });
 
     const prepared = await prepareAccountExport(database, {
       commandId: testId(26030), commandType: 'PREPARE_ACCOUNT_EXPORT',
