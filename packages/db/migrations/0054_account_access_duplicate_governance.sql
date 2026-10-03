@@ -1,6 +1,3 @@
-alter table identity.users
-  drop constraint users_phone_verified_before_activation_check;
-
 create table identity.trusted_sessions (
   trusted_session_id uuid primary key,
   user_id uuid not null references identity.users(user_id),
