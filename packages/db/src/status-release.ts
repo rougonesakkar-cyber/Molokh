@@ -63,6 +63,7 @@ interface StatusReleaseContextRow {
   readonly champion_user_id: string | null;
   readonly contender_user_id: string | null;
   readonly account_active: boolean;
+  readonly sensitive_action_held: boolean;
   readonly membership_active: boolean;
   readonly has_active_obligation: boolean;
   readonly has_blocking_live_challenge: boolean;
@@ -115,6 +116,9 @@ async function releaseContext(
       )) as integrity_hold_active,
       competitive.champion_user_id, competitive.contender_user_id,
       athlete.account_state = 'ACTIVE' as account_active,
+      exists (select 1 from identity.user_sensitive_action_holds as sensitive_hold
+        where sensitive_hold.user_id = athlete.user_id and sensitive_hold.state = 'ACTIVE')
+        as sensitive_action_held,
       exists (
         select 1 from community.community_memberships as membership
         where membership.community_id = competitive.community_id
@@ -211,6 +215,7 @@ function assertContextEligible(row: StatusReleaseContextRow | null): asserts row
     integrityHoldActive: row.integrity_hold_active,
     hasActiveObligation: row.has_active_obligation,
     hasBlockingLiveChallenge: row.has_blocking_live_challenge,
+    sensitiveActionHeld: row.sensitive_action_held,
   });
 }
 

@@ -27,7 +27,8 @@ export type MembershipExitConflictCode =
   | 'MEMBERSHIP_EXIT_NOT_PREVIEWED'
   | 'MEMBERSHIP_EXIT_PREVIEW_EXPIRED'
   | 'MEMBERSHIP_EXIT_TOKEN_INVALID'
-  | 'MEMBERSHIP_EXIT_CONTEXT_CHANGED';
+  | 'MEMBERSHIP_EXIT_CONTEXT_CHANGED'
+  | 'MEMBERSHIP_EXIT_SECURITY_HOLD';
 
 export class MembershipExitConflictError extends Error {
   readonly code: MembershipExitConflictCode;
@@ -102,6 +103,7 @@ export function assertMembershipExitEligibility(input: {
   readonly activeObligationCanForfeit?: boolean;
   readonly activeSessionStarted?: boolean;
   readonly hasLiveStatusProcess: boolean;
+  readonly sensitiveActionHeld?: boolean;
 }): void {
   if (!input.accountActive) {
     throw new MembershipExitConflictError('MEMBERSHIP_EXIT_ACCOUNT_NOT_ACTIVE');
@@ -114,6 +116,9 @@ export function assertMembershipExitEligibility(input: {
   }
   if (!input.competitionActive) {
     throw new MembershipExitConflictError('MEMBERSHIP_EXIT_COMPETITION_NOT_ACTIVE');
+  }
+  if (input.sensitiveActionHeld) {
+    throw new MembershipExitConflictError('MEMBERSHIP_EXIT_SECURITY_HOLD');
   }
   if (input.integrityHoldActive) {
     throw new MembershipExitConflictError('MEMBERSHIP_EXIT_INTEGRITY_HOLD');

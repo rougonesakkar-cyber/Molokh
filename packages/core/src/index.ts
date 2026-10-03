@@ -1,5 +1,6 @@
 export * from './command.js';
 export * from './account-closure.js';
+export * from './account-access.js';
 export * from './chat.js';
 export * from './challenge.js';
 export * from './community.js';

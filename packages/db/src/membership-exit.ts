@@ -102,6 +102,7 @@ interface MembershipExitContextRow {
   readonly champion_user_id: string | null;
   readonly contender_user_id: string | null;
   readonly account_active: boolean;
+  readonly sensitive_action_held: boolean;
   readonly community_active: boolean;
   readonly has_active_obligation: boolean;
   readonly has_live_status_process: boolean;
@@ -253,6 +254,9 @@ async function exitContext(
       competitive.champion_user_id, competitive.contender_user_id,
       configuration.pair_cooldown_days,
       athlete.account_state = 'ACTIVE' as account_active,
+      exists (select 1 from identity.user_sensitive_action_holds as sensitive_hold
+        where sensitive_hold.user_id = athlete.user_id and sensitive_hold.state = 'ACTIVE')
+        as sensitive_action_held,
       community.state in ('ACTIVE', 'PAUSED') as community_active,
       active.challenge_id is not null as has_active_obligation,
       exists (
@@ -358,6 +362,7 @@ function assertContextEligible(
     activeSessionStarted: row.active_session_actual_start_at !== null
       || ['IN_PROGRESS', 'ENDED'].includes(row.active_session_state ?? ''),
     hasLiveStatusProcess: row.has_live_status_process,
+    sensitiveActionHeld: row.sensitive_action_held,
   });
 }
 

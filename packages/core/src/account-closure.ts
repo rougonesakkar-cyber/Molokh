@@ -21,6 +21,7 @@ export type AccountLifecycleErrorCode =
   | 'ACCOUNT_CLOSURE_ACTIVE_MEMBERSHIP'
   | 'ACCOUNT_CLOSURE_ACTIVE_ROLE'
   | 'ACCOUNT_CLOSURE_ACTIVE_QUEUE_ENTRY'
+  | 'ACCOUNT_CLOSURE_SECURITY_HOLD'
   | 'ACCOUNT_EXPORT_INVALID_STATE'
   | 'ACCOUNT_EXPORT_NOT_DUE'
   | 'ACCOUNT_NOT_CLOSABLE';
@@ -71,10 +72,14 @@ export function assertAccountClosureCanBeRequested(input: {
   readonly accountState: AccountState;
   readonly actor: ActorSnapshot;
   readonly userId: string;
+  readonly sensitiveActionHeld?: boolean;
 }): void {
   assertOwnAccountActor(input.actor, input.userId);
   if (input.accountState === 'CLOSED') {
     throw new AccountLifecycleConflictError('ACCOUNT_NOT_CLOSABLE');
+  }
+  if (input.sensitiveActionHeld) {
+    throw new AccountLifecycleConflictError('ACCOUNT_CLOSURE_SECURITY_HOLD');
   }
 }
 

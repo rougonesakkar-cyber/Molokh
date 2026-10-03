@@ -29,8 +29,11 @@ Schemas are organizational boundaries inside one database, not permission to cre
 - `account_verifications`
 - `account_access_cases`
 - `duplicate_account_cases`
+- `duplicate_account_case_users`
+- `duplicate_account_processes`
 - `duplicate_account_aliases`
 - `trusted_sessions`
+- `user_sensitive_action_holds`
 - `display_name_audit`
 - `age_division_transitions`
 - `account_closure_requests`
@@ -42,6 +45,10 @@ Critical constraints:
 - age 14+ activation check at command layer plus database-consistent birth date;
 - duplicate alias cannot self-reference;
 - one unresolved access/duplicate case per configured subject scope;
+- phone-change approval creates one exact 24-hour sensitive-action hold; trusted old sessions
+  remain service-response-only until the hold expires and are then revoked;
+- duplicate review stores every affected status/obligation and its explicit disposition;
+  choosing a canonical User never rewrites sporting history or transfers status;
 - one immutable `YOUTH→ADULT` transition per User; its timer aggregate advances only `0→1`.
 - one live `REQUESTED` closure and one live `REQUESTED/READY` data export per User;
 - closure pseudonymization event is immutable; export expiry nulls payload but preserves SHA-256.

@@ -819,6 +819,7 @@ AccountRecoveryApproved
 AccountRecoveryCompleted
 AccountRecoveryRejected
 AccountRecoveryRequested
+VerifiedPhoneChanged
 BlockCreated
 BlockRevoked
 BookingCoachReplaced
@@ -861,6 +862,7 @@ ChatMessageSent
 DisplayNameChanged
 DuplicateAccountCleared
 DuplicateAccountResolved
+DuplicateAccountRestricted
 DuplicateAccountReviewStarted
 IntegrityCaseAnnulled
 IntegrityCaseCorrected

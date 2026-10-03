@@ -1,4 +1,5 @@
 import {
+  AccountAccessConflictError,
   AccountLifecycleConflictError,
   IdempotencyKeyReusedError,
   PlatformIncidentConflictError,
@@ -21,6 +22,13 @@ import { sql, type Transaction } from 'kysely';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  approvePhoneChange,
+  completeVerifiedRecovery,
+  expirePhoneChangeSecurityHold,
+  openDuplicateAccountReview,
+  readMyAccountAccess,
+  requestAccountRecovery,
+  resolveDuplicateAccountReview,
   activateUser,
   requestAccountClosure,
   requestAccountExport,
@@ -1843,6 +1851,13 @@ describePostgres('PostgreSQL critical command transaction', () => {
         platform.platform_incidents,
         identity.account_data_exports,
         identity.account_closure_requests,
+        identity.duplicate_account_aliases,
+        identity.duplicate_account_processes,
+        identity.duplicate_account_case_users,
+        identity.duplicate_account_cases,
+        identity.user_sensitive_action_holds,
+        identity.trusted_sessions,
+        identity.account_access_cases,
         community.community_closure_status_dispositions,
         community.community_closure_session_dispositions,
         community.community_closure_plans,
@@ -10115,5 +10130,208 @@ describePostgres('PostgreSQL critical command transaction', () => {
     `.execute(database);
     expect(privateFacts.rows[0]).toEqual({ phone_e164: `closed:${athlete}`,
       event_count: '1', payload_is_null: true });
+  });
+
+  it('[AC-197][AC-198][AC-199] governs recovery, phone hold and duplicates without merging history', async () => {
+    const athleteA = testId(27000);
+    const athleteB = testId(27001);
+    const central = testId(27002);
+    const phoneCase = testId(27020);
+    const verifiedCase = testId(27040);
+    const duplicateCase = testId(27060);
+    const venue = testId(27003);
+    const community = testId(27004);
+    const competition = testId(27005);
+    const activate = async (userId: string, base: number, phone: string, name: string) =>
+      activateUser(database, {
+        commandId: testId(base), commandType: 'ACTIVATE_ACCOUNT',
+        idempotencyKey: `account-access-activate-${base}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'User', aggregateId: userId, expectedVersion: 0,
+        correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+        source: 'scheduler', payloadVersion: 1,
+        payload: { userId, phoneE164: phone,
+          phoneVerifiedAt: '2026-10-03T08:00:00.000Z', birthDate: '1990-01-01',
+          displayName: name, locale: 'ru-RU', primarySport: 'BOXING',
+          secondarySport: null, discoveryRadiusKm: 15 },
+      }, { eventId: testId(base + 3), auditId: testId(base + 4),
+        outboxMessageId: testId(base + 5) }, () => new Date('2026-10-03T09:00:00.000Z'));
+    await activate(athleteA, 27100, '+79990270000', 'Recovery Athlete');
+    await activate(athleteB, 27110, '+79990270001', 'Duplicate Athlete');
+    await activate(central, 27120, '+79990270002', 'Central Access');
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: testId(27006), communityId: community,
+      communityConfigurationId: testId(27007), membershipId: testId(27008),
+      centralGrantId: testId(27009), athleteUserId: athleteA, centralActorId: central,
+      legalName: 'Access Pilot Gym LLC', venueDisplayName: 'Access Pilot Gym',
+      communityName: 'Access Community', address: 'Москва', cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow', contactPayload: { phone: '+79990270999' },
+      occurredAt: '2026-10-03T09:00:00.000Z',
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community, centralActorId: central,
+      occurredAt: '2026-10-03T09:00:00.000Z', memberships: [
+        { membershipId: testId(27008), userId: athleteA },
+        { membershipId: testId(27010), userId: athleteB },
+      ],
+    });
+    await sql`update competition.competitions set phase = 'RUNNING',
+      champion_user_id = ${athleteA}::uuid, contender_user_id = ${athleteB}::uuid,
+      status_version = 2 where competition_id = ${competition}::uuid`.execute(database);
+    await sql`insert into identity.trusted_sessions (
+        trusted_session_id, user_id, session_reference_hash, state, trusted_at, last_seen_at
+      ) values (${testId(27011)}::uuid, ${athleteA}::uuid, ${'a'.repeat(64)}, 'TRUSTED',
+        '2026-10-03T09:00:00Z', '2026-10-03T09:30:00Z')`.execute(database);
+
+    const requestedPhone = await requestAccountRecovery(database, {
+      commandId: testId(27021), commandType: 'REQUEST_ACCOUNT_RECOVERY',
+      idempotencyKey: 'recovery-phone-request',
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountAccessCase', aggregateId: phoneCase, expectedVersion: 0,
+      correlationId: testId(27022), causationId: null, requestId: testId(27023),
+      source: 'api', payloadVersion: 1, payload: { userId: athleteA,
+        route: 'PHONE_CHANGE', signals: ['TRUSTED_SESSION'],
+        requestedPhoneE164: '+79990270009',
+        reason: 'Previous SIM is unavailable and trusted session is active' },
+    }, { eventId: testId(27024), auditId: testId(27025),
+      outboxMessageId: testId(27026) }, () => new Date('2026-10-03T10:00:00.000Z'));
+    expect(requestedPhone.response).toMatchObject({ state: 'PENDING',
+      route: 'PHONE_CHANGE', requestedPhoneE164: '+79990270009', version: 1 });
+
+    const approved = await approvePhoneChange(database, {
+      commandId: testId(27027), commandType: 'APPROVE_PHONE_CHANGE',
+      idempotencyKey: 'recovery-phone-approve',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'AccountAccessCase', aggregateId: phoneCase, expectedVersion: 1,
+      correlationId: testId(27022), causationId: testId(27024), requestId: testId(27028),
+      source: 'admin', payloadVersion: 1,
+      payload: { caseId: phoneCase, reason: 'Trusted session and Central signals agree' },
+    }, { eventId: testId(27029), auditId: testId(27030),
+      outboxMessageId: testId(27031), sensitiveHoldId: testId(27032),
+      userEventId: testId(27033) }, () => new Date('2026-10-03T10:05:00.000Z'));
+    expect(approved.response).toMatchObject({ state: 'SECURITY_HOLD',
+      securityHoldUntil: '2026-10-04T10:05:00.000Z', version: 2 });
+    await expect(requestAccountClosure(database, {
+      commandId: testId(27034), commandType: 'REQUEST_ACCOUNT_CLOSURE',
+      idempotencyKey: 'closure-during-phone-hold',
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountClosureRequest', aggregateId: testId(27035), expectedVersion: 0,
+      correlationId: testId(27022), causationId: testId(27029), requestId: testId(27036),
+      source: 'api', payloadVersion: 1,
+      payload: { userId: athleteA, exportRequested: false },
+    }, { eventId: testId(27037), auditId: testId(27038),
+      outboxMessageId: testId(27039) }))
+      .rejects.toMatchObject({ code: 'ACCOUNT_CLOSURE_SECURITY_HOLD' });
+    await expect(expirePhoneChangeSecurityHold(database, {
+      commandId: testId(27041), commandType: 'EXPIRE_SECURITY_HOLD',
+      idempotencyKey: 'recovery-phone-expire-early',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AccountAccessCase', aggregateId: phoneCase, expectedVersion: 2,
+      correlationId: testId(27022), causationId: testId(27029), requestId: testId(27042),
+      source: 'scheduler', payloadVersion: 1, payload: { caseId: phoneCase },
+    }, { eventId: testId(27043), auditId: testId(27044),
+      outboxMessageId: testId(27045) }, () => new Date('2026-10-04T10:04:59.999Z')))
+      .rejects.toMatchObject({ code: 'ACCOUNT_ACCESS_HOLD_NOT_DUE' });
+    const expired = await expirePhoneChangeSecurityHold(database, {
+      commandId: testId(27046), commandType: 'EXPIRE_SECURITY_HOLD',
+      idempotencyKey: 'recovery-phone-expire',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AccountAccessCase', aggregateId: phoneCase, expectedVersion: 2,
+      correlationId: testId(27022), causationId: testId(27029), requestId: testId(27047),
+      source: 'scheduler', payloadVersion: 1, payload: { caseId: phoneCase },
+    }, { eventId: testId(27048), auditId: testId(27049),
+      outboxMessageId: testId(27050) }, () => new Date('2026-10-04T10:05:00.000Z'));
+    expect(expired.response).toMatchObject({ state: 'COMPLETED', version: 3 });
+    await expect(readMyAccountAccess(database, athleteA)).resolves.toEqual(expired.response);
+
+    await requestAccountRecovery(database, {
+      commandId: testId(27051), commandType: 'REQUEST_ACCOUNT_RECOVERY',
+      idempotencyKey: 'verified-route-request',
+      actor: { type: 'USER', id: athleteB, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountAccessCase', aggregateId: verifiedCase, expectedVersion: 0,
+      correlationId: testId(27052), causationId: null, requestId: testId(27053),
+      source: 'api', payloadVersion: 1, payload: { userId: athleteB,
+        route: 'VERIFIED_ROUTE', signals: ['VERIFIED_PHONE'], requestedPhoneE164: null,
+        reason: 'Verified phone route is available for recovery' },
+    }, { eventId: testId(27054), auditId: testId(27055),
+      outboxMessageId: testId(27056) }, () => new Date('2026-10-04T11:00:00.000Z'));
+    const verified = await completeVerifiedRecovery(database, {
+      commandId: testId(27057), commandType: 'COMPLETE_VERIFIED_RECOVERY',
+      idempotencyKey: 'verified-route-complete',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AccountAccessCase', aggregateId: verifiedCase, expectedVersion: 1,
+      correlationId: testId(27052), causationId: testId(27054), requestId: testId(27058),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { caseId: verifiedCase, verifiedRouteSucceeded: true },
+    }, { eventId: testId(27059), auditId: testId(27061),
+      outboxMessageId: testId(27062) }, () => new Date('2026-10-04T11:01:00.000Z'));
+    expect(verified.response).toMatchObject({ state: 'COMPLETED', route: 'VERIFIED_ROUTE' });
+
+    const opened = await openDuplicateAccountReview(database, {
+      commandId: testId(27063), commandType: 'OPEN_DUPLICATE_REVIEW',
+      idempotencyKey: 'duplicate-open',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'DuplicateAccountCase', aggregateId: duplicateCase, expectedVersion: 0,
+      correlationId: testId(27064), causationId: null, requestId: testId(27065),
+      source: 'admin', payloadVersion: 1, payload: { userIds: [athleteB, athleteA],
+        signalReferences: ['central:manual-review-27060'],
+        reason: 'Central confirmed material duplicate-account signals' },
+    }, { eventId: testId(27066), auditId: testId(27067),
+      outboxMessageId: testId(27068), processHoldIds: [testId(27069)] },
+    () => new Date('2026-10-04T12:00:00.000Z'));
+    expect(opened.response).toMatchObject({ state: 'UNDER_REVIEW',
+      userIds: [athleteA, athleteB], canonicalUserId: null, version: 1 });
+    expect(opened.response.processes).toHaveLength(2);
+
+    const dispositions = opened.response.processes.map((process) => ({
+      kind: process.kind, aggregateId: process.aggregateId,
+      currentOwnerUserId: process.currentOwnerUserId,
+      decision: 'SEPARATE_GOVERNED_REVIEW' as const,
+    }));
+    const resolved = await resolveDuplicateAccountReview(database, {
+      commandId: testId(27070), commandType: 'RESOLVE_DUPLICATE',
+      idempotencyKey: 'duplicate-resolve',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'DuplicateAccountCase', aggregateId: duplicateCase, expectedVersion: 1,
+      correlationId: testId(27064), causationId: testId(27066), requestId: testId(27071),
+      source: 'admin', payloadVersion: 1, payload: { caseId: duplicateCase,
+        canonicalUserId: athleteA, dispositions,
+        reason: 'Central selected one canonical User and explicit process reviews' },
+    }, { eventId: testId(27072), auditId: testId(27073),
+      outboxMessageId: testId(27074), aliasIds: [testId(27075)],
+      userEventIds: [testId(27076)] }, () => new Date('2026-10-04T12:05:00.000Z'));
+    expect(resolved.response).toMatchObject({ state: 'RESOLVED',
+      canonicalUserId: athleteA, version: 2 });
+    const facts = await sql<{ readonly champion_user_id: string;
+      readonly contender_user_id: string; readonly duplicate_state: string;
+      readonly alias_count: string; readonly active_hold_count: string;
+      readonly trusted_session_state: string }>`select competition.champion_user_id,
+        competition.contender_user_id,
+        (select account_state from identity.users where user_id = ${athleteB}::uuid)
+          as duplicate_state,
+        (select count(*)::text from identity.duplicate_account_aliases
+          where case_id = ${duplicateCase}::uuid) as alias_count,
+        (select count(*)::text from competition.process_holds
+          where duplicate_account_case_id = ${duplicateCase}::uuid and state = 'ACTIVE')
+          as active_hold_count,
+        (select state from identity.trusted_sessions where user_id = ${athleteA}::uuid)
+          as trusted_session_state
+      from competition.competitions as competition
+      where competition.competition_id = ${competition}::uuid`.execute(database);
+    expect(facts.rows[0]).toEqual({ champion_user_id: athleteA,
+      contender_user_id: athleteB, duplicate_state: 'RESTRICTED', alias_count: '1',
+      active_hold_count: '1', trusted_session_state: 'REVOKED' });
+    await expect(requestAccountRecovery(database, {
+      commandId: testId(27077), commandType: 'REQUEST_ACCOUNT_RECOVERY',
+      idempotencyKey: 'recovery-after-duplicate',
+      actor: { type: 'USER', id: athleteB, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountAccessCase', aggregateId: testId(27078), expectedVersion: 0,
+      correlationId: testId(27079), causationId: testId(27072), requestId: testId(27080),
+      source: 'api', payloadVersion: 1, payload: { userId: athleteB,
+        route: 'VERIFIED_ROUTE', signals: [], requestedPhoneE164: null,
+        reason: 'Missing recovery signal must be rejected' },
+    }, { eventId: testId(27081), auditId: testId(27082),
+      outboxMessageId: testId(27083) }))
+      .rejects.toBeInstanceOf(AccountAccessConflictError);
   });
 });

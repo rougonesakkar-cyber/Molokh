@@ -20,7 +20,8 @@ export type StatusReleaseConflictCode =
   | 'STATUS_RELEASE_NOT_PREVIEWED'
   | 'STATUS_RELEASE_PREVIEW_EXPIRED'
   | 'STATUS_RELEASE_TOKEN_INVALID'
-  | 'STATUS_RELEASE_STATUS_CHANGED';
+  | 'STATUS_RELEASE_STATUS_CHANGED'
+  | 'STATUS_RELEASE_SECURITY_HOLD';
 
 export class StatusReleaseConflictError extends Error {
   readonly code: StatusReleaseConflictCode;
@@ -97,6 +98,7 @@ export function assertStatusReleaseEligibility(input: {
   readonly integrityHoldActive: boolean;
   readonly hasActiveObligation: boolean;
   readonly hasBlockingLiveChallenge: boolean;
+  readonly sensitiveActionHeld?: boolean;
 }): void {
   if (!input.accountActive) {
     throw new StatusReleaseConflictError('STATUS_RELEASE_ACCOUNT_NOT_ACTIVE');
@@ -106,6 +108,9 @@ export function assertStatusReleaseEligibility(input: {
   }
   if (!input.competitionActive) {
     throw new StatusReleaseConflictError('STATUS_RELEASE_COMPETITION_NOT_ACTIVE');
+  }
+  if (input.sensitiveActionHeld) {
+    throw new StatusReleaseConflictError('STATUS_RELEASE_SECURITY_HOLD');
   }
   if (input.integrityHoldActive) {
     throw new StatusReleaseConflictError('STATUS_RELEASE_INTEGRITY_HOLD');

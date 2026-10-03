@@ -309,8 +309,13 @@ export async function requestAccountClosure(database: Kysely<Database>,
     mutate: async (transaction, context) => {
       const user = await userRow(transaction, command.payload.userId, true);
       if (!user) throw new AccountLifecycleConflictError('ACCOUNT_NOT_CLOSABLE');
+      const sensitiveHold = await sql<{ readonly active: boolean }>`select exists (
+          select 1 from identity.user_sensitive_action_holds
+          where user_id = ${user.user_id}::uuid and state = 'ACTIVE'
+        ) as active`.execute(transaction);
       assertAccountClosureCanBeRequested({ accountState: user.account_state,
-        actor: command.actor, userId: user.user_id });
+        actor: command.actor, userId: user.user_id,
+        sensitiveActionHeld: sensitiveHold.rows[0]?.active ?? false });
       const live = await sql<{ readonly present: boolean }>`select true as present
         from identity.account_closure_requests where user_id = ${user.user_id}::uuid
           and state = 'REQUESTED' limit 1`.execute(transaction);
