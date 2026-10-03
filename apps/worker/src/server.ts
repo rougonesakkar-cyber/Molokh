@@ -19,6 +19,8 @@ import {
   expireBookingOfficialConversion,
   expireBookingSoloContinuation,
   expireBookingTrainingRetention,
+  expireAccountExport,
+  prepareAccountExport,
   expireGroupOffering,
   expireGroupPlan,
   expireOptionalChallenge,
@@ -49,6 +51,7 @@ import {
   readBookingOfficialConversionTimerSnapshot,
   readBookingSoloContinuationTimerSnapshot,
   readBookingTrainingRetentionTimerSnapshot,
+  readAccountExportTimerSnapshot,
   readGroupOfferingTimerSnapshot,
   readGroupPlanTimerSnapshot,
   readLikeTimerSnapshot,
@@ -75,6 +78,8 @@ import {
   type InvalidateActiveBookingOfficialConversionPayload,
   type ExpireBookingSoloContinuationPayload,
   type ExpireBookingTrainingRetentionPayload,
+  type ExpireAccountExportPayload,
+  type PrepareAccountExportPayload,
   type ExpireGroupOfferingPayload,
   type ExpireGroupPlanPayload,
   type ExpireLikePayload,
@@ -111,6 +116,10 @@ import { createTaskList } from './tasks.js';
 import { processTimer } from './timer-processor.js';
 import { identityTimerFromOutbox } from './identity-timers.js';
 import { incidentTimerFromOutbox } from './incident-timers.js';
+import {
+  accountExportIdFromRequestedOutbox,
+  accountLifecycleTimerFromOutbox,
+} from './account-lifecycle.js';
 import {
   platformIncidentIdFromResolvedOutbox,
   reconcilePlatformIncidentEffects,
@@ -818,6 +827,35 @@ const executeBookingTrainingRetentionExpiry = async (payload: TimerCommandPayloa
   });
 };
 
+const executeAccountExportExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireAccountExportPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_ACCOUNT_EXPORT',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AccountDataExport', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { exportId: payload.aggregateId },
+  };
+  await expireAccountExport(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+  });
+};
+
+const prepareRequestedAccountExport = async (exportId: string, causationId: string) => {
+  const command: CommandEnvelope<PrepareAccountExportPayload> = {
+    commandId: randomUUID(), commandType: 'PREPARE_ACCOUNT_EXPORT',
+    idempotencyKey: `account-export:${exportId}:prepare:v1`,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AccountDataExport', aggregateId: exportId, expectedVersion: 1,
+    correlationId: randomUUID(), causationId, requestId: randomUUID(),
+    source: 'scheduler', payloadVersion: 1, payload: { exportId },
+  };
+  await prepareAccountExport(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+  });
+};
+
 const executeResultFinalization = async (payload: TimerCommandPayload) => {
   const command: CommandEnvelope<FinalizeResultPayload> = {
     commandId: randomUUID(),
@@ -983,6 +1021,10 @@ const taskList = createTaskList({
             readAgeDivisionTransitionTimerSnapshot(database, timer.aggregateId),
           execute: executeAgeDivisionTransition,
         },
+        EXPIRE_ACCOUNT_EXPORT: {
+          loadSnapshot: (timer) => readAccountExportTimerSnapshot(database, timer.aggregateId),
+          execute: executeAccountExportExpiry,
+        },
         EXPIRE_LIKE: {
           loadSnapshot: (timer) => readLikeTimerSnapshot(database, timer.aggregateId),
           execute: executeLikeExpiry,
@@ -1119,6 +1161,10 @@ const taskList = createTaskList({
     if (incidentId) {
       await reconcileResolvedPlatformIncident(incidentId, message.eventId);
     }
+    const requestedExportId = accountExportIdFromRequestedOutbox(message.topic, message.payload);
+    if (requestedExportId) {
+      await prepareRequestedAccountExport(requestedExportId, message.eventId);
+    }
     const competitionId = competitionIdFromOutbox(message.topic, message.payload);
     if (competitionId) {
       if (vacancyQueueReconciliationTopics.has(message.topic)) {
@@ -1175,6 +1221,7 @@ const outboxPolling = startOutboxPolling({
     const socialTimer = socialTimerFromOutbox(message.topic, message.payload);
     const timer = socialTimer
       ?? incidentTimerFromOutbox(message.topic, message.payload)
+      ?? accountLifecycleTimerFromOutbox(message.topic, message.payload)
       ?? identityTimerFromOutbox(message.topic, message.payload)
       ?? schedulingTimerFromOutbox(message.topic, message.payload)
       ?? challengeTimerFromOutbox(message.topic, message.payload)

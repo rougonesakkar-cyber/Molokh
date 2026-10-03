@@ -527,6 +527,16 @@ export async function readAccountExportPayload(database: Kysely<Database>, userI
   return row.export_payload;
 }
 
+export async function readAccountExportTimerSnapshot(
+  database: Kysely<Database>, exportId: string,
+): Promise<{ readonly state: string; readonly version: number; readonly deadlineAt?: string }> {
+  const row = await exportRow(database, exportId);
+  return row
+    ? { state: row.state, version: Number(row.version),
+        ...(row.expires_at ? { deadlineAt: row.expires_at.toISOString() } : {}) }
+    : { state: 'MISSING', version: 0 };
+}
+
 export async function executeAccountClosure(database: Kysely<Database>,
   command: CommandEnvelope<ExecuteAccountClosurePayload>, ids: ExecuteAccountClosureEffectIds,
   now?: () => Date): Promise<ExecutedCommand<IdentityProjection>> {
