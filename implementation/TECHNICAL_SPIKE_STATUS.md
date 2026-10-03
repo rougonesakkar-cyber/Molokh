@@ -1,7 +1,7 @@
 # Technical Spike Status
 
-**Date:** 2026-10-02
-**Scope:** stack baseline through governed Membership removal, booked Youth Training retention and the age-18 transition.
+**Date:** 2026-10-03
+**Scope:** stack baseline through governed account closure, self-export and export-payload retention.
 
 ## Gates
 
@@ -43,7 +43,8 @@
 | Training cancellation/solo | Athlete no-fault withdrawal, two-party one-hour decision, solo conversion or atomic resource release | Pass in Core/API/client/worker and real PostgreSQL |
 | Youth consent, booked retention and age transition | independent Challenge-scoped grants, guardian token page, privacy-minimized persistence, acceptance/Booking guards, B-26…B-29 three-party Training retention and one server-boundary `YOUTH→ADULT` timer that preserves started snapshots | Pass in Core/API/client/worker and real PostgreSQL |
 | PlatformIncident reconciliation | PI-01…PI-05, Central queue/actions, active timer suppression, exact-overlap extension for all registered pausable deadlines and append-only mandatory-timeout compensation | Pass in Core/API/client/worker and real PostgreSQL |
-| Dependency severity gate | CI rejects unknown high/critical production advisories; published fixes are installed and the exact Expo-CLI `node-forge` advisory has a regression-tested, expiring local backport | Pass with time-bounded upstream exception through 2026-10-16 |
+| Account closure and self-export | ACR-01…ACR-03 30-day recovery, Central blocker queue, public pseudonymization, ADE-01…ADE-03 private JSON export and exact 48h payload deletion | Pass in Core/API/client/worker and real PostgreSQL |
+| Dependency severity gate | CI rejects unknown high/critical production advisories; published fixes are installed and the exact Expo-CLI `node-forge`/`braces` advisories have regression-tested, expiring local backports | Pass with two time-bounded upstream exceptions through 2026-10-16 |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
 | Source control | isolated branch, remote PR and CI | Pass on `codex/gym-admin-dashboard`; branch protection remains an external repository setting |
@@ -181,25 +182,27 @@ marker and deterministic status compensation. Explicit GENESIS/status intent, th
 FIFO projection, no-loss withdrawal and strict direct-head activation against the current
 Contender are executable. A mandatory refusal or timeout is represented by an appealable
 administrative Forfeit without inventing a Session. Final holder changes move waiting entries into
-a visible 24-hour reconfirmation without changing their FIFO keys. Production OTP/session handling,
-recovery/duplicate cases and account closure/export/retention remain. PlatformIncident lifecycle,
-exact-overlap deadline effects and mandatory-timeout compensation are executable.
+a visible 24-hour reconfirmation without changing their FIFO keys. Production OTP/session handling
+and recovery/duplicate cases remain. PlatformIncident lifecycle, exact-overlap deadline effects,
+mandatory-timeout compensation and account closure/self-export are executable. General Chat/
+evidence retention policies are registered; their destructive cleanup jobs remain release-hardening
+work and are not represented as complete.
 
 ## Verification result
 
-Verified on 2026-10-02:
+Verified on 2026-10-03:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 208 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 38 integration scenarios, including timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior and AC-195/196 incident reconciliation;
+- 215 non-database automated tests pass across Core, DB, API, worker and testkit;
+- the current PostgreSQL gate passes all 39 integration scenarios, including timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation and account closure/export retention;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/chat`, `/guardian-consent`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.8.1 and PostgreSQL 18 are healthy after moving only the inaccessible transient host runtime-socket directory into quarantine; no project, WSL disk or Docker data volume was reset;
-- migrations `0001`–`0052` apply successfully with checksum verification; `YOUTH_OFFICIAL` remains disabled by default;
+- migrations `0001`–`0053` apply successfully with checksum verification; `YOUTH_OFFICIAL` remains disabled by default;
 - the live universal client renders the empty GENESIS state, submits a position-1 status intent and withdraws it without loss; the queue immediately returns to empty and no browser error is produced by the flow;
 - the live Worker revalidates a fresh GENESIS intent, records the exact three-day single-candidate deadline, projects its mandatory notification and makes the pending timer stale after a no-loss withdrawal; the visible queue returns to empty;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
@@ -217,5 +220,5 @@ Verified on 2026-10-02:
   the same Session as `CONFIRMED_SOLO` and keeps the Slot booked without a loss or Challenge;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
 - the generated acceptance matrix maps 106 scenarios (`100/195 P0`) and distinguishes traceability from complete coverage;
-- Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all patchable transitive advisories are updated. The still-unreleased `node-forge` CVE-2026-85393 fix is backported to `1.4.0`; the audit gate verifies the published regression vector, permits only Expo CLI paths, checks that `1.4.1` is not yet published and expires automatically on 2026-10-16;
-- the Core specification validator reports 302 transitions, 293 registered events, 213 acceptance scenarios, zero open questions and zero errors.
+- Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;
+- the Core specification validator reports 308 transitions, 299 registered events, 213 acceptance scenarios, zero open questions and zero errors.

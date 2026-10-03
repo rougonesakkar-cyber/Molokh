@@ -1,12 +1,30 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const EXCEPTION = Object.freeze({
-  advisoryId: "GHSA-86w9-cpqp-85rv",
-  moduleName: "node-forge",
-  patchedVersion: "1.4.1",
-  expiresOn: "2026-10-16",
-});
+const EXCEPTIONS = Object.freeze([
+  Object.freeze({
+    advisoryId: "GHSA-86w9-cpqp-85rv",
+    moduleName: "node-forge",
+    installedVersion: "1.4.0",
+    patchedVersion: "1.4.1",
+    expiresOn: "2026-10-16",
+    probe: "./verify-node-forge-cve.mjs",
+    pathAllowed: (path) =>
+      path.startsWith("apps__client>") &&
+      path.includes(">@expo/cli>") &&
+      path.endsWith(">node-forge"),
+  }),
+  Object.freeze({
+    advisoryId: "GHSA-vfj7-8cjw-p6xm",
+    moduleName: "braces",
+    installedVersion: "3.0.3",
+    patchedVersion: "3.0.4",
+    expiresOn: "2026-10-16",
+    probe: "./verify-braces-cve.mjs",
+    pathAllowed: (path) =>
+      path.startsWith("apps__client>") && path.includes(">braces"),
+  }),
+]);
 
 const pnpmCli = process.env.npm_execpath;
 
@@ -39,15 +57,18 @@ function parseJson(output, label) {
   }
 }
 
-function verifyForgeBackport() {
+function verifyBackport(exception) {
   const probe = spawnSync(
     process.execPath,
-    [fileURLToPath(new URL("./verify-node-forge-cve.mjs", import.meta.url))],
+    [fileURLToPath(new URL(exception.probe, import.meta.url))],
     { cwd: process.cwd(), encoding: "utf8", windowsHide: true },
   );
 
   if (probe.status !== 0) {
-    fail("the local node-forge CVE backport regression probe failed.", probe.stderr || probe.stdout);
+    fail(
+      `the local ${exception.moduleName} CVE backport regression probe failed.`,
+      probe.stderr || probe.stdout,
+    );
   }
 }
 
@@ -67,31 +88,26 @@ if (blocking.length === 0) {
 }
 
 const unexpected = blocking.filter((advisory) => {
-  if (
-    advisory.github_advisory_id !== EXCEPTION.advisoryId ||
-    advisory.module_name !== EXCEPTION.moduleName
-  ) {
-    return true;
-  }
+  const exception = EXCEPTIONS.find(
+    (candidate) =>
+      candidate.advisoryId === advisory.github_advisory_id &&
+      candidate.moduleName === advisory.module_name,
+  );
+  if (!exception) return true;
 
   const findings = advisory.findings ?? [];
   return (
     findings.length === 0 ||
     findings.some(
       (finding) =>
-        finding.version !== "1.4.0" ||
+        finding.version !== exception.installedVersion ||
         finding.dev !== false ||
-        (finding.paths ?? []).some(
-          (path) =>
-            !path.startsWith("apps__client>") ||
-            !path.includes(">@expo/cli>") ||
-            !path.endsWith(">node-forge"),
-        ),
+        (finding.paths ?? []).some((path) => !exception.pathAllowed(path)),
     )
   );
 });
 
-if (unexpected.length > 0 || blocking.length !== 1) {
+if (unexpected.length > 0) {
   fail(
     "an unapproved high or critical advisory is present.",
     JSON.stringify(unexpected.length > 0 ? unexpected : blocking, null, 2),
@@ -99,23 +115,29 @@ if (unexpected.length > 0 || blocking.length !== 1) {
 }
 
 const today = new Date().toISOString().slice(0, 10);
-if (today > EXCEPTION.expiresOn) {
-  fail(`the ${EXCEPTION.advisoryId} backport exception expired on ${EXCEPTION.expiresOn}.`);
+const activeExceptions = EXCEPTIONS.filter((exception) =>
+  blocking.some((advisory) => advisory.github_advisory_id === exception.advisoryId),
+);
+for (const exception of activeExceptions) {
+  if (today > exception.expiresOn) {
+    fail(`the ${exception.advisoryId} backport exception expired on ${exception.expiresOn}.`);
+  }
+
+  const published = runPnpm(["view", exception.moduleName, "versions", "--json"]);
+  if (published.status !== 0) {
+    fail("could not verify whether the upstream patched package was published.", published.stderr);
+  }
+
+  const publishedVersions = parseJson(published.stdout, `${exception.moduleName} registry versions`);
+  if (publishedVersions.includes(exception.patchedVersion)) {
+    fail(
+      `${exception.moduleName}@${exception.patchedVersion} is available; remove the local backport and upgrade.`,
+    );
+  }
+
+  verifyBackport(exception);
 }
 
-const published = runPnpm(["view", EXCEPTION.moduleName, "versions", "--json"]);
-if (published.status !== 0) {
-  fail("could not verify whether the upstream patched package was published.", published.stderr);
-}
-
-const publishedVersions = parseJson(published.stdout, "registry versions");
-if (publishedVersions.includes(EXCEPTION.patchedVersion)) {
-  fail(
-    `${EXCEPTION.moduleName}@${EXCEPTION.patchedVersion} is available; remove the local backport and upgrade.`,
-  );
-}
-
-verifyForgeBackport();
 console.warn(
-  `Production dependency gate passed with a narrow, tested ${EXCEPTION.advisoryId} backport exception through ${EXCEPTION.expiresOn}; no other high or critical advisories are allowed.`,
+  `Production dependency gate passed with ${activeExceptions.length} narrow, tested, time-bounded local backport exception(s); no other high or critical advisories are allowed.`,
 );

@@ -5,16 +5,16 @@ Molokh — mobile-first продукт для поиска партнёров п
 ## Current state
 
 - Core Engine: **v1.0, product decisions closed**;
-- state transitions: **302**;
-- registered events: **293**;
+- state transitions: **308**;
+- registered events: **299**;
 - acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
 - executable acceptance traceability: **106/213** (`100/195 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition and full PlatformIncident reconciliation;
-- database gate: PostgreSQL migrations `0001`–`0052` and **38/38** integration scenarios pass locally;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation and recoverable account closure/self-export with payload expiry;
+- database gate: PostgreSQL migrations `0001`–`0053` and **39/39** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
-  sole unresolved upstream `node-forge` advisory is covered by a narrow regression-tested local
-  backport that expires on 2026-10-16 and rejects every other high/critical advisory;
+  unresolved upstream `node-forge` and `braces` advisories are covered by narrow regression-tested
+  local backports that expire on 2026-10-16 and reject every other high/critical advisory;
 - external deployment/accounts: not configured.
 
 Run the consistency check:
@@ -353,7 +353,15 @@ all candidates are exhausted. Central has a role-gated incident queue and confir
 actions. Challenge scheduling follows CH-24/CH-25: 14 days, one visible 7-day extension with
 expanded options, then `CANCELLED_NO_FAULT` if capacity is still unavailable.
 
+Account lifecycle now runs ACR-01…ACR-03 and ADE-01…ADE-03 end to end. A User may request
+closure and an optional private export, cancel closure strictly inside the 30-day recovery window,
+and download a prepared JSON snapshot for 48 hours. Central sees exact blocker counts and may
+execute only after recovery with no accepted obligation, status, active Session/Membership/role or
+FIFO entry. Final closure pseudonymizes public identity while preserving immutable sporting/audit
+lineage. The Worker prepares exports and deletes expired payloads without deleting their checksum
+or event/audit history; a live standalone export is reused by closure instead of duplicated.
+
 ## Next executable action
 
-Continue with account closure/export/retention, then the remaining pilot-hardening walkthroughs.
+Continue with recovery/duplicate-account cases and the remaining pilot-hardening walkthroughs.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
