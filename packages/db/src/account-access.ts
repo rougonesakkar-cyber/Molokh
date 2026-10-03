@@ -41,6 +41,9 @@ export interface DuplicateAccountEffectIds {
   readonly processHoldIds?: readonly string[];
   readonly aliasIds?: readonly string[];
   readonly userEventIds?: readonly string[];
+  readonly newProcessHoldId?: () => string;
+  readonly newAliasId?: () => string;
+  readonly newUserEventId?: () => string;
 }
 
 export interface RequestAccountRecoveryPayload {
@@ -389,7 +392,12 @@ export async function approvePhoneChange(
         outbox: [{ messageId: ids.outboxMessageId,
           topic: 'identity.account-recovery.phone-changed.v1', sourceEventId: userEventId,
           payload: { caseId: response.caseId, userId: response.userId,
-            securityHoldUntil: holdUntil } }] };
+            securityHoldUntil: holdUntil,
+            timer: { commandType: 'EXPIRE_SECURITY_HOLD', aggregateType: 'AccountAccessCase',
+              aggregateId: response.caseId, expectedState: 'SECURITY_HOLD',
+              expectedVersion: context.nextVersion, deadlineAt: holdUntil,
+              policyVersion: ACCOUNT_ACCESS_POLICY_VERSION,
+              idempotencyKey: `account-access:${response.caseId}:expire-security-hold:v${context.nextVersion}` } } }] };
     } });
 }
 
@@ -632,7 +640,8 @@ export async function openDuplicateAccountReview(
       ])).values()].sort((left, right) =>
         `${left.aggregateType}:${left.aggregateId}`.localeCompare(
           `${right.aggregateType}:${right.aggregateId}`));
-      const holdIds = ids.processHoldIds ?? [];
+      const holdIds = ids.processHoldIds
+        ?? holdTargets.map(() => ids.newProcessHoldId?.() ?? '');
       if (holdIds.length !== holdTargets.length) {
         throw new TypeError('One duplicate-account process hold ID is required per affected aggregate');
       }
@@ -754,8 +763,9 @@ export async function resolveDuplicateAccountReview(
         throw new AccountAccessConflictError('DUPLICATE_ACCOUNT_CANONICAL_REQUIRED');
       }
       const duplicates = users.rows.filter((item) => item.user_id !== canonical.user_id);
-      const aliasIds = ids.aliasIds ?? [];
-      const userEventIds = ids.userEventIds ?? [];
+      const aliasIds = ids.aliasIds ?? duplicates.map(() => ids.newAliasId?.() ?? '');
+      const userEventIds = ids.userEventIds
+        ?? duplicates.map(() => ids.newUserEventId?.() ?? '');
       if (aliasIds.length !== duplicates.length || userEventIds.length !== duplicates.length) {
         throw new TypeError('One private alias and User event ID is required per duplicate User');
       }
@@ -848,4 +858,15 @@ export async function listDuplicateAccountCasesForCentral(
     from identity.duplicate_account_cases where state = 'UNDER_REVIEW'
     order by requested_at, case_id`.execute(database);
   return Promise.all(result.rows.map((row) => duplicateProjection(database, row)));
+}
+
+export async function readAccountAccessTimerSnapshot(
+  database: Kysely<Database>, caseId: string,
+): Promise<{ readonly state: string; readonly version: number; readonly deadlineAt?: string }> {
+  const row = await accessCaseRow(database, caseId);
+  return row
+    ? { state: row.state, version: Number(row.version),
+        ...(row.security_hold_until
+          ? { deadlineAt: row.security_hold_until.toISOString() } : {}) }
+    : { state: 'MISSING', version: 0 };
 }

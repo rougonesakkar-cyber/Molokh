@@ -72,13 +72,15 @@ HTTP mapping:
 | PATCH | `/me/profile` | display name; never accepts state/status |
 | PATCH | `/me/sports` | primary and optional secondary sport; versioned critical command |
 | POST | `/me/recovery-cases` | account recovery/phone change request |
+| GET | `/me/account-access` | latest recovery state, incident scope and 24h hold deadline |
 | GET | `/me/account-lifecycle` | latest closure/export state and retention deadlines |
 | POST | `/me/account-exports` | request one asynchronous private export |
 | GET | `/me/account-exports/{export_id}/download` | owner-only download while READY and before 48h expiry |
 | POST | `/me/account-closure` | self-request closure and optional immediate/reused export; starts 30d recovery |
 | POST | `/me/account-closures/{closure_id}/cancel` | owner cancellation strictly before recovery deadline |
 
-Sensitive-action hold is represented in `/me.capability_denials[]`; trusted old session receives only service-response capabilities.
+Sensitive-action hold is represented in the account-access projection and enforced again by every
+sensitive command. A trusted old session receives only service-response capabilities.
 
 ## 5. Discovery, Match and Chat
 
@@ -356,6 +358,13 @@ resolved incident window, uses stable per-impact idempotency keys, rescans, and 
 only when no candidate remains.
 
 Account lifecycle exposes a deliberately separate Central surface:
+
+- `GET /api/v1/central/account-recovery-cases` returns pending recovery and active security holds;
+- `POST /api/v1/central/account-recovery-cases/{caseId}/approve-phone|complete-verified|reject|confirm-incident`
+  requires `Idempotency-Key`, `If-Match` and an explicit evidence-based decision;
+- `GET|POST /api/v1/central/duplicate-account-cases` exposes the duplicate review queue and opener;
+- `POST /api/v1/central/duplicate-account-cases/{caseId}/clear|resolve` requires one explicit
+  disposition per affected status/obligation and never merges sporting history;
 
 - `GET /api/v1/central/account-closures` returns live requests with recovery deadline, public
   display name, User version, exact blocker counts and derived `executable` flag;

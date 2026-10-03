@@ -67,6 +67,10 @@ import {
   AccountLifecycleSection,
   CentralAccountClosureSection,
 } from '../features/account-lifecycle/AccountLifecycleSection';
+import {
+  AccountAccessSection,
+  CentralAccountAccessSection,
+} from '../features/account-access/AccountAccessSection';
 import { MembershipExitSection } from '../features/membership-exit/MembershipExitSection';
 import { StatusQueueSection } from '../features/status-queue/StatusQueueSection';
 import {
@@ -2997,6 +3001,7 @@ export default function IdentityScreen() {
                   ))}
                 </View>
 
+                <AccountAccessSection token={activeTestToken} />
                 <AccountLifecycleSection token={activeTestToken} />
               </>
             ) : null}
@@ -3652,6 +3657,7 @@ export default function IdentityScreen() {
                 {activeTestAccount.role === 'Central' ? (
                   <>
                     <PlatformIncidentSection token={activeTestToken} />
+                    <CentralAccountAccessSection token={activeTestToken} />
                     <CentralAccountClosureSection
                       token={activeTestToken}
                       onExecuted={() => void loadIdentity()}

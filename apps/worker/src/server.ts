@@ -21,6 +21,7 @@ import {
   expireBookingTrainingRetention,
   expireAccountExport,
   prepareAccountExport,
+  expirePhoneChangeSecurityHold,
   expireGroupOffering,
   expireGroupPlan,
   expireOptionalChallenge,
@@ -52,6 +53,7 @@ import {
   readBookingSoloContinuationTimerSnapshot,
   readBookingTrainingRetentionTimerSnapshot,
   readAccountExportTimerSnapshot,
+  readAccountAccessTimerSnapshot,
   readGroupOfferingTimerSnapshot,
   readGroupPlanTimerSnapshot,
   readLikeTimerSnapshot,
@@ -80,6 +82,7 @@ import {
   type ExpireBookingTrainingRetentionPayload,
   type ExpireAccountExportPayload,
   type PrepareAccountExportPayload,
+  type ExpirePhoneChangeHoldPayload,
   type ExpireGroupOfferingPayload,
   type ExpireGroupPlanPayload,
   type ExpireLikePayload,
@@ -120,6 +123,7 @@ import {
   accountExportIdFromRequestedOutbox,
   accountLifecycleTimerFromOutbox,
 } from './account-lifecycle.js';
+import { accountAccessTimerFromOutbox } from './account-access.js';
 import {
   platformIncidentIdFromResolvedOutbox,
   reconcilePlatformIncidentEffects,
@@ -842,6 +846,21 @@ const executeAccountExportExpiry = async (payload: TimerCommandPayload) => {
   });
 };
 
+const executeAccountAccessHoldExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpirePhoneChangeHoldPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_SECURITY_HOLD',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AccountAccessCase', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { caseId: payload.aggregateId },
+  };
+  await expirePhoneChangeSecurityHold(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+  });
+};
+
 const prepareRequestedAccountExport = async (exportId: string, causationId: string) => {
   const command: CommandEnvelope<PrepareAccountExportPayload> = {
     commandId: randomUUID(), commandType: 'PREPARE_ACCOUNT_EXPORT',
@@ -1024,6 +1043,10 @@ const taskList = createTaskList({
         EXPIRE_ACCOUNT_EXPORT: {
           loadSnapshot: (timer) => readAccountExportTimerSnapshot(database, timer.aggregateId),
           execute: executeAccountExportExpiry,
+        },
+        EXPIRE_SECURITY_HOLD: {
+          loadSnapshot: (timer) => readAccountAccessTimerSnapshot(database, timer.aggregateId),
+          execute: executeAccountAccessHoldExpiry,
         },
         EXPIRE_LIKE: {
           loadSnapshot: (timer) => readLikeTimerSnapshot(database, timer.aggregateId),
@@ -1221,6 +1244,7 @@ const outboxPolling = startOutboxPolling({
     const socialTimer = socialTimerFromOutbox(message.topic, message.payload);
     const timer = socialTimer
       ?? incidentTimerFromOutbox(message.topic, message.payload)
+      ?? accountAccessTimerFromOutbox(message.topic, message.payload)
       ?? accountLifecycleTimerFromOutbox(message.topic, message.payload)
       ?? identityTimerFromOutbox(message.topic, message.payload)
       ?? schedulingTimerFromOutbox(message.topic, message.payload)

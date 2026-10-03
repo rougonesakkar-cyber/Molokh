@@ -130,6 +130,17 @@ import {
   readAccountExportPayload,
   listAccountClosuresForCentral,
   executeAccountClosure,
+  readMyAccountAccess,
+  requestAccountRecovery,
+  approvePhoneChange,
+  completeVerifiedRecovery,
+  rejectAccountRecovery,
+  confirmAccessIncident,
+  listAccountRecoveryCasesForCentral,
+  listDuplicateAccountCasesForCentral,
+  openDuplicateAccountReview,
+  clearDuplicateAccountReview,
+  resolveDuplicateAccountReview,
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
@@ -1074,6 +1085,21 @@ const localCentralAuth = new StaticBearerAuthAdapter(
 );
 
 const app = await buildApp({
+  accountAccess: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    readMine: (userId) => readMyAccountAccess(database, userId),
+    requestRecovery: (command, ids) => requestAccountRecovery(database, command, ids),
+    listRecovery: (centralUserId) => listAccountRecoveryCasesForCentral(database, centralUserId),
+    approvePhone: (command, ids) => approvePhoneChange(database, command, ids),
+    completeVerified: (command, ids) => completeVerifiedRecovery(database, command, ids),
+    rejectRecovery: (command, ids) => rejectAccountRecovery(database, command, ids),
+    confirmIncident: (command, ids) => confirmAccessIncident(database, command, ids),
+    listDuplicates: (centralUserId) => listDuplicateAccountCasesForCentral(database, centralUserId),
+    openDuplicate: (command, ids) => openDuplicateAccountReview(database, command, ids),
+    clearDuplicate: (command, ids) => clearDuplicateAccountReview(database, command, ids),
+    resolveDuplicate: (command, ids) => resolveDuplicateAccountReview(database, command, ids),
+  },
   accountLifecycle: {
     auth: localAuth,
     centralAuth: localCentralAuth,

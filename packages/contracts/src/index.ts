@@ -195,6 +195,123 @@ export const ExecuteAccountClosureBodySchema = Type.Object({
 }, { $id: 'ExecuteAccountClosureBody', additionalProperties: false });
 export type ExecuteAccountClosureBody = Static<typeof ExecuteAccountClosureBodySchema>;
 
+export const AccountRecoverySignalSchema = Type.Union([
+  Type.Literal('VERIFIED_PHONE'), Type.Literal('TRUSTED_SESSION'),
+  Type.Literal('CENTRAL_SUPPORT'),
+]);
+export const AccountAccessCaseSchema = Type.Object({
+  caseId: Type.String({ format: 'uuid' }),
+  userId: Type.String({ format: 'uuid' }),
+  state: Type.Union([Type.Literal('PENDING'), Type.Literal('SECURITY_HOLD'),
+    Type.Literal('COMPLETED'), Type.Literal('REJECTED')]),
+  route: Type.Union([Type.Literal('VERIFIED_ROUTE'), Type.Literal('PHONE_CHANGE')]),
+  signals: Type.Array(AccountRecoverySignalSchema, { minItems: 1, uniqueItems: true }),
+  requestedPhoneE164: Type.Union([Type.String({ minLength: 8, maxLength: 20 }), Type.Null()]),
+  requestedAt: Type.String({ format: 'date-time' }),
+  securityHoldUntil: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  incidentStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  incidentEndedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  affectedProcessIds: Type.Array(Type.String({ format: 'uuid' }), { uniqueItems: true }),
+  completedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'AccountAccessCase', additionalProperties: false });
+export type AccountAccessCaseContract = Static<typeof AccountAccessCaseSchema>;
+
+export const AccountAccessResponseSchema = Type.Object({
+  data: Type.Union([AccountAccessCaseSchema, Type.Null()]),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.Optional(Type.String({ format: 'uuid' })),
+    replayed: Type.Optional(Type.Boolean()) }, { additionalProperties: false }),
+}, { $id: 'AccountAccessResponse', additionalProperties: false });
+export type AccountAccessResponse = Static<typeof AccountAccessResponseSchema>;
+
+export const RequestAccountRecoveryBodySchema = Type.Object({
+  route: Type.Union([Type.Literal('VERIFIED_ROUTE'), Type.Literal('PHONE_CHANGE')]),
+  signals: Type.Array(AccountRecoverySignalSchema, { minItems: 1, uniqueItems: true }),
+  requestedPhoneE164: Type.Union([Type.String({ minLength: 8, maxLength: 20 }), Type.Null()]),
+  reason: Type.String({ minLength: 10, maxLength: 1000 }),
+}, { $id: 'RequestAccountRecoveryBody', additionalProperties: false });
+export type RequestAccountRecoveryBody = Static<typeof RequestAccountRecoveryBodySchema>;
+
+export const AccountAccessListResponseSchema = Type.Object({
+  data: Type.Array(AccountAccessCaseSchema),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) },
+    { additionalProperties: false }),
+}, { $id: 'AccountAccessListResponse', additionalProperties: false });
+export type AccountAccessListResponse = Static<typeof AccountAccessListResponseSchema>;
+
+export const AccountAccessReasonBodySchema = Type.Object({
+  reason: Type.String({ minLength: 10, maxLength: 1000 }),
+}, { $id: 'AccountAccessReasonBody', additionalProperties: false });
+export type AccountAccessReasonBody = Static<typeof AccountAccessReasonBodySchema>;
+
+export const CompleteVerifiedRecoveryBodySchema = Type.Object({
+  verifiedRouteSucceeded: Type.Literal(true),
+}, { $id: 'CompleteVerifiedRecoveryBody', additionalProperties: false });
+export type CompleteVerifiedRecoveryBody = Static<typeof CompleteVerifiedRecoveryBodySchema>;
+
+export const ConfirmAccessIncidentBodySchema = Type.Object({
+  incidentStartedAt: Type.String({ format: 'date-time' }),
+  incidentEndedAt: Type.String({ format: 'date-time' }),
+  affectedProcessIds: Type.Array(Type.String({ format: 'uuid' }),
+    { minItems: 1, uniqueItems: true }),
+  reason: Type.String({ minLength: 10, maxLength: 1000 }),
+}, { $id: 'ConfirmAccessIncidentBody', additionalProperties: false });
+export type ConfirmAccessIncidentBody = Static<typeof ConfirmAccessIncidentBodySchema>;
+
+export const DuplicateProcessSchema = Type.Object({
+  kind: Type.Union([Type.Literal('STATUS'), Type.Literal('OBLIGATION')]),
+  aggregateId: Type.String({ format: 'uuid' }),
+  currentOwnerUserId: Type.String({ format: 'uuid' }),
+  decision: Type.Union([Type.Literal('RETAIN_CURRENT_OWNER'),
+    Type.Literal('CLOSE_NO_FAULT'), Type.Literal('SEPARATE_GOVERNED_REVIEW'), Type.Null()]),
+}, { additionalProperties: false });
+export const DuplicateAccountCaseSchema = Type.Object({
+  caseId: Type.String({ format: 'uuid' }),
+  state: Type.Union([Type.Literal('UNDER_REVIEW'), Type.Literal('CLEARED'),
+    Type.Literal('RESOLVED')]),
+  userIds: Type.Array(Type.String({ format: 'uuid' }), { minItems: 2, uniqueItems: true }),
+  signalReferences: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true }),
+  canonicalUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  processes: Type.Array(DuplicateProcessSchema),
+  requestedAt: Type.String({ format: 'date-time' }),
+  decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'DuplicateAccountCase', additionalProperties: false });
+export type DuplicateAccountCaseContract = Static<typeof DuplicateAccountCaseSchema>;
+export const DuplicateAccountResponseSchema = Type.Object({
+  data: DuplicateAccountCaseSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }), replayed: Type.Boolean() },
+  { additionalProperties: false }),
+}, { $id: 'DuplicateAccountResponse', additionalProperties: false });
+export type DuplicateAccountResponse = Static<typeof DuplicateAccountResponseSchema>;
+export const DuplicateAccountListResponseSchema = Type.Object({
+  data: Type.Array(DuplicateAccountCaseSchema),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) },
+    { additionalProperties: false }),
+}, { $id: 'DuplicateAccountListResponse', additionalProperties: false });
+export type DuplicateAccountListResponse = Static<typeof DuplicateAccountListResponseSchema>;
+export const OpenDuplicateReviewBodySchema = Type.Object({
+  userIds: Type.Array(Type.String({ format: 'uuid' }), { minItems: 2, uniqueItems: true }),
+  signalReferences: Type.Array(Type.String({ minLength: 1, maxLength: 500 }),
+    { minItems: 1, uniqueItems: true }),
+  reason: Type.String({ minLength: 10, maxLength: 1000 }),
+}, { $id: 'OpenDuplicateReviewBody', additionalProperties: false });
+export type OpenDuplicateReviewBody = Static<typeof OpenDuplicateReviewBodySchema>;
+export const ResolveDuplicateReviewBodySchema = Type.Object({
+  canonicalUserId: Type.String({ format: 'uuid' }),
+  dispositions: Type.Array(Type.Object({
+    kind: Type.Union([Type.Literal('STATUS'), Type.Literal('OBLIGATION')]),
+    aggregateId: Type.String({ format: 'uuid' }),
+    currentOwnerUserId: Type.String({ format: 'uuid' }),
+    decision: Type.Union([Type.Literal('RETAIN_CURRENT_OWNER'),
+      Type.Literal('CLOSE_NO_FAULT'), Type.Literal('SEPARATE_GOVERNED_REVIEW')]),
+  }, { additionalProperties: false })),
+  reason: Type.String({ minLength: 10, maxLength: 1000 }),
+}, { $id: 'ResolveDuplicateReviewBody', additionalProperties: false });
+export type ResolveDuplicateReviewBody = Static<typeof ResolveDuplicateReviewBodySchema>;
+
 const DiscoveryRankingReasonSchema = Type.Union([
   Type.Literal('WITHIN_RADIUS'),
   Type.Literal('CITY_EXPANSION'),
