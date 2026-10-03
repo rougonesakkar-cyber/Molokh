@@ -63,6 +63,10 @@ import {
 import { MissingResultReviewSection } from '../features/missing-result/MissingResultReviewSection';
 import { IntegrityCaseSection } from '../features/integrity-case/IntegrityCaseSection';
 import { PlatformIncidentSection } from '../features/platform-incident/PlatformIncidentSection';
+import {
+  AccountLifecycleSection,
+  CentralAccountClosureSection,
+} from '../features/account-lifecycle/AccountLifecycleSection';
 import { MembershipExitSection } from '../features/membership-exit/MembershipExitSection';
 import { StatusQueueSection } from '../features/status-queue/StatusQueueSection';
 import {
@@ -2992,6 +2996,8 @@ export default function IdentityScreen() {
                     </Text>
                   ))}
                 </View>
+
+                <AccountLifecycleSection token={activeTestToken} />
               </>
             ) : null}
 
@@ -3644,7 +3650,13 @@ export default function IdentityScreen() {
                 />
 
                 {activeTestAccount.role === 'Central' ? (
-                  <PlatformIncidentSection token={activeTestToken} />
+                  <>
+                    <PlatformIncidentSection token={activeTestToken} />
+                    <CentralAccountClosureSection
+                      token={activeTestToken}
+                      onExecuted={() => void loadIdentity()}
+                    />
+                  </>
                 ) : null}
 
                 {coachInvites.map((invite) => (
