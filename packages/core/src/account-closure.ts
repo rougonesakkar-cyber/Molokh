@@ -20,6 +20,7 @@ export type AccountLifecycleErrorCode =
   | 'ACCOUNT_CLOSURE_ACTIVE_SESSION'
   | 'ACCOUNT_CLOSURE_ACTIVE_MEMBERSHIP'
   | 'ACCOUNT_CLOSURE_ACTIVE_ROLE'
+  | 'ACCOUNT_CLOSURE_ACTIVE_QUEUE_ENTRY'
   | 'ACCOUNT_EXPORT_INVALID_STATE'
   | 'ACCOUNT_EXPORT_NOT_DUE'
   | 'ACCOUNT_NOT_CLOSABLE';
@@ -101,6 +102,7 @@ export interface AccountClosureBlockers {
   readonly activeSessionCount: number;
   readonly activeMembershipCount: number;
   readonly activeRoleCount: number;
+  readonly activeQueueEntryCount: number;
 }
 
 export function assertAccountClosureCanBeExecuted(input: {
@@ -125,6 +127,7 @@ export function assertAccountClosureCanBeExecuted(input: {
     [input.blockers.activeSessionCount, 'ACCOUNT_CLOSURE_ACTIVE_SESSION'],
     [input.blockers.activeMembershipCount, 'ACCOUNT_CLOSURE_ACTIVE_MEMBERSHIP'],
     [input.blockers.activeRoleCount, 'ACCOUNT_CLOSURE_ACTIVE_ROLE'],
+    [input.blockers.activeQueueEntryCount, 'ACCOUNT_CLOSURE_ACTIVE_QUEUE_ENTRY'],
   ];
   for (const [count, code] of checks) {
     if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('blocker count is invalid');

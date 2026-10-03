@@ -42,7 +42,8 @@ describe('account closure and export policy', () => {
 
   it('requires Central, an elapsed recovery window and zero operational blockers', () => {
     const blockers = { activeObligationCount: 0, heldStatusCount: 0,
-      activeSessionCount: 0, activeMembershipCount: 0, activeRoleCount: 0 };
+      activeSessionCount: 0, activeMembershipCount: 0, activeRoleCount: 0,
+      activeQueueEntryCount: 0 };
     expect(() => assertAccountClosureCanBeExecuted({ state: 'REQUESTED', actor: central,
       recoveryUntil, occurredAt: recoveryUntil, blockers })).not.toThrow();
     expect(() => assertAccountClosureCanBeExecuted({ state: 'REQUESTED', actor: central,

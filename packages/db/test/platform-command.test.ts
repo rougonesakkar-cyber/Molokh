@@ -1,4 +1,5 @@
 import {
+  AccountLifecycleConflictError,
   IdempotencyKeyReusedError,
   PlatformIncidentConflictError,
   IdentityPermissionDeniedError,
@@ -21,6 +22,14 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   activateUser,
+  requestAccountClosure,
+  cancelAccountClosure,
+  executeAccountClosure,
+  prepareAccountExport,
+  expireAccountExport,
+  readAccountExportPayload,
+  readMyAccountLifecycle,
+  listAccountClosuresForCentral,
   activateBookingOfficialConversionFromQueue,
   addAppealResponse,
   acceptCoachInvite,
@@ -1831,6 +1840,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         platform.incident_timeout_compensations,
         platform.incident_impacts,
         platform.platform_incidents,
+        identity.account_data_exports,
+        identity.account_closure_requests,
         community.community_closure_status_dispositions,
         community.community_closure_session_dispositions,
         community.community_closure_plans,
@@ -9920,5 +9931,165 @@ describePostgres('PostgreSQL critical command transaction', () => {
     () => new Date('2026-10-03T12:02:00.000Z'));
     await expect(listMandatoryTimeoutCompensationCandidates(database, outsideIncident))
       .resolves.toEqual([]);
+  });
+
+  it('runs recoverable account closure, self-export and payload retention end to end', async () => {
+    const athlete = testId(26000);
+    const central = testId(26001);
+    const closure = testId(26020);
+    const exportId = testId(26021);
+    const finalClosure = testId(26050);
+    const activate = async (userId: string, base: number, phone: string, name: string) =>
+      activateUser(database, {
+        commandId: testId(base), commandType: 'ACTIVATE_ACCOUNT',
+        idempotencyKey: `account-lifecycle-activate-${base}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'User', aggregateId: userId, expectedVersion: 0,
+        correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+        source: 'scheduler', payloadVersion: 1,
+        payload: { userId, phoneE164: phone,
+          phoneVerifiedAt: '2026-10-03T08:00:00.000Z', birthDate: '1990-01-01',
+          displayName: name, locale: 'ru-RU', primarySport: 'BOXING',
+          secondarySport: null, discoveryRadiusKm: 15 },
+      }, { eventId: testId(base + 3), auditId: testId(base + 4),
+        outboxMessageId: testId(base + 5) }, () => new Date('2026-10-03T09:00:00.000Z'));
+    await activate(athlete, 26002, '+79990260000', 'Закрывающий аккаунт');
+    await activate(central, 26008, '+79990260001', 'Central Closure');
+    await sql`insert into community.role_grants (
+      grant_id, user_id, role, scope_type, scope_id, state,
+      authorized_by, authorized_at, version
+    ) values (${testId(26014)}::uuid, ${central}::uuid, 'CENTRAL_ADMIN', 'GLOBAL', null,
+      'ACTIVE', ${central}::uuid, '2026-10-03T09:00:00Z', 1)`.execute(database);
+
+    const requested = await requestAccountClosure(database, {
+      commandId: testId(26022), commandType: 'REQUEST_ACCOUNT_CLOSURE',
+      idempotencyKey: 'account-closure-with-export',
+      actor: { type: 'USER', id: athlete, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountClosureRequest', aggregateId: closure, expectedVersion: 0,
+      correlationId: testId(26023), causationId: null, requestId: testId(26024),
+      source: 'api', payloadVersion: 1,
+      payload: { userId: athlete, exportRequested: true },
+    }, { eventId: testId(26025), auditId: testId(26026), outboxMessageId: testId(26027),
+      exportId, exportEventId: testId(26028), exportOutboxMessageId: testId(26029) },
+    () => new Date('2026-10-03T10:00:00.000Z'));
+    expect(requested.response).toMatchObject({
+      closure: { closureId: closure, state: 'REQUESTED',
+        recoveryUntil: '2026-11-02T10:00:00.000Z', version: 1 },
+      dataExport: { exportId, state: 'REQUESTED', version: 1 },
+    });
+
+    const prepared = await prepareAccountExport(database, {
+      commandId: testId(26030), commandType: 'PREPARE_ACCOUNT_EXPORT',
+      idempotencyKey: 'account-export-prepare',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AccountDataExport', aggregateId: exportId, expectedVersion: 1,
+      correlationId: testId(26023), causationId: testId(26028), requestId: testId(26031),
+      source: 'scheduler', payloadVersion: 1, payload: { exportId },
+    }, { eventId: testId(26032), auditId: testId(26033), outboxMessageId: testId(26034) },
+    () => new Date('2026-10-03T10:01:00.000Z'));
+    expect(prepared.response).toMatchObject({ state: 'READY', version: 2,
+      expiresAt: '2026-10-05T10:01:00.000Z' });
+    expect(prepared.response.payloadSha256).toMatch(/^[0-9a-f]{64}$/);
+    await expect(readAccountExportPayload(database, athlete, exportId,
+      new Date('2026-10-04T10:00:00.000Z'))).resolves.toMatchObject({
+      schemaVersion: 1, userId: athlete,
+      profile: { display_name: 'Закрывающий аккаунт' },
+    });
+    await expect(expireAccountExport(database, {
+      commandId: testId(26035), commandType: 'EXPIRE_ACCOUNT_EXPORT',
+      idempotencyKey: 'account-export-expire-too-early',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AccountDataExport', aggregateId: exportId, expectedVersion: 2,
+      correlationId: testId(26023), causationId: testId(26032), requestId: testId(26036),
+      source: 'scheduler', payloadVersion: 1, payload: { exportId },
+    }, { eventId: testId(26037), auditId: testId(26038), outboxMessageId: testId(26039) },
+    () => new Date('2026-10-05T10:00:59.999Z')))
+      .rejects.toMatchObject({ code: 'ACCOUNT_EXPORT_NOT_DUE' });
+    const expired = await expireAccountExport(database, {
+      commandId: testId(26040), commandType: 'EXPIRE_ACCOUNT_EXPORT',
+      idempotencyKey: 'account-export-expire',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'AccountDataExport', aggregateId: exportId, expectedVersion: 2,
+      correlationId: testId(26023), causationId: testId(26032), requestId: testId(26041),
+      source: 'scheduler', payloadVersion: 1, payload: { exportId },
+    }, { eventId: testId(26042), auditId: testId(26043), outboxMessageId: testId(26044) },
+    () => new Date('2026-10-05T10:01:00.000Z'));
+    expect(expired.response).toMatchObject({ state: 'EXPIRED', version: 3 });
+    await expect(readAccountExportPayload(database, athlete, exportId))
+      .rejects.toBeInstanceOf(AccountLifecycleConflictError);
+
+    const cancelled = await cancelAccountClosure(database, {
+      commandId: testId(26045), commandType: 'CANCEL_ACCOUNT_CLOSURE',
+      idempotencyKey: 'account-closure-cancel',
+      actor: { type: 'USER', id: athlete, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountClosureRequest', aggregateId: closure, expectedVersion: 1,
+      correlationId: testId(26023), causationId: testId(26025), requestId: testId(26046),
+      source: 'api', payloadVersion: 1, payload: { closureId: closure },
+    }, { eventId: testId(26047), auditId: testId(26048), outboxMessageId: testId(26049) },
+    () => new Date('2026-10-06T10:00:00.000Z'));
+    expect(cancelled.response.closure).toMatchObject({ state: 'CANCELLED', version: 2 });
+
+    await requestAccountClosure(database, {
+      commandId: testId(26051), commandType: 'REQUEST_ACCOUNT_CLOSURE',
+      idempotencyKey: 'account-closure-final-request',
+      actor: { type: 'USER', id: athlete, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'AccountClosureRequest', aggregateId: finalClosure, expectedVersion: 0,
+      correlationId: testId(26052), causationId: testId(26047), requestId: testId(26053),
+      source: 'api', payloadVersion: 1,
+      payload: { userId: athlete, exportRequested: false },
+    }, { eventId: testId(26054), auditId: testId(26055), outboxMessageId: testId(26056) },
+    () => new Date('2026-10-06T10:00:00.000Z'));
+    await expect(listAccountClosuresForCentral(database, central,
+      new Date('2026-11-05T09:59:59.999Z'))).resolves.toEqual([
+      expect.objectContaining({ closureId: finalClosure, executable: false }),
+    ]);
+    await expect(executeAccountClosure(database, {
+      commandId: testId(26057), commandType: 'CLOSE_ACCOUNT',
+      idempotencyKey: 'account-closure-final-too-early',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'User', aggregateId: athlete, expectedVersion: 1,
+      correlationId: testId(26052), causationId: testId(26054), requestId: testId(26058),
+      source: 'admin', payloadVersion: 1,
+      payload: { closureId: finalClosure, userId: athlete, reason: 'User request approved.' },
+    }, { eventId: testId(26059), closureEventId: testId(26060),
+      auditId: testId(26061), outboxMessageId: testId(26062) },
+    () => new Date('2026-11-05T09:59:59.999Z')))
+      .rejects.toMatchObject({ code: 'ACCOUNT_CLOSURE_RECOVERY_ACTIVE' });
+    await expect(listAccountClosuresForCentral(database, central,
+      new Date('2026-11-05T10:00:00.000Z'))).resolves.toEqual([
+      expect.objectContaining({ closureId: finalClosure, executable: true,
+        blockers: { activeObligationCount: 0, heldStatusCount: 0,
+          activeSessionCount: 0, activeMembershipCount: 0, activeRoleCount: 0,
+          activeQueueEntryCount: 0 } }),
+    ]);
+    const closed = await executeAccountClosure(database, {
+      commandId: testId(26063), commandType: 'CLOSE_ACCOUNT',
+      idempotencyKey: 'account-closure-final-execute',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'User', aggregateId: athlete, expectedVersion: 1,
+      correlationId: testId(26052), causationId: testId(26054), requestId: testId(26064),
+      source: 'admin', payloadVersion: 1,
+      payload: { closureId: finalClosure, userId: athlete, reason: 'User request approved.' },
+    }, { eventId: testId(26065), closureEventId: testId(26066),
+      auditId: testId(26067), outboxMessageId: testId(26068) },
+    () => new Date('2026-11-05T10:00:00.000Z'));
+    expect(closed.response).toMatchObject({ accountState: 'CLOSED',
+      displayName: 'Удалённый участник', phoneVerified: false, version: 2, capabilities: [] });
+    await expect(readIdentityProjection(database, athlete)).resolves.toEqual(closed.response);
+    await expect(readMyAccountLifecycle(database, athlete)).resolves.toMatchObject({
+      closure: { closureId: finalClosure, state: 'EXECUTED', version: 2 },
+      dataExport: { exportId, state: 'EXPIRED', version: 3 },
+    });
+    const privateFacts = await sql<{ readonly phone_e164: string;
+      readonly event_count: string; readonly payload_is_null: boolean }>`
+      select users.phone_e164,
+        (select count(*)::text from platform.domain_events where aggregate_type = 'User'
+          and aggregate_id = users.user_id and event_name = 'UserAccountClosed') as event_count,
+        (select export_payload is null from identity.account_data_exports
+          where export_id = ${exportId}::uuid) as payload_is_null
+      from identity.users as users where users.user_id = ${athlete}::uuid
+    `.execute(database);
+    expect(privateFacts.rows[0]).toEqual({ phone_e164: `closed:${athlete}`,
+      event_count: '1', payload_is_null: true });
   });
 });
