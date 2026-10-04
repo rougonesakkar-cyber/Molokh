@@ -178,13 +178,16 @@ This sprint produces a demonstrable Training slice while establishing the same f
   remains optional and unconfigured. Account recovery and duplicate-account Central cases are also
   complete. Web refresh is kept in an HttpOnly/SameSite cookie, native refresh in Expo SecureStore,
   and the universal client restores/rotates the managed session without persisting a Web refresh or
-  access token. Remaining Story 4 production work is the avatar malware/scan port, external opt-in
-  SMS provider and role-aware production bootstrap.
+  access token. Production bootstrap is now fail-closed: it disables all local fixtures/static
+  tokens, requires explicit secrets/pilot IDs/HTTPS origins and rechecks the active Central role
+  from PostgreSQL for every privileged request. Remaining Story 4 production work is the avatar
+  malware/scan port and an external opt-in SMS provider.
 - Story 5 foundation: complete. One deterministic pilot Venue/Community and active Membership render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and at most one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
 - Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
-- Story 5 remaining: no local pilot blocker. Role-aware production session wiring and the avatar
-  scan adapter remain M2 release hardening; recovery and duplicate-account governance are complete.
+- Story 5 remaining: no local pilot blocker. The avatar scan adapter and external opt-in OTP
+  delivery remain M2 release hardening; production role-aware session wiring, recovery and
+  duplicate-account governance are complete.
 - M3 Discovery read increment: complete. A versioned, lexicographic ranking policy exhausts the selected radius before city expansion, highlights inbound interest inside each geography tier, treats sport as a soft signal and uses a stable ID tie-break. PostgreSQL source tables and hard gates exclude self, inactive/paused accounts, cross-age candidates, Block, active suppression and active/archived Match without computing a reliability score. The API and universal client render the second deterministic Athlete.
 - M3 social mutation increment: complete in code. Idempotent Like/Skip commands use a normalized pair lock; mutual Like creates both terminal Like states, exactly one Match and one personal Chat in one transaction. State/version-guarded worker timers expire one-sided Likes after 30 days and Skip suppression after 15 days. The universal client shows only Like/Skip and adds Match after mutual intent.
 - M3 Block/Unmatch increment: complete. Unmatch atomically closes the personal Chat and starts the 15-day pair suppression; directed Block closes any personal Match/contact and withdraws a pending pair Like. Both commands expose and audit the invariant that accepted obligations and status paths are preserved. Unblock never restores the old Match. Core, API, universal client and real PostgreSQL scenarios pass.
@@ -329,9 +332,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
   public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
   Worker and PostgreSQL migration `0053` pass.
-- Next increment: implement recovery/duplicate-account cases, then complete the remaining
-  role-switch and pilot-operations walkthroughs. General Chat/evidence cleanup workers remain M8
-  release-hardening work; the versioned policies are already persisted.
+- Next increment: implement the disabled-by-default avatar storage/scan adapter boundary, then
+  complete the remaining role-switch and pilot-operations walkthroughs. External OTP delivery is
+  intentionally deferred until a provider account is selected. General Chat/evidence cleanup
+  workers remain M8 release-hardening work; the versioned policies are already persisted.
 
 ## 5. Work that needs product/external input later
 

@@ -226,6 +226,23 @@ async function actorIsCentral(
   return result.rows.length === 1;
 }
 
+export async function hasActiveCentralRole(
+  database: Kysely<Database>,
+  userId: string,
+): Promise<boolean> {
+  const result = await sql<{ readonly grant_id: string }>`
+    select grant_id
+    from community.role_grants
+    where user_id = ${userId}::uuid
+      and role = 'CENTRAL_ADMIN'
+      and scope_type = 'GLOBAL'
+      and scope_id is null
+      and state = 'ACTIVE'
+    limit 1
+  `.execute(database);
+  return result.rows.length === 1;
+}
+
 async function venueTargetContext(
   transaction: Transaction<Database>,
   venueId: string,

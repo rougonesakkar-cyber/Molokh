@@ -28,6 +28,7 @@
 | Personal Chat slice | participant-only history/send, append-only edits, local visibility, Report freeze and typed system actions | Pass in Core/API/client and real PostgreSQL |
 | Scheduling publication slice | role-scoped Slot/GroupOffering publish, overlap guard, expiry timers and active-Match Chat cards | Pass in Core/API/client/worker and real PostgreSQL |
 | API edge baseline | official CORS/Helmet/rate-limit plugins, DB-backed readiness and secret log redaction | Pass |
+| Production auth bootstrap | database sessions only, no local fixtures/static tokens, live Central-role check, required secrets/pilot IDs/HTTPS origins | Pass in code and automated config/auth/DB tests; external OTP provider remains unconfigured |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
 | Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 109/213 mapped (`103/195 P0`) as implementation grows |
 | Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |

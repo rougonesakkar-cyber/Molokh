@@ -17,6 +17,12 @@ Molokh — mobile-first продукт для поиска партнёров п
   local backports that expire on 2026-10-16 and reject every other high/critical advisory;
 - external deployment/accounts: not configured.
 
+Production API startup is fail-closed and uses the database-backed session model only: local
+fixtures/static bearer tokens are disabled, Central endpoints recheck the current active global
+role, and secrets, pilot Community/Competition IDs plus HTTPS browser origins must be explicit.
+The required variable names are documented in [`.env.example`](.env.example); real values belong
+in the deployment secret store and must never be committed.
+
 Run the consistency check:
 
 ```powershell

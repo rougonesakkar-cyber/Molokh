@@ -99,6 +99,7 @@ import {
   readStatusQueueReconciliationCandidates,
   previewStatusRelease,
   confirmStatusRelease,
+  hasActiveCentralRole,
   previewMembershipExit,
   confirmMembershipExit,
   appealMembershipRemoval,
@@ -2973,6 +2974,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       contactPayload: { phone: '+79990000220' },
       occurredAt: '2026-09-06T08:00:00.000Z',
     });
+    await expect(hasActiveCentralRole(database, ids.centralActor)).resolves.toBe(true);
+    await expect(hasActiveCentralRole(database, ids.roleCoach)).resolves.toBe(false);
 
     const invitation: CommandEnvelope<{
       readonly userId: string;

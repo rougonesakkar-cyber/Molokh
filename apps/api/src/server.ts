@@ -142,6 +142,7 @@ import {
   clearDuplicateAccountReview,
   resolveDuplicateAccountReview,
   authenticateAccessToken,
+  hasActiveCentralRole,
   readRefreshTokenContext,
   requestAuthOtp,
   revokeAuthSession,
@@ -151,35 +152,25 @@ import {
 
 import { buildApp } from './app.js';
 import {
+  AuthorizedAuthAdapter,
   CompositeAuthAdapter,
   DatabaseBearerAuthAdapter,
-  StaticBearerAuthAdapter,
   StaticBearerAuthRegistryAdapter,
 } from './auth.js';
+import { readApiRuntimeConfig } from './runtime-config.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
-const production = process.env.NODE_ENV === 'production';
-const connectionString =
-  process.env.DATABASE_URL ??
-  (production
-    ? undefined
-    : 'postgres://molokh:local-only-password@localhost:5432/molokh');
-
-if (!connectionString) throw new Error('DATABASE_URL is required');
-if (production) {
-  throw new Error('A production AuthAdapter must be configured before production startup');
-}
-
-const youthConsentTokenSecret = process.env.YOUTH_CONSENT_TOKEN_SECRET
-  ?? 'molokh-local-youth-consent-token-secret-v1';
-const authSessionSecret = process.env.AUTH_SESSION_SECRET
-  ?? 'molokh-local-auth-session-secret-v1-change-in-production';
+const runtimeConfig = readApiRuntimeConfig();
+const production = runtimeConfig.production;
+const connectionString = runtimeConfig.databaseUrl;
+const youthConsentTokenSecret = runtimeConfig.youthConsentTokenSecret;
+const authSessionSecret = runtimeConfig.authSessionSecret;
 
 const localUserId = '0199a1b2-1234-7000-8000-000000000101';
 const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
-const localCommunityId = '0199a1b2-1234-7000-8000-000000000502';
-const localCompetitionId = '0199a1b2-1234-7000-8000-000000000901';
+const localCommunityId = runtimeConfig.pilotCommunityId;
+const localCompetitionId = runtimeConfig.pilotCompetitionId;
 const localCentralUserId = '0199a1b2-1234-7000-8000-000000000506';
 const localCoachUserId = '0199a1b2-1234-7000-8000-000000000508';
 const localReplacementCoachUserId = '0199a1b2-1234-7000-8000-000000000801';
@@ -565,6 +556,7 @@ const localTemporaryDiscoveryFixtures: ReadonlyArray<{
 
 await runMigrations(connectionString);
 const database = createDatabase(connectionString);
+if (runtimeConfig.localFixturesEnabled) {
 const existingLocalIdentity = await readIdentityProjection(database, localUserId);
 if (!existingLocalIdentity) {
   await activateUser(database, localActivation, {
@@ -1075,8 +1067,10 @@ if (!localAdminAlreadyActive && !(await readRoleGrant(database, localAdminGrantI
     },
   );
 }
+}
 
-const localStaticAuth = new StaticBearerAuthRegistryAdapter([
+const localStaticAuth = runtimeConfig.localFixturesEnabled
+  ? new StaticBearerAuthRegistryAdapter([
   { token: localToken, userId: localUserId },
   { token: localCentralToken, userId: localCentralUserId },
   { token: localCoachToken, userId: localCoachUserId },
@@ -1088,21 +1082,23 @@ const localStaticAuth = new StaticBearerAuthRegistryAdapter([
     token: fixture.token,
     userId: fixture.activation.payload.userId,
   })),
-]);
+]) : null;
 const databaseAuth = new DatabaseBearerAuthAdapter(
   (tokenHash) => authenticateAccessToken(database, tokenHash),
 );
-const localAuth = new CompositeAuthAdapter([databaseAuth, localStaticAuth]);
-const localCentralAuth = new StaticBearerAuthAdapter(
-  localCentralToken,
-  localCentralUserId,
+const localAuth = localStaticAuth
+  ? new CompositeAuthAdapter([databaseAuth, localStaticAuth])
+  : databaseAuth;
+const localCentralAuth = new AuthorizedAuthAdapter(
+  localAuth,
+  (authenticated) => hasActiveCentralRole(database, authenticated.userId),
 );
 
 const app = await buildApp({
   authentication: {
     auth: databaseAuth,
     secret: authSessionSecret,
-    localDevelopmentTransportEnabled: !production,
+    localDevelopmentTransportEnabled: runtimeConfig.localFixturesEnabled,
     smsTransportAvailable: false,
     secureCookies: production,
     requestOtp: (command, ids, codeVerifierHash) =>
@@ -1239,7 +1235,8 @@ const app = await buildApp({
       remove: true,
     },
   },
-  allowedOrigins: ['http://localhost:8081', 'http://127.0.0.1:8081'],
+  allowedOrigins: runtimeConfig.allowedOrigins,
+  trustProxy: runtimeConfig.trustProxy,
   readiness: () => probeDatabase(database),
   chat: {
     auth: localAuth,
@@ -1266,8 +1263,8 @@ const app = await buildApp({
   youthConsent: {
     auth: localAuth,
     tokenSecret: youthConsentTokenSecret,
-    publicBaseUrl: 'http://localhost:8081',
-    exposeDevelopmentActionUrl: true,
+    publicBaseUrl: runtimeConfig.publicWebUrl,
+    exposeDevelopmentActionUrl: runtimeConfig.localFixturesEnabled,
     readSummary: (challengeId, viewerUserId) =>
       readYouthConsentSummary(database, challengeId, viewerUserId),
     request: (command, ids, deliveryToken) =>

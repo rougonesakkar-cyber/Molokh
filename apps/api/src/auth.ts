@@ -128,3 +128,19 @@ export class CompositeAuthAdapter implements AuthAdapter {
     return null;
   }
 }
+
+export class AuthorizedAuthAdapter implements AuthAdapter {
+  constructor(
+    private readonly delegate: AuthAdapter,
+    private readonly authorize: (authenticated: AuthenticatedUser) => Promise<boolean>,
+  ) {}
+
+  async authenticate(
+    authorization: string | undefined,
+    requirement: AuthAccessRequirement = 'FULL',
+  ): Promise<AuthenticatedUser | null> {
+    const authenticated = await this.delegate.authenticate(authorization, requirement);
+    if (!authenticated) return null;
+    return await this.authorize(authenticated) ? authenticated : null;
+  }
+}

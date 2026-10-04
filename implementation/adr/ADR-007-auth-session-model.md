@@ -22,6 +22,9 @@ Molokh использует phone-first access, но SMS отправляетс�
 - Web получает refresh только через `HttpOnly; SameSite=Lax` cookie (`Secure` в production), native
   хранит refresh в Expo SecureStore. Universal client восстанавливает session при старте и ротирует
   access за минуту до истечения; Web access token остаётся только в памяти.
+- Production не загружает local fixtures или статические bearer-токены. Central adapter сначала
+  проверяет database session, затем актуальный `ACTIVE/GLOBAL/CENTRAL_ADMIN` grant; отзыв роли
+  прекращает привилегированный доступ без ожидания истечения access token.
 
 ## Consequences
 
