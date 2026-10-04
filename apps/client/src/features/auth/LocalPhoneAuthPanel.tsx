@@ -70,7 +70,7 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
       {activeSession ? (
         <>
           {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-          <Pressable accessibilityRole="button" disabled={busy}
+          <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy}
             onPress={() => { void logout(); }}
             style={({ pressed }) => [styles.button, pressed && styles.pressed,
               busy && styles.disabled]}>
@@ -89,7 +89,7 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
           style={styles.input} value={code} />
       ) : null}
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-      <Pressable accessibilityRole="button" disabled={busy}
+      <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy}
         onPress={() => { void (challenge ? confirmCode() : requestCode()); }}
         style={({ pressed }) => [styles.button, pressed && styles.pressed,
           busy && styles.disabled]}>
@@ -98,7 +98,7 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
         )}
       </Pressable>
       {challenge ? (
-        <Pressable accessibilityRole="button" disabled={busy}
+        <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy}
           onPress={() => { setChallenge(null); setCode(''); setNotice(null); }}>
           <Text style={styles.link}>Изменить номер</Text>
         </Pressable>

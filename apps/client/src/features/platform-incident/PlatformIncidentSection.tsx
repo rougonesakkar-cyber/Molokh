@@ -167,7 +167,8 @@ export function PlatformIncidentSection({ token }: { readonly token: string }) {
             Только объективно зарегистрированные сбои. Пользовательские сроки компенсируются автоматически.
           </Text>
         </View>
-        <Pressable accessibilityRole="button" disabled={loading} onPress={() => void load()}
+        <Pressable accessibilityRole="button" accessibilityState={{ disabled: loading }}
+          disabled={loading} onPress={() => void load()}
           style={[styles.refresh, loading && styles.disabled]}>
           <Text style={styles.refreshText}>Обновить</Text>
         </Pressable>

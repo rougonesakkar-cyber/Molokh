@@ -9,7 +9,8 @@
   "scripts": {
     "audit:prod": "node ./tools/audit-production.mjs",
     "build": "pnpm -r --if-present build",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm coverage:acceptance",
+    "check": "pnpm typecheck && pnpm test && pnpm check:a11y && pnpm build && pnpm coverage:acceptance",
+    "check:a11y": "node ./tools/check-client-accessibility.mjs",
     "coverage:acceptance": "node ./tools/acceptance-coverage.mjs",
     "dev:api": "pnpm --filter @molokh/api dev",
     "dev:client": "pnpm --filter @molokh/client start",

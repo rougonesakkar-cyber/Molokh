@@ -30,6 +30,8 @@ Required gates:
 - terminal states reject ordinary mutation;
 - same command with same idempotency key is observationally equivalent;
 - same idempotency key with changed payload is rejected.
+- universal-client TSX requires explicit control roles, field labels, heading hierarchy and
+  selected/checked/disabled accessibility state; static Web output must declare the pilot locale.
 
 ## 4. Status algebra properties
 

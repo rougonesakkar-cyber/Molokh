@@ -553,7 +553,7 @@ export default function ChatScreen() {
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
         <View style={styles.headerIdentity}>
-          <Text accessibilityRole="header" style={styles.title}>{counterpart}</Text>
+          <Text accessibilityRole="header" aria-level={1} style={styles.title}>{counterpart}</Text>
           <Text style={styles.subtitle}>
             {chatIsOpen
               ? chatChallenge?.challenge?.responsePolicy === 'MUTUAL_GENESIS'
@@ -638,6 +638,7 @@ export default function ChatScreen() {
                           />
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: requestingYouthConsent || guardianEmail.trim().length === 0 }}
                             disabled={requestingYouthConsent || guardianEmail.trim().length === 0}
                             onPress={() => void requestGuardianConsent()}
                             style={({ pressed }) => [
@@ -676,6 +677,7 @@ export default function ChatScreen() {
                         <View style={styles.challengeActions}>
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true }}
                             disabled={actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true}
                             onPress={() => void runChallengeAction('accept')}
                             style={({ pressed }) => [styles.challengeButton, (actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true) && styles.disabled, pressed && styles.pressed]}
@@ -684,6 +686,7 @@ export default function ChatScreen() {
                           </Pressable>
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
                             disabled={actingChallenge}
                             onPress={() => void runChallengeAction('decline')}
                             style={({ pressed }) => [styles.secondaryChallengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
@@ -694,6 +697,7 @@ export default function ChatScreen() {
                       ) : (
                         <Pressable
                           accessibilityRole="button"
+                          accessibilityState={{ disabled: actingChallenge }}
                           disabled={actingChallenge}
                           onPress={() => void runChallengeAction('withdraw')}
                           style={({ pressed }) => [styles.secondaryChallengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
@@ -712,6 +716,7 @@ export default function ChatScreen() {
                         <View style={styles.challengeActions}>
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
                             disabled={actingChallenge}
                             onPress={() => void runChallengeAction('accept')}
                             style={({ pressed }) => [styles.challengeButton, (actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true) && styles.disabled, pressed && styles.pressed]}
@@ -720,6 +725,7 @@ export default function ChatScreen() {
                           </Pressable>
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
                             disabled={actingChallenge}
                             onPress={() => Alert.alert(
                               'Подтвердить отказ?',
@@ -737,6 +743,7 @@ export default function ChatScreen() {
                       ) : (
                         <Pressable
                           accessibilityRole="button"
+                          accessibilityState={{ disabled: actingChallenge }}
                           disabled={actingChallenge}
                           onPress={() => void runChallengeAction('withdraw')}
                           style={({ pressed }) => [styles.secondaryChallengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
@@ -1311,7 +1318,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     justifyContent: 'center',
     marginTop: 7,
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 12,
   },
   groupButton: {
@@ -1320,7 +1327,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     justifyContent: 'center',
     marginTop: 7,
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 12,
   },
   trainingButtonText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },

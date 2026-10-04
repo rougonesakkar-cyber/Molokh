@@ -158,6 +158,7 @@ export default function GuardianConsentScreen() {
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: acting || !accepted || guardianDisplayName.trim().length < 2 || relationship.trim().length < 2 }}
                   disabled={acting || !accepted || guardianDisplayName.trim().length < 2 || relationship.trim().length < 2}
                   onPress={() => void decide('grant')}
                   style={({ pressed }) => [
@@ -171,6 +172,7 @@ export default function GuardianConsentScreen() {
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: acting }}
                   disabled={acting}
                   onPress={() => void decide('decline')}
                   style={({ pressed }) => [styles.secondary, acting && styles.disabled, pressed && styles.pressed]}
@@ -183,6 +185,7 @@ export default function GuardianConsentScreen() {
             {consent.canRevoke ? (
               <Pressable
                 accessibilityRole="button"
+                accessibilityState={{ disabled: acting }}
                 disabled={acting}
                 onPress={() => void decide('revoke')}
                 style={({ pressed }) => [styles.secondary, acting && styles.disabled, pressed && styles.pressed]}

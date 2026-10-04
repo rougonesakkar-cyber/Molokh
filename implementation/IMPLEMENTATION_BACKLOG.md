@@ -334,7 +334,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
   public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
   Worker and PostgreSQL migration `0053` pass.
-- Next increment: rehearse M8 rollback and accessibility checks.
+- Next increment: rehearse M8 rollback and real-device screen-reader/dynamic-layout checks.
   External object/scan and OTP delivery are intentionally
   deferred until provider accounts are selected. General Chat/evidence cleanup workers remain M8
   work; the versioned policies are already persisted.
@@ -355,6 +355,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   The isolated restore rebuilds notification fields in shadow form from canonical outbox events,
   compares deterministic count/hash plus Inbox receipts and explicitly excludes user-owned
   `read_at`. No live or canonical history table is truncated.
+- M8 static-accessibility increment: complete. CI parses every client TSX control for explicit
+  role/label/heading and selected/checked/disabled state, shared compact touch targets are at least
+  44 points, and the Web document declares Russian language/title/description. Real VoiceOver,
+  TalkBack, 200% zoom and largest-text device passes remain operational pilot gates.
 
 ## 5. Work that needs product/external input later
 

@@ -175,6 +175,7 @@ function IntegrityCard({ integrityCase, token, onUpdated }: {
               <Pressable
                 key={item}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: busy, selected: outcome === item }}
                 disabled={busy}
                 onPress={() => setOutcome(item)}
                 style={[styles.option, outcome === item && styles.optionSelected]}
@@ -278,6 +279,7 @@ function OpenIntegrityCaseForm({ token, onUpdated }: {
           <Pressable
             key={item}
             accessibilityRole="button"
+            accessibilityState={{ disabled: acting, selected: category === item }}
             disabled={acting}
             onPress={() => setCategory(item)}
             style={[styles.option, category === item && styles.optionSelected]}

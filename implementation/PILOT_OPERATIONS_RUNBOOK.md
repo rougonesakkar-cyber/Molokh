@@ -83,3 +83,27 @@ Record for each pre-pilot rehearsal:
 Every additional rebuildable projection must likewise declare its canonical event source,
 deterministic command and hash comparison. Canonical aggregate, domain-event, audit and sporting-
 history tables are never dropped for that exercise.
+
+## 5. Accessibility and localization
+
+Run the static universal-client gate on every change:
+
+```powershell
+pnpm check:a11y
+```
+
+It requires explicit roles for every `Pressable`, labels for every `TextInput`, heading levels,
+selected/checked state and an announced disabled state. Web static output declares `lang="ru"`,
+and interactive controls use at least a 44-point target in the shared compact styles. Text scaling
+remains enabled.
+
+Before inviting pilot users, complete the remaining device checks with real assistive technology:
+
+- keyboard-only Web navigation with visible focus and no focus trap;
+- browser zoom at 200% without lost actions or horizontal content clipping;
+- VoiceOver on the supported iOS build and TalkBack on the supported Android build;
+- Dynamic Type / largest system text, reduce-motion and light/dark system settings;
+- one Athlete, Coach, Gym Admin and Central critical journey with Russian announcements.
+
+Record device/OS/browser versions and defects. Static conformance is a gate, but it is not a
+substitute for screen-reader and dynamic-layout testing on real devices.

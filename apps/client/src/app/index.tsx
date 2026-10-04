@@ -2860,7 +2860,7 @@ export default function IdentityScreen() {
             })}
           </View>
         ) : null}
-        <Text accessibilityRole="header" style={styles.title}>{activeSectionCopy.title}</Text>
+        <Text accessibilityRole="header" aria-level={1} style={styles.title}>{activeSectionCopy.title}</Text>
         <Text style={styles.lead}>{activeSectionCopy.lead}</Text>
 
         {loading ? (
@@ -3211,6 +3211,7 @@ export default function IdentityScreen() {
                                 />
                                 <Pressable
                                   accessibilityRole="button"
+                                  accessibilityState={{ disabled: actingMembershipRemoval || removalAppealReason.trim().length < 10 }}
                                   disabled={actingMembershipRemoval || removalAppealReason.trim().length < 10}
                                   onPress={() => void appealMembershipRemoval(removal)}
                                   style={({ pressed }) => [
@@ -3224,6 +3225,7 @@ export default function IdentityScreen() {
                                 </Pressable>
                                 <Pressable
                                   accessibilityRole="button"
+                                  accessibilityState={{ disabled: actingMembershipRemoval }}
                                   disabled={actingMembershipRemoval}
                                   onPress={() => {
                                     setRemovalAppealCaseId(null);
@@ -3286,6 +3288,7 @@ export default function IdentityScreen() {
                             />
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: actingMembershipRemoval || removalDecisionReason.trim().length < 10 }}
                               disabled={actingMembershipRemoval || removalDecisionReason.trim().length < 10}
                               onPress={() => void decideMembershipRemoval(removal, 'CONFIRM_REMOVAL')}
                               style={({ pressed }) => [
@@ -3299,6 +3302,7 @@ export default function IdentityScreen() {
                             </Pressable>
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: actingMembershipRemoval || removalDecisionReason.trim().length < 10 }}
                               disabled={actingMembershipRemoval || removalDecisionReason.trim().length < 10}
                               onPress={() => void decideMembershipRemoval(removal, 'REJECT_REMOVAL')}
                               style={({ pressed }) => [
@@ -3540,6 +3544,7 @@ export default function IdentityScreen() {
                         />
                         <Pressable
                           accessibilityRole="button"
+                          accessibilityState={{ disabled: actingCommunityClosure || communityClosureReason.trim().length === 0 }}
                           disabled={actingCommunityClosure || communityClosureReason.trim().length === 0}
                           onPress={() => void scheduleCommunityClosurePlan()}
                           style={({ pressed }) => [
@@ -3581,6 +3586,7 @@ export default function IdentityScreen() {
                             />
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: actingCommunityClosure || communityClosureReason.trim().length === 0 }}
                               disabled={actingCommunityClosure || communityClosureReason.trim().length === 0}
                               onPress={() => void finalizeCommunityClosurePlan()}
                               style={({ pressed }) => [
@@ -3687,6 +3693,11 @@ export default function IdentityScreen() {
                                     <Pressable
                                       key={hours}
                                       accessibilityRole="button"
+                                      accessibilityState={{
+                                        disabled: actingCentralAppealId !== null
+                                          || centralDecisionAppealId !== appeal.appealId
+                                          || centralDecisionReason.trim().length === 0,
+                                      }}
                                       disabled={actingCentralAppealId !== null
                                         || centralDecisionAppealId !== appeal.appealId
                                         || centralDecisionReason.trim().length === 0}
@@ -3885,6 +3896,7 @@ export default function IdentityScreen() {
                                 />
                                 <Pressable
                                   accessibilityRole="button"
+                                  accessibilityState={{ disabled: actingMembershipRemoval || removalReason.trim().length < 10 }}
                                   disabled={actingMembershipRemoval || removalReason.trim().length < 10}
                                   onPress={() => void requestMembershipRemoval(member)}
                                   style={({ pressed }) => [
@@ -3902,6 +3914,7 @@ export default function IdentityScreen() {
                                 </Pressable>
                                 <Pressable
                                   accessibilityRole="button"
+                                  accessibilityState={{ disabled: actingMembershipRemoval }}
                                   disabled={actingMembershipRemoval}
                                   onPress={() => {
                                     setRemovalTargetId(null);
@@ -3915,6 +3928,7 @@ export default function IdentityScreen() {
                             ) : (
                               <Pressable
                                 accessibilityRole="button"
+                                accessibilityState={{ disabled: actingMembershipRemoval }}
                                 disabled={actingMembershipRemoval}
                                 onPress={() => {
                                   setRemovalTargetId(member.membershipId);
@@ -4164,6 +4178,7 @@ export default function IdentityScreen() {
                       {editingAdminSchedule ? (
                         <Pressable
                           accessibilityRole="button"
+                          accessibilityState={{ disabled: publishingSchedule }}
                           disabled={publishingSchedule}
                           onPress={cancelEditingAdminSchedule}
                           style={({ pressed }) => [
@@ -4201,6 +4216,7 @@ export default function IdentityScreen() {
                           <View style={styles.confirmationActions}>
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: publishingSchedule || withdrawingScheduleId !== null }}
                               disabled={publishingSchedule || withdrawingScheduleId !== null}
                               onPress={() => startEditingSlot(slot)}
                               style={({ pressed }) => [
@@ -4212,6 +4228,7 @@ export default function IdentityScreen() {
                             </Pressable>
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: publishingSchedule || withdrawingScheduleId !== null }}
                               disabled={publishingSchedule || withdrawingScheduleId !== null}
                               onPress={() => {
                                 setPendingScheduleWithdrawal({
@@ -4244,6 +4261,7 @@ export default function IdentityScreen() {
                           <View style={styles.confirmationActions}>
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: publishingSchedule || withdrawingScheduleId !== null }}
                               disabled={publishingSchedule || withdrawingScheduleId !== null}
                               onPress={() => startEditingGroupOffering(offering)}
                               style={({ pressed }) => [
@@ -4255,6 +4273,7 @@ export default function IdentityScreen() {
                             </Pressable>
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: publishingSchedule || withdrawingScheduleId !== null }}
                               disabled={publishingSchedule || withdrawingScheduleId !== null}
                               onPress={() => {
                                 setPendingScheduleWithdrawal({
@@ -4322,6 +4341,7 @@ export default function IdentityScreen() {
                           <View style={styles.confirmationActions}>
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: withdrawingScheduleId !== null }}
                               disabled={withdrawingScheduleId !== null}
                               onPress={() => setPendingScheduleWithdrawal(null)}
                               style={({ pressed }) => [
@@ -4333,6 +4353,7 @@ export default function IdentityScreen() {
                             </Pressable>
                             <Pressable
                               accessibilityRole="button"
+                              accessibilityState={{ disabled: withdrawingScheduleId !== null }}
                               disabled={withdrawingScheduleId !== null}
                               onPress={() => void withdrawAdminSchedule()}
                               style={({ pressed }) => [
@@ -4460,6 +4481,7 @@ export default function IdentityScreen() {
                               <View style={styles.confirmationActions}>
                                 <Pressable
                                   accessibilityRole="button"
+                                  accessibilityState={{ disabled: confirmingBookingId !== null }}
                                   disabled={confirmingBookingId !== null}
                                   onPress={() => {
                                     setHostRejectionDraftId(null);
@@ -4474,6 +4496,7 @@ export default function IdentityScreen() {
                                 </Pressable>
                                 <Pressable
                                   accessibilityRole="button"
+                                  accessibilityState={{ disabled: confirmingBookingId !== null }}
                                   disabled={confirmingBookingId !== null}
                                   onPress={() => void rejectHostBooking(item)}
                                   style={({ pressed }) => [
@@ -5264,6 +5287,10 @@ export default function IdentityScreen() {
                                       />
                                       <Pressable
                                         accessibilityRole="button"
+                                        accessibilityState={{
+                                          disabled: actingResultKey !== null
+                                            || appealResponseStatement.trim().length === 0,
+                                        }}
                                         disabled={actingResultKey !== null
                                           || appealResponseStatement.trim().length === 0}
                                         onPress={() => void runAppealParticipantAction(appealDetail, 'response')}
@@ -5286,6 +5313,7 @@ export default function IdentityScreen() {
                                         </Text>
                                         <Pressable
                                           accessibilityRole="button"
+                                          accessibilityState={{ disabled: actingResultKey !== null }}
                                           disabled={actingResultKey !== null}
                                           onPress={() => void runAppealParticipantAction(appealDetail, 'withdraw')}
                                           style={({ pressed }) => [
@@ -5622,7 +5650,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 13,
   },
   choiceChipSelected: { backgroundColor: '#8b2f22', borderColor: '#8b2f22' },
@@ -5725,7 +5753,7 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 10,
   },
   attendanceButtonText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
@@ -5771,7 +5799,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 12,
   },
   dangerButton: {
@@ -5793,7 +5821,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 12,
   },
   refreshButton: {

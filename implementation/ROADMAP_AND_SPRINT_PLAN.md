@@ -128,7 +128,7 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Complete accessibility/localization and rollback operational checks.
+1. Complete rollback and real-device accessibility/localization operational checks.
 2. Extend projection rebuild coverage whenever another disposable stored projection is introduced.
 3. Add audited Chat/evidence payload cleanup jobs during release hardening; keep payment, group
    capacity and automatic alternatives outside Molokh MVP.
