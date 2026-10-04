@@ -243,8 +243,8 @@ Verified on 2026-10-04:
   overflow at the 640px reflow proxy. Actual browser 200% zoom and device screen readers remain
   explicitly unverified;
 - the release rollback gate hashes every migration blob in the selected Git target against the
-  applied PostgreSQL ledger. A schema-compatible target at `389ae14` passes all 57 migrations,
-  while pre-`0057` target `6d4ae4c` is rejected before deployment;
+  applied PostgreSQL ledger. Current target `166c820` passes all 58 migrations, while pre-`0058`
+  target `1ed37c4` is rejected before deployment;
 - production runtime now requires and publishes the exact Git SHA. The read-only release canary
   passes live/ready, runtime identity, security headers, configured CORS and unauthenticated-boundary
   probes with the correct SHA and rejects a deliberate release mismatch;
