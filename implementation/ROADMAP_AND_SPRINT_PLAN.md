@@ -128,7 +128,7 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Implement and rehearse the pilot monitoring/alert checks and projection-rebuild verification.
+1. Implement and rehearse projection-rebuild verification.
 2. Complete accessibility/localization and rollback operational checks.
 3. Add audited Chat/evidence payload cleanup jobs during release hardening; keep payment, group
    capacity and automatic alternatives outside Molokh MVP.

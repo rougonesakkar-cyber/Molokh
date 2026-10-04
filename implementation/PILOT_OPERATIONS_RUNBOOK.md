@@ -18,6 +18,17 @@ an overdue `SCHEDULED` Session has no current-version window timer, or a status/
 stuck after its terminal event. Central may pause affected contours through PlatformIncident; it
 must not invent a merits decision.
 
+Run the read-only local monitor with:
+
+```powershell
+pnpm monitor:pilot
+```
+
+The monitor exits nonzero for liveness/readiness, pipeline, overdue Session/Result or terminal
+status-lock failures. Delayed Coach action, Appeal SLA, Missing Result review and backup freshness
+are warnings by default; use `./tools/check-pilot-health.ps1 -FailOnWarning` for a strict scheduled
+alert. Production should export the same queries as metrics rather than screen-scraping this CLI.
+
 ## 2. Backup policy
 
 - Production target: managed PostgreSQL automated backups plus daily logical custom-format dump.

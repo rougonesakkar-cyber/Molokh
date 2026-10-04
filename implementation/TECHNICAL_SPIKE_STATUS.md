@@ -228,6 +228,9 @@ Verified on 2026-10-04:
   SHA-256, restores only into a fresh isolated `molokh_restore_*` database, matches nine critical
   table counts plus the migration ledger and removes the rehearsal database after success; the source database is never
   overwritten and the operational steps are recorded in `PILOT_OPERATIONS_RUNBOOK.md`;
+- the read-only pilot monitor passes API live/ready, PostgreSQL, outbox, Worker, overdue-window,
+  Result/Appeal/status-lock and backup-freshness checks; its only current warning is the expected
+  pair of restored `READY_FOR_COACH` Sessions awaiting an explicit Coach action;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
 - the generated acceptance matrix maps 109 scenarios (`103/195 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;
