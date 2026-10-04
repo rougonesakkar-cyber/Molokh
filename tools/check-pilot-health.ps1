@@ -6,6 +6,7 @@ param(
   [int]$MaxPipelineDelaySeconds = 300,
   [int]$MaxReadyForCoachMinutes = 120,
   [int]$MaxBackupAgeHours = 25,
+  [int]$MaxRetentionDelayHours = 26,
   [switch]$FailOnWarning
 )
 
@@ -52,7 +53,29 @@ select json_build_object(
   'overdueResultPending', (select count(*) from competition.challenges where state = 'RESULT_PENDING' and updated_at < clock_timestamp() - interval '24 hours'),
   'overdueAppeals', (select count(*) from competition.appeals where state in ('SUBMITTED', 'UNDER_REVIEW') and sla_due_at < clock_timestamp()),
   'terminalStatusLocks', (select count(*) from competition.competitions competition join competition.results result on result.result_id = competition.status_lock_result_id where result.state in ('FINAL', 'REVERSED', 'ANNULLED', 'REPEAT_ORDERED')),
-  'oldMissingResultReviews', (select count(*) from competition.missing_result_reviews where state in ('OPEN', 'UNDER_REVIEW', 'REVIEWER_ASSIGNED') and opened_at < clock_timestamp() - interval '48 hours')
+  'oldMissingResultReviews', (select count(*) from competition.missing_result_reviews where state in ('OPEN', 'UNDER_REVIEW', 'REVIEWER_ASSIGNED') and opened_at < clock_timestamp() - interval '48 hours'),
+  'overdueChatPayloads', (
+    select count(*) from social.chat_message_revisions revision
+    join social.chat_messages message on message.message_id = revision.message_id
+    join social.chats chat on chat.chat_id = message.chat_id
+    join lateral (
+      select policy.retention_seconds from platform.retention_policy_versions policy
+      where policy.record_class = case chat.scope
+        when 'PERSONAL_MATCH' then 'PERSONAL_CHAT' else 'SERVICE_CHAT' end
+        and policy.effective_at <= clock_timestamp()
+      order by policy.effective_at desc, policy.created_at desc, policy.policy_id desc limit 1
+    ) policy on true
+    where revision.payload is not null
+      and not exists (select 1 from social.chat_message_reports report
+        where report.message_id = message.message_id)
+      and not exists (
+        select 1 from social.chat_messages recent
+        where recent.chat_id = chat.chat_id
+          and recent.updated_at >= clock_timestamp()
+            - make_interval(secs => policy.retention_seconds)
+            - make_interval(hours => $MaxRetentionDelayHours)
+      )
+  )
 )::text;
 "@
   try {
@@ -89,6 +112,9 @@ select json_build_object(
       }
       if ([int64]$metrics.oldMissingResultReviews -gt 0) {
         Add-Finding 'WARNING' 'missing_result_review' "$($metrics.oldMissingResultReviews) Missing Result reviews are older than 48 hours."
+      }
+      if ([int64]$metrics.overdueChatPayloads -gt 0) {
+        Add-Finding 'WARNING' 'chat_retention' "$($metrics.overdueChatPayloads) Chat revision payloads exceed retention plus the $MaxRetentionDelayHours-hour cleanup allowance."
       }
     }
   } catch {

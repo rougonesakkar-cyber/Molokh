@@ -7,11 +7,11 @@ Molokh — mobile-first продукт для поиска партнёров п
 - Core Engine: **v1.0, product decisions closed**;
 - state transitions: **308**;
 - registered events: **308**;
-- acceptance scenarios: **213** (`195 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **109/213** (`103/195 P0`);
+- acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
+- executable acceptance traceability: **110/214** (`104/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0057` and **41/41** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0058` and **42/42** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   unresolved upstream `node-forge` and `braces` advisories are covered by narrow regression-tested
   local backports that expire on 2026-10-16 and reject every other high/critical advisory;
@@ -380,6 +380,10 @@ real-device accessibility checks. The static accessibility gate is now part of
 two deliberately unstarted Sessions awaiting Coach action. External OTP and private object/scan providers
 remain explicit deployment inputs rather than hidden local substitutes.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+
+Migration `0058` and the daily Worker now enforce 12-month personal and three-year service Chat
+payload retention in bounded audited batches. Report/Case snapshots, revision checksums and all
+business/audit history remain intact; attachment cleanup stays off with the disabled media feature.
 
 Before rolling application code back, run `pnpm check:rollback -TargetRef <known-good-git-ref>`.
 It rejects a target that does not contain the exact immutable migration history already applied to

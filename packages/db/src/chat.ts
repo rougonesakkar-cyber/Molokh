@@ -464,6 +464,7 @@ export async function readChatMessages(
          and visibility.user_id = ${viewerUserId}::uuid
         where message.chat_id = ${chatId}::uuid
           and message.state = 'ACTIVE'
+          and revision.payload is not null
           and visibility.message_id is null
           and (message.created_at, message.message_id) < (
             select created_at, message_id from social.chat_messages where message_id = ${cursor}::uuid
@@ -487,6 +488,7 @@ export async function readChatMessages(
          and visibility.user_id = ${viewerUserId}::uuid
         where message.chat_id = ${chatId}::uuid
           and message.state = 'ACTIVE'
+          and revision.payload is not null
           and visibility.message_id is null
         order by message.created_at desc, message.message_id desc
         limit ${pageSize + 1}

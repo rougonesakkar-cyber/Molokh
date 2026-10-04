@@ -62,6 +62,7 @@ import {
   extendAppealSla,
   claimOutboxBatch,
   claimInboxEvent,
+  cleanupExpiredChatPayloads,
   createDatabase,
   detectPlatformIncident,
   confirmPlatformIncident,
@@ -4164,6 +4165,137 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).rejects.toMatchObject<Partial<ChatActionDeniedError>>({
       code: 'SERVICE_MESSAGE_IMMUTABLE',
     });
+  });
+
+  it('[AC-214] deletes expired unreported Chat payloads while retaining checksums, evidence and audit', async () => {
+    const athleteA = testId(110000);
+    const athleteB = testId(110001);
+    const personalChat = testId(110002);
+    const serviceChat = testId(110003);
+    const deletedMessage = testId(110004);
+    const preservedMessage = testId(110005);
+    const serviceMessage = testId(110006);
+    const deletedRevision = testId(110007);
+    const preservedRevision = testId(110008);
+    const serviceRevision = testId(110009);
+    const oldActivity = '2026-09-01T10:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${athleteA}::uuid, '+79991100000', ${oldActivity}::timestamptz,
+          '1990-01-01', 'ADULT', 'Retention A', 'ACTIVE', 'ru-RU', 1,
+          ${oldActivity}::timestamptz),
+        (${athleteB}::uuid, '+79991100001', ${oldActivity}::timestamptz,
+          '1990-01-01', 'ADULT', 'Retention B', 'ACTIVE', 'ru-RU', 1,
+          ${oldActivity}::timestamptz)
+    `.execute(database);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+        values
+          (${personalChat}::uuid, 'PERSONAL_MATCH', 'CLOSED', 1,
+            ${oldActivity}::timestamptz, ${oldActivity}::timestamptz),
+          (${serviceChat}::uuid, 'CHALLENGE_SERVICE', 'CLOSED', 1,
+            ${oldActivity}::timestamptz, ${oldActivity}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.chat_participants (chat_id, user_id, joined_at)
+        values
+          (${personalChat}::uuid, ${athleteA}::uuid, ${oldActivity}::timestamptz),
+          (${personalChat}::uuid, ${athleteB}::uuid, ${oldActivity}::timestamptz),
+          (${serviceChat}::uuid, ${athleteA}::uuid, ${oldActivity}::timestamptz),
+          (${serviceChat}::uuid, ${athleteB}::uuid, ${oldActivity}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.chat_messages (
+          message_id, chat_id, sender_user_id, payload_type, current_revision_id,
+          state, version, created_at, updated_at
+        ) values
+          (${deletedMessage}::uuid, ${personalChat}::uuid, ${athleteA}::uuid,
+            'PERSONAL_TEXT', ${deletedRevision}::uuid, 'ACTIVE', 1,
+            ${oldActivity}::timestamptz, ${oldActivity}::timestamptz),
+          (${preservedMessage}::uuid, ${personalChat}::uuid, ${athleteA}::uuid,
+            'PERSONAL_TEXT', ${preservedRevision}::uuid, 'ACTIVE', 1,
+            ${oldActivity}::timestamptz, ${oldActivity}::timestamptz),
+          (${serviceMessage}::uuid, ${serviceChat}::uuid, ${athleteA}::uuid,
+            'PERSONAL_TEXT', ${serviceRevision}::uuid, 'ACTIVE', 1,
+            ${oldActivity}::timestamptz, ${oldActivity}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.chat_message_revisions (
+          revision_id, message_id, revision_no, payload, created_by, created_at
+        ) values
+          (${deletedRevision}::uuid, ${deletedMessage}::uuid, 1,
+            ${JSON.stringify({ kind: 'PERSONAL_TEXT', text: 'delete after retention' })}::jsonb,
+            ${athleteA}::uuid, ${oldActivity}::timestamptz),
+          (${preservedRevision}::uuid, ${preservedMessage}::uuid, 1,
+            ${JSON.stringify({ kind: 'PERSONAL_TEXT', text: 'case evidence' })}::jsonb,
+            ${athleteA}::uuid, ${oldActivity}::timestamptz),
+          (${serviceRevision}::uuid, ${serviceMessage}::uuid, 1,
+            ${JSON.stringify({ kind: 'PERSONAL_TEXT', text: 'three year service retention' })}::jsonb,
+            ${athleteA}::uuid, ${oldActivity}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.chat_message_reports (
+          report_id, message_id, reporter_user_id, reason_code, state,
+          evidence_snapshot, created_at
+        ) values (
+          ${testId(110010)}::uuid, ${preservedMessage}::uuid, ${athleteB}::uuid,
+          'SAFETY', 'RESOLVED', ${JSON.stringify({ revisions: [{ text: 'case evidence' }] })}::jsonb,
+          ${oldActivity}::timestamptz
+        )
+      `.execute(transaction);
+    });
+
+    const personal = await cleanupExpiredChatPayloads(database, 'PERSONAL_CHAT', {
+      runId: testId(110011), auditId: testId(110012), requestId: testId(110013),
+    }, { now: () => new Date('2027-10-04T10:00:00.000Z') });
+    expect(personal).toMatchObject({
+      recordClass: 'PERSONAL_CHAT', policyVersion: 'data-lifecycle-mvp-v1',
+      retentionSeconds: 31_536_000, deletedCount: 1,
+      payloadSetSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    const revisions = await sql<{
+      readonly revision_id: string;
+      readonly payload: unknown | null;
+      readonly payload_sha256: string | null;
+      readonly retention_policy_version: string | null;
+    }>`
+      select revision_id, payload, payload_sha256, retention_policy_version
+      from social.chat_message_revisions order by revision_id
+    `.execute(database);
+    expect(revisions.rows.find((row) => row.revision_id === deletedRevision)).toMatchObject({
+      payload: null, payload_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      retention_policy_version: 'data-lifecycle-mvp-v1',
+    });
+    expect(revisions.rows.find((row) => row.revision_id === preservedRevision)?.payload)
+      .toMatchObject({ text: 'case evidence' });
+    expect(revisions.rows.find((row) => row.revision_id === serviceRevision)?.payload)
+      .toMatchObject({ text: 'three year service retention' });
+    await expect(readChatMessages(database, personalChat, athleteB, 20, null))
+      .resolves.toMatchObject({
+        messages: [expect.objectContaining({ messageId: preservedMessage })],
+      });
+
+    const replay = await cleanupExpiredChatPayloads(database, 'PERSONAL_CHAT', {
+      runId: testId(110014), auditId: testId(110015), requestId: testId(110016),
+    }, { now: () => new Date('2027-10-04T10:05:00.000Z') });
+    expect(replay.deletedCount).toBe(0);
+
+    const service = await cleanupExpiredChatPayloads(database, 'SERVICE_CHAT', {
+      runId: testId(110017), auditId: testId(110018), requestId: testId(110019),
+    }, { now: () => new Date('2030-10-04T10:00:00.000Z') });
+    expect(service).toMatchObject({ retentionSeconds: 94_608_000, deletedCount: 1 });
+    const audits = await sql<{ readonly count: string }>`
+      select count(*)::text as count from platform.audit_events
+      where action = 'DELETE_RETAINED_CHAT_PAYLOADS'
+    `.execute(database);
+    expect(audits.rows[0]?.count).toBe('2');
   });
 
   it('[AC-173][AC-201][AC-207][AC-208] completes ordinary scheduling, Coach replacement and external no-fault cancellation', async () => {

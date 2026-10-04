@@ -556,6 +556,11 @@ States: `ACTIVE`, `HIDDEN_BY_MODERATION`. User-local deletion is a visibility pr
 | MSG-04 | ACTIVE | `REPORT_MESSAGE` / participant | open report allowed; reporter != sender | ACTIVE | `ChatMessageReported` | freeze edit; copy original/revisions to Case evidence; hide reporter identity | — | no |
 | MSG-05 | ACTIVE | `HIDE_MESSAGE_FOR_ALL` / CENTRAL | decided Case; reason; reviewer no conflict | HIDDEN_BY_MODERATION | `ChatMessageHiddenByModeration` | remove from participant projections; retain originals in Case/audit | — | yes logical |
 
+Retention cleanup is a storage lifecycle, not a user-visible ChatMessage state transition. After
+the effective 12-month personal or 3-year service inactivity period, an uncaptured revision payload
+is removed in a bounded audited batch. Its SHA-256, deletion time and policy version remain; a
+message/report captured by a Case is excluded and canonical business/audit history is untouched.
+
 ## 26. StatusTenure lifecycle
 
 Conceptual states: `PROVISIONAL_OPEN`, `FINAL_OPEN`, `CLOSED`. Они выводятся из `provisional/ended_at`.

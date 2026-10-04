@@ -84,6 +84,8 @@ Boundaries to test at `t-1ms`, `t`, `t+1ms`:
 - evidence URL/retention;
 - exact PlatformIncident overlap.
 - account closure cancellation at the 30-day boundary and export payload deletion at +48h.
+- personal/service Chat cleanup at retention `t-1ms/t/t+1ms`, including Case preservation,
+  checksum lineage, batch replay and concurrent send/cleanup serialization.
 
 DST tests use Venue IANA timezone for display while business comparisons remain UTC.
 

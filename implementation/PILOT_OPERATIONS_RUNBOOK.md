@@ -25,9 +25,10 @@ pnpm monitor:pilot
 ```
 
 The monitor exits nonzero for liveness/readiness, pipeline, overdue Session/Result or terminal
-status-lock failures. Delayed Coach action, Appeal SLA, Missing Result review and backup freshness
-are warnings by default; use `./tools/check-pilot-health.ps1 -FailOnWarning` for a strict scheduled
-alert. Production should export the same queries as metrics rather than screen-scraping this CLI.
+status-lock failures. Delayed Coach action, Appeal SLA, Missing Result review, overdue Chat
+retention and backup freshness are warnings by default; use
+`./tools/check-pilot-health.ps1 -FailOnWarning` for a strict scheduled alert. Production should
+export the same queries as metrics rather than screen-scraping this CLI.
 
 ## 2. Backup policy
 
@@ -157,3 +158,19 @@ are green, preventing an old or mixed artifact from being mistaken for the candi
 Only after the canary passes, run `pnpm monitor:pilot` and the four-role critical walkthrough.
 Stop traffic promotion on any failure. The local rehearsal must pass once with the correct SHA and
 fail once with an intentionally different SHA; this proves the release-identity check itself.
+
+## 8. Chat payload retention
+
+The Worker schedules `cleanup_chat_payloads` daily at 03:15 worker time; keep the pilot VM clock in
+UTC. Each run independently reads the currently effective immutable `PERSONAL_CHAT` and
+`SERVICE_CHAT` policies and processes at most 500 revision payloads per class with row locks and
+`SKIP LOCKED`.
+
+Cleanup never deletes message identity, participants, domain/audit history or moderation Case
+snapshots. It nulls only eligible uncaptured payloads and keeps SHA-256, deletion time and policy
+version on the revision. Re-running after the same batch is a no-op. `pnpm monitor:pilot` warns when
+eligible payloads remain more than 26 hours beyond their retention boundary; investigate Worker
+cron/logs and rerun the task through the normal Graphile queue rather than issuing manual SQL.
+
+Attachment evidence remains unavailable in MVP. Do not create a cleanup substitute until the
+private object/scan provider and canonical attachment model are enabled together.

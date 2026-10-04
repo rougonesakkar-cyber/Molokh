@@ -270,6 +270,7 @@
 | AC-211 | P0 | User attempts ordinary Appeal after Result is FINAL, then Central detects concrete system error | ordinary Appeal is rejected; independent IntegrityCase opens, public review marker appears and affected status/queue is held |
 | AC-212 | P0 | IntegrityCase corrects or annuls a Final status-changing Result | source Result/events remain; one append-only decision compensates status/Cooldown, deterministically replays Competition and exposes only neutral review reason |
 | AC-213 | P1 | provisional Result becomes final, while another provisional Result is later reversed | first displays review marker then removes it; second switches profile/last-five to effective outcome and retains neutral reviewed-history entry without private evidence |
+| AC-214 | P0 | a personal Chat is inactive for 12 months while another old message is captured by a moderation Case and a service Chat is younger than 3 years | only eligible uncaptured payloads are deleted in bounded audited batches; per-revision SHA-256/policy lineage remains, Case evidence and service payload remain, and replay is a no-op |
 
 ## 12. Minimum release suite
 
@@ -287,4 +288,4 @@ MVP нельзя выпускать без автоматизации всех P
 - AC-181–187 (EvidenceAttachment, future competition scopes, age transition, status-only release and optional anti-spam).
 - AC-188–196 (Block/Unmatch cleanup without status evasion, explicit GENESIS consent/FIFO return, free display identity, Chat revisions/moderation and PlatformIncident compensation).
 - AC-197–204 (account recovery/duplicates, equivalent Coach replacement, LATE/NO_SHOW and multi-Admin ownership).
-- AC-205–213 (Coach-confirmed actual start, Venue operational failure, injury/withdrawal, Final integrity review and provisional public projection).
+- AC-205–214 (Coach-confirmed actual start, Venue operational failure, injury/withdrawal, Final integrity review, provisional public projection and Chat payload retention).

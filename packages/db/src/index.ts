@@ -28,6 +28,7 @@ export * from './booking-conversion.js';
 export * from './solo-continuation.js';
 export * from './training-retention.js';
 export * from './chat.js';
+export * from './chat-retention.js';
 export * from './challenge.js';
 export * from './community.js';
 export * from './community-closure.js';

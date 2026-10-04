@@ -392,6 +392,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 - `INV-OPS-12`: only an objectively evidenced, Central-confirmed PlatformIncident can alter deadline/outcome handling; an individual delivery complaint alone cannot.
 - `INV-OPS-13`: confirmed Incident extends each pausable deadline by exact incident overlap. Session facts, Cooldown and retention remain continuous.
 - `INV-OPS-14`: a timeout/Forfeit already committed during an Incident is immutable; recovery uses one idempotent compensating no-fault event and preserves the full source history.
+- `INV-OPS-15`: Chat payload retention uses the effective immutable policy and whole-Chat last activity. Bounded concurrent cleanup nulls only expired, uncaptured revision payloads, preserves a SHA-256/deletion time/policy version plus append-only audit, and never deletes a Case snapshot, domain event or sporting record. PlatformIncident does not pause this clock.
 
 ## 5. Status transition function
 

@@ -9,6 +9,7 @@ describe('worker task registry', () => {
       onRuntimeProbe,
       onOutboxEvent: vi.fn(),
       onTimer: vi.fn(),
+      onChatRetentionCleanup: vi.fn(),
     });
 
     await tasks.runtime_probe?.({ message: 'ready' }, {} as never);
@@ -22,6 +23,7 @@ describe('worker task registry', () => {
       onRuntimeProbe: vi.fn(),
       onOutboxEvent,
       onTimer: vi.fn(),
+      onChatRetentionCleanup: vi.fn(),
     });
     const payload = {
       messageId: 'message-1',
@@ -36,5 +38,19 @@ describe('worker task registry', () => {
     await expect(
       tasks.deliver_outbox_event?.({ eventId: 'event-1' }, {} as never),
     ).rejects.toThrow('messageId');
+  });
+
+  it('runs the scheduled Chat retention cleanup without trusting cron payload', async () => {
+    const onChatRetentionCleanup = vi.fn();
+    const tasks = createTaskList({
+      onRuntimeProbe: vi.fn(),
+      onOutboxEvent: vi.fn(),
+      onTimer: vi.fn(),
+      onChatRetentionCleanup,
+    });
+
+    await tasks.cleanup_chat_payloads?.({ ignored: true }, {} as never);
+
+    expect(onChatRetentionCleanup).toHaveBeenCalledOnce();
   });
 });

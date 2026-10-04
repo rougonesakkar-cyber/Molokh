@@ -13,6 +13,7 @@ import {
   activateStatusQueueHead,
   claimInboxEvent,
   claimOutboxBatch,
+  cleanupExpiredChatPayloads,
   createDatabase,
   expireDiscoverySuppression,
   expireBookingIntent,
@@ -1032,6 +1033,14 @@ const reconcileResolvedPlatformIncident = async (
 
 const taskList = createTaskList({
   onRuntimeProbe: (message) => logger.info({ message }, 'runtime probe'),
+  onChatRetentionCleanup: async () => {
+    for (const recordClass of ['PERSONAL_CHAT', 'SERVICE_CHAT'] as const) {
+      const result = await cleanupExpiredChatPayloads(database, recordClass, {
+        runId: randomUUID(), auditId: randomUUID(), requestId: randomUUID(),
+      });
+      logger.info(result, 'Chat retention cleanup completed');
+    }
+  },
   onTimer: async (payload) => {
     await processTimer(payload, {
       handlers: {
@@ -1217,6 +1226,7 @@ const taskList = createTaskList({
 const runner = await run({
   connectionString,
   concurrency: 2,
+  crontab: '15 3 * * * cleanup_chat_payloads',
   pollInterval: 1_000,
   taskList,
 });

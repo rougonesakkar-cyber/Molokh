@@ -434,6 +434,13 @@ Payload schemas live in code/version registry. Sensitive payload is separated/en
 - account closure pseudonymizes public identity after 30-day recovery while preserving lineage.
 - account-export payload: 48 hours after READY; checksum and audit/event lineage remain.
 
+Migration `0058_chat_payload_retention.sql` makes revision payloads independently erasable while
+retaining SHA-256, deletion time and the exact policy version. The daily Worker uses whole-Chat
+last activity, locks eligible Chat/message/revision rows, skips every message captured by a moderation
+report and cleans at most 500 rows per class/run. Personal and Challenge-service payloads therefore
+follow their 12-month/3-year policies without deleting message identity, Case evidence or audit and
+sporting history.
+
 Use time partitioning only after measured volume. Early partitioning is appropriate for `audit_events`, `domain_events`, `outbox_messages` and `notifications`, not every aggregate table.
 
 ## 6. Migration rules

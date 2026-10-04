@@ -326,7 +326,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 109/213 (`103/195 P0`).
+  Acceptance traceability is 110/214 (`104/196 P0`).
 - M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
   exact 30-day recovery, owner cancellation and reasoned Central execution only after all
   obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one
@@ -337,8 +337,8 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - Next increment: complete real-device screen-reader/dynamic-layout checks. The release canary and
   rollback compatibility gates are implemented and fail-closed.
   External object/scan and OTP delivery are intentionally
-  deferred until provider accounts are selected. General Chat/evidence cleanup workers remain M8
-  work; the versioned policies are already persisted.
+  deferred until provider accounts are selected. Chat payload cleanup is complete; evidence cleanup
+  remains gated on the currently disabled attachment/storage capability.
 - M8 role/pilot walkthrough increment: complete. Athlete, Coach, Gym Admin and Central workspaces
   expose their scoped actions with destructive controls guarded by explicit reason/confirmation.
   The walkthrough found a stale Session-window timer gap after Training→Official and pair→solo;
@@ -366,6 +366,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - M8 release-canary increment: complete. Production requires the exact Git SHA; a read-only probe
   verifies live/ready, runtime identity, security headers, CORS and the protected auth boundary.
   The local rehearsal accepts the correct artifact SHA and rejects a deliberate mismatch.
+- M8 Chat-retention increment: complete. Migration `0058` plus a daily bounded Worker erase only
+  expired uncaptured payloads, preserve per-revision checksum/time/policy lineage and append one
+  batch audit. Report/Case evidence and service Chat under its three-year term remain untouched;
+  AC-214 passes against PostgreSQL.
 
 ## 5. Work that needs product/external input later
 

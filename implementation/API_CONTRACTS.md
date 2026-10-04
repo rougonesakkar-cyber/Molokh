@@ -121,6 +121,8 @@ object private, verify checksum/detected type, run malware/content scan and expo
 Chat history identifies the authenticated viewer in response metadata so ownership controls never
 depend on client route parameters. Chat API returns versioned structured action objects; clients
 never parse human message text to infer an action, and Users cannot forge system action cards.
+Expired revision payloads are omitted after policy cleanup; the API never reconstructs text from
+retained checksums or audit metadata.
 
 Unmatch and Block responses explicitly confirm preservation of accepted Official obligations and
 status FIFO/mandatory paths. Unmatch adds a 15-day pair suppression; Block remains effective until
