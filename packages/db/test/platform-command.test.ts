@@ -160,7 +160,6 @@ import {
   selectSameSlot,
   selectSlot,
   openSessionWindow,
-  startSession,
   recordSessionAttendance,
   recordSessionResult,
   endSession,
@@ -258,7 +257,6 @@ import {
   type SelectSameSlotPayload,
   type SelectSlotPayload,
   type OpenSessionWindowPayload,
-  type StartSessionPayload,
   type RecordAttendancePayload,
   type EndSessionPayload,
   type ReplaceSessionCoachPayload,
@@ -1577,6 +1575,92 @@ async function verifySchedulingPublication(
       if (!confirmed.response.session) throw new Error('Expected a confirmed Session');
       return confirmed.response.session;
     };
+
+    const noShowSession = await createConfirmedSession(
+      2700, '2026-09-15T14:00:00.000Z', '2026-09-15T15:00:00.000Z', 'ordinary-no-show',
+    );
+    const [presentAthleteId, absentAthleteId] = noShowSession.athleteUserIds;
+    const beforeNoShowPresent = await readMySessions(database, presentAthleteId);
+    const beforeNoShowAbsent = await readMySessions(database, absentAthleteId);
+    await openSessionWindow(
+      database,
+      {
+        commandId: testId(2740), commandType: 'OPEN_SESSION_WINDOW',
+        idempotencyKey: `open-no-show-session-${noShowSession.sessionId}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Session', aggregateId: noShowSession.sessionId, expectedVersion: 1,
+        correlationId: testId(2741), causationId: null, requestId: testId(2742),
+        source: 'scheduler', payloadVersion: 1,
+        payload: { sessionId: noShowSession.sessionId },
+      } satisfies CommandEnvelope<OpenSessionWindowPayload>,
+      { eventId: testId(2743), auditId: testId(2744), outboxMessageId: testId(2745) },
+      () => new Date('2026-09-15T14:00:00.000Z'),
+    );
+    const ordinaryAttendance = async (
+      athleteUserId: string,
+      status: 'PRESENT' | 'NO_SHOW',
+      expectedVersion: number,
+      base: number,
+      occurredAt: string,
+    ) => recordSessionAttendance(
+      database,
+      {
+        commandId: testId(base), commandType: 'RECORD_ATTENDANCE',
+        idempotencyKey: `ordinary-no-show-${athleteUserId}`,
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'Session', aggregateId: noShowSession.sessionId, expectedVersion,
+        correlationId: testId(base + 1), causationId: testId(2743), requestId: testId(base + 2),
+        source: 'api', payloadVersion: 1,
+        payload: { sessionId: noShowSession.sessionId, athleteUserId, status, comment: null },
+      } satisfies CommandEnvelope<RecordAttendancePayload>,
+      {
+        eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
+        attendanceId: testId(base + 6), attendanceEventId: testId(base + 7),
+      },
+      () => new Date(occurredAt),
+    );
+    await ordinaryAttendance(
+      presentAthleteId, 'PRESENT', 2, 2750, '2026-09-15T14:01:00.000Z',
+    );
+    const absentAttendance = await ordinaryAttendance(
+      absentAthleteId, 'NO_SHOW', 3, 2760, '2026-09-15T14:15:00.000Z',
+    );
+    expect(absentAttendance.response.attendance).toEqual(expect.arrayContaining([
+      expect.objectContaining({ athleteUserId: presentAthleteId, status: 'PRESENT' }),
+      expect.objectContaining({ athleteUserId: absentAthleteId, status: 'NO_SHOW' }),
+    ]));
+    await endSession(
+      database,
+      {
+        commandId: testId(2770), commandType: 'END_SESSION',
+        idempotencyKey: `end-no-show-session-${noShowSession.sessionId}`,
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'Session', aggregateId: noShowSession.sessionId, expectedVersion: 4,
+        correlationId: testId(2771), causationId: testId(2763), requestId: testId(2772),
+        source: 'api', payloadVersion: 1,
+        payload: { sessionId: noShowSession.sessionId },
+      } satisfies CommandEnvelope<EndSessionPayload>,
+      {
+        eventId: testId(2773), auditId: testId(2774), outboxMessageId: testId(2775),
+        bookingEventId: testId(2776), slotEventId: testId(2777),
+      },
+      () => new Date('2026-09-15T14:20:00.000Z'),
+    );
+    await expect(readMySessions(database, presentAthleteId)).resolves.toMatchObject({
+      completedTrainingCount: beforeNoShowPresent.completedTrainingCount + 1,
+    });
+    await expect(readMySessions(database, absentAthleteId)).resolves.toMatchObject({
+      completedTrainingCount: beforeNoShowAbsent.completedTrainingCount,
+    });
+    const noShowCompetitionEffects = await sql<{
+      readonly results: string;
+      readonly cooldowns: string;
+    }>`
+      select
+        (select count(*)::text from competition.results) as results,
+        (select count(*)::text from competition.pair_cooldowns) as cooldowns
+    `.execute(database);
+    expect(noShowCompetitionEffects.rows[0]).toEqual({ results: '0', cooldowns: '0' });
 
     const rejectableSession = await createConfirmedSession(
       1400, '2026-09-12T14:00:00.000Z', '2026-09-12T15:00:00.000Z', 'reject-replacement',
@@ -4298,7 +4382,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(audits.rows[0]?.count).toBe('2');
   });
 
-  it('[AC-023][AC-024][AC-027][AC-028][AC-033][AC-034][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan, Coach replacement and external no-fault cancellation', async () => {
+  it('[AC-023][AC-024][AC-027][AC-028][AC-033][AC-034][AC-038][AC-039][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan, NO_SHOW, Coach replacement and external no-fault cancellation', async () => {
     await verifySchedulingPublication(database);
   });
 
@@ -4968,7 +5052,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).resolves.toMatchObject({ state: 'EXPIRED', version: 3 });
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205][AC-206] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -5257,27 +5341,6 @@ describePostgres('PostgreSQL critical command transaction', () => {
       effective_stake: 'CONTENDER', competition_status_version: '1',
     });
 
-    const startedOfficial = await startSession(
-      database,
-      {
-        commandId: testId(1897), commandType: 'START_SESSION',
-        idempotencyKey: `start-official-session-${sessionId}`,
-        actor: { type: 'USER', id: coachId, roles: ['COACH'], scopeIds: [communityId] },
-        aggregateType: 'Session', aggregateId: sessionId, expectedVersion: 2,
-        correlationId: testId(1898), causationId: testId(1893), requestId: testId(1899),
-        source: 'api', payloadVersion: 1, payload: { sessionId },
-      } satisfies CommandEnvelope<StartSessionPayload>,
-      {
-        eventId: testId(1900), auditId: testId(1901), outboxMessageId: testId(1902),
-        challengeEventId: testId(1903), challengeOutboxMessageId: testId(1904),
-      },
-      () => new Date('2026-09-12T14:01:00.000Z'),
-    );
-    expect(startedOfficial.response).toMatchObject({ state: 'IN_PROGRESS', version: 3 });
-    await expect(readChatChallenge(database, sourceChatId, athleteA)).resolves.toMatchObject({
-      challenge: { challengeId, state: 'IN_SESSION', version: 7 },
-    });
-
     const recordOfficialAttendance = async (
       athleteUserId: string,
       expectedVersion: number,
@@ -5289,18 +5352,25 @@ describePostgres('PostgreSQL critical command transaction', () => {
         idempotencyKey: `official-attendance-${athleteUserId}`,
         actor: { type: 'USER', id: coachId, roles: ['COACH'], scopeIds: [communityId] },
         aggregateType: 'Session', aggregateId: sessionId, expectedVersion,
-        correlationId: testId(base + 1), causationId: testId(1900), requestId: testId(base + 2),
+        correlationId: testId(base + 1), causationId: testId(1893), requestId: testId(base + 2),
         source: 'api', payloadVersion: 1,
         payload: { sessionId, athleteUserId, status: 'PRESENT', comment: null },
       } satisfies CommandEnvelope<RecordAttendancePayload>,
       {
         eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
         attendanceId: testId(base + 6), attendanceEventId: testId(base + 7),
+        challengeEventId: testId(base + 8), challengeOutboxMessageId: testId(base + 9),
       },
       () => new Date(`2026-09-12T14:0${expectedVersion}:00.000Z`),
     );
-    await recordOfficialAttendance(athleteA, 3, 1910);
-    await recordOfficialAttendance(athleteB, 4, 1920);
+    const firstOfficialAttendance = await recordOfficialAttendance(athleteA, 2, 1910);
+    expect(firstOfficialAttendance.response).toMatchObject({
+      state: 'IN_PROGRESS', actualStartAt: '2026-09-12T14:02:00.000Z', version: 3,
+    });
+    await expect(readChatChallenge(database, sourceChatId, athleteA)).resolves.toMatchObject({
+      challenge: { challengeId, state: 'IN_SESSION', version: 7 },
+    });
+    await recordOfficialAttendance(athleteB, 3, 1920);
 
     const endedOfficial = await endSession(
       database,
@@ -5308,8 +5378,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         commandId: testId(1930), commandType: 'END_SESSION',
         idempotencyKey: `end-official-session-${sessionId}`,
         actor: { type: 'USER', id: coachId, roles: ['COACH'], scopeIds: [communityId] },
-        aggregateType: 'Session', aggregateId: sessionId, expectedVersion: 5,
-        correlationId: testId(1931), causationId: testId(1900), requestId: testId(1932),
+        aggregateType: 'Session', aggregateId: sessionId, expectedVersion: 4,
+        correlationId: testId(1931), causationId: testId(1913), requestId: testId(1932),
         source: 'api', payloadVersion: 1, payload: { sessionId },
       } satisfies CommandEnvelope<EndSessionPayload>,
       {
@@ -5319,7 +5389,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       },
       () => new Date('2026-09-12T14:55:00.000Z'),
     );
-    expect(endedOfficial.response).toMatchObject({ state: 'ENDED', version: 6 });
+    expect(endedOfficial.response).toMatchObject({ state: 'ENDED', version: 5 });
     await expect(readChatChallenge(database, sourceChatId, athleteB)).resolves.toMatchObject({
       challenge: { challengeId, state: 'RESULT_PENDING', version: 8 },
     });
