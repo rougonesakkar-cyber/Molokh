@@ -334,8 +334,8 @@ This sprint produces a demonstrable Training slice while establishing the same f
   payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
   public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
   Worker and PostgreSQL migration `0053` pass.
-- Next increment: complete real-device screen-reader/dynamic-layout checks. The release canary and
-  rollback compatibility gates are implemented and fail-closed.
+- Next increment: complete real-browser 200% zoom plus real-device screen-reader/dynamic-text
+  checks. The release canary and rollback compatibility gates are implemented and fail-closed.
   External object/scan and OTP delivery are intentionally
   deferred until provider accounts are selected. Chat payload cleanup is complete; evidence cleanup
   remains gated on the currently disabled attachment/storage capability.

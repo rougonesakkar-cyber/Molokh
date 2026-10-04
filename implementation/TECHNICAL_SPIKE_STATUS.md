@@ -238,6 +238,10 @@ Verified on 2026-10-04:
   control state; six compact controls now meet the 44-point target and static Web exports
   `lang="ru"` with Molokh title/description. Real VoiceOver/TalkBack and 200% zoom remain manual
   pre-pilot checks rather than claimed automated coverage;
+- the local Web keyboard rehearsal traverses and wraps all 14 Discovery controls without a focus
+  trap, shows native focus, activates Profile with Enter and has no console error or horizontal
+  overflow at the 640px reflow proxy. Actual browser 200% zoom and device screen readers remain
+  explicitly unverified;
 - the release rollback gate hashes every migration blob in the selected Git target against the
   applied PostgreSQL ledger. A schema-compatible target at `389ae14` passes all 57 migrations,
   while pre-`0057` target `6d4ae4c` is rejected before deployment;

@@ -128,8 +128,8 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Complete real-device accessibility/localization operational checks; release-canary and
-   schema-ledger rollback gates are complete.
+1. Complete real-browser 200% zoom and real-device screen-reader/dynamic-text checks;
+   release-canary and schema-ledger rollback gates are complete.
 2. Extend projection rebuild coverage whenever another disposable stored projection is introduced.
 3. Keep attachment/evidence cleanup disabled with its storage feature until a provider is selected;
    keep payment, group capacity and automatic alternatives outside Molokh MVP.

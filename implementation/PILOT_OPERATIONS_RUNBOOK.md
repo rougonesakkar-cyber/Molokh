@@ -109,6 +109,12 @@ Before inviting pilot users, complete the remaining device checks with real assi
 Record device/OS/browser versions and defects. Static conformance is a gate, but it is not a
 substitute for screen-reader and dynamic-layout testing on real devices.
 
+Local Web rehearsal on 2026-10-04: Discovery traversed all 14 controls and wrapped by Tab without
+a focus trap; native focus outline remained visible, Profile activated with Enter, a 640px viewport
+(the layout width corresponding to 200% on the 1280px test surface) had no horizontal overflow, and
+the browser console stayed clear. The in-app browser did not apply browser zoom, so actual 200%
+Chrome/Edge zoom and VoiceOver/TalkBack are still unverified gates, not inferred from this proxy.
+
 ## 6. Release rollback
 
 Molokh uses forward-only, immutable database migrations. A code rollback must never delete or
