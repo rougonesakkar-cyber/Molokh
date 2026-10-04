@@ -20,6 +20,7 @@ import {
   type ExecutedCommand,
   type RelatedDomainEventDraft,
 } from './platform-command.js';
+import { matchTimerPayload } from './social.js';
 
 export interface PersonalTextContent {
   readonly kind: 'PERSONAL_TEXT';
@@ -137,6 +138,7 @@ interface ChatRow {
   readonly match_id: string | null;
   readonly match_state: 'ACTIVE' | 'ARCHIVED' | 'UNMATCHED' | 'BLOCKED' | null;
   readonly match_version: string | null;
+  readonly match_last_activity_at: Date | null;
 }
 
 interface MessageRow {
@@ -256,7 +258,8 @@ async function lockedChat(
     select
       chat.chat_id, chat.scope, chat.state, chat.version::text as version,
       matched.match_id, matched.state as match_state,
-      matched.version::text as match_version
+      matched.version::text as match_version,
+      matched.last_activity_at as match_last_activity_at
     from social.chats as chat
     left join social.matches as matched on matched.chat_id = chat.chat_id
     where chat.chat_id = ${chatId}::uuid
@@ -324,6 +327,7 @@ export async function sendChatMessage(
       `.execute(transaction);
 
       const relatedEvents: RelatedDomainEventDraft[] = [];
+      let inactivityTimer: ReturnType<typeof matchTimerPayload> | null = null;
       if (chat.match_id) {
         if (chat.match_state === 'ARCHIVED') {
           const matchVersion = Number(chat.match_version) + 1;
@@ -364,6 +368,11 @@ export async function sendChatMessage(
               metadata: { policyVersion: CHAT_POLICY_VERSION },
             },
           );
+          inactivityTimer = matchTimerPayload(
+            chat.match_id,
+            matchVersion,
+            context.occurredAt,
+          );
         } else {
           await sql`
             update social.matches
@@ -371,6 +380,13 @@ export async function sendChatMessage(
                 updated_at = ${context.occurredAt.toISOString()}::timestamptz
             where match_id = ${chat.match_id}::uuid and state = 'ACTIVE'
           `.execute(transaction);
+          if (chat.match_state === 'ACTIVE' && chat.match_version !== null) {
+            inactivityTimer = matchTimerPayload(
+              chat.match_id,
+              Number(chat.match_version),
+              context.occurredAt,
+            );
+          }
         }
       }
 
@@ -419,6 +435,7 @@ export async function sendChatMessage(
               chatId: chat.chat_id,
               senderUserId: command.actor.id,
               payloadType: type,
+              ...(inactivityTimer ? { timer: inactivityTimer } : {}),
             },
           },
         ],

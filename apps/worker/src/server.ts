@@ -15,6 +15,7 @@ import {
   claimOutboxBatch,
   cleanupExpiredChatPayloads,
   createDatabase,
+  archiveInactiveMatch,
   expireDiscoverySuppression,
   expireBookingIntent,
   expireBookingOfficialConversion,
@@ -58,6 +59,7 @@ import {
   readGroupOfferingTimerSnapshot,
   readGroupPlanTimerSnapshot,
   readLikeTimerSnapshot,
+  readMatchTimerSnapshot,
   readResultTimerSnapshot,
   readMissingResultChallengeTimerSnapshot,
   readPlatformIncidentTimerSuppression,
@@ -87,6 +89,7 @@ import {
   type ExpireGroupOfferingPayload,
   type ExpireGroupPlanPayload,
   type ExpireLikePayload,
+  type ExpireInactiveMatchPayload,
   type FinalizeResultPayload,
   type ExpireSlotPayload,
   type OpenSessionWindowPayload,
@@ -479,6 +482,30 @@ const executeLikeExpiry = async (payload: TimerCommandPayload) => {
     eventId: randomUUID(),
     auditId: randomUUID(),
     outboxMessageId: randomUUID(),
+  });
+};
+
+const executeInactiveMatchExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireInactiveMatchPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_INACTIVE_MATCH',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Match',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { matchId: payload.aggregateId },
+  };
+  await archiveInactiveMatch(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    chatEventId: randomUUID(),
   });
 };
 
@@ -1060,6 +1087,10 @@ const taskList = createTaskList({
         EXPIRE_LIKE: {
           loadSnapshot: (timer) => readLikeTimerSnapshot(database, timer.aggregateId),
           execute: executeLikeExpiry,
+        },
+        EXPIRE_INACTIVE_MATCH: {
+          loadSnapshot: (timer) => readMatchTimerSnapshot(database, timer.aggregateId),
+          execute: executeInactiveMatchExpiry,
         },
         EXPIRE_DISCOVERY_SUPPRESSION: {
           loadSnapshot: (timer) =>

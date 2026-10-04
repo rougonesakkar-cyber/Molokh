@@ -3,9 +3,11 @@ import {
   SocialActionDeniedError,
   assertBlockOwner,
   assertCanEndMatch,
+  assertMatchCanBeArchived,
   assertSameAgeContour,
   discoverySuppressionEndsAt,
   likeExpiresAt,
+  matchInactivityDeadline,
   newLikeState,
   normalizeSocialPair,
   socialPairEndPolicy,
@@ -38,6 +40,10 @@ export interface ExpireLikePayload {
 
 export interface ExpireDiscoverySuppressionPayload {
   readonly suppressionId: string;
+}
+
+export interface ExpireInactiveMatchPayload {
+  readonly matchId: string;
 }
 
 export interface UnmatchPayload {
@@ -165,6 +171,19 @@ export interface ExpireLikeEffectIds {
 }
 
 export type ExpireDiscoverySuppressionEffectIds = ExpireLikeEffectIds;
+
+export interface ExpireInactiveMatchEffectIds extends ExpireLikeEffectIds {
+  readonly chatEventId: string;
+}
+
+export interface ArchivedMatchProjection {
+  readonly matchId: string;
+  readonly state: 'ARCHIVED';
+  readonly chatId: string;
+  readonly chatState: 'ARCHIVED';
+  readonly lastActivityAt: string;
+  readonly version: number;
+}
 
 export interface UnmatchEffectIds {
   readonly eventId: string;
@@ -376,6 +395,24 @@ function suppressionTimerPayload(
     deadlineAt: untilAt.toISOString(),
     policyVersion: SOCIAL_POLICY_VERSION,
     idempotencyKey: `discovery-suppression:${suppressionId}:expire:v${version}`,
+  } as const;
+}
+
+export function matchTimerPayload(
+  matchId: string,
+  version: number,
+  lastActivityAt: Date,
+) {
+  const deadlineAt = matchInactivityDeadline(lastActivityAt);
+  return {
+    commandType: 'EXPIRE_INACTIVE_MATCH',
+    aggregateType: 'Match',
+    aggregateId: matchId,
+    expectedState: 'ACTIVE',
+    expectedVersion: version,
+    deadlineAt: deadlineAt.toISOString(),
+    policyVersion: SOCIAL_POLICY_VERSION,
+    idempotencyKey: `match:${matchId}:archive:v${version}`,
   } as const;
 }
 
@@ -593,7 +630,12 @@ export async function createDiscoveryLike(
             messageId: ids.matchOutboxMessageId,
             topic: 'social.match.created.v1',
             sourceEventId: ids.matchEventId,
-            payload: { matchId: ids.matchId, chatId: ids.chatId, participants: [pair.lowUserId, pair.highUserId] },
+            payload: {
+              matchId: ids.matchId,
+              chatId: ids.chatId,
+              participants: [pair.lowUserId, pair.highUserId],
+              timer: matchTimerPayload(ids.matchId, 1, context.occurredAt),
+            },
           },
         ],
       };
@@ -1254,6 +1296,140 @@ export async function readMatches(
     lastActivityAt: row.last_activity_at.toISOString(),
     version: Number(row.version),
   }));
+}
+
+export async function readMatchTimerSnapshot(
+  database: Kysely<Database>,
+  matchId: string,
+): Promise<TimerAggregateSnapshot> {
+  const result = await sql<{
+    readonly state: MatchState;
+    readonly version: string;
+    readonly last_activity_at: Date;
+  }>`
+    select state, version::text as version, last_activity_at
+    from social.matches
+    where match_id = ${matchId}::uuid
+  `.execute(database);
+  const row = result.rows[0];
+  return row
+    ? {
+        state: row.state,
+        version: Number(row.version),
+        deadlineAt: matchInactivityDeadline(row.last_activity_at).toISOString(),
+      }
+    : { state: 'MISSING', version: 0 };
+}
+
+export async function archiveInactiveMatch(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ExpireInactiveMatchPayload>,
+  ids: ExpireInactiveMatchEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ArchivedMatchProjection>> {
+  if (
+    command.actor.type !== 'SYSTEM'
+    || command.actor.id !== null
+    || command.aggregateType !== 'Match'
+    || command.commandType !== 'EXPIRE_INACTIVE_MATCH'
+    || command.payload.matchId !== command.aggregateId
+  ) {
+    throw new SocialActionDeniedError('MATCH_NOT_ACTIVE');
+  }
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const result = await sql<{
+        readonly match_id: string;
+        readonly state: MatchState;
+        readonly chat_id: string;
+        readonly last_activity_at: Date;
+        readonly version: string;
+        readonly chat_state: 'OPEN' | 'ARCHIVED' | 'READ_ONLY' | 'CLOSED';
+        readonly chat_version: string;
+      }>`
+        select matched.match_id, matched.state, matched.chat_id,
+          matched.last_activity_at, matched.version::text as version,
+          chat.state as chat_state, chat.version::text as chat_version
+        from social.matches as matched
+        join social.chats as chat on chat.chat_id = matched.chat_id
+        where matched.match_id = ${command.aggregateId}::uuid
+        for update of matched, chat
+      `.execute(transaction);
+      const current = result.rows[0];
+      if (!current) throw new SocialActionDeniedError('MATCH_NOT_FOUND');
+      assertMatchCanBeArchived(current.state, current.last_activity_at, context.occurredAt);
+      if (current.chat_state !== 'OPEN') {
+        throw new SocialActionDeniedError('MATCH_NOT_ACTIVE');
+      }
+      const chatVersion = Number(current.chat_version) + 1;
+      await sql`
+        update social.matches
+        set state = 'ARCHIVED', version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where match_id = ${current.match_id}::uuid and state = 'ACTIVE'
+      `.execute(transaction);
+      await sql`
+        update social.chats
+        set state = 'ARCHIVED', version = ${chatVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where chat_id = ${current.chat_id}::uuid and state = 'OPEN'
+      `.execute(transaction);
+      const response: ArchivedMatchProjection = {
+        matchId: current.match_id,
+        state: 'ARCHIVED',
+        chatId: current.chat_id,
+        chatState: 'ARCHIVED',
+        lastActivityAt: current.last_activity_at.toISOString(),
+        version: context.nextVersion,
+      };
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'MatchArchived',
+          schemaVersion: 1,
+          transitionId: 'MT-02',
+          payload: {
+            matchId: current.match_id,
+            chatId: current.chat_id,
+            lastActivityAt: current.last_activity_at.toISOString(),
+          },
+          metadata: { policyVersion: SOCIAL_POLICY_VERSION },
+        },
+        relatedEvents: [{
+          eventId: ids.chatEventId,
+          eventName: 'ChatArchived',
+          schemaVersion: 1,
+          aggregateType: 'Chat',
+          aggregateId: current.chat_id,
+          aggregateVersion: chatVersion,
+          transitionId: 'CT-02',
+          payload: { chatId: current.chat_id, matchId: current.match_id },
+          metadata: { policyVersion: SOCIAL_POLICY_VERSION },
+        }],
+        audit: {
+          auditId: ids.auditId,
+          action: 'ARCHIVE_INACTIVE_MATCH',
+          transitionId: 'MT-02',
+          reasonCode: 'INACTIVE_30_DAYS',
+          beforeState: 'ACTIVE',
+          afterState: 'ARCHIVED',
+          metadata: {
+            chatId: current.chat_id,
+            lastActivityAt: current.last_activity_at.toISOString(),
+          },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'social.match.archived.v1',
+          payload: { matchId: current.match_id, chatId: current.chat_id },
+        }],
+      };
+    },
+  });
 }
 
 export async function readLikeTimerSnapshot(

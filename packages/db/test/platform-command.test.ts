@@ -53,6 +53,7 @@ import {
   changePrimaryAdmin,
   decideAppeal,
   blockUser,
+  archiveInactiveMatch,
   createDiscoveryLike,
   editChatMessage,
   expireDiscoverySuppression,
@@ -117,6 +118,7 @@ import {
   readAgeDivisionTransitionTimerSnapshot,
   readDiscoverySuppressionTimerSnapshot,
   readLikeTimerSnapshot,
+  readMatchTimerSnapshot,
   readMatches,
   readResult,
   readResultTimerSnapshot,
@@ -234,6 +236,7 @@ import {
   type UnblockUserPayload,
   type UnmatchPayload,
   type ExpireGroupOfferingPayload,
+  type ExpireInactiveMatchPayload,
   type ExpireStatusQueueReconfirmationPayload,
   type PublishGroupOfferingPayload,
   type PublishSlotPayload,
@@ -3596,7 +3599,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('[AC-005][AC-006][AC-007][AC-008] keeps Like, mutual Match, Skip and expiry atomic and traceable', async () => {
+  it('[AC-005][AC-006][AC-007][AC-008][AC-009] keeps Like, mutual Match, inactivity archive/reactivation, Skip and expiry atomic', async () => {
     const athleteA = testId(430);
     const athleteB = testId(431);
     const athleteC = testId(432);
@@ -4248,6 +4251,93 @@ describePostgres('PostgreSQL critical command transaction', () => {
       ),
     ).rejects.toMatchObject<Partial<ChatActionDeniedError>>({
       code: 'SERVICE_MESSAGE_IMMUTABLE',
+    });
+
+    const activeRematch = rematchedCd.response.match!;
+    await expect(readMatchTimerSnapshot(database, activeRematch.matchId)).resolves.toEqual({
+      state: 'ACTIVE',
+      version: 1,
+      deadlineAt: '2026-10-07T10:14:00.000Z',
+    });
+    await expect(archiveInactiveMatch(
+      database,
+      {
+        commandId: testId(970), commandType: 'EXPIRE_INACTIVE_MATCH',
+        idempotencyKey: `match:${activeRematch.matchId}:archive:v1`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Match', aggregateId: activeRematch.matchId, expectedVersion: 1,
+        correlationId: testId(971), causationId: testId(955), requestId: testId(972),
+        source: 'scheduler', payloadVersion: 1,
+        payload: { matchId: activeRematch.matchId },
+      } satisfies CommandEnvelope<ExpireInactiveMatchPayload>,
+      {
+        eventId: testId(973), auditId: testId(974), outboxMessageId: testId(975),
+        chatEventId: testId(976),
+      },
+      () => new Date('2026-10-07T10:13:59.999Z'),
+    )).rejects.toMatchObject({ code: 'MATCH_NOT_DUE' });
+    const archivedMatch = await archiveInactiveMatch(
+      database,
+      {
+        commandId: testId(970), commandType: 'EXPIRE_INACTIVE_MATCH',
+        idempotencyKey: `match:${activeRematch.matchId}:archive:v1`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Match', aggregateId: activeRematch.matchId, expectedVersion: 1,
+        correlationId: testId(971), causationId: testId(955), requestId: testId(972),
+        source: 'scheduler', payloadVersion: 1,
+        payload: { matchId: activeRematch.matchId },
+      } satisfies CommandEnvelope<ExpireInactiveMatchPayload>,
+      {
+        eventId: testId(973), auditId: testId(974), outboxMessageId: testId(975),
+        chatEventId: testId(976),
+      },
+      () => new Date('2026-10-07T10:14:00.000Z'),
+    );
+    expect(archivedMatch.response).toMatchObject({
+      matchId: activeRematch.matchId,
+      state: 'ARCHIVED',
+      chatId,
+      chatState: 'ARCHIVED',
+      version: 2,
+    });
+    await expect(readMatches(database, athleteC)).resolves.toEqual([
+      expect.objectContaining({ matchId: activeRematch.matchId, state: 'ARCHIVED', version: 2 }),
+    ]);
+
+    const reactivationMessageId = testId(977);
+    await sendChatMessage(
+      database,
+      {
+        commandId: testId(978), commandType: 'SEND_MESSAGE',
+        idempotencyKey: 'chat-reactivate-c-d',
+        actor: { type: 'USER', id: athleteD, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'ChatMessage', aggregateId: reactivationMessageId, expectedVersion: 0,
+        correlationId: testId(979), causationId: testId(973), requestId: testId(980),
+        source: 'api', payloadVersion: 1,
+        payload: {
+          chatId,
+          content: { kind: 'PERSONAL_TEXT', text: 'Возобновим тренировку?' },
+        },
+      } satisfies CommandEnvelope<SendChatMessagePayload>,
+      {
+        eventId: testId(981), auditId: testId(982), outboxMessageId: testId(983),
+        revisionId: testId(984), matchEventId: testId(985), chatEventId: testId(986),
+      },
+      () => new Date('2026-10-07T10:15:00.000Z'),
+    );
+    await expect(readMatches(database, athleteC)).resolves.toEqual([
+      expect.objectContaining({
+        matchId: activeRematch.matchId,
+        state: 'ACTIVE',
+        lastActivityAt: '2026-10-07T10:15:00.000Z',
+        version: 3,
+      }),
+    ]);
+    await expect(readChatMessages(database, chatId, athleteC, 20, null)).resolves.toMatchObject({
+      chatState: 'OPEN',
+      messages: expect.arrayContaining([
+        expect.objectContaining({ messageId: reactivationMessageId }),
+      ]),
     });
   });
 
