@@ -238,6 +238,9 @@ Verified on 2026-10-04:
   control state; six compact controls now meet the 44-point target and static Web exports
   `lang="ru"` with Molokh title/description. Real VoiceOver/TalkBack and 200% zoom remain manual
   pre-pilot checks rather than claimed automated coverage;
+- the release rollback gate hashes every migration blob in the selected Git target against the
+  applied PostgreSQL ledger. A schema-compatible target at `389ae14` passes all 57 migrations,
+  while pre-`0057` target `6d4ae4c` is rejected before deployment;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
 - the generated acceptance matrix maps 109 scenarios (`103/195 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;

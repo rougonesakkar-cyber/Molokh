@@ -107,3 +107,33 @@ Before inviting pilot users, complete the remaining device checks with real assi
 
 Record device/OS/browser versions and defects. Static conformance is a gate, but it is not a
 substitute for screen-reader and dynamic-layout testing on real devices.
+
+## 6. Release rollback
+
+Molokh uses forward-only, immutable database migrations. A code rollback must never delete or
+rewrite already-applied schema or business history. Before deploying a previous application
+revision, validate it against the live migration ledger:
+
+```powershell
+pnpm check:rollback -TargetRef <known-good-git-ref>
+```
+
+The gate resolves the target commit, requires every applied migration to exist there, and compares
+the exact SHA-256 of every SQL blob with `platform.schema_migrations`. It fails closed when the
+target predates an applied migration or contains altered migration history. Passing this check is
+necessary, not sufficient: the target revision must still pass its build, startup smoke, API
+readiness and `pnpm monitor:pilot` after deployment.
+
+Rollback sequence:
+
+1. stop new application rollout and record the failed and last-known-good Git SHAs;
+2. keep PostgreSQL and Worker history intact; take and verify a backup if the incident permits;
+3. run the compatibility gate against the last-known-good SHA;
+4. redeploy only that immutable application artifact when the gate passes;
+5. verify `/health/live`, `/health/ready`, critical role journeys and `pnpm monitor:pilot`;
+6. reconcile any in-flight domain work through existing append-only incident/case flows.
+
+If the gate rejects the target, do not use a down migration. Fix forward or deploy a newer
+compatible revision. Database restore is disaster recovery into an isolated or replacement
+database, not a normal application rollback. Sporting statuses, Results and Appeals are reversed
+only through their governed domain transitions.

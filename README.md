@@ -375,8 +375,12 @@ or event/audit history; a live standalone export is reused by closure instead of
 
 The Athlete, Coach, Gym Admin and Central role-switch walkthrough plus the isolated PostgreSQL
 backup/restore plus notification shadow-rebuild rehearsal are complete. Continue with M8
-real-device accessibility and rollback checks. The static accessibility gate is now part of
+release-canary and real-device accessibility checks. The static accessibility gate is now part of
 `pnpm check`. The read-only pilot monitor is executable and currently reports only the
 two deliberately unstarted Sessions awaiting Coach action. External OTP and private object/scan providers
 remain explicit deployment inputs rather than hidden local substitutes.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
+
+Before rolling application code back, run `pnpm check:rollback -TargetRef <known-good-git-ref>`.
+It rejects a target that does not contain the exact immutable migration history already applied to
+PostgreSQL; ordinary rollback never uses down migrations or rewrites sporting history.
