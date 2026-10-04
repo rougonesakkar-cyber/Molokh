@@ -26,8 +26,10 @@ import type {
   MatchesResponse,
   MissingResultReviewListResponse,
   MembershipExitCommandResponse,
+  MembershipCommandResponse,
   MembershipRemovalCommandResponse,
   MembershipRemovalListResponse,
+  PendingMembershipListResponse,
   MySessionsResponse,
   PendingCoachInviteListResponse,
   RecordSessionResultBody,
@@ -98,6 +100,7 @@ type CommunityClosureDisposition = 'RETAIN_TO_COMPLETION' | 'CANCEL_NO_FAULT';
 type CompetitionStatus = CompetitionStatusResponse['data'];
 type StatusReleasePreview = StatusReleaseCommandResponse['data'];
 type MembershipExitPreview = MembershipExitCommandResponse['data'];
+type PendingMembership = PendingMembershipListResponse['data'][number];
 type MembershipRemoval = MembershipRemovalListResponse['data'][number];
 type VenueMember = VenueMemberListResponse['data'][number];
 type Capability = Identity['capabilities'][number];
@@ -426,6 +429,9 @@ export default function IdentityScreen() {
     useState<MembershipExitPreview | null>(null);
   const [membershipExitNotice, setMembershipExitNotice] = useState<string | null>(null);
   const [actingMembershipExit, setActingMembershipExit] = useState(false);
+  const [pendingMemberships, setPendingMemberships] = useState<PendingMembership[]>([]);
+  const [membershipNotice, setMembershipNotice] = useState<string | null>(null);
+  const [actingMembershipId, setActingMembershipId] = useState<string | null>(null);
   const [membershipRemovals, setMembershipRemovals] = useState<MembershipRemoval[]>([]);
   const [venueMembers, setVenueMembers] = useState<VenueMember[]>([]);
   const [removalTargetId, setRemovalTargetId] = useState<string | null>(null);
@@ -612,7 +618,19 @@ export default function IdentityScreen() {
           (await removalQueueResponse.json()) as MembershipRemovalListResponse;
         setMembershipRemovals(removalQueue.data);
       }
-      if (currentAccount?.role === 'Gym Admin' && loadedCommunity) {
+      if (
+        loadedCommunity?.access.capabilities.includes('MANAGE_MEMBERSHIPS')
+      ) {
+        const pendingMembershipResponse = await fetch(
+          `${apiUrl}/api/v1/communities/${loadedCommunity.community.communityId}/memberships/pending`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (!pendingMembershipResponse.ok) {
+          throw new Error(await apiErrorMessage(pendingMembershipResponse));
+        }
+        const pendingMembershipResult =
+          (await pendingMembershipResponse.json()) as PendingMembershipListResponse;
+        setPendingMemberships(pendingMembershipResult.data);
         const dashboardResponse = await fetch(
           `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/admin-dashboard`,
           { headers: { Authorization: `Bearer ${localToken}` } },
@@ -635,6 +653,7 @@ export default function IdentityScreen() {
         const membersResult = (await membersResponse.json()) as VenueMemberListResponse;
         setVenueMembers(membersResult.data);
       } else {
+        setPendingMemberships([]);
         setVenueAdminDashboard(null);
         setVenueMembers([]);
       }
@@ -945,6 +964,9 @@ export default function IdentityScreen() {
     setMembershipExitPreview(null);
     setMembershipExitNotice(null);
     setActingMembershipExit(false);
+    setPendingMemberships([]);
+    setMembershipNotice(null);
+    setActingMembershipId(null);
     setMembershipRemovals([]);
     setVenueMembers([]);
     setRemovalTargetId(null);
@@ -2532,6 +2554,77 @@ export default function IdentityScreen() {
     }
   };
 
+  const requestCommunityMembership = async () => {
+    if (!communityContext || communityContext.membership || actingMembershipId) return;
+    const communityId = communityContext.community.communityId;
+    setActingMembershipId('request');
+    setMembershipNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/communities/${communityId}/memberships`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': `membership-request:${communityId}:${identity?.userId ?? 'me'}:${new Date().toISOString().slice(0, 10)}`,
+          },
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as MembershipCommandResponse;
+      setCommunityContext((current) => current ? {
+        ...current,
+        membership: {
+          membershipId: result.data.membershipId,
+          state: result.data.state,
+          ageDivision: result.data.ageDivision,
+          competitionEnabled: result.data.competitionEnabled,
+          joinPath: result.data.joinPath,
+        },
+      } : current);
+      setMembershipNotice(
+        'Заявка отправлена залу. Обычно администратор отвечает в течение 24 часов.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отправить заявку в Community');
+    } finally {
+      setActingMembershipId(null);
+    }
+  };
+
+  const approvePendingMembership = async (membership: PendingMembership) => {
+    if (actingMembershipId) return;
+    setActingMembershipId(membership.membershipId);
+    setMembershipNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/memberships/${membership.membershipId}/approve`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': `membership-approve:${membership.membershipId}:v${membership.version}`,
+            'If-Match': String(membership.version),
+          },
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      setPendingMemberships((current) =>
+        current.filter((item) => item.membershipId !== membership.membershipId));
+      setMembershipNotice(`${membership.displayName}: Membership активирована.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось одобрить Membership');
+    } finally {
+      setActingMembershipId(null);
+    }
+  };
+
   const previewMembershipExit = async () => {
     const membership = communityContext?.membership;
     if (!membership || membership.state !== 'ACTIVE' || actingMembershipExit) return;
@@ -3118,6 +3211,51 @@ export default function IdentityScreen() {
 
             {activeSection === 'COMMUNITY' ? (
               <>
+                {communityContext?.access.capabilities.includes('MANAGE_MEMBERSHIPS') ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      Заявки в Community
+                    </Text>
+                    <Text style={styles.hint}>
+                      Новые участники становятся eligible для соревнований только после вашего подтверждения.
+                    </Text>
+                    {pendingMemberships.length === 0 ? (
+                      <Text style={styles.muted}>Новых заявок сейчас нет.</Text>
+                    ) : pendingMemberships.map((membership) => (
+                      <View key={membership.membershipId} style={styles.hostConfirmationCard}>
+                        <View style={styles.row}>
+                          <Text style={styles.venueName}>{membership.displayName}</Text>
+                          <Text style={styles.sessionState}>Ожидает</Text>
+                        </View>
+                        <Text style={styles.muted}>
+                          {membership.requestedAt
+                            ? `Отправлена ${formatDateTime(membership.requestedAt)}`
+                            : 'Заявка отправлена'}
+                        </Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: actingMembershipId !== null }}
+                          disabled={actingMembershipId !== null}
+                          onPress={() => void approvePendingMembership(membership)}
+                          style={({ pressed }) => [
+                            styles.button,
+                            actingMembershipId !== null && styles.buttonDisabled,
+                            pressed && actingMembershipId === null && styles.buttonPressed,
+                          ]}
+                        >
+                          {actingMembershipId === membership.membershipId
+                            ? <ActivityIndicator color="#ffffff" />
+                            : <Text style={styles.buttonText}>Принять в Community</Text>}
+                        </Pressable>
+                      </View>
+                    ))}
+                    {membershipNotice ? (
+                      <Text accessibilityLiveRegion="polite" style={styles.successText}>
+                        {membershipNotice}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : null}
                 {activeTestAccount.role === 'Athlete' && competitionStatus ? (
                   <StatusQueueSection
                     competition={competitionStatus}
@@ -5433,6 +5571,34 @@ export default function IdentityScreen() {
                       <Text style={styles.muted}>Membership</Text>
                       <Text style={styles.value}>{communityContext.membership?.state ?? 'Нет'}</Text>
                     </View>
+                    {!communityContext.membership
+                      && communityContext.access.capabilities.includes('REQUEST_MEMBERSHIP') ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: actingMembershipId !== null }}
+                        disabled={actingMembershipId !== null}
+                        onPress={() => void requestCommunityMembership()}
+                        style={({ pressed }) => [
+                          styles.button,
+                          actingMembershipId !== null && styles.buttonDisabled,
+                          pressed && actingMembershipId === null && styles.buttonPressed,
+                        ]}
+                      >
+                        {actingMembershipId === 'request'
+                          ? <ActivityIndicator color="#ffffff" />
+                          : <Text style={styles.buttonText}>Вступить в Community</Text>}
+                      </Pressable>
+                    ) : null}
+                    {communityContext.membership?.state === 'PENDING' ? (
+                      <Text style={styles.hint}>
+                        Заявка рассматривается залом. Напоминание администратору уйдёт через 12 часов.
+                      </Text>
+                    ) : null}
+                    {membershipNotice ? (
+                      <Text accessibilityLiveRegion="polite" style={styles.successText}>
+                        {membershipNotice}
+                      </Text>
+                    ) : null}
                     <View style={styles.row}>
                       <Text style={styles.muted}>Pair Cooldown</Text>
                       <Text style={styles.value}>{communityContext.community.pairCooldownDays} дней</Text>

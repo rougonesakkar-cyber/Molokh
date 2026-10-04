@@ -47,6 +47,7 @@ import { registerStatusQueueRoutes, type StatusQueueRouteDependencies } from './
 import { registerStatusReleaseRoutes, type StatusReleaseRouteDependencies } from './status-release-routes.js';
 import { registerMembershipExitRoutes, type MembershipExitRouteDependencies } from './membership-exit-routes.js';
 import { registerMembershipRemovalRoutes, type MembershipRemovalRouteDependencies } from './membership-removal-routes.js';
+import { registerMembershipRoutes, type MembershipRouteDependencies } from './membership-routes.js';
 import { registerYouthConsentRoutes, type YouthConsentRouteDependencies } from './youth-consent-routes.js';
 import {
   registerPlatformIncidentRoutes,
@@ -75,6 +76,7 @@ export interface BuildAppOptions extends FastifyServerOptions {
   readonly statusRelease?: StatusReleaseRouteDependencies;
   readonly membershipExit?: MembershipExitRouteDependencies;
   readonly membershipRemoval?: MembershipRemovalRouteDependencies;
+  readonly membership?: MembershipRouteDependencies;
   readonly youthConsent?: YouthConsentRouteDependencies;
   readonly missingResult?: MissingResultRouteDependencies;
   readonly platformIncident?: PlatformIncidentRouteDependencies;
@@ -103,6 +105,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     statusRelease,
     membershipExit,
     membershipRemoval,
+    membership,
     youthConsent,
     missingResult,
     platformIncident,
@@ -162,6 +165,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   if (statusRelease) await registerStatusReleaseRoutes(app, statusRelease);
   if (membershipExit) await registerMembershipExitRoutes(app, membershipExit);
   if (membershipRemoval) await registerMembershipRemovalRoutes(app, membershipRemoval);
+  if (membership) await registerMembershipRoutes(app, membership);
   if (youthConsent) await registerYouthConsentRoutes(app, youthConsent);
   if (appeal) await registerAppealRoutes(app, appeal);
   if (missingResult) await registerMissingResultRoutes(app, missingResult);

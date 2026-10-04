@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   AccountAccessConflictError,
   AccountLifecycleConflictError,
@@ -7,6 +9,7 @@ import {
   IdentityValidationError,
   InvalidCommandEnvelopeError,
   InvalidRoleGrantTransitionError,
+  MembershipConflictError,
   RoleGrantPermissionDeniedError,
   RoleGrantValidationError,
   ResultConflictError,
@@ -44,6 +47,8 @@ import {
   acceptCoachInvite,
   appointGymAdmin,
   approveAccountVerification,
+  approveMembership,
+  activateMembershipByInvite,
   decideBookingOfficialConversion,
   decideBookingSoloContinuation,
   decideBookingTrainingRetention,
@@ -88,8 +93,10 @@ import {
   markNotificationRead,
   listPendingVerifications,
   listPendingCoachInvites,
+  listPendingMemberships,
   listAppealsForCentral,
   projectNotificationBatch,
+  projectPendingMembershipNotification,
   readCommunityContext,
   readBookingOfficialConversionForSession,
   readBookingSoloContinuationForSession,
@@ -109,6 +116,8 @@ import {
   listMembershipRemovalsForCentral,
   listVenueMembersForAdmin,
   requestMembershipRemoval,
+  requestMembership,
+  readMembershipTimerSnapshot,
   readVacancyQueueReconciliationCandidate,
   reconcileVacancyQueue,
   promoteSingleGenesisCandidate,
@@ -2019,6 +2028,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         social.likes,
         community.community_pause_intervals,
         community.role_grants,
+        community.membership_invites,
         community.community_memberships,
         community.community_configuration_versions,
         community.communities,
@@ -10852,5 +10862,165 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(stored.rows[0]).toEqual({ code_hash: otpVerifierHash,
       access_hash: secondAccessHash, refresh_hash: secondRefreshHash,
       family_state: 'REVOKED', trusted_state: 'REVOKED' });
+  });
+
+  it('[AC-013][AC-014][AC-015] governs Membership request, timers, approval and QR activation', async () => {
+    const base = 29000;
+    const seedUser = testId(base + 1);
+    const applicant = testId(base + 2);
+    const qrApplicant = testId(base + 3);
+    const admin = testId(base + 4);
+    const central = testId(base + 5);
+    const venue = testId(base + 6);
+    const community = testId(base + 7);
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${seedUser}::uuid, '+79992900001', now(), '1990-01-01', 'ADULT',
+          'Seed Athlete', 'ACTIVE', 'ru-RU', 1, now()),
+        (${applicant}::uuid, '+79992900002', now(), '1991-01-01', 'ADULT',
+          'Applicant', 'ACTIVE', 'ru-RU', 1, now()),
+        (${qrApplicant}::uuid, '+79992900003', now(), '1992-01-01', 'ADULT',
+          'QR Applicant', 'ACTIVE', 'ru-RU', 1, now()),
+        (${admin}::uuid, '+79992900004', now(), '1989-01-01', 'ADULT',
+          'Gym Admin', 'ACTIVE', 'ru-RU', 1, now()),
+        (${central}::uuid, '+79992900005', now(), '1988-01-01', 'ADULT',
+          'Central', 'ACTIVE', 'ru-RU', 1, now())
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: testId(base + 8), communityId: community,
+      communityConfigurationId: testId(base + 9), membershipId: testId(base + 10),
+      centralGrantId: testId(base + 11), athleteUserId: seedUser, centralActorId: central,
+      legalName: 'Membership Pilot LLC', venueDisplayName: 'Membership Pilot',
+      communityName: 'Membership Community', address: 'Москва', cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow', contactPayload: { phone: '+79992900000' },
+      occurredAt: '2026-10-04T09:00:00.000Z',
+    });
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${testId(base + 12)}::uuid, ${admin}::uuid, 'GYM_ADMIN', 'VENUE',
+        ${venue}::uuid, 'ACTIVE', ${central}::uuid, now(), 1
+      )
+    `.execute(database);
+
+    const requestedMembership = testId(base + 13);
+    const requestCommand: CommandEnvelope<{ readonly communityId: string }> = {
+      commandId: testId(base + 14), commandType: 'REQUEST_MEMBERSHIP',
+      idempotencyKey: 'membership-request-29000',
+      actor: { type: 'USER', id: applicant, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'CommunityMembership', aggregateId: requestedMembership,
+      expectedVersion: 0, correlationId: testId(base + 15), causationId: null,
+      requestId: testId(base + 16), source: 'api', payloadVersion: 1,
+      payload: { communityId: community },
+    };
+    const requestIds = {
+      eventId: testId(base + 17), auditId: testId(base + 18),
+      outboxMessageId: testId(base + 19), notificationIds: [testId(base + 20)],
+      reminderTimerOutboxMessageId: testId(base + 21),
+      escalationTimerOutboxMessageId: testId(base + 22),
+    };
+    const requested = await requestMembership(database, requestCommand, requestIds);
+    const replay = await requestMembership(database, requestCommand, requestIds);
+    expect(requested).toMatchObject({ replayed: false, responseStatus: 201,
+      response: { membershipId: requestedMembership, state: 'PENDING',
+        competitionEnabled: false, joinPath: 'SELF_REQUEST', version: 1 } });
+    expect(replay.replayed).toBe(true);
+    expect(await listPendingMemberships(database, admin, community)).toMatchObject([
+      { membershipId: requestedMembership, displayName: 'Applicant', state: 'PENDING' },
+    ]);
+    await expect(listPendingMemberships(database, applicant, community))
+      .rejects.toEqual(expect.objectContaining({ code: 'MEMBERSHIP_ADMIN_REQUIRED' }));
+
+    const timerOutbox = await sql<{ readonly topic: string; readonly payload: {
+      readonly timer: { readonly deadlineAt: string; readonly commandType: string } } }>`
+      select topic, payload from platform.outbox_messages
+      where message_id in (
+        ${requestIds.reminderTimerOutboxMessageId}::uuid,
+        ${requestIds.escalationTimerOutboxMessageId}::uuid
+      ) order by topic
+    `.execute(database);
+    expect(timerOutbox.rows.map((row) => row.payload.timer.commandType).sort()).toEqual([
+      'ESCALATE_MEMBERSHIP_REQUEST', 'REMIND_MEMBERSHIP_REQUEST',
+    ]);
+    const deadlines = timerOutbox.rows.map((row) => Date.parse(row.payload.timer.deadlineAt)).sort();
+    expect(deadlines[1]! - deadlines[0]!).toBe(12 * 60 * 60 * 1_000);
+    expect(await readMembershipTimerSnapshot(database, requestedMembership)).toEqual({
+      state: 'PENDING', version: 1,
+    });
+    await expect(projectPendingMembershipNotification(
+      database, requestedMembership, 'REMINDER', [testId(base + 23)],
+    )).resolves.toBe(1);
+    await expect(projectPendingMembershipNotification(
+      database, requestedMembership, 'ESCALATION', [testId(base + 24)],
+    )).resolves.toBe(1);
+    await expect(projectPendingMembershipNotification(
+      database, requestedMembership, 'REMINDER', [testId(base + 25)],
+    )).resolves.toBe(0);
+
+    const approved = await approveMembership(database, {
+      commandId: testId(base + 26), commandType: 'APPROVE_MEMBERSHIP',
+      idempotencyKey: 'membership-approve-29000',
+      actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+      aggregateType: 'CommunityMembership', aggregateId: requestedMembership,
+      expectedVersion: 1, correlationId: testId(base + 15),
+      causationId: requestIds.eventId, requestId: testId(base + 27),
+      source: 'admin', payloadVersion: 1, payload: { membershipId: requestedMembership },
+    }, { eventId: testId(base + 28), auditId: testId(base + 29),
+      outboxMessageId: testId(base + 30), notificationIds: [testId(base + 31)] });
+    expect(approved.response).toMatchObject({ state: 'ACTIVE', competitionEnabled: true,
+      version: 2, decidedBy: admin });
+    expect(await readMembershipTimerSnapshot(database, requestedMembership)).toEqual({
+      state: 'ACTIVE', version: 2,
+    });
+    expect(await listPendingMemberships(database, admin, community)).toEqual([]);
+    await expect(projectPendingMembershipNotification(
+      database, requestedMembership, 'ESCALATION', [testId(base + 32)],
+    )).resolves.toBe(0);
+
+    const inviteToken = 'membership-pilot-qr-token-29000';
+    const tokenHash = createHash('sha256').update(inviteToken, 'utf8').digest('hex');
+    await sql`
+      insert into community.membership_invites (
+        invite_id, community_id, join_path, token_sha256, age_division, state,
+        expires_at, max_uses, created_by, version
+      ) values (
+        ${testId(base + 33)}::uuid, ${community}::uuid, 'QR', ${tokenHash}, 'ADULT',
+        'ACTIVE', '2099-01-01T00:00:00.000Z', 1, ${admin}::uuid, 1
+      )
+    `.execute(database);
+    const qrMembership = testId(base + 34);
+    const activated = await activateMembershipByInvite(database, {
+      commandId: testId(base + 35), commandType: 'JOIN_BY_QR_OR_INVITE',
+      idempotencyKey: 'membership-qr-29000',
+      actor: { type: 'USER', id: qrApplicant, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'CommunityMembership', aggregateId: qrMembership,
+      expectedVersion: 0, correlationId: testId(base + 36), causationId: null,
+      requestId: testId(base + 37), source: 'api', payloadVersion: 1,
+      payload: { token: inviteToken },
+    }, { eventId: testId(base + 38), auditId: testId(base + 39),
+      outboxMessageId: testId(base + 40), notificationIds: [testId(base + 41)] });
+    expect(activated.response).toMatchObject({ membershipId: qrMembership, state: 'ACTIVE',
+      competitionEnabled: true, joinPath: 'QR', userId: qrApplicant });
+    const invite = await sql<{ readonly state: string; readonly used_count: number }>`
+      select state, used_count from community.membership_invites
+      where token_sha256 = ${tokenHash}
+    `.execute(database);
+    expect(invite.rows[0]).toEqual({ state: 'EXPIRED', used_count: 1 });
+    await expect(activateMembershipByInvite(database, {
+      commandId: testId(base + 42), commandType: 'JOIN_BY_QR_OR_INVITE',
+      idempotencyKey: 'membership-qr-expired-29000',
+      actor: { type: 'USER', id: seedUser, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'CommunityMembership', aggregateId: testId(base + 43),
+      expectedVersion: 0, correlationId: testId(base + 44), causationId: null,
+      requestId: testId(base + 45), source: 'api', payloadVersion: 1,
+      payload: { token: inviteToken },
+    }, { eventId: testId(base + 46), auditId: testId(base + 47),
+      outboxMessageId: testId(base + 48), notificationIds: [testId(base + 49)] }))
+      .rejects.toEqual(expect.objectContaining({ code: 'MEMBERSHIP_INVITE_INVALID' }));
   });
 });

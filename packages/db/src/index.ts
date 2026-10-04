@@ -38,6 +38,7 @@ export * from './identity.js';
 export * from './integrity-case.js';
 export * from './missing-result.js';
 export * from './membership-exit.js';
+export * from './membership.js';
 export * from './membership-removal.js';
 export * from './notifications.js';
 export * from './outbox.js';

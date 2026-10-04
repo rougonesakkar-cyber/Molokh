@@ -136,7 +136,7 @@ the blocker revokes it. Neither endpoint cascades from Match to Challenge or Boo
 | GET | `/communities/{id}/members` | privacy-filtered members/status |
 | GET | `/communities/{id}/competition` | Champion, Contender, active Challenge, public FIFO |
 | POST | `/communities/{id}/memberships` | self-request |
-| POST | `/community-invites/{token}/accept` | QR/invite activation |
+| POST | `/community-invites/accept` | QR/invite activation; opaque token is sent in the request body, never in the API URL |
 | POST | `/communities/{community_id}/coach-invites` | scoped Admin/Central invites verified Coach |
 | GET | `/me/coach-invites` | invitee reads own pending invitations |
 | POST | `/me/coach-invites/{grant_id}/accept` | invitee activates Coach grant |

@@ -2949,6 +2949,56 @@ export const CommunityContextResponseSchema = Type.Object(
 
 export type CommunityContextResponse = Static<typeof CommunityContextResponseSchema>;
 
+export const MembershipProjectionSchema = Type.Object(
+  {
+    membershipId: Type.String({ format: 'uuid' }),
+    communityId: Type.String({ format: 'uuid' }),
+    userId: Type.String({ format: 'uuid' }),
+    ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+    state: Type.Union([
+      Type.Literal('PENDING'), Type.Literal('ACTIVE'), Type.Literal('UNDER_REVIEW'),
+      Type.Literal('REJECTED'), Type.Literal('LEFT'), Type.Literal('REMOVED'),
+      Type.Literal('ARCHIVED'),
+    ]),
+    competitionEnabled: Type.Boolean(),
+    joinPath: Type.Union([
+      Type.Literal('QR'), Type.Literal('INVITE'), Type.Literal('SELF_REQUEST'),
+    ]),
+    requestedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    decidedBy: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'MembershipProjection', additionalProperties: false },
+);
+export type MembershipContract = Static<typeof MembershipProjectionSchema>;
+
+export const MembershipCommandResponseSchema = Type.Object(
+  {
+    data: MembershipProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }, { additionalProperties: false }),
+  },
+  { $id: 'MembershipCommandResponse', additionalProperties: false },
+);
+export type MembershipCommandResponse = Static<typeof MembershipCommandResponseSchema>;
+
+export const PendingMembershipListResponseSchema = Type.Object(
+  {
+    data: Type.Array(Type.Intersect([
+      MembershipProjectionSchema,
+      Type.Object({ displayName: Type.String({ minLength: 1, maxLength: 80 }) }),
+    ])),
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) },
+      { additionalProperties: false }),
+  },
+  { $id: 'PendingMembershipListResponse', additionalProperties: false },
+);
+export type PendingMembershipListResponse = Static<typeof PendingMembershipListResponseSchema>;
+
 export const CommunityLifecycleProjectionSchema = Type.Object(
   {
     communityId: Type.String({ format: 'uuid' }),

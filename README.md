@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **308**;
 - registered events: **308**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **143/214** (`137/196 P0`);
+- executable acceptance traceability: **146/214** (`140/196 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0058` and **42/42** integration scenarios pass locally;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin-approval Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
+- database gate: PostgreSQL migrations `0001`–`0059` and **43/43** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   unresolved upstream `node-forge` and `braces` advisories are covered by narrow regression-tested
   local backports that expire on 2026-10-16 and reject every other high/critical advisory;
@@ -99,9 +99,12 @@ pnpm.cmd --filter @molokh/client web
 ```
 
 Then open `http://localhost:8081`. The development API creates deterministic local
-Athlete, Coach, Gym Admin and Central accounts plus five temporary Discovery profiles.
+Athlete, Coach, Gym Admin and Central accounts, a Membership applicant without an active
+Community relationship, plus five temporary Discovery profiles.
 Use **«Сменить»** in the development-only **«Тестовый аккаунт»** panel to move between
 them without restarting Expo. No SMS or production credential is required for this local slice.
+Switch to **«Кирилл Старт»** to submit a Membership request, then to
+**«Пилотный администратор»** to approve it from the FIFO queue.
 For the real database-backed authentication path, open **«Сменить» → «Настоящая сессия»**,
 leave the pilot number `+79990000001`, request a code and sign in. Only the development build
 shows and pre-fills that code. Web keeps refresh in an HttpOnly cookie and access only in memory;

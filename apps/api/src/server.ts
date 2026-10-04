@@ -1,11 +1,13 @@
 import { AccountLifecycleConflictError, type CommandEnvelope } from '@molokh/core';
 import {
   activateUser,
+  activateMembershipByInvite,
   addAppealResponse,
   acceptCoachInvite,
   decideAppeal,
   appointGymAdmin,
   approveAccountVerification,
+  approveMembership,
   changeDisplayName,
   changeSports,
   confirmMissingResultVenue,
@@ -30,6 +32,7 @@ import {
   inviteCoach,
   hideChatMessageForUser,
   listPendingCoachInvites,
+  listPendingMemberships,
   listMissingResultReviewsForCentral,
   listMissingResultReviewsForViewer,
   listIntegrityCasesForCentral,
@@ -78,6 +81,7 @@ import {
   listMembershipRemovalsForSubject,
   listVenueMembersForAdmin,
   requestMembershipRemoval,
+  requestMembership,
   respondToGenesisChallenge,
   readVenueAdminDashboard,
   reportChatMessage,
@@ -178,6 +182,7 @@ const localReplacementCoachUserId = '0199a1b2-1234-7000-8000-000000000801';
 const localAdminUserId = '0199a1b2-1234-7000-8000-000000000509';
 const localDiscoveryUserId = '0199a1b2-1234-7000-8000-000000000554';
 const localDiscoveryUserTwoId = '0199a1b2-1234-7000-8000-000000000561';
+const localMembershipApplicantUserId = '0199a1b2-1234-7000-8000-000000000620';
 const localToken = process.env.LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 const localCentralToken =
   process.env.LOCAL_CENTRAL_AUTH_TOKEN ?? 'molokh-local-central-token';
@@ -191,6 +196,8 @@ const localDiscoveryToken =
   process.env.LOCAL_DISCOVERY_AUTH_TOKEN ?? 'molokh-local-discovery-token';
 const localDiscoveryTwoToken =
   process.env.LOCAL_DISCOVERY_TWO_AUTH_TOKEN ?? 'molokh-local-discovery-two-token';
+const localMembershipApplicantToken =
+  process.env.LOCAL_MEMBERSHIP_APPLICANT_AUTH_TOKEN ?? 'molokh-local-applicant-token';
 const localActivation: CommandEnvelope<{
   readonly userId: string;
   readonly phoneE164: string;
@@ -379,6 +386,32 @@ const localDiscoveryTwoActivation: typeof localActivation = {
     locale: 'ru-RU',
     primarySport: 'BOXING',
     secondarySport: 'RUNNING',
+    discoveryRadiusKm: 15,
+  },
+};
+
+const localMembershipApplicantActivation: typeof localActivation = {
+  commandId: '0199a1b2-1234-7000-8000-000000000621',
+  commandType: 'ACTIVATE_ACCOUNT',
+  idempotencyKey: 'local-development-membership-applicant-v1',
+  actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+  aggregateType: 'User',
+  aggregateId: localMembershipApplicantUserId,
+  expectedVersion: 0,
+  correlationId: '0199a1b2-1234-7000-8000-000000000622',
+  causationId: null,
+  requestId: '0199a1b2-1234-7000-8000-000000000623',
+  source: 'scheduler',
+  payloadVersion: 1,
+  payload: {
+    userId: localMembershipApplicantUserId,
+    phoneE164: '+79990000620',
+    phoneVerifiedAt: '2026-09-05T09:00:00.000Z',
+    birthDate: '1996-06-20',
+    displayName: 'Кирилл Старт',
+    locale: 'ru-RU',
+    primarySport: 'BOXING',
+    secondarySport: null,
     discoveryRadiusKm: 15,
   },
 };
@@ -623,6 +656,17 @@ if (!existingDiscoveryTwoIdentity) {
     outboxMessageId: '0199a1b2-1234-7000-8000-000000000567',
   });
 }
+const existingMembershipApplicantIdentity = await readIdentityProjection(
+  database,
+  localMembershipApplicantUserId,
+);
+if (!existingMembershipApplicantIdentity) {
+  await activateUser(database, localMembershipApplicantActivation, {
+    eventId: '0199a1b2-1234-7000-8000-000000000624',
+    auditId: '0199a1b2-1234-7000-8000-000000000625',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000626',
+  });
+}
 for (const fixture of localTemporaryDiscoveryFixtures) {
   const existingIdentity = await readIdentityProjection(
     database,
@@ -810,6 +854,13 @@ const localAthleteVerificationFixture = (
 for (const [index, userId] of athleteVerificationUserIds.entries()) {
   await ensureLocalVerifiedUser(localAthleteVerificationFixture(userId, index + 1));
 }
+
+await ensureLocalVerifiedUser(
+  localAthleteVerificationFixture(
+    localMembershipApplicantUserId,
+    athleteVerificationUserIds.length + 1,
+  ),
+);
 
 await ensureLocalPilotCompetition(database, {
   competitionId: localCompetitionId,
@@ -1079,6 +1130,7 @@ const localStaticAuth = runtimeConfig.localFixturesEnabled
   { token: localAdminToken, userId: localAdminUserId },
   { token: localDiscoveryToken, userId: localDiscoveryUserId },
   { token: localDiscoveryTwoToken, userId: localDiscoveryUserTwoId },
+  { token: localMembershipApplicantToken, userId: localMembershipApplicantUserId },
   ...localTemporaryDiscoveryFixtures.map((fixture) => ({
     token: fixture.token,
     userId: fixture.activation.payload.userId,
@@ -1222,6 +1274,15 @@ const app = await buildApp({
     request: (command, ids) => requestMembershipRemoval(database, command, ids),
     appeal: (command, ids) => appealMembershipRemoval(database, command, ids),
     decide: (command, ids) => decideMembershipRemoval(database, command, ids),
+  },
+  membership: {
+    auth: localAuth,
+    requestMembership: (command, ids) => requestMembership(database, command, ids),
+    activateMembershipByInvite: (command, ids) =>
+      activateMembershipByInvite(database, command, ids),
+    approveMembership: (command, ids) => approveMembership(database, command, ids),
+    listPendingMemberships: (actorId, communityId) =>
+      listPendingMemberships(database, actorId, communityId),
   },
   logger: {
     redact: {

@@ -45,6 +45,7 @@ import {
   openSessionWindow,
   outboxRetryDelayMilliseconds,
   projectNotificationBatch,
+  projectPendingMembershipNotification,
   promoteSingleGenesisCandidate,
   readDiscoverySuppressionTimerSnapshot,
   readBookingIntentTimerSnapshot,
@@ -60,6 +61,7 @@ import {
   readGroupPlanTimerSnapshot,
   readLikeTimerSnapshot,
   readMatchTimerSnapshot,
+  readMembershipTimerSnapshot,
   readResultTimerSnapshot,
   readMissingResultChallengeTimerSnapshot,
   readPlatformIncidentTimerSuppression,
@@ -114,6 +116,7 @@ import pino from 'pino';
 import { startOutboxPolling } from './outbox-dispatcher.js';
 import { parseNotificationProjection } from './notification-projection.js';
 import { socialTimerFromOutbox } from './social-timers.js';
+import { membershipTimerFromOutbox } from './membership-timers.js';
 import { schedulingTimerFromOutbox } from './scheduling-timers.js';
 import { challengeTimerFromOutbox } from './challenge-timers.js';
 import { resultTimerFromOutbox } from './result-timers.js';
@@ -507,6 +510,18 @@ const executeInactiveMatchExpiry = async (payload: TimerCommandPayload) => {
     outboxMessageId: randomUUID(),
     chatEventId: randomUUID(),
   });
+};
+
+const executeMembershipRequestNotification = async (payload: TimerCommandPayload) => {
+  const kind = payload.commandType === 'REMIND_MEMBERSHIP_REQUEST'
+    ? 'REMINDER'
+    : 'ESCALATION';
+  await projectPendingMembershipNotification(
+    database,
+    payload.aggregateId,
+    kind,
+    Array.from({ length: 20 }, () => randomUUID()),
+  );
 };
 
 const executeSuppressionExpiry = async (payload: TimerCommandPayload) => {
@@ -1092,6 +1107,14 @@ const taskList = createTaskList({
           loadSnapshot: (timer) => readMatchTimerSnapshot(database, timer.aggregateId),
           execute: executeInactiveMatchExpiry,
         },
+        REMIND_MEMBERSHIP_REQUEST: {
+          loadSnapshot: (timer) => readMembershipTimerSnapshot(database, timer.aggregateId),
+          execute: executeMembershipRequestNotification,
+        },
+        ESCALATE_MEMBERSHIP_REQUEST: {
+          loadSnapshot: (timer) => readMembershipTimerSnapshot(database, timer.aggregateId),
+          execute: executeMembershipRequestNotification,
+        },
         EXPIRE_DISCOVERY_SUPPRESSION: {
           loadSnapshot: (timer) =>
             readDiscoverySuppressionTimerSnapshot(database, timer.aggregateId),
@@ -1284,6 +1307,7 @@ const outboxPolling = startOutboxPolling({
   deliver: async (message) => {
     const socialTimer = socialTimerFromOutbox(message.topic, message.payload);
     const timer = socialTimer
+      ?? membershipTimerFromOutbox(message.topic, message.payload)
       ?? incidentTimerFromOutbox(message.topic, message.payload)
       ?? accountAccessTimerFromOutbox(message.topic, message.payload)
       ?? accountLifecycleTimerFromOutbox(message.topic, message.payload)

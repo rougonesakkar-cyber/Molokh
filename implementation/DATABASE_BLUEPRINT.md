@@ -441,6 +441,10 @@ report and cleans at most 500 rows per class/run. Personal and Challenge-service
 follow their 12-month/3-year policies without deleting message identity, Case evidence or audit and
 sporting history.
 
+Migration `0059_membership_invites.sql` stores only SHA-256 invite-token digests. Venue QR and
+direct invite resources have an explicit expiry, optional use limit and atomic use counter; raw
+tokens never enter domain events, audit metadata, projections or API responses.
+
 Use time partitioning only after measured volume. Early partitioning is appropriate for `audit_events`, `domain_events`, `outbox_messages` and `notifications`, not every aggregate table.
 
 ## 6. Migration rules

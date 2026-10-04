@@ -15,6 +15,7 @@ import {
   MinimumAgeNotMetError,
   InvalidRoleGrantTransitionError,
   MembershipExitConflictError,
+  MembershipConflictError,
   MembershipRemovalConflictError,
   PlatformIncidentConflictError,
   ResultConflictError,
@@ -316,6 +317,20 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
         message: 'This voluntary Membership exit is no longer available',
         requestId,
       },
+    };
+  }
+  if (error instanceof MembershipConflictError) {
+    const statusCode = error.code === 'MEMBERSHIP_NOT_FOUND'
+      || error.code === 'MEMBERSHIP_INVITE_INVALID'
+      ? 404
+      : error.code === 'MEMBERSHIP_ADMIN_REQUIRED'
+          || error.code === 'MEMBERSHIP_ACCOUNT_NOT_ACTIVE'
+        ? 403
+        : 409;
+    return {
+      statusCode,
+      body: { code: error.code,
+        message: 'This Membership action is not available in the current state', requestId },
     };
   }
   if (error instanceof MembershipRemovalConflictError) {

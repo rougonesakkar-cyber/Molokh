@@ -326,7 +326,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 143/214 (`137/196 P0`).
+  Acceptance traceability is 146/214 (`140/196 P0`).
 - M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
   exact 30-day recovery, owner cancellation and reasoned Central execution only after all
   obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one
