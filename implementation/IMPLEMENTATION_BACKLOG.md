@@ -334,10 +334,15 @@ This sprint produces a demonstrable Training slice while establishing the same f
   payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
   public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
   Worker and PostgreSQL migration `0053` pass.
-- Next increment: complete the remaining role-switch and pilot-operations walkthroughs, then move
-  to the M8 release-hardening checklist. External object/scan and OTP delivery are intentionally
+- Next increment: rehearse M8 monitoring, backup/restore, rollback and accessibility checks.
+  External object/scan and OTP delivery are intentionally
   deferred until provider accounts are selected. General Chat/evidence cleanup workers remain M8
   work; the versioned policies are already persisted.
+- M8 role/pilot walkthrough increment: complete. Athlete, Coach, Gym Admin and Central workspaces
+  expose their scoped actions with destructive controls guarded by explicit reason/confirmation.
+  The walkthrough found a stale Session-window timer gap after Training→Official and pair→solo;
+  the fix also covers Official→Training, adds current-version outbox assertions and migration
+  `0057`, and recovered the existing pilot Sessions to `READY_FOR_COACH` without rewriting history.
 
 ## 5. Work that needs product/external input later
 

@@ -435,6 +435,7 @@ function bookingOfficialConversionEffectIds(input: {
       idempotentResourceId('conversion-obligation-high', input.aggregateId, seed),
     ],
     bookingEventId: newUuidV7(), sessionEventId: newUuidV7(),
+    sessionTimerOutboxMessageId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
   };
@@ -456,6 +457,7 @@ function bookingSoloContinuationEffectIds(input: {
     ),
     bookingEventId: newUuidV7(),
     sessionEventId: newUuidV7(),
+    sessionTimerOutboxMessageId: newUuidV7(),
     slotEventId: newUuidV7(),
     conversionEventId: newUuidV7(),
     conversionQueueEventId: newUuidV7(),
@@ -475,7 +477,8 @@ function bookingTrainingRetentionEffectIds(input: {
     confirmationId: idempotentResourceId(
       'training-retention-confirmation', input.aggregateId, input.actorId,
     ),
-    bookingEventId: newUuidV7(), sessionEventId: newUuidV7(), slotEventId: newUuidV7(),
+    bookingEventId: newUuidV7(), sessionEventId: newUuidV7(),
+    sessionTimerOutboxMessageId: newUuidV7(), slotEventId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
   };

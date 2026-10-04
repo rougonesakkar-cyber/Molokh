@@ -135,7 +135,11 @@ aligns it with the formal state machine: it starts as `SCHEDULED`, receives
 `window_opened_at` from a versioned server timer, and only then becomes `READY_FOR_COACH`.
 That migration also adds immutable-per-Athlete Attendance facts and separate actual start/end
 timestamps. `0021_backfill_session_window_timers.sql` schedules timers for Sessions confirmed
-before the lifecycle increment was deployed.
+before the lifecycle increment was deployed. `0057_reissue_current_session_window_timers.sql`
+repairs any still-`SCHEDULED` Session whose current version has no matching window timer. Normal
+Training→Official, pair→solo and Official→Training commits publish that replacement timer in the
+same transaction as the version-changing Session event, so the migration is recovery rather than
+the steady-state mechanism.
 
 `0022_coach_replacement_and_no_fault_cancellation.sql` adds append-only Booking and Session
 Coach assignment history plus explicit cancellation actor/reason timestamps. Replacement keeps

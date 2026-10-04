@@ -197,15 +197,15 @@ Verified on 2026-10-04:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 215 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 39 integration scenarios, including timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation and account closure/export retention;
+- 232 non-database automated tests pass across Core, DB, API, worker and testkit;
+- the current PostgreSQL gate passes all 41 integration scenarios, including timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation and account closure/export retention;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
 - Expo produces a static Web export for `/chat`, `/guardian-consent`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.8.1 and PostgreSQL 18 are healthy after moving only the inaccessible transient host runtime-socket directory into quarantine; no project, WSL disk or Docker data volume was reset;
-- migrations `0001`–`0056` apply successfully with checksum verification; `YOUTH_OFFICIAL` remains disabled by default;
+- migrations `0001`–`0057` apply successfully with checksum verification; `0057` reissues only missing current-version Session window timers and `YOUTH_OFFICIAL` remains disabled by default;
 - the live universal client renders the empty GENESIS state, submits a position-1 status intent and withdraws it without loss; the queue immediately returns to empty and no browser error is produced by the flow;
 - the live Worker revalidates a fresh GENESIS intent, records the exact three-day single-candidate deadline, projects its mandatory notification and makes the pending timer stale after a no-loss withdrawal; the visible queue returns to empty;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
@@ -221,6 +221,9 @@ Verified on 2026-10-04:
   `OFFICIAL_CHALLENGE`, creates one BOOKED Challenge and exactly two active obligations;
 - live Athlete Training withdrawal followed by remaining-Athlete and Coach acceptance preserves
   the same Session as `CONFIRMED_SOLO` and keeps the Slot booked without a loss or Challenge;
+- live recovery reissued the missing current-version timers for both an Official conversion and a
+  solo conversion; Worker moved them from `SCHEDULED` to `READY_FOR_COACH`, and the refreshed
+  Athlete/Coach projections expose `Ожидает Coach` plus the permitted Coach start action;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
 - the generated acceptance matrix maps 109 scenarios (`103/195 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;

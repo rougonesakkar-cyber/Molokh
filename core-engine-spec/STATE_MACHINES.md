@@ -223,6 +223,7 @@ States: `SCHEDULED`, `READY_FOR_COACH`, `IN_PROGRESS`, `ENDED`, `CANCELLED`.
 | S-13 | SCHEDULED | `CONVERT_OFFICIAL_TO_TRAINING` / SYSTEM after B-28 | both Athletes and Coach/host confirmed; before actual start | SCHEDULED | `SessionConvertedToTraining` | clear live Challenge link; retain immutable lineage through retention record; no Competition effect | min(1h,start) | no |
 
 Stakes замораживаются в S-02 на logical `scheduled_start_at`; это не `actual_start_at`. Actual start фиксируется только S-09/S-10, а `recorded_at` отражает момент Coach/system commit (`ASSUMPTION A-05`).
+S-07, S-08 while still `SCHEDULED`, S-12 and S-13 advance the Session version and therefore atomically reissue the scheduled-window timer with that new exact version. The previous job is intentionally stale; the replacement preserves the original logical boundary.
 
 ## 11. Competition phase и availability
 

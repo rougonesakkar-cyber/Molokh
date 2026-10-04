@@ -11,7 +11,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - executable acceptance traceability: **109/213** (`103/195 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0056` and **41/41** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0057` and **41/41** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   unresolved upstream `node-forge` and `braces` advisories are covered by narrow regression-tested
   local backports that expire on 2026-10-16 and reject every other high/critical advisory;
@@ -373,7 +373,7 @@ or event/audit history; a live standalone export is reused by closure instead of
 
 ## Next executable action
 
-Continue with the remaining role-switch/pilot-operations walkthroughs and the M8 backup,
-monitoring, accessibility and recovery rehearsal. External OTP and private object/scan providers
+The Athlete, Coach, Gym Admin and Central role-switch walkthrough is complete. Continue with the
+M8 backup/restore, monitoring, accessibility and recovery rehearsal. External OTP and private object/scan providers
 remain explicit deployment inputs rather than hidden local substitutes.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

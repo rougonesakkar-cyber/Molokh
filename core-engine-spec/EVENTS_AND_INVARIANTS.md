@@ -299,6 +299,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 - `INV-SCH-19`: after equivalent Coach replacement either Athlete may choose external no-fault reschedule before start; any material-term change requires normal mutual reconfirmation.
 - `INV-SCH-20`: scheduled start opens READY_FOR_COACH and freezes competitive context but is never proof of physical start, attendance or completed Training. Only authorized Coach Start/first Attendance creates actual_start_at and IN_PROGRESS.
 - `INV-SCH-21`: confirmed Coach/Venue failure before actual start is EXTERNAL: equivalent replacement may proceed within grace; otherwise Booking/Session close no-fault and Official returns scheduling without a user reschedule count.
+- `INV-SCH-22`: any mutation that keeps a Session in `SCHEDULED` while advancing its version reissues `OPEN_SESSION_WINDOW` for the new exact version and the original `scheduled_start_at`; an older timer may become stale, but it cannot strand the Session before `READY_FOR_COACH`.
 
 ### Challenge
 

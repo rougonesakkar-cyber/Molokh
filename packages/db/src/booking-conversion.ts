@@ -52,6 +52,7 @@ export interface BookingOfficialConversionEffectIds {
   readonly obligationIds?: readonly [string, string];
   readonly bookingEventId?: string;
   readonly sessionEventId?: string;
+  readonly sessionTimerOutboxMessageId?: string;
   readonly notificationOutboxMessageId: string;
   readonly notificationIds: readonly [string, string, string];
 }
@@ -1459,6 +1460,17 @@ export async function decideBookingOfficialConversion(
           { messageId: ids.outboxMessageId, topic: 'scheduling.booking.converted-to-official.v1',
             payload: { conversionId: existing.conversion_id, bookingId: context.booking_id,
               sessionId: context.session_id, challengeId, competitionId: context.competition_id } },
+          { messageId: requiredId(ids, 'sessionTimerOutboxMessageId'),
+            topic: 'scheduling.session.scheduled.v1',
+            sourceEventId: requiredId(ids, 'sessionEventId'),
+            payload: { sessionId: context.session_id, timer: {
+              commandType: 'OPEN_SESSION_WINDOW', aggregateType: 'Session',
+              aggregateId: context.session_id, expectedState: 'SCHEDULED',
+              expectedVersion: Number(context.session_version) + 1,
+              deadlineAt: context.scheduled_start_at.toISOString(),
+              policyVersion: SCHEDULING_POLICY_VERSION,
+              idempotencyKey: `session:${context.session_id}:open-session-window:v${Number(context.session_version) + 1}`,
+            } } },
           { messageId: ids.notificationOutboxMessageId, topic: 'notification.in_app.v1', payload: {
             notifications: [context.pair_low_id, context.pair_high_id, context.coach_user_id]
               .map((recipientUserId, index) => ({ notificationId: ids.notificationIds[index]!, recipientUserId,

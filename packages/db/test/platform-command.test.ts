@@ -2133,6 +2133,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     sessionEventId: testId(base + 18),
     notificationOutboxMessageId: testId(base + 19),
     notificationIds: [testId(base + 20), testId(base + 21), testId(base + 22)] as const,
+    sessionTimerOutboxMessageId: testId(base + 23),
   });
 
   const bookingSoloEffects = (base: number, continuationId: string) => ({
@@ -2150,6 +2151,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     timerOutboxMessageId: testId(base + 10),
     notificationOutboxMessageId: testId(base + 11),
     notificationIds: [testId(base + 12), testId(base + 13)] as const,
+    sessionTimerOutboxMessageId: testId(base + 14),
   });
 
   const seedYouthOfficialAtAgeBoundary = async (base: number, started: boolean) => {
@@ -4232,6 +4234,20 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(readSession(database, fixture.session, fixture.athleteA)).resolves.toMatchObject({
       purpose: 'OFFICIAL_CHALLENGE', challengeId: testId(18318), state: 'SCHEDULED',
     });
+    const officialWindowTimer = await sql<{ readonly payload: {
+      readonly sessionId: string;
+      readonly timer: { readonly expectedVersion: number; readonly idempotencyKey: string };
+    } }>`
+      select payload from platform.outbox_messages
+      where message_id = ${testId(18333)}::uuid
+    `.execute(database);
+    expect(officialWindowTimer.rows[0]?.payload).toEqual(expect.objectContaining({
+      sessionId: fixture.session,
+      timer: expect.objectContaining({
+        expectedVersion: 2,
+        idempotencyKey: `session:${fixture.session}:open-session-window:v2`,
+      }),
+    }));
     const committed = await sql<{
       readonly booking_purpose: string;
       readonly booking_state: string;
@@ -4727,6 +4743,20 @@ describePostgres('PostgreSQL critical command transaction', () => {
       viewerCanCancelTraining: false,
       soloContinuation: { state: 'CONFIRMED', remainingAthleteUserId: fixture.athleteB },
     });
+    const soloWindowTimer = await sql<{ readonly payload: {
+      readonly sessionId: string;
+      readonly timer: { readonly expectedVersion: number; readonly idempotencyKey: string };
+    } }>`
+      select payload from platform.outbox_messages
+      where message_id = ${testId(20924)}::uuid
+    `.execute(database);
+    expect(soloWindowTimer.rows[0]?.payload).toEqual(expect.objectContaining({
+      sessionId: fixture.session,
+      timer: expect.objectContaining({
+        expectedVersion: 2,
+        idempotencyKey: `session:${fixture.session}:open-session-window:v2`,
+      }),
+    }));
   });
 
   it('[AC-037] expires solo continuation and releases all resources without competition effects', async () => {
@@ -8662,6 +8692,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         bookingEventId: testId(input.base + 7), sessionEventId: testId(input.base + 8),
         slotEventId: testId(input.base + 9), notificationOutboxMessageId: testId(input.base + 10),
         notificationIds: [testId(input.base + 11), testId(input.base + 12), testId(input.base + 13)],
+        sessionTimerOutboxMessageId: testId(input.base + 14),
       },
       () => new Date(`2026-10-02T10:${20 + (input.expectedVersion * 5)}:00.000Z`),
     );
@@ -8701,6 +8732,20 @@ describePostgres('PostgreSQL critical command transaction', () => {
       booking_challenge_id: null, session_state: 'SCHEDULED', session_purpose: 'TRAINING',
       session_challenge_id: null, slot_state: 'BOOKED', competition_effects: '0',
     });
+    const retainedWindowTimer = await sql<{ readonly payload: {
+      readonly sessionId: string;
+      readonly timer: { readonly expectedVersion: number; readonly idempotencyKey: string };
+    } }>`
+      select payload from platform.outbox_messages
+      where message_id = ${testId(19654)}::uuid
+    `.execute(database);
+    expect(retainedWindowTimer.rows[0]?.payload).toEqual(expect.objectContaining({
+      sessionId: session,
+      timer: expect.objectContaining({
+        expectedVersion: 2,
+        idempotencyKey: `session:${session}:open-session-window:v2`,
+      }),
+    }));
   });
 
   it('[AC-002] schedules one Youth birthday timer and transitions exactly once at its boundary', async () => {

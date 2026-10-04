@@ -21,13 +21,13 @@ The shortest honest path is Training first, Competition second. Both reuse the s
 |---|---|---|---|
 | M0 — Workspace | Reproducible monorepo, CI template, local PostgreSQL, universal Expo shell | DONE | API, Worker, DB and Web/Android shell boot locally |
 | M1 — Platform integrity | Atomic commands, event/audit/outbox, timers, notification inbox, request context | DONE | Commit/replay/conflict/rollback and duplicate delivery pass real PostgreSQL tests |
-| M2 — Identity & Community | Athlete profile, verification, pilot Venue, membership and scoped roles | IN PROGRESS | Verified Adult joins one Community and cannot bypass role/scope guards |
+| M2 — Identity & Community | Athlete profile, verification, pilot Venue, membership and scoped roles | COMPLETE | Verified Adult joins one Community and cannot bypass role/scope guards |
 | M3 — Discovery, Match & Chat | Transparent card ordering, Like/Match, personal chat and structured actions | DONE | Two Users can discover, match and coordinate without hidden reliability scoring |
 | M4 — Training slice | Slot choice, mutual agreement, host confirmation, Session, Coach attendance and no-fault operations | COMPLETE | One end-to-end ordinary training works on the universal client |
-| M5 — Challenge & Status | Challenge eligibility, FIFO, booking, Forfeit, Champion/Contender transfer and cooldown | IN PROGRESS | Concurrent status scenarios remain deterministic and auditable |
-| M6 — Appeal & Governance | Provisional result, 48-hour Appeal, waiver, reversal/annul/repeat and Central queues | IN PROGRESS | A disputed result changes outcome without deleting history |
-| M7 — Lifecycle P0 | Youth boundary, account/community lifecycle and platform-incident compensation | IN PROGRESS | Lifecycle P0 scenarios have no age/status/obligation leakage |
-| M8 — Pilot hardening | Security, accessibility, failure recovery, backups, runbooks and Venue onboarding | PLANNED | Closed pilot can run with documented support and rollback paths |
+| M5 — Challenge & Status | Challenge eligibility, FIFO, booking, Forfeit, Champion/Contender transfer and cooldown | COMPLETE | Concurrent status scenarios remain deterministic and auditable |
+| M6 — Appeal & Governance | Provisional result, 48-hour Appeal, waiver, reversal/annul/repeat and Central queues | COMPLETE | A disputed result changes outcome without deleting history |
+| M7 — Lifecycle P0 | Youth boundary, account/community lifecycle and platform-incident compensation | COMPLETE | Lifecycle P0 scenarios have no age/status/obligation leakage |
+| M8 — Pilot hardening | Security, accessibility, failure recovery, backups, runbooks and Venue onboarding | IN PROGRESS | Closed pilot can run with documented support and rollback paths |
 
 ## 3. Weekly sprint plan
 
@@ -98,7 +98,7 @@ Rules protecting the 12-week target:
 - Core Engine v1.0: 308 transitions, 308 registered events, 213 acceptance scenarios and zero open blocking questions.
 - Workspace: TypeScript checks and Web production build pass across all packages.
 - Tests: 232 non-PostgreSQL tests and 41 real PostgreSQL scenarios pass, including authentication/session policy, social concurrency, Chat revision/report invariants, the single-winner Booking confirmation race, atomic Challenge→Booking→Session lineage, status FIFO, Training conversion, Youth boundaries, PlatformIncident reconciliation and account closure/export retention.
-- Database: PostgreSQL 18 is healthy and checksum-verified migrations `0001`–`0056` pass. The recovered Docker runtime reused the existing database volume; no project file or database data was reset.
+- Database: PostgreSQL 18 is healthy and checksum-verified migrations `0001`–`0057` pass. The recovered Docker runtime reused the existing database volume; no project file or database data was reset. Migration `0057` repaired current-version Session window timers without rewriting Session history.
 - Product slice: the live universal Web route reads the seeded Athlete and changes an arbitrary display name through a versioned/idempotent API command; replay returns the same event.
 - Community increment: the same route shows the pilot Venue, active Membership, 15-day cooldown and transparent Official Challenge denial; role scope tests cover Coach/Admin/Primary/Central boundaries.
 - Verification increment: Athlete V-01, Central queue and V-02 execute through live HTTP; approval unlocks Official capability and idempotent replay returns the same event.
@@ -113,6 +113,7 @@ Rules protecting the 12-week target:
 - Scheduling host-confirmation increment: Coach/Admin sees pending requests in Community; one transaction claims the Slot, creates a `SCHEDULED` Session and notifies both Athletes. The database race test proves that one Slot cannot create two Sessions.
 - Gym Admin mutation increment: future Slot/GroupOffering records can be edited or reason-withdrawn only before pair intent; reasoned host rejection notifies both Athletes and returns an Official Challenge to scheduling without resetting its obligation.
 - Session lifecycle increment: the server opens `READY_FOR_COACH` at scheduled time; Coach owns actual Start, Attendance and End; completed Training count is derived only from ended `PRESENT/LATE` facts.
+- Session timer continuity increment: Training→Official, pair→solo and Official→Training preserve the original scheduled boundary while advancing Session version, atomically publish a new versioned window timer and make the older job safely stale. The live repair advanced both previously stranded pilot Sessions to `READY_FOR_COACH`, and Athlete/Coach projections show the canonical state.
 - Coach replacement/no-fault increment: Admin may assign only a free authorized replacement before actual start; Slot and Session change atomically, immutable terms remain frozen, assignment revisions are append-only, and Athlete rejection or external failure closes all resources with no penalty/statistics.
 - Direct optional Challenge increment: active Match, verification, competitive Membership, pair matrix, Block/cooldown/quiet and unanswered limits are server-enforced; a ruleset snapshot and service Chat are created atomically. Recipient acceptance creates two globally unique active obligations, decline creates a 48-hour pair quiet period, withdrawal is no-fault, and a state/version-guarded Worker timer expires unanswered invitations after 48 hours.
 - Official Booking increment: accepted Challenge, Booking and Session now have explicit database lineage. Slot selection commits `CH-08`, Venue/Coach confirmation atomically commits `CH-10` and creates one `OFFICIAL_CHALLENGE` Session, while expiry/conflict commits `CH-09` and keeps the original obligation/deadline.
@@ -127,9 +128,7 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Perform the remaining role-switch Web walkthrough for Appeal, Missing Result, IntegrityCase,
-   PlatformIncident and account lifecycle paths; keep external object/scan and OTP delivery disabled
-   until provider accounts are selected.
-2. Rehearse monitoring, backup, restore and rollback for the pilot environment.
+1. Rehearse monitoring, backup, restore and rollback for the pilot environment.
+2. Complete accessibility/localization and failure-recovery operational checks.
 3. Add audited Chat/evidence payload cleanup jobs during release hardening; keep payment, group
    capacity and automatic alternatives outside Molokh MVP.
