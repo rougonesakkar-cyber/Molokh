@@ -137,3 +137,23 @@ If the gate rejects the target, do not use a down migration. Fix forward or depl
 compatible revision. Database restore is disaster recovery into an isolated or replacement
 database, not a normal application rollback. Sporting statuses, Results and Appeals are reversed
 only through their governed domain transitions.
+
+## 7. Release canary
+
+Every production API process requires `RELEASE_SHA` with the full lower-case Git commit SHA. After
+deploying the candidate without yet inviting pilot traffic, run:
+
+```powershell
+pnpm check:canary -ApiBaseUrl https://api.example `
+  -ExpectedRelease <deployed-git-sha> `
+  -ExpectedWebOrigin https://app.example
+```
+
+The read-only canary proves process liveness, PostgreSQL-backed readiness, exact release identity,
+the universal runtime contract, baseline security headers, the configured browser origin and a
+closed unauthenticated boundary on `/api/v1/me`. A release mismatch fails even when health checks
+are green, preventing an old or mixed artifact from being mistaken for the candidate.
+
+Only after the canary passes, run `pnpm monitor:pilot` and the four-role critical walkthrough.
+Stop traffic promotion on any failure. The local rehearsal must pass once with the correct SHA and
+fail once with an intentionally different SHA; this proves the release-identity check itself.

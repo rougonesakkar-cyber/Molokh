@@ -334,8 +334,8 @@ This sprint produces a demonstrable Training slice while establishing the same f
   payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
   public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
   Worker and PostgreSQL migration `0053` pass.
-- Next increment: complete real-device screen-reader/dynamic-layout checks and release canary
-  rehearsal. The rollback compatibility gate is implemented and fail-closed.
+- Next increment: complete real-device screen-reader/dynamic-layout checks. The release canary and
+  rollback compatibility gates are implemented and fail-closed.
   External object/scan and OTP delivery are intentionally
   deferred until provider accounts are selected. General Chat/evidence cleanup workers remain M8
   work; the versioned policies are already persisted.
@@ -363,6 +363,9 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - M8 rollback increment: complete. The operator gate compares the target Git revision with every
   live `platform.schema_migrations` SHA-256, accepts a schema-compatible prior release and rejects
   a target that predates migration `0057`. Database and sporting history stay forward-only.
+- M8 release-canary increment: complete. Production requires the exact Git SHA; a read-only probe
+  verifies live/ready, runtime identity, security headers, CORS and the protected auth boundary.
+  The local rehearsal accepts the correct artifact SHA and rejects a deliberate mismatch.
 
 ## 5. Work that needs product/external input later
 

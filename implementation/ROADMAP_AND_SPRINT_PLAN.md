@@ -128,8 +128,8 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Complete release canary and real-device accessibility/localization operational checks; the
-   schema-ledger rollback gate is complete.
+1. Complete real-device accessibility/localization operational checks; release-canary and
+   schema-ledger rollback gates are complete.
 2. Extend projection rebuild coverage whenever another disposable stored projection is introduced.
 3. Add audited Chat/evidence payload cleanup jobs during release hardening; keep payment, group
    capacity and automatic alternatives outside Molokh MVP.

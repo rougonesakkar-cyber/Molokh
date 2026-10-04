@@ -1239,6 +1239,7 @@ const app = await buildApp({
   allowedOrigins: runtimeConfig.allowedOrigins,
   trustProxy: runtimeConfig.trustProxy,
   readiness: () => probeDatabase(database),
+  releaseSha: runtimeConfig.releaseSha,
   chat: {
     auth: localAuth,
     readMessages: (chatId, userId, limit, cursor) =>

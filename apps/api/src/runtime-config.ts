@@ -17,6 +17,7 @@ export interface ApiRuntimeConfig {
   readonly allowedOrigins: readonly string[];
   readonly localFixturesEnabled: boolean;
   readonly trustProxy: boolean;
+  readonly releaseSha: string;
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {
@@ -52,6 +53,17 @@ function origin(value: string, key: string, production: boolean): string {
   return parsed.origin;
 }
 
+function releaseSha(env: NodeJS.ProcessEnv, production: boolean): string {
+  const value = production ? required(env, 'RELEASE_SHA') : env.RELEASE_SHA?.trim() || 'development';
+  if (value !== 'development' && !/^[0-9a-f]{40}$/.test(value)) {
+    throw new Error('RELEASE_SHA must be a full lower-case Git commit SHA');
+  }
+  if (production && value === 'development') {
+    throw new Error('RELEASE_SHA must identify an immutable production commit');
+  }
+  return value;
+}
+
 export function readApiRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): ApiRuntimeConfig {
@@ -83,5 +95,6 @@ export function readApiRuntimeConfig(
     allowedOrigins,
     localFixturesEnabled: !production,
     trustProxy: production,
+    releaseSha: releaseSha(env, production),
   };
 }

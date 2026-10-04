@@ -85,6 +85,7 @@ export interface BuildAppOptions extends FastifyServerOptions {
   readonly result?: ResultRouteDependencies;
   readonly scheduling?: SchedulingRouteDependencies;
   readonly readiness?: () => Promise<boolean>;
+  readonly releaseSha?: string;
   readonly verification?: VerificationRouteDependencies;
 }
 
@@ -112,6 +113,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     result,
     scheduling,
     readiness = async () => true,
+    releaseSha = 'development',
     verification,
     ...serverOptions
   } = options;
@@ -229,6 +231,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
       apiTransport: 'https+sse',
       clients: ['web', 'ios', 'android'],
       database: 'postgresql-18',
+      releaseSha,
     }),
   );
 

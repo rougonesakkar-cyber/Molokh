@@ -172,6 +172,23 @@ describe('runtime contract', () => {
     expect(unavailable.json()).toMatchObject({ code: 'SERVICE_NOT_READY' });
   });
 
+  it('publishes the immutable release identity used by canary verification', async () => {
+    const releaseSha = 'a'.repeat(40);
+    const app = await buildApp({ releaseSha });
+    apps.push(app);
+
+    const response = await app.inject({ method: 'GET', url: '/v1/meta/runtime' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      architecture: 'modular-monolith',
+      apiTransport: 'https+sse',
+      clients: ['web', 'ios', 'android'],
+      database: 'postgresql-18',
+      releaseSha,
+    });
+  });
+
   it('publishes an OpenAPI 3.1 document', async () => {
     const app = await buildApp();
     apps.push(app);

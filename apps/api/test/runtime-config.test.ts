@@ -6,7 +6,7 @@ describe('API runtime configuration', () => {
   it('keeps local fixtures and loopback origins only outside production', () => {
     const config = readApiRuntimeConfig({ NODE_ENV: 'development' });
     expect(config).toMatchObject({ localFixturesEnabled: true, trustProxy: false,
-      publicWebUrl: 'http://localhost:8081' });
+      publicWebUrl: 'http://localhost:8081', releaseSha: 'development' });
     expect(config.allowedOrigins).toEqual([
       'http://localhost:8081',
       'http://127.0.0.1:8081',
@@ -25,9 +25,10 @@ describe('API runtime configuration', () => {
       PILOT_COMPETITION_ID: '0199a1b2-1234-7000-8000-000000000901',
       PUBLIC_WEB_URL: 'https://app.molokh.example',
       CORS_ALLOWED_ORIGINS: 'https://app.molokh.example,https://admin.molokh.example',
+      RELEASE_SHA: 'a'.repeat(40),
     });
     expect(config).toMatchObject({ localFixturesEnabled: false, trustProxy: true,
-      publicWebUrl: 'https://app.molokh.example' });
+      publicWebUrl: 'https://app.molokh.example', releaseSha: 'a'.repeat(40) });
     expect(config.allowedOrigins).toEqual([
       'https://app.molokh.example',
       'https://admin.molokh.example',
@@ -40,6 +41,7 @@ describe('API runtime configuration', () => {
       AUTH_SESSION_SECRET: 'a'.repeat(32), YOUTH_CONSENT_TOKEN_SECRET: 'b'.repeat(32),
       PILOT_COMMUNITY_ID: '0199a1b2-1234-7000-8000-000000000502',
       PILOT_COMPETITION_ID: '0199a1b2-1234-7000-8000-000000000901',
+      RELEASE_SHA: 'a'.repeat(40),
     };
     expect(() => readApiRuntimeConfig({ ...base,
       PUBLIC_WEB_URL: 'http://app.molokh.example',
@@ -49,5 +51,19 @@ describe('API runtime configuration', () => {
       PUBLIC_WEB_URL: 'https://app.molokh.example',
       CORS_ALLOWED_ORIGINS: 'https://admin.molokh.example' }))
       .toThrow('CORS_ALLOWED_ORIGINS must include PUBLIC_WEB_URL');
+  });
+
+  it('requires an immutable full commit SHA in production', () => {
+    const production = {
+      NODE_ENV: 'production', DATABASE_URL: 'postgres://molokh:secret@db/molokh',
+      AUTH_SESSION_SECRET: 'a'.repeat(32), YOUTH_CONSENT_TOKEN_SECRET: 'b'.repeat(32),
+      PILOT_COMMUNITY_ID: '0199a1b2-1234-7000-8000-000000000502',
+      PILOT_COMPETITION_ID: '0199a1b2-1234-7000-8000-000000000901',
+      PUBLIC_WEB_URL: 'https://app.molokh.example',
+      CORS_ALLOWED_ORIGINS: 'https://app.molokh.example',
+    };
+    expect(() => readApiRuntimeConfig(production)).toThrow('RELEASE_SHA is required in production');
+    expect(() => readApiRuntimeConfig({ ...production, RELEASE_SHA: 'abc1234' }))
+      .toThrow('RELEASE_SHA must be a full lower-case Git commit SHA');
   });
 });

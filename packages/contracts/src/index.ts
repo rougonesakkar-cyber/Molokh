@@ -132,6 +132,7 @@ export const RuntimeProjectionSchema = Type.Object(
       Type.Literal('android'),
     ]),
     database: Type.Literal('postgresql-18'),
+    releaseSha: Type.String({ pattern: '^(development|[0-9a-f]{40})$' }),
   },
   { $id: 'RuntimeProjection' },
 );

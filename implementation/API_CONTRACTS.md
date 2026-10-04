@@ -10,6 +10,9 @@
 - every HTTP response also carries `X-Request-Id` and `X-Correlation-Id`; a valid incoming ID is propagated and an invalid one is replaced;
 - list pagination uses opaque cursor;
 - public/profile payloads never expose private reason/evidence fields.
+- `/health/live` identifies the process, `/health/ready` proves required dependencies, and
+  `/v1/meta/runtime` exposes the universal architecture plus the immutable deployment
+  `releaseSha` used by the release canary.
 
 ## 2. Standard command response
 
