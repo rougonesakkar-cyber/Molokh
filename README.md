@@ -373,7 +373,8 @@ or event/audit history; a live standalone export is reused by closure instead of
 
 ## Next executable action
 
-The Athlete, Coach, Gym Admin and Central role-switch walkthrough is complete. Continue with the
-M8 backup/restore, monitoring, accessibility and recovery rehearsal. External OTP and private object/scan providers
+The Athlete, Coach, Gym Admin and Central role-switch walkthrough plus the isolated PostgreSQL
+backup/restore rehearsal are complete. Continue with M8 monitoring, accessibility and projection-
+rebuild recovery checks. External OTP and private object/scan providers
 remain explicit deployment inputs rather than hidden local substitutes.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

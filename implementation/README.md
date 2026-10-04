@@ -25,6 +25,7 @@
 - [IMPLEMENTATION_BACKLOG.md](IMPLEMENTATION_BACKLOG.md) — вертикальные этапы и критерии готовности.
 - [TEST_STRATEGY.md](TEST_STRATEGY.md) — модельные, concurrency, replay и acceptance tests.
 - [TECHNICAL_SPIKE_STATUS.md](TECHNICAL_SPIKE_STATUS.md) — исполняемый baseline, результаты проверок и локальные environment gates.
+- [PILOT_OPERATIONS_RUNBOOK.md](PILOT_OPERATIONS_RUNBOOK.md) — health, backup/restore и incident/recovery действия закрытого пилота.
 - [adr/README.md](adr/README.md) — принятые технические решения и условия их пересмотра.
 - [../MOLOKH_MOBILE_UX_CORE_HANDOFF_v1.0.md](../MOLOKH_MOBILE_UX_CORE_HANDOFF_v1.0.md) — синхронизированный UX/Core handoff.
 

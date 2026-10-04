@@ -14,6 +14,7 @@
     "dev:api": "pnpm --filter @molokh/api dev",
     "dev:client": "pnpm --filter @molokh/client start",
     "dev:worker": "pnpm --filter @molokh/worker dev",
+    "rehearse:db-recovery": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/rehearse-db-recovery.ps1",
     "test": "pnpm -r --if-present test",
     "test:db": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/test-db.ps1",
     "typecheck": "pnpm -r --if-present typecheck"
