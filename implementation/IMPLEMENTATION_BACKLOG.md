@@ -334,7 +334,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
   public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
   Worker and PostgreSQL migration `0053` pass.
-- Next increment: rehearse M8 projection rebuild, rollback and accessibility checks.
+- Next increment: rehearse M8 rollback and accessibility checks.
   External object/scan and OTP delivery are intentionally
   deferred until provider accounts are selected. General Chat/evidence cleanup workers remain M8
   work; the versioned policies are already persisted.
@@ -351,6 +351,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   outbox and Graphile delay, overdue Session windows, delayed Coach action, Result/Appeal/Missing
   Result queues, terminal status locks and verified-backup freshness. Critical findings fail the
   process; operational warnings can be promoted to failures for scheduled pilot alerts.
+- M8 projection-rebuild increment: complete for the current generated notification projection.
+  The isolated restore rebuilds notification fields in shadow form from canonical outbox events,
+  compares deterministic count/hash plus Inbox receipts and explicitly excludes user-owned
+  `read_at`. No live or canonical history table is truncated.
 
 ## 5. Work that needs product/external input later
 

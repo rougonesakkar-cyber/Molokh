@@ -374,8 +374,8 @@ or event/audit history; a live standalone export is reused by closure instead of
 ## Next executable action
 
 The Athlete, Coach, Gym Admin and Central role-switch walkthrough plus the isolated PostgreSQL
-backup/restore rehearsal are complete. Continue with M8 accessibility and projection-
-rebuild recovery checks. The read-only pilot monitor is executable and currently reports only the
+backup/restore plus notification shadow-rebuild rehearsal are complete. Continue with M8
+accessibility and rollback checks. The read-only pilot monitor is executable and currently reports only the
 two deliberately unstarted Sessions awaiting Coach action. External OTP and private object/scan providers
 remain explicit deployment inputs rather than hidden local substitutes.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.

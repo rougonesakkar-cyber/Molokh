@@ -231,6 +231,9 @@ Verified on 2026-10-04:
 - the read-only pilot monitor passes API live/ready, PostgreSQL, outbox, Worker, overdue-window,
   Result/Appeal/status-lock and backup-freshness checks; its only current warning is the expected
   pair of restored `READY_FOR_COACH` Sessions awaiting an explicit Coach action;
+- the isolated recovery rehearsal shadow-rebuilds all generated notification fields from canonical
+  `notification.in_app.v1` outbox events and matches 55 rows, their deterministic hash and every
+  `notification-inbox-v1` receipt without mutating user-owned `read_at`;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
 - the generated acceptance matrix maps 109 scenarios (`103/195 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;

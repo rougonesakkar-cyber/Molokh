@@ -59,8 +59,11 @@ Run while the local pilot is quiescent so critical-table count comparison is exa
 
 The rehearsal refuses the live database name, creates only a new `molokh_restore_*` database,
 validates SHA-256, restores with `--exit-on-error`, compares canonical critical-table counts and
-removes only the successfully verified rehearsal database. A failed rehearsal database remains
-available for diagnosis and is never silently overwritten.
+performs a notification shadow rebuild from `notification.in_app.v1` outbox events. The generated
+count/hash and Inbox receipts must match the stored projection. `read_at` is deliberately excluded
+from the rebuild hash because it is user-owned state, not generated event data. The command removes
+only the successfully verified rehearsal database. A failed rehearsal database remains available
+for diagnosis and is never silently overwritten.
 
 For disaster recovery, restore into a new database/service, run migrations and smoke tests there,
 then switch the application connection under an approved incident plan. Never use restore as an
@@ -77,6 +80,6 @@ Record for each pre-pilot rehearsal:
 - restore target identity, critical-table counts and smoke-test result;
 - measured RPO/RTO, failure notes and follow-up owner.
 
-Projection rebuild remains a separate rehearsal: each rebuildable projection must first declare
-its canonical event source, deterministic command and hash comparison. Canonical aggregate,
-domain-event, audit and sporting-history tables are never dropped for that exercise.
+Every additional rebuildable projection must likewise declare its canonical event source,
+deterministic command and hash comparison. Canonical aggregate, domain-event, audit and sporting-
+history tables are never dropped for that exercise.

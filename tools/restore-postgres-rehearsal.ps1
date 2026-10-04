@@ -80,6 +80,68 @@ union all select 'competition.challenges|' || count(*) from competition.challeng
 union all select 'competition.results|' || count(*) from competition.results
 order by 1;
 '@
+$notificationProjectionQuery = @'
+with expected as (
+  select
+    (item.value ->> 'notificationId')::uuid as notification_id,
+    (item.value ->> 'recipientUserId')::uuid as recipient_user_id,
+    message.event_id as source_event_id,
+    item.value ->> 'category' as category,
+    item.value ->> 'renderKey' as render_key,
+    item.value -> 'actionTarget' as action_target,
+    item.value -> 'payload' as payload,
+    case when item.value ->> 'deadlineAt' is null then null
+      else (item.value ->> 'deadlineAt')::timestamptz end as deadline_at
+  from platform.outbox_messages message
+  cross join lateral jsonb_array_elements(message.payload -> 'notifications')
+    with ordinality item(value, ordinal)
+  where message.topic = 'notification.in_app.v1'
+), actual as (
+  select notification_id, recipient_user_id, source_event_id, category,
+    render_key, action_target, payload, deadline_at
+  from platform.notifications
+), expected_summary as (
+  select count(*)::bigint as row_count,
+    md5(coalesce(string_agg(jsonb_build_object(
+      'notificationId', notification_id,
+      'recipientUserId', recipient_user_id,
+      'sourceEventId', source_event_id,
+      'category', category,
+      'renderKey', render_key,
+      'actionTarget', action_target,
+      'payload', payload,
+      'deadlineEpoch', extract(epoch from deadline_at)
+    )::text, '|' order by notification_id), '')) as projection_hash
+  from expected
+), actual_summary as (
+  select count(*)::bigint as row_count,
+    md5(coalesce(string_agg(jsonb_build_object(
+      'notificationId', notification_id,
+      'recipientUserId', recipient_user_id,
+      'sourceEventId', source_event_id,
+      'category', category,
+      'renderKey', render_key,
+      'actionTarget', action_target,
+      'payload', payload,
+      'deadlineEpoch', extract(epoch from deadline_at)
+    )::text, '|' order by notification_id), '')) as projection_hash
+  from actual
+)
+select json_build_object(
+  'expectedCount', expected_summary.row_count,
+  'actualCount', actual_summary.row_count,
+  'expectedHash', expected_summary.projection_hash,
+  'actualHash', actual_summary.projection_hash,
+  'missingReceipts', (select count(*) from (
+    select distinct event_id from platform.outbox_messages
+    where topic = 'notification.in_app.v1'
+    except
+    select event_id from platform.inbox_receipts
+    where consumer_name = 'notification-inbox-v1'
+  ) missing)
+)::text
+from expected_summary cross join actual_summary;
+'@
 
 try {
   & docker cp $resolvedBackup "$containerId`:$containerPath" | Out-Null
@@ -108,6 +170,21 @@ try {
     throw "Restored critical-table counts differ from the quiescent source snapshot.`nSource:`n$($sourceCounts -join "`n")`nRestored:`n$($restoredCounts -join "`n")"
   }
 
+  $projectionJson = (& docker compose -f $composeFile exec -T postgres psql `
+    --username $DatabaseUser --dbname $TargetDatabase --tuples-only --no-align `
+    --command $notificationProjectionQuery | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $projectionJson) {
+    throw 'Notification shadow-rebuild query failed.'
+  }
+  $projection = $projectionJson | ConvertFrom-Json
+  if (
+    [int64]$projection.expectedCount -ne [int64]$projection.actualCount `
+    -or $projection.expectedHash -ne $projection.actualHash `
+    -or [int64]$projection.missingReceipts -ne 0
+  ) {
+    throw "Notification shadow rebuild differs from the stored projection: $projectionJson"
+  }
+
   $verified = $true
   $serverVersion = (& docker compose -f $composeFile exec -T postgres psql `
     --username $DatabaseUser --dbname $TargetDatabase --tuples-only --no-align `
@@ -117,6 +194,7 @@ try {
     --command 'select max(migration_name) from platform.schema_migrations' | Out-String).Trim()
   Write-Host "Restore verified in isolated database: $TargetDatabase"
   Write-Host "PostgreSQL: $serverVersion; migration ceiling: $migrationCeiling"
+  Write-Host "Notification shadow rebuild: $($projection.actualCount) rows; hash $($projection.actualHash); missing receipts 0"
   $restoredCounts | ForEach-Object { Write-Host "  $_" }
 } finally {
   if ($containerPath -match '^/tmp/molokh-restore-[a-f0-9]+\.dump$') {
