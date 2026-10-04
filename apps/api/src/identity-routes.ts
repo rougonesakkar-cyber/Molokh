@@ -5,15 +5,19 @@ import {
 } from '@molokh/core';
 import {
   ApiErrorSchema,
+  AvatarUploadTicketResponseSchema,
   ChangeDisplayNameBodySchema,
   ChangeSportsBodySchema,
   IdentityCommandResponseSchema,
   MeResponseSchema,
+  RequestAvatarUploadBodySchema,
+  type AvatarUploadTicketResponse,
   type ChangeDisplayNameBody,
   type ChangeSportsBody,
   type IdentityCommandResponse,
   type IdentityProjectionContract,
   type MeResponse,
+  type RequestAvatarUploadBody,
 } from '@molokh/contracts';
 import type {
   ChangeDisplayNamePayload,
@@ -24,6 +28,11 @@ import type {
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import type { AuthAdapter, AuthenticatedUser } from './auth.js';
+import {
+  AvatarMediaUnavailableError,
+  DisabledAvatarMediaAdapter,
+  type AvatarMediaPort,
+} from './avatar-media.js';
 import { requestContext } from './request-context.js';
 import { newUuidV7 } from './uuid-v7.js';
 
@@ -38,6 +47,7 @@ export interface IdentityRouteDependencies {
     command: CommandEnvelope<ChangeSportsPayload>,
     ids: IdentityEffectIds,
   ) => Promise<ExecutedCommand<IdentityProjection>>;
+  readonly avatarMedia?: AvatarMediaPort;
 }
 
 interface IdentityHeaders {
@@ -82,6 +92,7 @@ export async function registerIdentityRoutes(
   app: FastifyInstance,
   dependencies: IdentityRouteDependencies,
 ): Promise<void> {
+  const avatarMedia = dependencies.avatarMedia ?? new DisabledAvatarMediaAdapter();
   app.get<{ Headers: IdentityHeaders }>(
     '/api/v1/me',
     {
@@ -237,6 +248,51 @@ export async function registerIdentityRoutes(
           replayed: executed.replayed,
         },
       };
+    },
+  );
+
+  app.post<{
+    Body: RequestAvatarUploadBody;
+    Headers: IdentityHeaders;
+  }>(
+    '/api/v1/me/avatar-uploads',
+    {
+      schema: {
+        operationId: 'requestMyAvatarUpload',
+        body: RequestAvatarUploadBodySchema,
+        response: {
+          201: AvatarUploadTicketResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          503: ApiErrorSchema,
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: 60_000 } },
+    },
+    async (request, reply): Promise<AvatarUploadTicketResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const idempotencyKey = request.headers['idempotency-key']?.trim();
+      if (!idempotencyKey) throw new InvalidCommandEnvelopeError('Idempotency-Key');
+      try {
+        const ticket = await avatarMedia.beginUpload({
+          userId: authenticated.userId,
+          idempotencyKey,
+          mimeType: request.body.mimeType,
+          sizeBytes: request.body.sizeBytes,
+          sha256: request.body.sha256,
+        });
+        void reply.status(201);
+        return { data: ticket, meta: { requestId: requestContext(request).requestId } };
+      } catch (error) {
+        if (!(error instanceof AvatarMediaUnavailableError)) throw error;
+        await reply.status(503).send({ code: error.code, message: error.message,
+          requestId: requestContext(request).requestId });
+        return;
+      }
     },
   );
 }

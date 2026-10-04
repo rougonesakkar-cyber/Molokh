@@ -109,6 +109,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { StaticBearerAuthAdapter } from '../src/auth.js';
+import type { AvatarMediaPort } from '../src/avatar-media.js';
 import { mapApiError } from '../src/request-context.js';
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
@@ -363,6 +364,46 @@ describe('runtime contract', () => {
       expectedVersion: 1,
       payload: { primarySport: 'RUNNING', secondarySport: 'BOXING' },
     });
+  });
+
+  it('keeps avatar upload disabled unless a private scan adapter is configured', async () => {
+    const baseIdentity = {
+      auth: new StaticBearerAuthAdapter(token, userId), readMe: async () => identity,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(),
+    };
+    const disabledApp = await buildApp({ identity: baseIdentity });
+    apps.push(disabledApp);
+    const payload = { mimeType: 'image/jpeg', sizeBytes: 1024, sha256: 'a'.repeat(64) };
+    const disabled = await disabledApp.inject({ method: 'POST',
+      url: '/api/v1/me/avatar-uploads', headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'avatar-upload-disabled-1' }, payload });
+    expect(disabled.statusCode).toBe(503);
+    expect(disabled.json()).toMatchObject({ code: 'FEATURE_NOT_AVAILABLE' });
+
+    const beginUpload = vi.fn<AvatarMediaPort['beginUpload']>(async () => ({
+      assetId: '0199a1b2-1234-7000-8000-000000000399', state: 'PENDING_UPLOAD',
+      uploadUrl: 'https://private-objects.example/upload/opaque',
+      expiresAt: '2026-10-04T11:00:00.000Z',
+      requiredHeaders: { 'content-type': 'image/jpeg' },
+      scanPolicyVersion: 'avatar-scan-v1',
+    }));
+    const enabledApp = await buildApp({ identity: { ...baseIdentity,
+      avatarMedia: { beginUpload } } });
+    apps.push(enabledApp);
+    const enabled = await enabledApp.inject({ method: 'POST',
+      url: '/api/v1/me/avatar-uploads', headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'avatar-upload-enabled-1' }, payload });
+    expect(enabled.statusCode).toBe(201);
+    expect(enabled.json()).toMatchObject({ data: { state: 'PENDING_UPLOAD',
+      scanPolicyVersion: 'avatar-scan-v1' } });
+    expect(beginUpload).toHaveBeenCalledWith({ userId,
+      idempotencyKey: 'avatar-upload-enabled-1', ...payload });
+    const invalid = await enabledApp.inject({ method: 'POST',
+      url: '/api/v1/me/avatar-uploads', headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'avatar-upload-invalid-1' },
+      payload: { ...payload, mimeType: 'image/gif' } });
+    expect(invalid.statusCode).toBe(400);
+    expect(beginUpload).toHaveBeenCalledOnce();
   });
 
   it('answers allowed browser preflight requests without reaching a route', async () => {

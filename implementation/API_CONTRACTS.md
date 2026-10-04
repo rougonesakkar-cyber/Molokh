@@ -71,6 +71,7 @@ HTTP mapping:
 | GET | `/me` | User/profile/capabilities/active processes |
 | PATCH | `/me/profile` | display name; never accepts state/status |
 | PATCH | `/me/sports` | primary and optional secondary sport; versioned critical command |
+| POST | `/me/avatar-uploads` | request an idempotent private upload ticket; disabled until a scan/storage adapter is configured |
 | POST | `/me/recovery-cases` | account recovery/phone change request |
 | GET | `/me/account-access` | latest recovery state, incident scope and 24h hold deadline |
 | GET | `/me/account-lifecycle` | latest closure/export state and retention deadlines |
@@ -90,6 +91,11 @@ and an available provider adapter. Web sends `clientKind=WEB` and receives refre
 `HttpOnly; SameSite=Lax` cookie; native sends `clientKind=NATIVE` and stores the returned refresh
 token in Expo SecureStore. During a phone-change security hold, a pre-change trusted session
 may read and accept/decline its existing Challenge but cannot create or mutate unrelated resources.
+
+Avatar upload accepts only JPEG/PNG/WebP metadata up to 10 MiB and a SHA-256 checksum. The default
+adapter returns `FEATURE_NOT_AVAILABLE` and stores nothing. A future provider adapter must keep the
+object private, verify checksum/detected type, run malware/content scan and expose a separate
+`AVAILABLE` decision before any profile attachment; an upload ticket alone never publishes media.
 
 ## 5. Discovery, Match and Chat
 

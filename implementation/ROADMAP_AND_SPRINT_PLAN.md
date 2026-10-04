@@ -127,8 +127,8 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Implement the disabled-by-default avatar storage/scan adapter boundary; keep external OTP
-   delivery disabled until a provider account is selected.
+1. Complete the remaining role-switch and pilot-operations walkthroughs; keep external object/scan
+   and OTP delivery disabled until provider accounts are selected.
 2. Perform the remaining role-switch Web walkthrough for Appeal, Missing Result, IntegrityCase, PlatformIncident and account lifecycle paths.
 3. Rehearse monitoring, backup, restore and rollback for the pilot environment.
 4. Add audited Chat/evidence payload cleanup jobs during release hardening; keep payment, group capacity and automatic alternatives outside Molokh MVP.

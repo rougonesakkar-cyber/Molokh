@@ -2733,6 +2733,34 @@ export const ChangeSportsBodySchema = Type.Object(
 
 export type ChangeSportsBody = Static<typeof ChangeSportsBodySchema>;
 
+export const RequestAvatarUploadBodySchema = Type.Object({
+  mimeType: Type.Union([
+    Type.Literal('image/jpeg'),
+    Type.Literal('image/png'),
+    Type.Literal('image/webp'),
+  ]),
+  sizeBytes: Type.Integer({ minimum: 1, maximum: 10 * 1024 * 1024 }),
+  sha256: Type.String({ pattern: '^[0-9a-f]{64}$' }),
+}, { $id: 'RequestAvatarUploadBody', additionalProperties: false });
+export type RequestAvatarUploadBody = Static<typeof RequestAvatarUploadBodySchema>;
+
+export const AvatarUploadTicketSchema = Type.Object({
+  assetId: Type.String({ format: 'uuid' }),
+  state: Type.Literal('PENDING_UPLOAD'),
+  uploadUrl: Type.String({ format: 'uri' }),
+  expiresAt: Type.String({ format: 'date-time' }),
+  requiredHeaders: Type.Record(Type.String(), Type.String()),
+  scanPolicyVersion: Type.Literal('avatar-scan-v1'),
+}, { $id: 'AvatarUploadTicket', additionalProperties: false });
+export type AvatarUploadTicketContract = Static<typeof AvatarUploadTicketSchema>;
+
+export const AvatarUploadTicketResponseSchema = Type.Object({
+  data: AvatarUploadTicketSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) },
+    { additionalProperties: false }),
+}, { $id: 'AvatarUploadTicketResponse', additionalProperties: false });
+export type AvatarUploadTicketResponse = Static<typeof AvatarUploadTicketResponseSchema>;
+
 export const IdentityCommandResponseSchema = Type.Object(
   {
     data: IdentityProjectionSchema,

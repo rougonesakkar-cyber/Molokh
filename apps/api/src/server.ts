@@ -151,6 +151,7 @@ import {
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
+import { DisabledAvatarMediaAdapter } from './avatar-media.js';
 import {
   AuthorizedAuthAdapter,
   CompositeAuthAdapter,
@@ -1303,6 +1304,7 @@ const app = await buildApp({
   },
   identity: {
     auth: localAuth,
+    avatarMedia: new DisabledAvatarMediaAdapter(),
     readMe: (userId) => readIdentityProjection(database, userId),
     changeDisplayName: (command, ids) => changeDisplayName(database, command, ids),
     changeSports: (command, ids) => changeSports(database, command, ids),
