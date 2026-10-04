@@ -2394,7 +2394,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     }
   });
 
-  it('commits once, replays the response and rejects changed payload or stale version', async () => {
+  it('[AC-135][AC-136][AC-137] commits once, replays the response and rejects changed payload or stale version', async () => {
     let mutationCount = 0;
     const execute = (input: CommandEnvelope<{ readonly amount: number }>) =>
       executeCriticalCommand(database, {
@@ -2468,7 +2468,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(counts.rows[0]).toEqual({ aggregates: '0', events: '0' });
   });
 
-  it('leases outbox work once and makes failed delivery retryable', async () => {
+  it('[AC-142] leases outbox work once and makes failed delivery retryable', async () => {
     await executeCriticalCommand(database, {
       command: command(),
       mutate: (transaction, context) => mutate(transaction, context.nextVersion),
@@ -2510,7 +2510,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).toEqual([]);
   });
 
-  it('projects an event into recipient notifications once and marks reads idempotently', async () => {
+  it('[AC-141] projects an event into recipient notifications once and marks reads idempotently', async () => {
     await executeCriticalCommand(database, {
       command: command(),
       mutate: (transaction, context) => mutate(transaction, context.nextVersion),
@@ -2561,7 +2561,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).resolves.toBe(false);
   });
 
-  it('activates an athlete and changes an arbitrary display name exactly once', async () => {
+  it('[AC-168][AC-192] activates, verifies and changes an arbitrary display name without identity drift', async () => {
     const activation: CommandEnvelope<ActivateIdentityInput> = {
       commandId: ids.activationCommand,
       commandType: 'ACTIVATE_ACCOUNT',
@@ -4298,7 +4298,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(audits.rows[0]?.count).toBe('2');
   });
 
-  it('[AC-173][AC-201][AC-207][AC-208] completes ordinary scheduling, Coach replacement and external no-fault cancellation', async () => {
+  it('[AC-023][AC-024][AC-027][AC-028][AC-033][AC-034][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan, Coach replacement and external no-fault cancellation', async () => {
     await verifySchedulingPublication(database);
   });
 
@@ -4968,7 +4968,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).resolves.toMatchObject({ state: 'EXPIRED', version: 3 });
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-058][AC-070][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -9259,7 +9259,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(rejected.response).toMatchObject({ state: 'REJECTED', version: 2 });
   });
 
-  it('[AC-195] extends a pausable Challenge response deadline by its exact incident overlap once', async () => {
+  it('[AC-059][AC-060][AC-195] extends pausable deadlines once and expires scheduling without fault after capacity extension', async () => {
     const athleteA = testId(24000);
     const athleteB = testId(24001);
     const central = testId(24002);

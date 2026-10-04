@@ -64,7 +64,7 @@ describe('Official Challenge policy', () => {
     ]);
   });
 
-  it('gives the current Contender 72 hours to answer a mandatory FIFO Challenge', () => {
+  it('[AC-046] gives the current Champion 72 hours to answer a mandatory TITLE Challenge', () => {
     const createdAt = new Date('2026-09-08T10:00:00.000Z');
     expect(mandatoryChallengeReminderDeadlines(createdAt).map((value) => value.toISOString())).toEqual([
       '2026-09-10T10:00:00.000Z',
@@ -72,7 +72,7 @@ describe('Official Challenge policy', () => {
     expect(mandatoryChallengeResponseDeadline(createdAt).toISOString()).toBe('2026-09-11T10:00:00.000Z');
   });
 
-  it('allows an Ordinary or Champion to invite an Ordinary only through an active Match', () => {
+  it('[AC-042][AC-043][AC-049] enforces the direct OPEN pair matrix without putting Champion status at stake', () => {
     expect(() => assertDirectOpenChallengeCanBeCreated(eligible)).not.toThrow();
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, initiatorStatus: 'CHAMPION' })).not.toThrow();
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, activeMatch: false })).toThrowError(
@@ -81,6 +81,30 @@ describe('Official Challenge policy', () => {
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, recipientStatus: 'CHAMPION' })).toThrowError(
       new ChallengeConflictError('PAIR_MATRIX_DENIED'),
     );
+    expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, initiatorStatus: 'CONTENDER' })).toThrowError(
+      new ChallengeConflictError('PAIR_MATRIX_DENIED'),
+    );
+    expect(effectiveChallengeStakeAtSessionWindow({
+      plannedStake: 'NONE',
+      participantUserIds: ['champion', 'ordinary'],
+      championUserId: 'champion',
+      contenderUserId: 'someone-else',
+    })).toBe('NONE');
+  });
+
+  it('[AC-045][AC-056][AC-057] rejects inactive Membership, live-pair duplication and pair Cooldown', () => {
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      initiatorMembershipActive: false,
+    })).toThrowError(new ChallengeConflictError('MEMBERSHIP_NOT_ACTIVE'));
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      livePairChallengeExists: true,
+    })).toThrowError(new ChallengeConflictError('PAIR_CHALLENGE_EXISTS'));
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      pairCooldownActive: true,
+    })).toThrowError(new ChallengeConflictError('PAIR_COOLDOWN_ACTIVE'));
   });
 
   it('caps unanswered optional invitations without treating them as accepted obligations', () => {

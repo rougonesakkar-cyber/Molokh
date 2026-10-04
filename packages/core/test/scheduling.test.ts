@@ -40,7 +40,7 @@ import {
 describe('Scheduling publication policy', () => {
   const occurredAt = new Date('2026-09-07T09:00:00.000Z');
 
-  it('accepts a future interval inside the Venue horizon', () => {
+  it('[AC-027] accepts a future interval inside the Venue horizon', () => {
     expect(() =>
       assertPublicationWindow({
         startAt: '2026-09-14T09:00:00.000Z',
@@ -56,7 +56,7 @@ describe('Scheduling publication policy', () => {
     ['reversed interval', '2026-09-08T10:00:00.000Z', '2026-09-08T09:00:00.000Z', 30],
     ['outside horizon', '2026-10-08T09:00:00.001Z', '2026-10-08T10:00:00.000Z', 30],
     ['invalid horizon', '2026-09-08T09:00:00.000Z', '2026-09-08T10:00:00.000Z', 31],
-  ])('rejects %s', (_name, startAt, endAt, horizonDays) => {
+  ])('[AC-028] rejects %s', (_name, startAt, endAt, horizonDays) => {
     expect(() => assertPublicationWindow({ startAt, endAt, occurredAt, horizonDays })).toThrow(
       SchedulingValidationError,
     );
@@ -170,7 +170,7 @@ describe('Scheduling publication policy', () => {
     ).toThrowError(expect.objectContaining({ reason: 'SESSION_NOT_READY' }));
   });
 
-  it('keeps Session facts under the assigned non-participant Coach', () => {
+  it('[AC-020] keeps Session facts under the assigned non-participant Coach', () => {
     expect(() =>
       assertSessionCoach({
         actorId: 'coach',
@@ -182,6 +182,13 @@ describe('Scheduling publication policy', () => {
       assertSessionCoach({
         actorId: 'athlete-a',
         coachUserId: 'coach',
+        athleteUserIds: ['athlete-a', 'athlete-b'],
+      }),
+    ).toThrow(SchedulingPermissionDeniedError);
+    expect(() =>
+      assertSessionCoach({
+        actorId: 'athlete-a',
+        coachUserId: 'athlete-a',
         athleteUserIds: ['athlete-a', 'athlete-b'],
       }),
     ).toThrow(SchedulingPermissionDeniedError);
@@ -208,7 +215,7 @@ describe('Scheduling publication policy', () => {
     ).toThrowError(expect.objectContaining({ reason: 'SESSION_OPERATION_WINDOW_CLOSED' }));
   });
 
-  it('protects NO_SHOW grace and counts only attended ended Training', () => {
+  it('[AC-074] protects NO_SHOW grace and counts only attended ended Training', () => {
     expect(() =>
       assertAttendanceCanBeRecorded({
         state: 'IN_PROGRESS',
@@ -220,6 +227,17 @@ describe('Scheduling publication policy', () => {
         occurredAt: new Date('2026-09-07T09:14:59.999Z'),
       }),
     ).toThrowError(expect.objectContaining({ reason: 'NO_SHOW_TOO_EARLY' }));
+    expect(() =>
+      assertAttendanceCanBeRecorded({
+        state: 'IN_PROGRESS',
+        status: 'NO_SHOW',
+        athleteId: 'athlete-b',
+        athleteUserIds: ['athlete-a', 'athlete-b'],
+        scheduledStartAt: occurredAt.toISOString(),
+        noShowGraceMinutes: 15,
+        occurredAt: new Date('2026-09-07T09:15:00.000Z'),
+      }),
+    ).not.toThrow();
     expect(attendanceCountsAsCompletedTraining('PRESENT')).toBe(true);
     expect(attendanceCountsAsCompletedTraining('LATE')).toBe(true);
     expect(attendanceCountsAsCompletedTraining('NO_SHOW')).toBe(false);

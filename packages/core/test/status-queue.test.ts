@@ -41,7 +41,7 @@ describe('status queue policy', () => {
     });
   });
 
-  it('routes an Ordinary member toward the current Contender in a running Competition', () => {
+  it('[AC-045][AC-057] routes only an eligible Ordinary member toward the current Contender', () => {
     expect(assertStatusQueueEntryCanBeSubmitted({
       ...eligible,
       competitionPhase: 'RUNNING',
@@ -51,6 +51,18 @@ describe('status queue policy', () => {
       targetStatus: 'CONTENDER',
       boundHolderUserId: '0199a1b2-1234-7000-8000-000000000002',
     });
+    expect(() => assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      membershipActive: false,
+    })).toThrowError('MEMBERSHIP_NOT_ACTIVE');
+    expect(() => assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      pairCooldownActive: true,
+    })).toThrowError('PAIR_COOLDOWN_ACTIVE');
   });
 
   it('AC-090 breaks an identical server-time tie deterministically by entry id', () => {
@@ -88,7 +100,7 @@ describe('status queue policy', () => {
     })).toThrowError('LIVE_QUEUE_ENTRY_EXISTS');
   });
 
-  it('activates only the strict FIFO head against the still-current Contender', () => {
+  it('[AC-048] activates only the strict FIFO head against the still-current Contender', () => {
     const activation = {
       state: 'WAITING' as const,
       kind: 'DIRECT_STATUS' as const,
