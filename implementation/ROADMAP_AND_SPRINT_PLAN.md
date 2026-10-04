@@ -97,7 +97,7 @@ Rules protecting the 12-week target:
 
 - Core Engine v1.0: 308 transitions, 308 registered events, 213 acceptance scenarios and zero open blocking questions.
 - Workspace: TypeScript checks and Web production build pass across all packages.
-- Tests: 215 non-database tests and 39 real PostgreSQL scenarios pass, including social concurrency, Chat revision/report invariants, the single-winner Booking confirmation race, atomic Challenge→Booking→Session lineage, status FIFO, Training conversion, Youth boundaries, PlatformIncident reconciliation and account closure/export retention.
+- Tests: 232 non-PostgreSQL tests and 41 real PostgreSQL scenarios pass, including authentication/session policy, social concurrency, Chat revision/report invariants, the single-winner Booking confirmation race, atomic Challenge→Booking→Session lineage, status FIFO, Training conversion, Youth boundaries, PlatformIncident reconciliation and account closure/export retention.
 - Database: PostgreSQL 18 is healthy and checksum-verified migrations `0001`–`0056` pass. The recovered Docker runtime reused the existing database volume; no project file or database data was reset.
 - Product slice: the live universal Web route reads the seeded Athlete and changes an arbitrary display name through a versioned/idempotent API command; replay returns the same event.
 - Community increment: the same route shows the pilot Venue, active Membership, 15-day cooldown and transparent Official Challenge denial; role scope tests cover Coach/Admin/Primary/Central boundaries.
@@ -127,8 +127,9 @@ Rules protecting the 12-week target:
 
 ## 8. Immediate next actions
 
-1. Complete the remaining role-switch and pilot-operations walkthroughs; keep external object/scan
-   and OTP delivery disabled until provider accounts are selected.
-2. Perform the remaining role-switch Web walkthrough for Appeal, Missing Result, IntegrityCase, PlatformIncident and account lifecycle paths.
-3. Rehearse monitoring, backup, restore and rollback for the pilot environment.
-4. Add audited Chat/evidence payload cleanup jobs during release hardening; keep payment, group capacity and automatic alternatives outside Molokh MVP.
+1. Perform the remaining role-switch Web walkthrough for Appeal, Missing Result, IntegrityCase,
+   PlatformIncident and account lifecycle paths; keep external object/scan and OTP delivery disabled
+   until provider accounts are selected.
+2. Rehearse monitoring, backup, restore and rollback for the pilot environment.
+3. Add audited Chat/evidence payload cleanup jobs during release hardening; keep payment, group
+   capacity and automatic alternatives outside Molokh MVP.

@@ -184,15 +184,16 @@ marker and deterministic status compensation. Explicit GENESIS/status intent, th
 FIFO projection, no-loss withdrawal and strict direct-head activation against the current
 Contender are executable. A mandatory refusal or timeout is represented by an appealable
 administrative Forfeit without inventing a Session. Final holder changes move waiting entries into
-a visible 24-hour reconfirmation without changing their FIFO keys. Production OTP/session handling
-and recovery/duplicate cases remain. PlatformIncident lifecycle, exact-overlap deadline effects,
+a visible 24-hour reconfirmation without changing their FIFO keys. Production session handling,
+recovery/duplicate cases and the fail-closed avatar provider boundary are complete; external OTP
+and private object/scan providers remain unconfigured. PlatformIncident lifecycle, exact-overlap deadline effects,
 mandatory-timeout compensation and account closure/self-export are executable. General Chat/
 evidence retention policies are registered; their destructive cleanup jobs remain release-hardening
 work and are not represented as complete.
 
 ## Verification result
 
-Verified on 2026-10-03:
+Verified on 2026-10-04:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;

@@ -373,5 +373,7 @@ or event/audit history; a live standalone export is reused by closure instead of
 
 ## Next executable action
 
-Continue with recovery/duplicate-account cases and the remaining pilot-hardening walkthroughs.
+Continue with the remaining role-switch/pilot-operations walkthroughs and the M8 backup,
+monitoring, accessibility and recovery rehearsal. External OTP and private object/scan providers
+remain explicit deployment inputs rather than hidden local substitutes.
 The technology baseline is fixed by the accepted ADR set and changes through a new ADR.
