@@ -6,12 +6,12 @@ Molokh — mobile-first продукт для поиска партнёров п
 
 - Core Engine: **v1.0, product decisions closed**;
 - state transitions: **308**;
-- registered events: **308**;
+- registered events: **309**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **152/214** (`146/196 P0`);
+- executable acceptance traceability: **153/214** (`147/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0060` and **47/47** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0061` and **47/47** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   unresolved upstream `node-forge` and `braces` advisories are covered by narrow regression-tested
   local backports that expire on 2026-10-16 and reject every other high/critical advisory;
@@ -201,6 +201,10 @@ still makes no capacity or statistics claim.
 но расходует один из двух пользовательских переносов. Инициатор, категория причины, время,
 виновная сторона и связанный Booking сохраняются append-only; свободный текст причины остаётся
 во внутреннем защищённом журнале. Исходные обязательства и 14-дневный deadline не меняются.
+Взаимный перенос сначала создаёт только видимое обоим предложение и ничего не меняет. После
+подтверждения второй стороной он расходует один общий перенос без виновного, закрывает связанные
+pre-start Booking/Session/Slot по CH-21/B-15/SL-06 и возвращает Challenge к выбору времени с теми
+же обязательствами и canonical scheduling deadline.
 
 Gym Admin can edit or remove future personal Slots and GroupOfferings directly from Community.
 The action is intentionally refused after a pair has started choosing that publication, so terms

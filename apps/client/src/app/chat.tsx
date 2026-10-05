@@ -6,6 +6,7 @@ import type {
   ChatMessageCommandResponse,
   ChatMessagesResponse,
   GroupPlanCommandResponse,
+  MutualChallengeRescheduleRequestResponse,
   TrainingOptionsResponse,
   YouthConsentCommandResponse,
   YouthConsentSummaryResponse,
@@ -361,6 +362,119 @@ export default function ChatScreen() {
           onPress: () => void runChallengeReschedule('SCHEDULE_CHANGED'),
         },
         { text: 'Другая причина', onPress: () => void runChallengeReschedule('OTHER') },
+      ],
+    );
+  };
+
+  const runMutualRescheduleProposal = async (
+    reasonCode: 'SCHEDULE_CHANGED' | 'OTHER',
+  ) => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge || actingChallenge) return;
+    const operation = `challenge:mutual-reschedule:propose:${challenge.challengeId}:v${challenge.version}:${reasonCode}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingChallenge(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challenge.challengeId}/mutual-reschedules`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(challenge.version),
+          },
+          body: JSON.stringify({ reasonCode }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadChallenge();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as MutualChallengeRescheduleRequestResponse;
+      actionKeys.current.delete(operation);
+      setChatChallenge((current) => current
+        ? { ...current, mutualRescheduleRequest: result.data }
+        : current);
+      await loadChallenge();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось предложить взаимный перенос');
+    } finally {
+      setActingChallenge(false);
+    }
+  };
+
+  const confirmMutualRescheduleProposal = async () => {
+    const challenge = chatChallenge?.challenge;
+    const request = chatChallenge?.mutualRescheduleRequest;
+    if (!challenge || !request || actingChallenge || request.proposedByUserId === viewerUserId) return;
+    const operation = `challenge:mutual-reschedule:confirm:${request.requestId}:v${request.version}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingChallenge(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challenge.challengeId}/mutual-reschedules/${request.requestId}/confirm`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(challenge.version),
+          },
+          body: JSON.stringify({ requestVersion: request.version }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) {
+          await Promise.all([loadChallenge(), loadTrainingOptions()]);
+        }
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as ChallengeCommandResponse;
+      actionKeys.current.delete(operation);
+      setChatChallenge((current) => current
+        ? { ...current, challenge: result.data, mutualRescheduleRequest: null }
+        : current);
+      await Promise.all([loadChallenge(), loadTrainingOptions()]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось подтвердить взаимный перенос');
+    } finally {
+      setActingChallenge(false);
+    }
+  };
+
+  const proposeMutualReschedule = () => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge || challenge.userRescheduleCount >= 2) return;
+    Alert.alert(
+      'Предложить взаимный перенос?',
+      `Пока партнёр не подтвердит, Session и Challenge не изменятся. После подтверждения будет использован перенос ${challenge.userRescheduleCount + 1} из 2 без назначения виновного.`,
+      [
+        { text: 'Не предлагать', style: 'cancel' },
+        {
+          text: 'Изменилось расписание',
+          onPress: () => void runMutualRescheduleProposal('SCHEDULE_CHANGED'),
+        },
+        { text: 'Другая причина', onPress: () => void runMutualRescheduleProposal('OTHER') },
+      ],
+    );
+  };
+
+  const confirmMutualReschedule = () => {
+    Alert.alert(
+      'Подтвердить взаимный перенос?',
+      'Текущая бронь будет закрыта без поражения. Challenge вернётся к выбору времени, а общий счётчик переносов увеличится на один.',
+      [
+        { text: 'Не подтверждать', style: 'cancel' },
+        { text: 'Подтвердить перенос', onPress: () => void confirmMutualRescheduleProposal() },
       ],
     );
   };
@@ -912,6 +1026,58 @@ export default function ChatScreen() {
                             : `Статус: ${chatChallenge.challenge.state}`}
                     </Text>
                   )}
+                  {['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED']
+                    .includes(chatChallenge.challenge.state) ? (
+                    <View style={styles.challengeActions}>
+                      {chatChallenge.mutualRescheduleRequest ? (
+                        chatChallenge.mutualRescheduleRequest.proposedByUserId === viewerUserId ? (
+                          <Text style={styles.trainingTerms}>
+                            Взаимный перенос предложен. До ответа партнёра бронь и Challenge не изменяются.
+                          </Text>
+                        ) : (
+                          <Pressable
+                            accessibilityLabel="Подтвердить взаимный перенос без назначения виновного"
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
+                            disabled={actingChallenge}
+                            onPress={confirmMutualReschedule}
+                            style={({ pressed }) => [
+                              styles.challengeButton,
+                              actingChallenge && styles.disabled,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.trainingButtonText}>Подтвердить взаимный перенос</Text>
+                          </Pressable>
+                        )
+                      ) : (
+                        <Pressable
+                          accessibilityLabel="Предложить партнёру взаимный перенос"
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            disabled: actingChallenge
+                              || chatChallenge.challenge.userRescheduleCount >= 2,
+                          }}
+                          disabled={actingChallenge
+                            || chatChallenge.challenge.userRescheduleCount >= 2}
+                          onPress={proposeMutualReschedule}
+                          style={({ pressed }) => [
+                            styles.secondaryChallengeButton,
+                            (actingChallenge
+                              || chatChallenge.challenge!.userRescheduleCount >= 2)
+                              && styles.disabled,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.secondaryChallengeText}>
+                            {chatChallenge.challenge.userRescheduleCount >= 2
+                              ? 'Лимит взаимных переносов использован'
+                              : 'Предложить взаимный перенос'}
+                          </Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  ) : null}
                 </View>
               ) : null}
               {challengeIsTerminal && chatChallenge?.canCreate ? (

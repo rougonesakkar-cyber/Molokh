@@ -883,7 +883,38 @@ const ChallengeConflictCodeSchema = Type.Union([
   Type.Literal('CHALLENGE_OBLIGATION_MISSING'),
   Type.Literal('CHALLENGE_RESCHEDULE_NOT_ALLOWED'),
   Type.Literal('CHALLENGE_RESCHEDULE_LIMIT_REACHED'),
+  Type.Literal('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED'),
+  Type.Literal('CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS'),
+  Type.Literal('CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED'),
 ]);
+
+export const ScheduleMutationReasonCodeSchema = Type.Union([
+  Type.Literal('COACH_UNAVAILABLE'),
+  Type.Literal('VENUE_UNAVAILABLE'),
+  Type.Literal('SCHEDULE_CHANGED'),
+  Type.Literal('OTHER'),
+]);
+
+export const MutualChallengeRescheduleRequestSchema = Type.Object(
+  {
+    requestId: Type.String({ format: 'uuid' }),
+    challengeId: Type.String({ format: 'uuid' }),
+    bookingId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    sessionId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    proposedByUserId: Type.String({ format: 'uuid' }),
+    confirmedByUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    reasonCode: ScheduleMutationReasonCodeSchema,
+    state: Type.Union([Type.Literal('PROPOSED'), Type.Literal('CONFIRMED')]),
+    proposedAt: Type.String({ format: 'date-time' }),
+    confirmedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    version: Type.Integer({ minimum: 1, maximum: 2 }),
+  },
+  { $id: 'MutualChallengeRescheduleRequest', additionalProperties: false },
+);
+
+export type MutualChallengeRescheduleRequestContract = Static<
+  typeof MutualChallengeRescheduleRequestSchema
+>;
 
 export const ChallengeProjectionSchema = Type.Object(
   {
@@ -931,6 +962,10 @@ export const ChatChallengeResponseSchema = Type.Object(
     data: Type.Object(
       {
         challenge: Type.Union([ChallengeProjectionSchema, Type.Null()]),
+        mutualRescheduleRequest: Type.Union([
+          MutualChallengeRescheduleRequestSchema,
+          Type.Null(),
+        ]),
         canCreate: Type.Boolean(),
         createDenialCode: Type.Union([ChallengeConflictCodeSchema, Type.Null()]),
         policyVersion: Type.Literal('challenge-mvp-v1'),
@@ -960,6 +995,34 @@ export const RespondToChallengeBodySchema = Type.Object(
 );
 
 export type RespondToChallengeBody = Static<typeof RespondToChallengeBodySchema>;
+
+export const ConfirmMutualChallengeRescheduleBodySchema = Type.Object(
+  { requestVersion: Type.Integer({ minimum: 1 }) },
+  { $id: 'ConfirmMutualChallengeRescheduleBody', additionalProperties: false },
+);
+
+export type ConfirmMutualChallengeRescheduleBody = Static<
+  typeof ConfirmMutualChallengeRescheduleBodySchema
+>;
+
+export const MutualChallengeRescheduleRequestResponseSchema = Type.Object(
+  {
+    data: MutualChallengeRescheduleRequestSchema,
+    meta: Type.Object(
+      {
+        requestId: Type.String({ format: 'uuid' }),
+        eventId: Type.String({ format: 'uuid' }),
+        replayed: Type.Boolean(),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'MutualChallengeRescheduleRequestResponse', additionalProperties: false },
+);
+
+export type MutualChallengeRescheduleRequestResponse = Static<
+  typeof MutualChallengeRescheduleRequestResponseSchema
+>;
 
 export const ChallengeCommandResponseSchema = Type.Object(
   {
@@ -2514,13 +2577,6 @@ export const UpdateGroupOfferingBodySchema = Type.Object(
 );
 
 export type UpdateGroupOfferingBody = Static<typeof UpdateGroupOfferingBodySchema>;
-
-export const ScheduleMutationReasonCodeSchema = Type.Union([
-  Type.Literal('COACH_UNAVAILABLE'),
-  Type.Literal('VENUE_UNAVAILABLE'),
-  Type.Literal('SCHEDULE_CHANGED'),
-  Type.Literal('OTHER'),
-]);
 
 export const ScheduleMutationReasonBodySchema = Type.Object(
   {

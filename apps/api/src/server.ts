@@ -55,6 +55,8 @@ import {
   readCommunityContext,
   readCommunityLifecycle,
   readChatChallenge,
+  confirmMutualChallengeReschedule,
+  proposeMutualChallengeReschedule,
   rescheduleChallengeByAthlete,
   readChatMessages,
   readActiveBlocks,
@@ -1333,6 +1335,10 @@ const app = await buildApp({
       withdrawOptionalChallenge(database, command, ids),
     rescheduleChallengeByAthlete: (command, ids) =>
       rescheduleChallengeByAthlete(database, command, ids),
+    proposeMutualChallengeReschedule: (command, ids) =>
+      proposeMutualChallengeReschedule(database, command, ids),
+    confirmMutualChallengeReschedule: (command, ids) =>
+      confirmMutualChallengeReschedule(database, command, ids),
   },
   youthConsent: {
     auth: localAuth,

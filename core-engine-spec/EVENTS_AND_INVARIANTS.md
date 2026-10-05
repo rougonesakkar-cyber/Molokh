@@ -201,7 +201,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 | `GenesisChallengePartyAccepted/Declined/ResponseExpired` | Challenge | GENESIS queue/Competition phase |
 | `MandatoryChallengeRefused/Expired` | Challenge | Result |
 | `ChallengeBookingStarted/Booked/SessionStarted/AwaitingResult` | Challenge | Activity/read model |
-| `ChallengeRescheduled/RescheduledByAthlete/SchedulingExtended/CancelledNoCapacity` | Challenge | Booking, deadlines |
+| `ChallengeRescheduleProposed/Rescheduled/RescheduledByAthlete/SchedulingExtended/CancelledNoCapacity` | Challenge | Booking, deadlines |
 | `FoundingGenesisPaired/GenesisWithoutOpponent/ContenderGenesisPaired/SuccessionWithoutOpponent/GenesisPairingReleased` | Competition | Challenge, Status, FIFO |
 | `GenesisStatusApplied/ContenderAssigned/Transferred/Defended/TitleTransferred/Defended` | Status Engine | tenure, profile, queue |
 | `ChampionSuccessionApplied/ChampionVacated/ContenderVacated` | Status Engine | Competition phase, queue |
@@ -666,6 +666,7 @@ ChallengeCreated
 ChallengeCreatedFromConfirmedTraining
 ChallengeDeclined
 ChallengeQueued
+ChallengeRescheduleProposed
 ChallengeRescheduled
 ChallengeRescheduledByAthlete
 ChallengeResponseExpired

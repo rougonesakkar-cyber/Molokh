@@ -216,6 +216,14 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - M5 direct optional Challenge increment: complete. From an active Match, a verified competitive Member may create only an allowed OPEN/NONE invitation. The server freezes Community rules, enforces one live pair Challenge and at most three unanswered outgoing invitations, supports recipient accept/decline and initiator withdrawal, creates both accepted obligations atomically, starts a 14-day scheduling deadline, and expires unanswered invitations after 48 hours no-fault. The universal Chat renders the next action without mixing the invitation with ordinary Training.
 - M5 Official Booking increment: complete. Selecting a personal Slot for an accepted Challenge creates an explicitly linked `OFFICIAL_CHALLENGE` Booking and moves Challenge to `BOOKING_PENDING`. Peer selection preserves the frozen commercial snapshot; Venue/Coach confirmation atomically claims the Slot, creates the linked `OFFICIAL_CHALLENGE` Session and moves Challenge to `BOOKED`. Expiry/resource rejection returns it to scheduling without resetting the 14-day deadline or obligations.
 - M5 first Athlete-reschedule increment: complete. CH-22 lets either participant explicitly spend the first of two user reschedules before a confirmed Session. The Challenge returns to `ACCEPTED_UNSCHEDULED`, a pending Booking closes while its Slot remains published, and the original obligations/deadline survive. Counter, initiator, A/B fault, reason and optional Booking lineage commit as one append-only fact with Challenge/Booking events, private audit detail, outbox/timer replacement and peer/host notifications. Exact replay is idempotent, stale versions fail and the shared Booking lock serializes Athlete reschedule, B-04 withdrawal and host confirmation without sporting sanctions.
+- M5 mutual Challenge-reschedule increment: complete. CH-21 keeps a versioned proposal separate
+  from the completed reschedule: the initiator cannot self-confirm, and Challenge/resources/counter
+  remain unchanged until the peer confirms. Confirmation atomically consumes one shared transfer,
+  appends `MUTUAL` with no fault user, closes pending or confirmed pre-start scheduling resources
+  through B-15/SL-06, preserves obligations/deadline and emits audit/event/outbox plus Athlete/Coach
+  notifications without exposing the private reason note. The two-transfer limit, exact replay,
+  stale versions and resource races remain DB-authoritative. AC-062 passes end to end under migration
+  `0061`.
 - M5 Official Session lifecycle increment: complete in code. The scheduled boundary freezes one immutable competitive snapshot but no attendance; Coach Start or first Attendance atomically commits `CH-13` to `IN_SESSION`, and Coach End commits `CH-14` to `RESULT_PENDING`. The outbox carries 2h/12h/24h Result reminder deadlines while ordinary Training remains outside Competition.
 - M5 Result/status increment: complete in code. Authorized Coach Result commits `CH-15`, stores immutable source facts, derives status only from the Session snapshot, applies an immediate provisional transition and status lock, creates a configurable pair Cooldown after decisive loss, and schedules the 48-hour finalizer. AC-202 is explicit: `LATE` remains attendance metadata and cannot synthesize `NO_SHOW`, Forfeit, loss, administrative Result or Cooldown; the assigned Coach can record the ordinary Result against the frozen Session snapshot. AC-203 enforces configured grace, separates Attendance from Coach Result, binds one absence to the present winner plus normal Appeal, and normalizes two absences to `NO_CONTEST` without winner/status/loss/Cooldown. Duplicate Result and stale status snapshots fail atomically.
 - M6 Appeal lifecycle increment: complete. Only the eligible Athlete can submit Appeal or irreversibly waive it. Waiver may finalize early; otherwise a state/version-guarded Worker timer commits `CH-17`, releases both obligations and clears the status lock.
@@ -336,7 +344,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 152/214 (`146/196 P0`).
+  Acceptance traceability is 153/214 (`147/196 P0`).
 - M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
   exact 30-day recovery, owner cancellation and reasoned Central execution only after all
   obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one

@@ -191,6 +191,8 @@ import {
   finalizeResult,
   readChatChallenge,
   readChallengeTimerSnapshot,
+  proposeMutualChallengeReschedule,
+  confirmMutualChallengeReschedule,
   rescheduleChallengeByAthlete,
   remindMissingResultCoach,
   escalateMissingResultAdmin,
@@ -262,6 +264,10 @@ import {
   type WithdrawSlotPayload,
   type WithdrawBookingRequestPayload,
   type AthleteChallengeRescheduleEffectIds,
+  type ProposeMutualChallengeReschedulePayload,
+  type ProposeMutualChallengeRescheduleEffectIds,
+  type ConfirmMutualChallengeReschedulePayload,
+  type ConfirmMutualChallengeRescheduleEffectIds,
   type RescheduleChallengeByAthletePayload,
   type ConfirmGroupPlanPayload,
   type ConfirmBookingHostPayload,
@@ -2012,6 +2018,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         competition.pair_cooldowns,
         competition.results,
         governance.youth_challenge_consents,
+        competition.challenge_mutual_reschedule_requests,
         competition.challenge_reschedules,
         competition.challenges,
         competition.ruleset_snapshots,
@@ -5429,7 +5436,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).resolves.toMatchObject({ state: 'EXPIRED', version: 3 });
   });
 
-  it('[AC-061][AC-066] withdraws or reschedules an Official Slot request and serializes host confirmation', async () => {
+  it('[AC-061][AC-062][AC-066] withdraws or reschedules an Official Slot request and serializes confirmation', async () => {
     const fixture = await seedConfirmedTrainingForConversion(21400);
     const sourceChatId = testId(21407);
     await database.transaction().execute(async (transaction) => {
@@ -5848,26 +5855,6 @@ describePostgres('PostgreSQL critical command transaction', () => {
         },
         () => new Date('2026-09-27T10:13:00.000Z'),
       ),
-      rescheduleChallengeByAthlete(
-        database,
-        {
-          commandId: testId(22100), commandType: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
-          idempotencyKey: 'challenge-athlete-reschedule-race-confirm',
-          actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
-          aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 7,
-          correlationId: testId(22101), causationId: testId(21914), requestId: testId(22102),
-          source: 'api', payloadVersion: 1,
-          payload: { challengeId, reasonCode: 'SCHEDULE_CHANGED', reasonNote: null },
-        } satisfies CommandEnvelope<RescheduleChallengeByAthletePayload>,
-        {
-          eventId: testId(22103), auditId: testId(22104), outboxMessageId: testId(22105),
-          notificationId: testId(22106), notificationOutboxMessageId: testId(22107),
-          rescheduleId: testId(22108), bookingEventId: testId(22109),
-          bookingOutboxMessageId: testId(22110),
-          notificationIds: [testId(22111), testId(22112)],
-        },
-        () => new Date('2026-09-27T10:13:00.000Z'),
-      ),
     ]);
     expect(raced.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     const raceState = await sql<{
@@ -5896,6 +5883,314 @@ describePostgres('PostgreSQL critical command transaction', () => {
         slot_booking_id: raceBookingId, challenge_state: 'BOOKED', sessions: '1',
       },
     ]).toContainEqual(raceState.rows[0]);
+
+    let mutualBookingId = raceBookingId;
+    let mutualSessionId = testId(22008);
+    if (raceState.rows[0]?.booking_state === 'CANCELLED') {
+      mutualBookingId = testId(22100);
+      mutualSessionId = testId(22128);
+      await selectSlot(
+        database,
+        {
+          commandId: testId(22101), commandType: 'SELECT_SLOT',
+          idempotencyKey: 'mutual-reschedule-select-after-race',
+          actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+          aggregateType: 'Booking', aggregateId: mutualBookingId, expectedVersion: 0,
+          correlationId: testId(22102), causationId: testId(21929), requestId: testId(22103),
+          source: 'api', payloadVersion: 1,
+          payload: {
+            chatId: sourceChatId, slotId: fixture.slot, commercialVersion: 1, challengeId,
+          },
+        } satisfies CommandEnvelope<SelectSlotPayload>,
+        {
+          eventId: testId(22104), auditId: testId(22105), outboxMessageId: testId(22106),
+          notificationId: testId(22107), notificationOutboxMessageId: testId(22108),
+          challengeEventId: testId(22109), challengeOutboxMessageId: testId(22110),
+        },
+        () => new Date('2026-09-27T10:14:00.000Z'),
+      );
+      await selectSameSlot(
+        database,
+        {
+          commandId: testId(22111), commandType: 'SELECT_SAME_SLOT',
+          idempotencyKey: 'mutual-reschedule-select-same-after-race',
+          actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+          aggregateType: 'Booking', aggregateId: mutualBookingId, expectedVersion: 1,
+          correlationId: testId(22112), causationId: testId(22104), requestId: testId(22113),
+          source: 'api', payloadVersion: 1,
+          payload: { bookingId: mutualBookingId, commercialVersion: 1 },
+        } satisfies CommandEnvelope<SelectSameSlotPayload>,
+        {
+          eventId: testId(22114), auditId: testId(22115), outboxMessageId: testId(22116),
+          notificationId: testId(22117), notificationOutboxMessageId: testId(22118),
+        },
+        () => new Date('2026-09-27T10:15:00.000Z'),
+      );
+      await confirmBookingHost(
+        database,
+        {
+          commandId: testId(22120), commandType: 'CONFIRM_BOOKING_HOST',
+          idempotencyKey: 'mutual-reschedule-confirm-host-after-race',
+          actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [] },
+          aggregateType: 'Booking', aggregateId: mutualBookingId, expectedVersion: 2,
+          correlationId: testId(22121), causationId: testId(22114), requestId: testId(22122),
+          source: 'api', payloadVersion: 1, payload: { bookingId: mutualBookingId },
+        } satisfies CommandEnvelope<ConfirmBookingHostPayload>,
+        {
+          eventId: testId(22123), auditId: testId(22124), outboxMessageId: testId(22125),
+          slotEventId: testId(22126), sessionEventId: testId(22127),
+          sessionId: mutualSessionId, sessionTimerOutboxMessageId: testId(22129),
+          notificationIds: [testId(22130), testId(22131)],
+          notificationOutboxMessageId: testId(22132), challengeEventId: testId(22133),
+          challengeOutboxMessageId: testId(22134),
+        },
+        () => new Date('2026-09-27T10:16:00.000Z'),
+      );
+    }
+
+    const bookedChallenge = await sql<{
+      readonly version: string;
+      readonly user_reschedule_count: number;
+    }>`
+      select version::text, user_reschedule_count
+      from competition.challenges where challenge_id = ${challengeId}::uuid
+    `.execute(database);
+    const bookedChallengeVersion = Number(bookedChallenge.rows[0]?.version);
+    expect(bookedChallenge.rows[0]?.user_reschedule_count).toBe(1);
+
+    const mutualRequestId = testId(22200);
+    const proposalCommand = {
+      commandId: testId(22201), commandType: 'PROPOSE_MUTUAL_CHALLENGE_RESCHEDULE',
+      idempotencyKey: 'challenge-mutual-reschedule-propose',
+      actor: { type: 'USER' as const, id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'ChallengeMutualReschedule', aggregateId: mutualRequestId,
+      expectedVersion: 0, correlationId: testId(22202), causationId: testId(22003),
+      requestId: testId(22203), source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId, challengeVersion: bookedChallengeVersion,
+        reasonCode: 'SCHEDULE_CHANGED' as const,
+        reasonNote: 'Оба спортсмена согласовали перенос в личном чате.',
+      },
+    } satisfies CommandEnvelope<ProposeMutualChallengeReschedulePayload>;
+    const proposalEffects = {
+      eventId: testId(22204), auditId: testId(22205), outboxMessageId: testId(22206),
+      notificationId: testId(22207), notificationOutboxMessageId: testId(22208),
+    } satisfies ProposeMutualChallengeRescheduleEffectIds;
+    const proposed = await proposeMutualChallengeReschedule(
+      database, proposalCommand, proposalEffects,
+      () => new Date('2026-09-27T10:17:00.000Z'),
+    );
+    expect(proposed.response).toMatchObject({
+      requestId: mutualRequestId, challengeId, bookingId: mutualBookingId,
+      sessionId: mutualSessionId, proposedByUserId: fixture.athleteA,
+      confirmedByUserId: null, state: 'PROPOSED', version: 1,
+    });
+    await expect(readChatChallenge(database, sourceChatId, fixture.athleteB)).resolves
+      .toMatchObject({
+        mutualRescheduleRequest: {
+          requestId: mutualRequestId, state: 'PROPOSED', version: 1,
+        },
+      });
+    const unchangedBeforeConfirmation = await sql<{
+      readonly challenge_state: string;
+      readonly user_reschedule_count: number;
+      readonly booking_state: string;
+      readonly session_state: string;
+      readonly slot_state: string;
+    }>`
+      select challenge.state as challenge_state, challenge.user_reschedule_count,
+        booking.state as booking_state, session.state as session_state, slot.state as slot_state
+      from competition.challenges challenge
+      join scheduling.bookings booking on booking.booking_id = ${mutualBookingId}::uuid
+      join scheduling.sessions session on session.session_id = ${mutualSessionId}::uuid
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where challenge.challenge_id = ${challengeId}::uuid
+    `.execute(database);
+    expect(unchangedBeforeConfirmation.rows[0]).toEqual({
+      challenge_state: 'BOOKED', user_reschedule_count: 1,
+      booking_state: 'CONFIRMED_PAIR', session_state: 'SCHEDULED', slot_state: 'BOOKED',
+    });
+
+    const selfConfirmEffects = {
+      eventId: testId(22304), auditId: testId(22305), outboxMessageId: testId(22306),
+      notificationId: testId(22307), notificationOutboxMessageId: testId(22308),
+      rescheduleId: testId(22309), requestEventId: testId(22310),
+      bookingEventId: testId(22311), slotEventId: testId(22312),
+      sessionEventId: testId(22313), bookingOutboxMessageId: testId(22314),
+      notificationIds: [testId(22315), testId(22316), testId(22317)],
+    } satisfies ConfirmMutualChallengeRescheduleEffectIds;
+    await expect(confirmMutualChallengeReschedule(
+      database,
+      {
+        commandId: testId(22301), commandType: 'CONFIRM_MUTUAL_CHALLENGE_RESCHEDULE',
+        idempotencyKey: 'challenge-mutual-reschedule-self-confirm',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId,
+        expectedVersion: bookedChallengeVersion, correlationId: testId(22302),
+        causationId: testId(22204), requestId: testId(22303), source: 'api',
+        payloadVersion: 1,
+        payload: { challengeId, requestId: mutualRequestId, requestVersion: 1 },
+      } satisfies CommandEnvelope<ConfirmMutualChallengeReschedulePayload>,
+      selfConfirmEffects,
+      () => new Date('2026-09-27T10:18:00.000Z'),
+    )).rejects.toMatchObject({ code: 'CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED' });
+
+    const confirmCommand = {
+      commandId: testId(22401), commandType: 'CONFIRM_MUTUAL_CHALLENGE_RESCHEDULE',
+      idempotencyKey: 'challenge-mutual-reschedule-confirm',
+      actor: { type: 'USER' as const, id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challengeId,
+      expectedVersion: bookedChallengeVersion, correlationId: testId(22402),
+      causationId: testId(22204), requestId: testId(22403), source: 'api',
+      payloadVersion: 1,
+      payload: { challengeId, requestId: mutualRequestId, requestVersion: 1 },
+    } satisfies CommandEnvelope<ConfirmMutualChallengeReschedulePayload>;
+    const confirmEffects = {
+      eventId: testId(22404), auditId: testId(22405), outboxMessageId: testId(22406),
+      notificationId: testId(22407), notificationOutboxMessageId: testId(22408),
+      rescheduleId: testId(22409), requestEventId: testId(22410),
+      bookingEventId: testId(22411), slotEventId: testId(22412),
+      sessionEventId: testId(22413), bookingOutboxMessageId: testId(22414),
+      notificationIds: [testId(22415), testId(22416), testId(22417)],
+    } satisfies ConfirmMutualChallengeRescheduleEffectIds;
+    const mutuallyRescheduled = await confirmMutualChallengeReschedule(
+      database, confirmCommand, confirmEffects,
+      () => new Date('2026-09-27T10:19:00.000Z'),
+    );
+    expect(mutuallyRescheduled.response).toMatchObject({
+      challengeId, state: 'ACCEPTED_UNSCHEDULED', userRescheduleCount: 2,
+      schedulingDeadlineAt: '2026-10-11T10:02:00.000Z',
+      version: bookedChallengeVersion + 1,
+    });
+    await expect(confirmMutualChallengeReschedule(
+      database, confirmCommand, confirmEffects,
+      () => new Date('2026-09-27T10:20:00.000Z'),
+    )).resolves.toMatchObject({ replayed: true, response: { userRescheduleCount: 2 } });
+    await expect(confirmMutualChallengeReschedule(
+      database,
+      {
+        ...confirmCommand, commandId: testId(22418),
+        idempotencyKey: 'challenge-mutual-reschedule-confirm-stale',
+      },
+      { ...confirmEffects, eventId: testId(22419), auditId: testId(22420) },
+      () => new Date('2026-09-27T10:20:00.000Z'),
+    )).rejects.toBeInstanceOf(VersionConflictError);
+
+    const mutualState = await sql<{
+      readonly challenge_state: string;
+      readonly challenge_version: string;
+      readonly user_reschedule_count: number;
+      readonly scheduling_deadline_at: Date;
+      readonly booking_state: string;
+      readonly session_state: string;
+      readonly slot_state: string;
+      readonly request_state: string;
+      readonly request_version: string;
+      readonly proposed_by_user_id: string;
+      readonly confirmed_by_user_id: string | null;
+      readonly initiated_by_user_id: string;
+      readonly fault_attribution: string;
+      readonly fault_user_id: string | null;
+      readonly reason_note: string | null;
+      readonly reschedules: string;
+      readonly obligations: string;
+      readonly results: string;
+      readonly cooldowns: string;
+    }>`
+      select challenge.state as challenge_state, challenge.version::text as challenge_version,
+        challenge.user_reschedule_count, challenge.scheduling_deadline_at,
+        booking.state as booking_state, session.state as session_state, slot.state as slot_state,
+        request.state as request_state, request.version as request_version,
+        request.proposed_by_user_id::text, request.confirmed_by_user_id::text,
+        reschedule.initiated_by_user_id::text, reschedule.fault_attribution,
+        reschedule.fault_user_id::text, reschedule.reason_note,
+        (select count(*)::text from competition.challenge_reschedules item
+          where item.challenge_id = challenge.challenge_id) as reschedules,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id and obligation.released_at is null) as obligations,
+        (select count(*)::text from competition.results result
+          where result.challenge_id = challenge.challenge_id) as results,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.source_result_id in (
+            select result.result_id from competition.results result
+            where result.challenge_id = challenge.challenge_id
+          )) as cooldowns
+      from competition.challenges challenge
+      join competition.challenge_mutual_reschedule_requests request
+        on request.request_id = ${mutualRequestId}::uuid
+      join competition.challenge_reschedules reschedule
+        on reschedule.reschedule_id = ${confirmEffects.rescheduleId}::uuid
+      join scheduling.bookings booking on booking.booking_id = ${mutualBookingId}::uuid
+      join scheduling.sessions session on session.session_id = ${mutualSessionId}::uuid
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where challenge.challenge_id = ${challengeId}::uuid
+    `.execute(database);
+    expect(mutualState.rows[0]).toEqual({
+      challenge_state: 'ACCEPTED_UNSCHEDULED',
+      challenge_version: String(bookedChallengeVersion + 1), user_reschedule_count: 2,
+      scheduling_deadline_at: new Date('2026-10-11T10:02:00.000Z'),
+      booking_state: 'CANCELLED', session_state: 'CANCELLED', slot_state: 'CANCELLED',
+      request_state: 'CONFIRMED', request_version: '2',
+      proposed_by_user_id: fixture.athleteA, confirmed_by_user_id: fixture.athleteB,
+      initiated_by_user_id: fixture.athleteA, fault_attribution: 'MUTUAL',
+      fault_user_id: null,
+      reason_note: 'Оба спортсмена согласовали перенос в личном чате.',
+      reschedules: '2', obligations: '2', results: '0', cooldowns: '0',
+    });
+    const mutualEffectsState = await sql<{
+      readonly proposal_payload: Record<string, unknown>;
+      readonly confirmation_payload: Record<string, unknown>;
+      readonly audit_metadata: Record<string, unknown>;
+      readonly outbox_payload: {
+        readonly timer: { readonly deadlineAt: string; readonly expectedVersion: number };
+      };
+      readonly notification_payload: {
+        readonly notifications: readonly { readonly recipientUserId: string }[];
+      };
+    }>`
+      select proposal.payload as proposal_payload,
+        confirmation.payload as confirmation_payload, audit.metadata as audit_metadata,
+        outbox.payload as outbox_payload, notification.payload as notification_payload
+      from platform.domain_events proposal
+      join platform.domain_events confirmation
+        on confirmation.event_id = ${confirmEffects.eventId}::uuid
+      join platform.audit_events audit on audit.audit_id = ${confirmEffects.auditId}::uuid
+      join platform.outbox_messages outbox
+        on outbox.message_id = ${confirmEffects.outboxMessageId}::uuid
+      join platform.outbox_messages notification
+        on notification.message_id = ${confirmEffects.notificationOutboxMessageId}::uuid
+      where proposal.event_id = ${proposalEffects.eventId}::uuid
+    `.execute(database);
+    expect(mutualEffectsState.rows[0]?.proposal_payload).not.toHaveProperty('reasonNote');
+    expect(mutualEffectsState.rows[0]?.confirmation_payload).not.toHaveProperty('reasonNote');
+    expect(mutualEffectsState.rows[0]?.audit_metadata).toMatchObject({
+      reasonNote: 'Оба спортсмена согласовали перенос в личном чате.',
+      faultAttribution: 'MUTUAL', userRescheduleCount: 2,
+    });
+    expect(mutualEffectsState.rows[0]?.outbox_payload).not.toHaveProperty('reasonNote');
+    expect(mutualEffectsState.rows[0]?.outbox_payload.timer).toEqual({
+      commandType: 'EXPIRE_CHALLENGE_SCHEDULING', aggregateType: 'Challenge',
+      aggregateId: challengeId, deadlineAt: '2026-10-11T10:02:00.000Z',
+      expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: bookedChallengeVersion + 1,
+      policyVersion: 'challenge-mvp-v1',
+      idempotencyKey: `challenge:${challengeId}:expire-scheduling:v${bookedChallengeVersion + 1}`,
+    });
+    expect(mutualEffectsState.rows[0]?.notification_payload.notifications
+      .map((notification) => notification.recipientUserId).sort())
+      .toEqual([fixture.athleteA, fixture.athleteB, fixture.coach].sort());
+    await expect(proposeMutualChallengeReschedule(
+      database,
+      {
+        ...proposalCommand, commandId: testId(22501), aggregateId: testId(22500),
+        idempotencyKey: 'challenge-mutual-reschedule-third-denied',
+        payload: { ...proposalCommand.payload, challengeVersion: bookedChallengeVersion + 1 },
+      },
+      {
+        eventId: testId(22504), auditId: testId(22505), outboxMessageId: testId(22506),
+        notificationId: testId(22507), notificationOutboxMessageId: testId(22508),
+      },
+      () => new Date('2026-09-27T10:21:00.000Z'),
+    )).rejects.toMatchObject({ code: 'CHALLENGE_RESCHEDULE_LIMIT_REACHED' });
   });
 
   it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205][AC-206] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {

@@ -22,7 +22,9 @@ import {
   effectiveChallengeStakeAtSessionWindow,
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
+  assertMutualChallengeRescheduleCanBeProposed,
   nextAthleteChallengeRescheduleCount,
+  nextMutualChallengeRescheduleCount,
   optionalChallengePairQuietEndsAt,
   optionalChallengeReminderDeadlines,
   optionalChallengeResponseDeadline,
@@ -218,6 +220,32 @@ describe('Official Challenge policy', () => {
     })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED'));
     expect(() => nextAthleteChallengeRescheduleCount({
       ...input, userRescheduleCount: 2,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
+  });
+
+  it('[AC-062] counts a mutual reschedule only after the peer confirms', () => {
+    const proposal = {
+      state: 'BOOKED' as const,
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const,
+      userRescheduleCount: 0,
+      requestExistsForCurrentVersion: false,
+    };
+    expect(() => assertMutualChallengeRescheduleCanBeProposed(proposal)).not.toThrow();
+    expect(() => assertMutualChallengeRescheduleCanBeProposed({
+      ...proposal, requestExistsForCurrentVersion: true,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS'));
+    expect(nextMutualChallengeRescheduleCount({
+      state: 'BOOKED', proposedByUserId: 'athlete-a', confirmedByUserId: 'athlete-b',
+      participantUserIds: proposal.participantUserIds, userRescheduleCount: 0,
+    })).toBe(1);
+    expect(() => nextMutualChallengeRescheduleCount({
+      state: 'BOOKED', proposedByUserId: 'athlete-a', confirmedByUserId: 'athlete-a',
+      participantUserIds: proposal.participantUserIds, userRescheduleCount: 0,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED'));
+    expect(() => nextMutualChallengeRescheduleCount({
+      state: 'BOOKED', proposedByUserId: 'athlete-a', confirmedByUserId: 'athlete-b',
+      participantUserIds: proposal.participantUserIds, userRescheduleCount: 2,
     })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
   });
 

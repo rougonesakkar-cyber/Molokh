@@ -65,7 +65,10 @@ export type ChallengeConflictCode =
   | 'CHALLENGE_PARTICIPANT_REQUIRED'
   | 'CHALLENGE_OBLIGATION_MISSING'
   | 'CHALLENGE_RESCHEDULE_NOT_ALLOWED'
-  | 'CHALLENGE_RESCHEDULE_LIMIT_REACHED';
+  | 'CHALLENGE_RESCHEDULE_LIMIT_REACHED'
+  | 'CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED'
+  | 'CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS'
+  | 'CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED';
 
 export class ChallengeConflictError extends Error {
   readonly code: ChallengeConflictCode;
@@ -185,6 +188,60 @@ export function nextAthleteChallengeRescheduleCount(input: {
   }
   if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING'].includes(input.state)) {
     throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (
+    !Number.isSafeInteger(input.userRescheduleCount)
+    || input.userRescheduleCount < 0
+    || input.userRescheduleCount >= MAX_USER_CHALLENGE_RESCHEDULES
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
+  }
+  return input.userRescheduleCount + 1;
+}
+
+export function assertMutualChallengeRescheduleCanBeProposed(input: {
+  readonly state: ChallengeState;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly userRescheduleCount: number;
+  readonly requestExistsForCurrentVersion: boolean;
+}): void {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED');
+  }
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (
+    !Number.isSafeInteger(input.userRescheduleCount)
+    || input.userRescheduleCount < 0
+    || input.userRescheduleCount >= MAX_USER_CHALLENGE_RESCHEDULES
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
+  }
+  if (input.requestExistsForCurrentVersion) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS');
+  }
+}
+
+export function nextMutualChallengeRescheduleCount(input: {
+  readonly state: ChallengeState;
+  readonly proposedByUserId: string;
+  readonly confirmedByUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly userRescheduleCount: number;
+}): number {
+  if (
+    !input.participantUserIds.includes(input.proposedByUserId)
+    || !input.participantUserIds.includes(input.confirmedByUserId)
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED');
+  }
+  if (input.proposedByUserId === input.confirmedByUserId) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED');
+  }
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
   }
   if (
     !Number.isSafeInteger(input.userRescheduleCount)

@@ -102,6 +102,11 @@ import type {
   ChallengeProjection,
   ChatChallengeProjection,
   AthleteChallengeRescheduleEffectIds,
+  ConfirmMutualChallengeRescheduleEffectIds,
+  ConfirmMutualChallengeReschedulePayload,
+  MutualChallengeRescheduleRequestProjection,
+  ProposeMutualChallengeRescheduleEffectIds,
+  ProposeMutualChallengeReschedulePayload,
   RescheduleChallengeByAthletePayload,
   PauseCommunityPayload,
   ReactivateCommunityPayload,
@@ -2854,7 +2859,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');
   });
 
-  it('[AC-061] exposes the direct optional Official Challenge and Athlete reschedule flow', async () => {
+  it('[AC-061][AC-062] exposes unilateral and mutual Athlete reschedule flows', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000001101';
     const challengeId = '0199a1b2-1234-7000-8000-000000001102';
     const challenge: ChallengeProjection = {
@@ -2881,6 +2886,7 @@ describe('runtime contract', () => {
     };
     const chatProjection: ChatChallengeProjection = {
       challenge: null,
+      mutualRescheduleRequest: null,
       canCreate: true,
       createDenialCode: null,
       policyVersion: 'challenge-mvp-v1',
@@ -2917,6 +2923,40 @@ describe('runtime contract', () => {
       aggregateVersion: 3,
       replayed: false,
     }));
+    const mutualRequestId = '0199a1b2-1234-7000-8000-000000001109';
+    const mutualRequest: MutualChallengeRescheduleRequestProjection = {
+      requestId: mutualRequestId,
+      challengeId,
+      bookingId: null,
+      sessionId: null,
+      proposedByUserId: userId,
+      confirmedByUserId: null,
+      reasonCode: 'SCHEDULE_CHANGED',
+      state: 'PROPOSED',
+      proposedAt: '2026-09-08T12:00:00.000Z',
+      confirmedAt: null,
+      version: 1,
+    };
+    const mutualProposed = vi.fn(async (
+      _command: CommandEnvelope<ProposeMutualChallengeReschedulePayload>,
+      _ids: ProposeMutualChallengeRescheduleEffectIds,
+    ): Promise<ExecutedCommand<MutualChallengeRescheduleRequestProjection>> => ({
+      responseStatus: 201,
+      response: mutualRequest,
+      eventId: '0199a1b2-1234-7000-8000-000000001110',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const mutualConfirmed = vi.fn(async (
+      _command: CommandEnvelope<ConfirmMutualChallengeReschedulePayload>,
+      _ids: ConfirmMutualChallengeRescheduleEffectIds,
+    ): Promise<ExecutedCommand<ChallengeProjection>> => ({
+      responseStatus: 200,
+      response: { ...acceptedProjection, userRescheduleCount: 1, version: 3 },
+      eventId: '0199a1b2-1234-7000-8000-000000001111',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
     const app = await buildApp({
       challenge: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -2926,6 +2966,8 @@ describe('runtime contract', () => {
         declineOptionalChallenge: vi.fn(),
         withdrawOptionalChallenge: vi.fn(),
         rescheduleChallengeByAthlete: rescheduled,
+        proposeMutualChallengeReschedule: mutualProposed,
+        confirmMutualChallengeReschedule: mutualConfirmed,
       },
     });
     apps.push(app);
@@ -3000,6 +3042,54 @@ describe('runtime contract', () => {
       },
     });
 
+    const proposeMutual = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/mutual-reschedules`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-mutual-reschedule-propose-api-1',
+        'if-match': '2',
+      },
+      payload: { reasonCode: 'SCHEDULE_CHANGED' },
+    });
+    expect(proposeMutual.statusCode).toBe(201);
+    expect(proposeMutual.json()).toMatchObject({
+      data: { requestId: mutualRequestId, state: 'PROPOSED', version: 1 },
+    });
+    expect(mutualProposed.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PROPOSE_MUTUAL_CHALLENGE_RESCHEDULE',
+      aggregateType: 'ChallengeMutualReschedule',
+      expectedVersion: 0,
+      payload: {
+        challengeId,
+        challengeVersion: 2,
+        reasonCode: 'SCHEDULE_CHANGED',
+        reasonNote: null,
+      },
+    });
+
+    const confirmMutual = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/mutual-reschedules/${mutualRequestId}/confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-mutual-reschedule-confirm-api-1',
+        'if-match': '2',
+      },
+      payload: { requestVersion: 1 },
+    });
+    expect(confirmMutual.statusCode).toBe(200);
+    expect(confirmMutual.json()).toMatchObject({
+      data: { state: 'ACCEPTED_UNSCHEDULED', userRescheduleCount: 1, version: 3 },
+    });
+    expect(mutualConfirmed.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CONFIRM_MUTUAL_CHALLENGE_RESCHEDULE',
+      aggregateType: 'Challenge',
+      aggregateId: challengeId,
+      expectedVersion: 2,
+      payload: { challengeId, requestId: mutualRequestId, requestVersion: 1 },
+    });
+
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/challenge');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges');
@@ -3007,5 +3097,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/decline');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/withdraw');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/reschedule');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/mutual-reschedules');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/mutual-reschedules/{requestId}/confirm');
   });
 });
