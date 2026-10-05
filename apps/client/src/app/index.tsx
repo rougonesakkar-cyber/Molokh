@@ -5435,6 +5435,11 @@ export default function IdentityScreen() {
                           ) : null}
                           {session.state === 'IN_PROGRESS' || session.state === 'ENDED' ? (
                             <View style={styles.attendanceList}>
+                              {session.viewerCanManage ? (
+                                <Text style={styles.hint}>
+                                  Опоздание фиксирует посещение и само по себе не означает поражение.
+                                </Text>
+                              ) : null}
                               {session.activeAthleteUserIds.map((athleteUserId, index) => {
                                 const recorded = session.attendance.find(
                                   (item) => item.athleteUserId === athleteUserId,

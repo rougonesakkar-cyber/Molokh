@@ -98,6 +98,19 @@ describe('Result and provisional status policy', () => {
     })).toThrowError(new ResultValidationError('outcomeCode'));
   });
 
+  it('[AC-202] permits an ordinary decisive Result when LATE created no NO_SHOW fact', () => {
+    expect(() => assertResultMatchesAttendance({
+      outcomeCode: 'WIN_B', winnerUserId: 'athlete-b',
+      participantUserIds: participants, noShowUserIds: [],
+    })).not.toThrow();
+    expect(normalizeResultParticipants({
+      outcomeCode: 'WIN_B', winnerUserId: null, participantUserIds: participants,
+      reasonCode: null, comment: null,
+    })).toMatchObject({
+      winnerUserId: 'athlete-b', loserUserId: 'athlete-a', decisive: true,
+    });
+  });
+
   it('[AC-088][AC-089] finalizes at 48h or when every eligible Athlete waived', () => {
     const base = {
       state: 'RECORDED' as const,

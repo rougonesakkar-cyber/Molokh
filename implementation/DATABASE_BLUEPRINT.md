@@ -276,6 +276,7 @@ Critical constraints:
 - `actual_start_at` requires Session state IN_PROGRESS/ENDED;
 - READY has `window_opened_at` but no actual start;
 - unique attendance per Session/Athlete;
+- `LATE` stores `arrival_at` with no absence reason and has no Result/Cooldown side effect;
 - no overlapping confirmed/READY/IN_PROGRESS Session ranges for one Athlete.
 
 ### competition
@@ -338,6 +339,7 @@ Critical constraints:
 
 - one effective Result per Challenge cycle/context;
 - original outcome columns immutable after insert;
+- only `NO_SHOW` Attendance constrains the Result outcome; `LATE` remains attendance metadata;
 - one Appeal history per Result/appellant;
 - waiver unique per Result/User;
 - one open IntegrityCase per Final Result;

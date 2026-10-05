@@ -292,6 +292,11 @@ contact and action token are omitted from projections and audit metadata.
 
 `scheduled_start_at`, `window_opened_at` and `actual_start_at` are separate fields. A READY Session never contributes Training stats. For the closed-pilot MVP, Coach records both Athlete facts before manual End; only `PRESENT/LATE` on an `ENDED` Training Session contributes to the count. Equivalent replacement changes Session and booked Slot assignment atomically while preserving the original commercial snapshot. It is append-only audited and exposes a pre-start Athlete opt-out; both that opt-out and a Venue/Coach operational failure close Booking, Session and Slot with `EXTERNAL` fault and no Athlete penalty.
 
+`LATE` is a visit fact, not a sporting outcome. It does not synthesize `NO_SHOW`, Forfeit, loss,
+administrative Result or Cooldown. After an ended Official Session, the assigned Coach records the
+ordinary Result through the same versioned/idempotent command; only recorded `NO_SHOW` facts
+constrain that Result.
+
 The Training conversion projection exposes its public state, exact deadline, required viewer role,
 recorded decisions and FIFO position where applicable. A direct conversion temporarily marks the
 Booking `OFFICIAL_CONVERSION_PENDING`; a Contender-bearing pair stays ordinary while its

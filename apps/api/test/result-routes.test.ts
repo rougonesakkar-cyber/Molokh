@@ -49,7 +49,7 @@ afterEach(async () => {
 });
 
 describe('Result and Appeal routes', () => {
-  it('[AC-076][AC-088][AC-089] exposes the complete provisional Result command surface', async () => {
+  it('[AC-076][AC-088][AC-089][AC-202] exposes the ordinary Coach Result command surface', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
