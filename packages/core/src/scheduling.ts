@@ -15,6 +15,7 @@ export type SchedulingConflictCode =
   | 'ACTOR_ALREADY_SELECTED'
   | 'SELECTION_EXPIRED'
   | 'HOST_CONFIRMATION_EXPIRED'
+  | 'BOOKING_WITHDRAWAL_NOT_ALLOWED'
   | 'COMMERCIAL_TERMS_CHANGED'
   | 'SESSION_NOT_READY'
   | 'SESSION_NOT_IN_PROGRESS'
@@ -241,6 +242,19 @@ export function assertHostConfirmationWindow(input: {
   }
   if (input.occurredAt >= deadline) {
     throw new SchedulingConflictError('HOST_CONFIRMATION_EXPIRED');
+  }
+}
+
+export function assertBookingRequestCanBeWithdrawn(input: {
+  readonly state: string;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+}): void {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  if (!['SELECTING', 'HOST_CONFIRMATION_PENDING'].includes(input.state)) {
+    throw new SchedulingConflictError('BOOKING_WITHDRAWAL_NOT_ALLOWED');
   }
 }
 

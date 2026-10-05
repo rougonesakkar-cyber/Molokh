@@ -94,6 +94,7 @@ import {
   replaceSessionCoach,
   selectSameSlot,
   selectSlot,
+  withdrawBookingRequest,
   runMigrations,
   sendChatMessage,
   startAccountVerification,
@@ -1416,6 +1417,8 @@ const app = await buildApp({
       withdrawGroupOffering(database, command, ids),
     selectSlot: (command, ids) => selectSlot(database, command, ids),
     selectSameSlot: (command, ids) => selectSameSlot(database, command, ids),
+    withdrawBookingRequest: (command, ids) =>
+      withdrawBookingRequest(database, command, ids),
     readHostConfirmationQueue: (actorUserId) =>
       readHostConfirmationQueue(database, actorUserId),
     readVenueAdminDashboard: (actorUserId, venueId) =>

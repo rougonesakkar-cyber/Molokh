@@ -87,6 +87,7 @@ import type {
   BookingTrainingRetentionEffectIds,
   BookingTrainingRetentionProjection,
   BookingIntentProjection,
+  BookingWithdrawalEffectIds,
   DecideBookingOfficialConversionPayload,
   DecideBookingSoloContinuationPayload,
   DecideBookingTrainingRetentionPayload,
@@ -124,6 +125,7 @@ import type {
   UpdateSlotPayload,
   VenueAdminDashboardProjection,
   WithdrawGroupOfferingPayload,
+  WithdrawBookingRequestPayload,
   WithdrawSlotPayload,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -216,6 +218,10 @@ export interface SchedulingRouteDependencies {
   readonly selectSameSlot: (
     command: CommandEnvelope<SelectSameSlotPayload>,
     ids: PairIntentNotificationEffectIds,
+  ) => Promise<ExecutedCommand<BookingIntentProjection>>;
+  readonly withdrawBookingRequest: (
+    command: CommandEnvelope<WithdrawBookingRequestPayload>,
+    ids: BookingWithdrawalEffectIds,
   ) => Promise<ExecutedCommand<BookingIntentProjection>>;
   readonly readHostConfirmationQueue: (
     actorUserId: string,
@@ -359,6 +365,18 @@ function hostConfirmationEffectIds(
       `${actorId}:${idempotencyKey}`,
     ),
     sessionTimerOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7()],
+    notificationOutboxMessageId: newUuidV7(),
+    challengeEventId: newUuidV7(),
+    challengeOutboxMessageId: newUuidV7(),
+  };
+}
+
+function bookingWithdrawalEffectIds(): BookingWithdrawalEffectIds {
+  return {
+    eventId: newUuidV7(),
+    auditId: newUuidV7(),
+    outboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7()],
     notificationOutboxMessageId: newUuidV7(),
     challengeEventId: newUuidV7(),
@@ -1621,6 +1639,67 @@ export async function registerSchedulingRoutes(
           payload: { bookingId: request.params.bookingId, commercialVersion: request.body.commercialVersion },
         },
         pairIntentEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return bookingIntentCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: BookingParams;
+    Body: SessionActionBody;
+  }>(
+    '/api/v1/bookings/:bookingId/withdraw',
+    {
+      schema: {
+        operationId: 'withdrawBookingSlotRequest',
+        params: Type.Object(
+          { bookingId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: SessionActionBodySchema,
+        response: {
+          200: BookingIntentCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<BookingIntentCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.withdrawBookingRequest(
+        {
+          commandId: newUuidV7(),
+          commandType: 'WITHDRAW_SLOT_REQUEST',
+          idempotencyKey,
+          actor: {
+            type: 'USER',
+            id: authenticated.userId,
+            roles: ['ATHLETE'],
+            scopeIds: [],
+          },
+          aggregateType: 'Booking',
+          aggregateId: request.params.bookingId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId,
+          causationId: context.causationId,
+          requestId: context.requestId,
+          source: 'api',
+          payloadVersion: 1,
+          payload: { bookingId: request.params.bookingId },
+        },
+        bookingWithdrawalEffectIds(),
       );
       reply.status(executed.responseStatus);
       return bookingIntentCommandResponse(executed, context.requestId);

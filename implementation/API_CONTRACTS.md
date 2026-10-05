@@ -186,6 +186,11 @@ published alternatives. `POST /bookings` records the first Athlete selection; on
 call `select-same`, which freezes the immutable commercial snapshot and asks the host without
 claiming the Slot. Group cards always include freshness, Venue contact and a capacity disclaimer;
 mutual GroupPlan confirmation notifies the Venue but creates no Booking, Session or statistics.
+Either Athlete may call `POST /bookings/{id}/withdraw` while the request is still `SELECTING` or
+`HOST_CONFIRMATION_PENDING`. The versioned command closes only the Booking, leaves the Slot
+published, notifies the peer and an already-waiting host, and returns a linked Official Challenge
+to scheduling without changing its original obligation or deadline. A concurrent host confirmation
+serializes on the same Booking row, so only cancellation or confirmation can commit.
 The Venue Admin dashboard keeps that distinction explicit: pending personal requests are actionable,
 while group interest is informational and never implies a reservation or available capacity.
 Host confirmation locks the Slot, changes the Booking to `CONFIRMED_PAIR` and creates exactly

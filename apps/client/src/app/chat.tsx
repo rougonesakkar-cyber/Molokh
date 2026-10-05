@@ -380,6 +380,33 @@ export default function ChatScreen() {
     }
   };
 
+  const confirmBookingWithdrawal = (
+    booking: NonNullable<TrainingOptions['activeIntent']['booking']>,
+  ) => {
+    Alert.alert(
+      'Отменить выбор слота?',
+      booking.purpose === 'OFFICIAL_CHALLENGE'
+        ? 'Challenge останется принятым. Вы сможете выбрать другое время без поражения, Cooldown или переноса.'
+        : 'Запрос будет закрыт без бронирования и спортивных последствий.',
+      [
+        { text: 'Оставить выбор', style: 'cancel' },
+        {
+          text: 'Отменить выбор',
+          style: 'destructive',
+          onPress: () => {
+            void runTrainingAction({
+              operation: `withdraw-booking:${booking.bookingId}:v${booking.version}`,
+              resourceId: booking.bookingId,
+              path: `/api/v1/bookings/${booking.bookingId}/withdraw`,
+              version: booking.version,
+              body: {},
+            });
+          },
+        },
+      ],
+    );
+  };
+
   const chooseGroup = async (offering: TrainingOptions['groupOfferings'][number]) => {
     if (!chatId || !viewerUserId) return;
     const plan = trainingOptions?.activeIntent.groupPlan;
@@ -944,6 +971,26 @@ export default function ChatScreen() {
                       <Text style={styles.trainingButtonText}>{buttonLabel}</Text>
                     )}
                   </Pressable>
+                  {booking && selected && ['SELECTING', 'HOST_CONFIRMATION_PENDING'].includes(booking.state) ? (
+                    <Pressable
+                      accessibilityLabel="Отменить выбор этого слота без спортивных последствий"
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: actingTrainingId !== null }}
+                      disabled={actingTrainingId !== null}
+                      onPress={() => confirmBookingWithdrawal(booking)}
+                      style={({ pressed }) => [
+                        styles.secondaryChallengeButton,
+                        actingTrainingId !== null && styles.disabled,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      {actingTrainingId === booking.bookingId ? (
+                        <ActivityIndicator color="#8b2f22" size="small" />
+                      ) : (
+                        <Text style={styles.secondaryChallengeText}>Отменить выбор слота</Text>
+                      )}
+                    </Pressable>
+                  ) : null}
                   {selected && booking.state === 'SELECTING' ? (
                     <Text style={styles.intentDeadline}>
                       Выбор действует до{' '}

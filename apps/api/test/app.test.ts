@@ -55,6 +55,7 @@ import type {
   SendChatMessageEffectIds,
   SendChatMessagePayload,
   BookingIntentProjection,
+  BookingWithdrawalEffectIds,
   BookingOfficialConversionEffectIds,
   BookingOfficialConversionProjection,
   BookingSoloContinuationEffectIds,
@@ -96,6 +97,7 @@ import type {
   UpdateSlotPayload,
   VenueAdminDashboardProjection,
   WithdrawGroupOfferingPayload,
+  WithdrawBookingRequestPayload,
   WithdrawSlotPayload,
   ChallengeProjection,
   ChatChallengeProjection,
@@ -1590,7 +1592,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
+  it('[AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
     const venueId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const chatId = '0199a1b2-1234-7000-8000-000000000703';
@@ -1788,6 +1790,18 @@ describe('runtime contract', () => {
       },
       version: 2,
     };
+    const withdrawBookingRequest = vi.fn(
+      async (
+        _command: CommandEnvelope<WithdrawBookingRequestPayload>,
+        _ids: BookingWithdrawalEffectIds,
+      ): Promise<ExecutedCommand<BookingIntentProjection>> => ({
+        responseStatus: 200,
+        response: { ...pendingBooking, state: 'CANCELLED', version: 3 },
+        eventId: '0199a1b2-1234-7000-8000-000000000737',
+        aggregateVersion: 3,
+        replayed: false,
+      }),
+    );
     const hostConfirmationItems = [
       {
         booking: pendingBooking,
@@ -2171,6 +2185,7 @@ describe('runtime contract', () => {
         withdrawGroupOffering,
         selectSlot: selectedSlot,
         selectSameSlot: selectedSameSlot,
+        withdrawBookingRequest,
         readHostConfirmationQueue,
         readVenueAdminDashboard,
         confirmBookingHost: confirmedByHost,
@@ -2423,6 +2438,26 @@ describe('runtime contract', () => {
       commandType: 'SELECT_SAME_SLOT',
       expectedVersion: 1,
       payload: { bookingId: booking.bookingId, commercialVersion: 1 },
+    });
+
+    const bookingWithdrawn = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/withdraw`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'withdraw-booking-api-1',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(bookingWithdrawn.statusCode).toBe(200);
+    expect(bookingWithdrawn.json()).toMatchObject({ data: { state: 'CANCELLED', version: 3 } });
+    expect(withdrawBookingRequest.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'WITHDRAW_SLOT_REQUEST',
+      aggregateType: 'Booking',
+      aggregateId: booking.bookingId,
+      expectedVersion: 2,
+      payload: { bookingId: booking.bookingId },
     });
 
     const hostQueue = await app.inject({
@@ -2789,6 +2824,7 @@ describe('runtime contract', () => {
     );
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings');
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/select-same');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/withdraw');
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/host-confirmations');
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/host-confirm');
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/host-reject');

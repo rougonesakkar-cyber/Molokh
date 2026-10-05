@@ -158,6 +158,7 @@ import {
   updateSlot,
   withdrawGroupOffering,
   withdrawSlot,
+  withdrawBookingRequest,
   proposeGroupPlan,
   confirmGroupPlan,
   confirmBookingHost,
@@ -258,6 +259,7 @@ import {
   type UpdateSlotPayload,
   type WithdrawGroupOfferingPayload,
   type WithdrawSlotPayload,
+  type WithdrawBookingRequestPayload,
   type ConfirmGroupPlanPayload,
   type ConfirmBookingHostPayload,
   type DecideBookingOfficialConversionPayload,
@@ -5421,6 +5423,289 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(
       readBookingSoloContinuationForSession(database, fixture.session, fixture.athleteB),
     ).resolves.toMatchObject({ state: 'EXPIRED', version: 3 });
+  });
+
+  it('[AC-066] withdraws an Official Slot request without fault and serializes against host confirmation', async () => {
+    const fixture = await seedConfirmedTrainingForConversion(21400);
+    const sourceChatId = testId(21407);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        update scheduling.slots
+        set state = 'PUBLISHED', booking_id = null, version = 1
+        where slot_id = ${fixture.slot}::uuid
+      `.execute(transaction);
+      await sql`
+        delete from scheduling.sessions where session_id = ${fixture.session}::uuid
+      `.execute(transaction);
+      await sql`
+        delete from scheduling.bookings where booking_id = ${fixture.booking}::uuid
+      `.execute(transaction);
+    });
+
+    const challengeId = testId(21500);
+    await createDirectOpenChallenge(
+      database,
+      {
+        commandId: testId(21501), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+        idempotencyKey: 'withdraw-booking-challenge-create',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 0,
+        correlationId: testId(21502), causationId: null, requestId: testId(21503),
+        source: 'api', payloadVersion: 1, payload: { sourceChatId },
+      },
+      {
+        eventId: testId(21504), auditId: testId(21505), outboxMessageId: testId(21506),
+        notificationId: testId(21507), notificationOutboxMessageId: testId(21508),
+        serviceChatId: testId(21509), serviceChatEventId: testId(21510),
+        rulesetSnapshotId: testId(21511), acknowledgmentId: testId(21512),
+      },
+      () => new Date('2026-09-27T10:01:00.000Z'),
+    );
+    const accepted = await acceptOptionalChallenge(
+      database,
+      {
+        commandId: testId(21513), commandType: 'ACCEPT_OPTIONAL_CHALLENGE',
+        idempotencyKey: 'withdraw-booking-challenge-accept',
+        actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 1,
+        correlationId: testId(21514), causationId: testId(21504), requestId: testId(21515),
+        source: 'api', payloadVersion: 1, payload: { challengeId },
+      },
+      {
+        eventId: testId(21516), auditId: testId(21517), outboxMessageId: testId(21518),
+        notificationId: testId(21519), notificationOutboxMessageId: testId(21520),
+        acknowledgmentId: testId(21521), obligationIds: [testId(21522), testId(21523)],
+      },
+      () => new Date('2026-09-27T10:02:00.000Z'),
+    );
+    expect(accepted.response).toMatchObject({
+      state: 'ACCEPTED_UNSCHEDULED',
+      schedulingDeadlineAt: '2026-10-11T10:02:00.000Z',
+      version: 2,
+    });
+
+    const bookingId = testId(21600);
+    await selectSlot(
+      database,
+      {
+        commandId: testId(21601), commandType: 'SELECT_SLOT',
+        idempotencyKey: 'withdraw-booking-select',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 0,
+        correlationId: testId(21602), causationId: testId(21516), requestId: testId(21603),
+        source: 'api', payloadVersion: 1,
+        payload: { chatId: sourceChatId, slotId: fixture.slot, commercialVersion: 1, challengeId },
+      } satisfies CommandEnvelope<SelectSlotPayload>,
+      {
+        eventId: testId(21604), auditId: testId(21605), outboxMessageId: testId(21606),
+        notificationId: testId(21607), notificationOutboxMessageId: testId(21608),
+        challengeEventId: testId(21609), challengeOutboxMessageId: testId(21610),
+      },
+      () => new Date('2026-09-27T10:03:00.000Z'),
+    );
+    await selectSameSlot(
+      database,
+      {
+        commandId: testId(21611), commandType: 'SELECT_SAME_SLOT',
+        idempotencyKey: 'withdraw-booking-select-same',
+        actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 1,
+        correlationId: testId(21612), causationId: testId(21604), requestId: testId(21613),
+        source: 'api', payloadVersion: 1,
+        payload: { bookingId, commercialVersion: 1 },
+      } satisfies CommandEnvelope<SelectSameSlotPayload>,
+      {
+        eventId: testId(21614), auditId: testId(21615), outboxMessageId: testId(21616),
+        notificationId: testId(21617), notificationOutboxMessageId: testId(21618),
+      },
+      () => new Date('2026-09-27T10:04:00.000Z'),
+    );
+    const withdrawalCommand = {
+      commandId: testId(21620), commandType: 'WITHDRAW_SLOT_REQUEST',
+      idempotencyKey: 'withdraw-booking-request',
+      actor: { type: 'USER' as const, id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 2,
+      correlationId: testId(21621), causationId: testId(21614), requestId: testId(21622),
+      source: 'api', payloadVersion: 1, payload: { bookingId },
+    } satisfies CommandEnvelope<WithdrawBookingRequestPayload>;
+    const withdrawalEffects = {
+      eventId: testId(21623), auditId: testId(21624), outboxMessageId: testId(21625),
+      notificationIds: [testId(21626), testId(21627)] as const,
+      notificationOutboxMessageId: testId(21628), challengeEventId: testId(21629),
+      challengeOutboxMessageId: testId(21630),
+    };
+    const withdrawn = await withdrawBookingRequest(
+      database, withdrawalCommand, withdrawalEffects,
+      () => new Date('2026-09-27T10:05:00.000Z'),
+    );
+    expect(withdrawn.response).toMatchObject({
+      bookingId, challengeId, state: 'CANCELLED', version: 3,
+    });
+    const replayed = await withdrawBookingRequest(
+      database, withdrawalCommand, withdrawalEffects,
+      () => new Date('2026-09-27T10:06:00.000Z'),
+    );
+    expect(replayed).toMatchObject({ replayed: true, response: { state: 'CANCELLED' } });
+    await expect(withdrawBookingRequest(
+      database,
+      {
+        ...withdrawalCommand,
+        commandId: testId(21631), idempotencyKey: 'withdraw-booking-request-stale',
+      },
+      { ...withdrawalEffects, eventId: testId(21632), auditId: testId(21633) },
+      () => new Date('2026-09-27T10:06:00.000Z'),
+    )).rejects.toBeInstanceOf(VersionConflictError);
+
+    const released = await sql<{
+      readonly booking_state: string;
+      readonly slot_state: string;
+      readonly slot_booking_id: string | null;
+      readonly challenge_state: string;
+      readonly scheduling_deadline_at: Date;
+      readonly obligations: string;
+      readonly sessions: string;
+      readonly results: string;
+      readonly cooldowns: string;
+    }>`
+      select booking.state as booking_state, slot.state as slot_state,
+        slot.booking_id::text as slot_booking_id, challenge.state as challenge_state,
+        challenge.scheduling_deadline_at,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id and obligation.released_at is null) as obligations,
+        (select count(*)::text from scheduling.sessions session
+          where session.challenge_id = challenge.challenge_id) as sessions,
+        (select count(*)::text from competition.results result
+          where result.challenge_id = challenge.challenge_id) as results,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.source_result_id in (
+            select result.result_id from competition.results result
+            where result.challenge_id = challenge.challenge_id
+          )) as cooldowns
+      from scheduling.bookings booking
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      join competition.challenges challenge on challenge.challenge_id = booking.challenge_id
+      where booking.booking_id = ${bookingId}::uuid
+    `.execute(database);
+    expect(released.rows[0]).toMatchObject({
+      booking_state: 'CANCELLED', slot_state: 'PUBLISHED', slot_booking_id: null,
+      challenge_state: 'ACCEPTED_UNSCHEDULED',
+      scheduling_deadline_at: new Date('2026-10-11T10:02:00.000Z'),
+      obligations: '2', sessions: '0', results: '0', cooldowns: '0',
+    });
+    const withdrawalNotifications = await sql<{ readonly payload: {
+      readonly notifications: readonly { readonly recipientUserId: string }[];
+    } }>`
+      select payload from platform.outbox_messages
+      where message_id = ${withdrawalEffects.notificationOutboxMessageId}::uuid
+    `.execute(database);
+    expect(withdrawalNotifications.rows[0]?.payload.notifications.map(
+      (notification) => notification.recipientUserId,
+    )).toEqual([fixture.athleteB, fixture.coach]);
+
+    const raceBookingId = testId(21700);
+    await selectSlot(
+      database,
+      {
+        commandId: testId(21701), commandType: 'SELECT_SLOT',
+        idempotencyKey: 'withdraw-booking-race-select',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: raceBookingId, expectedVersion: 0,
+        correlationId: testId(21702), causationId: testId(21629), requestId: testId(21703),
+        source: 'api', payloadVersion: 1,
+        payload: { chatId: sourceChatId, slotId: fixture.slot, commercialVersion: 1, challengeId },
+      } satisfies CommandEnvelope<SelectSlotPayload>,
+      {
+        eventId: testId(21704), auditId: testId(21705), outboxMessageId: testId(21706),
+        notificationId: testId(21707), notificationOutboxMessageId: testId(21708),
+        challengeEventId: testId(21709), challengeOutboxMessageId: testId(21710),
+      },
+      () => new Date('2026-09-27T10:07:00.000Z'),
+    );
+    await selectSameSlot(
+      database,
+      {
+        commandId: testId(21711), commandType: 'SELECT_SAME_SLOT',
+        idempotencyKey: 'withdraw-booking-race-select-same',
+        actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: raceBookingId, expectedVersion: 1,
+        correlationId: testId(21712), causationId: testId(21704), requestId: testId(21713),
+        source: 'api', payloadVersion: 1,
+        payload: { bookingId: raceBookingId, commercialVersion: 1 },
+      } satisfies CommandEnvelope<SelectSameSlotPayload>,
+      {
+        eventId: testId(21714), auditId: testId(21715), outboxMessageId: testId(21716),
+        notificationId: testId(21717), notificationOutboxMessageId: testId(21718),
+      },
+      () => new Date('2026-09-27T10:08:00.000Z'),
+    );
+    const raced = await Promise.allSettled([
+      withdrawBookingRequest(
+        database,
+        {
+          commandId: testId(21720), commandType: 'WITHDRAW_SLOT_REQUEST',
+          idempotencyKey: 'withdraw-booking-race-withdraw',
+          actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+          aggregateType: 'Booking', aggregateId: raceBookingId, expectedVersion: 2,
+          correlationId: testId(21721), causationId: testId(21714), requestId: testId(21722),
+          source: 'api', payloadVersion: 1, payload: { bookingId: raceBookingId },
+        } satisfies CommandEnvelope<WithdrawBookingRequestPayload>,
+        {
+          eventId: testId(21723), auditId: testId(21724), outboxMessageId: testId(21725),
+          notificationIds: [testId(21726), testId(21727)],
+          notificationOutboxMessageId: testId(21728), challengeEventId: testId(21729),
+          challengeOutboxMessageId: testId(21730),
+        },
+        () => new Date('2026-09-27T10:09:00.000Z'),
+      ),
+      confirmBookingHost(
+        database,
+        {
+          commandId: testId(21800), commandType: 'CONFIRM_BOOKING_HOST',
+          idempotencyKey: 'withdraw-booking-race-confirm',
+          actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [] },
+          aggregateType: 'Booking', aggregateId: raceBookingId, expectedVersion: 2,
+          correlationId: testId(21801), causationId: testId(21714), requestId: testId(21802),
+          source: 'api', payloadVersion: 1, payload: { bookingId: raceBookingId },
+        } satisfies CommandEnvelope<ConfirmBookingHostPayload>,
+        {
+          eventId: testId(21803), auditId: testId(21804), outboxMessageId: testId(21805),
+          slotEventId: testId(21806), sessionEventId: testId(21807), sessionId: testId(21808),
+          sessionTimerOutboxMessageId: testId(21809),
+          notificationIds: [testId(21810), testId(21811)],
+          notificationOutboxMessageId: testId(21812), challengeEventId: testId(21813),
+          challengeOutboxMessageId: testId(21814),
+        },
+        () => new Date('2026-09-27T10:09:00.000Z'),
+      ),
+    ]);
+    expect(raced.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const raceState = await sql<{
+      readonly booking_state: string;
+      readonly slot_state: string;
+      readonly slot_booking_id: string | null;
+      readonly challenge_state: string;
+      readonly sessions: string;
+    }>`
+      select booking.state as booking_state, slot.state as slot_state,
+        slot.booking_id::text as slot_booking_id, challenge.state as challenge_state,
+        (select count(*)::text from scheduling.sessions session
+          where session.booking_id = booking.booking_id) as sessions
+      from scheduling.bookings booking
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      join competition.challenges challenge on challenge.challenge_id = booking.challenge_id
+      where booking.booking_id = ${raceBookingId}::uuid
+    `.execute(database);
+    expect([
+      {
+        booking_state: 'CANCELLED', slot_state: 'PUBLISHED', slot_booking_id: null,
+        challenge_state: 'ACCEPTED_UNSCHEDULED', sessions: '0',
+      },
+      {
+        booking_state: 'CONFIRMED_PAIR', slot_state: 'BOOKED',
+        slot_booking_id: raceBookingId, challenge_state: 'BOOKED', sessions: '1',
+      },
+    ]).toContainEqual(raceState.rows[0]);
   });
 
   it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205][AC-206] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {

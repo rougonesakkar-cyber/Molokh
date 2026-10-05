@@ -7,6 +7,7 @@ import {
   SchedulingValidationError,
   assertAcceptedChallengeCanStartBooking,
   assertAthleteScheduleAvailable,
+  assertBookingRequestCanBeWithdrawn,
   assertChallengeBookingCanBeConfirmed,
   assertHostConfirmationWindow,
   bookingSelectionExpiresAt,
@@ -27,6 +28,7 @@ export type BookingIntentState =
   | 'SELECTING'
   | 'HOST_CONFIRMATION_PENDING'
   | 'CONFIRMED_PAIR'
+  | 'CANCELLED'
   | 'REJECTED'
   | 'EXPIRED';
 
@@ -45,6 +47,10 @@ export interface SelectSameSlotPayload {
 }
 
 export interface ConfirmBookingHostPayload {
+  readonly bookingId: string;
+}
+
+export interface WithdrawBookingRequestPayload {
   readonly bookingId: string;
 }
 
@@ -95,6 +101,11 @@ export interface HostConfirmationEffectIds extends PairIntentEffectIds {
 }
 
 export interface HostRejectionEffectIds extends PairIntentEffectIds {
+  readonly notificationIds: readonly [string, string];
+  readonly notificationOutboxMessageId: string;
+}
+
+export interface BookingWithdrawalEffectIds extends PairIntentEffectIds {
   readonly notificationIds: readonly [string, string];
   readonly notificationOutboxMessageId: string;
 }
@@ -944,6 +955,197 @@ export async function selectSameSlot(
   });
 }
 
+export async function withdrawBookingRequest(
+  database: Kysely<Database>,
+  command: CommandEnvelope<WithdrawBookingRequestPayload>,
+  ids: BookingWithdrawalEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<BookingIntentProjection>> {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'Booking'
+    || command.payload.bookingId !== command.aggregateId
+  ) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const result = await sql<BookingIntentRow>`
+        select booking.booking_id, booking.chat_id, booking.match_id, booking.slot_id,
+          booking.purpose, booking.challenge_id,
+          booking.pair_low_id, booking.pair_high_id, booking.initiated_by,
+          booking.selected_by_low_at, booking.selected_by_high_at,
+          booking.selection_expires_at, booking.host_confirmation_deadline_at,
+          booking.commercial_terms_snapshot, booking.host_confirmed_at,
+          session.session_id, booking.state, booking.version::text as version
+        from scheduling.bookings as booking
+        left join scheduling.sessions as session on session.booking_id = booking.booking_id
+        where booking.booking_id = ${command.aggregateId}::uuid
+        for update of booking
+      `.execute(transaction);
+      const booking = result.rows[0];
+      if (!booking) throw new SchedulingConflictError('BOOKING_WITHDRAWAL_NOT_ALLOWED');
+      assertBookingRequestCanBeWithdrawn({
+        state: booking.state,
+        actorUserId: command.actor.id!,
+        participantUserIds: [booking.pair_low_id, booking.pair_high_id],
+      });
+      const challenge = booking.challenge_id
+        ? await challengeForBooking(transaction, booking.challenge_id)
+        : null;
+      if (
+        challenge
+        && (
+          booking.purpose !== 'OFFICIAL_CHALLENGE'
+          || challenge.source_chat_id !== booking.chat_id
+          || challenge.source_match_id !== booking.match_id
+          || challenge.pair_low_id !== booking.pair_low_id
+          || challenge.pair_high_id !== booking.pair_high_id
+          || challenge.state !== 'BOOKING_PENDING'
+        )
+      ) {
+        throw new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING');
+      }
+      await sql`
+        update scheduling.bookings
+        set state = 'CANCELLED', version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where booking_id = ${command.aggregateId}::uuid
+          and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+      `.execute(transaction);
+      const challengeNextVersion = challenge ? Number(challenge.version) + 1 : null;
+      if (challenge && challengeNextVersion !== null) {
+        await sql`
+          update competition.challenges
+          set state = 'ACCEPTED_UNSCHEDULED', version = ${challengeNextVersion},
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where challenge_id = ${challenge.challenge_id}::uuid
+            and state = 'BOOKING_PENDING'
+        `.execute(transaction);
+      }
+      const cancelled = bookingProjection({
+        ...booking,
+        state: 'CANCELLED',
+        version: String(context.nextVersion),
+      });
+      const peerUserId = otherPairUser(booking, command.actor.id!);
+      const coachUserId = booking.state === 'HOST_CONFIRMATION_PENDING'
+        ? booking.commercial_terms_snapshot?.coachUserId ?? null
+        : null;
+      const notifications = [
+        {
+          notificationId: ids.notificationIds[0],
+          recipientUserId: peerUserId,
+          category: 'SERVICE',
+          renderKey: 'booking.request-withdrawn',
+          actionTarget: { type: 'CHAT', chatId: booking.chat_id },
+          payload: {
+            bookingId: booking.booking_id,
+            slotId: booking.slot_id,
+            withdrawnByUserId: command.actor.id,
+          },
+          deadlineAt: null,
+        },
+        ...(coachUserId
+          ? [{
+              notificationId: ids.notificationIds[1],
+              recipientUserId: coachUserId,
+              category: 'SERVICE',
+              renderKey: 'booking.host-request-withdrawn',
+              actionTarget: { type: 'BOOKING', bookingId: booking.booking_id },
+              payload: {
+                bookingId: booking.booking_id,
+                slotId: booking.slot_id,
+                withdrawnByUserId: command.actor.id,
+              },
+              deadlineAt: null,
+            }]
+          : []),
+      ];
+      return {
+        responseStatus: 200,
+        response: cancelled,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'BookingRequestWithdrawn',
+          schemaVersion: 1,
+          transitionId: 'B-04',
+          payload: {
+            bookingId: booking.booking_id,
+            slotId: booking.slot_id,
+            withdrawnByUserId: command.actor.id,
+            previousState: booking.state,
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        ...(challenge && challengeNextVersion !== null
+          ? {
+              relatedEvents: [{
+                eventId: requiredChallengeEffectIds(ids).eventId,
+                eventName: 'ChallengeReturnedToScheduling',
+                schemaVersion: 1,
+                aggregateType: 'Challenge',
+                aggregateId: challenge.challenge_id,
+                aggregateVersion: challengeNextVersion,
+                transitionId: 'CH-09',
+                payload: {
+                  challengeId: challenge.challenge_id,
+                  bookingId: booking.booking_id,
+                  reason: 'ATHLETE_WITHDREW_SLOT_REQUEST',
+                },
+                metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+              }],
+            }
+          : {}),
+        audit: {
+          auditId: ids.auditId,
+          action: 'WITHDRAW_SLOT_REQUEST',
+          transitionId: 'B-04',
+          reasonCode: null,
+          beforeState: booking.state,
+          afterState: 'CANCELLED',
+          metadata: {
+            slotId: booking.slot_id,
+            challengeId: booking.challenge_id,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'scheduling.booking.request-withdrawn.v1',
+            payload: {
+              bookingId: booking.booking_id,
+              chatId: booking.chat_id,
+              slotId: booking.slot_id,
+              withdrawnByUserId: command.actor.id,
+              previousState: booking.state,
+            },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: { notifications },
+          },
+          ...(challenge
+            ? [{
+                messageId: requiredChallengeEffectIds(ids).outboxMessageId,
+                topic: 'competition.challenge.returned-to-scheduling.v1',
+                sourceEventId: requiredChallengeEffectIds(ids).eventId,
+                payload: {
+                  challengeId: challenge.challenge_id,
+                  bookingId: booking.booking_id,
+                  reason: 'ATHLETE_WITHDREW_SLOT_REQUEST',
+                },
+              }]
+            : []),
+        ],
+      };
+    },
+  });
+}
+
 export async function confirmBookingHost(
   database: Kysely<Database>,
   command: CommandEnvelope<ConfirmBookingHostPayload>,
@@ -1048,7 +1250,7 @@ export async function confirmBookingHost(
             eventId: ids.eventId,
             eventName: 'BookingRejectedByResourceConflict',
             schemaVersion: 1,
-            transitionId: 'B-04',
+            transitionId: 'B-08',
             payload: { bookingId: rejectedBooking.bookingId, slotId: rejectedBooking.slotId },
             metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
           },
@@ -1074,7 +1276,7 @@ export async function confirmBookingHost(
           audit: {
             auditId: ids.auditId,
             action: 'CONFIRM_BOOKING_HOST',
-            transitionId: 'B-04',
+            transitionId: 'B-08',
             reasonCode: 'SLOT_ALREADY_CLAIMED',
             beforeState: 'HOST_CONFIRMATION_PENDING',
             afterState: 'REJECTED',
@@ -1204,7 +1406,7 @@ export async function confirmBookingHost(
           eventId: ids.eventId,
           eventName: 'BookingHostConfirmed',
           schemaVersion: 1,
-          transitionId: 'B-03',
+          transitionId: 'B-06',
           payload: {
             bookingId: booking.booking_id,
             slotId: slot.slot_id,
@@ -1261,7 +1463,7 @@ export async function confirmBookingHost(
         audit: {
           auditId: ids.auditId,
           action: 'CONFIRM_BOOKING_HOST',
-          transitionId: 'B-03',
+          transitionId: 'B-06',
           reasonCode: null,
           beforeState: 'HOST_CONFIRMATION_PENDING',
           afterState: 'CONFIRMED_PAIR',
@@ -1431,7 +1633,7 @@ export async function rejectBookingHost(
           eventId: ids.eventId,
           eventName: 'BookingRejectedByHost',
           schemaVersion: 1,
-          transitionId: 'B-06',
+          transitionId: 'B-07',
           payload: {
             bookingId: booking.booking_id,
             slotId: booking.slot_id,
@@ -1462,7 +1664,7 @@ export async function rejectBookingHost(
         audit: {
           auditId: ids.auditId,
           action: 'REJECT_BOOKING_HOST',
-          transitionId: 'B-06',
+          transitionId: 'B-07',
           reasonCode: reason.reasonCode,
           beforeState: 'HOST_CONFIRMATION_PENDING',
           afterState: 'REJECTED',

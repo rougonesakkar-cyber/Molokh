@@ -128,7 +128,10 @@ exclude using gist (
 Migration `0016_scheduling_publication.sql` implements `slots`, `group_offerings`, the active
 Coach exclusion, publication indexes and structured commercial/contact fields. Migrations
 `0017`–`0018` add pair-owned Booking intent, informational GroupPlan, one-live-intent indexes
-and database guards for immutable commercial/offering snapshots. Migration
+and database guards for immutable commercial/offering snapshots. B-04 reuses these rows: a locked
+pre-confirmation Booking becomes `CANCELLED`, its Slot is never mutated, and a linked Challenge
+returns to `ACCEPTED_UNSCHEDULED` in the same event/audit/outbox transaction. The shared Booking
+row lock serializes this withdrawal with host confirmation. Migration
 `0019_booking_confirmation_session.sql` adds ordinary Sessions; host confirmation claims the
 Slot and creates exactly one Session in the same transaction. `0020_session_lifecycle.sql`
 aligns it with the formal state machine: it starts as `SCHEDULED`, receives

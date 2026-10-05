@@ -6,6 +6,7 @@ import {
   SchedulingPermissionDeniedError,
   SchedulingValidationError,
   assertHostConfirmationWindow,
+  assertBookingRequestCanBeWithdrawn,
   assertAthleteScheduleAvailable,
   assertFutureScheduleCanBeMutated,
   assertAttendanceCanBeRecorded,
@@ -74,6 +75,31 @@ describe('Scheduling publication policy', () => {
       amount: '1500.00',
       currency: 'RUB',
     });
+  });
+
+  it('[AC-066] lets either Athlete withdraw only an unconfirmed Booking request', () => {
+    for (const state of ['SELECTING', 'HOST_CONFIRMATION_PENDING']) {
+      expect(() => assertBookingRequestCanBeWithdrawn({
+        state,
+        actorUserId: 'athlete-a',
+        participantUserIds: ['athlete-a', 'athlete-b'],
+      })).not.toThrow();
+      expect(() => assertBookingRequestCanBeWithdrawn({
+        state,
+        actorUserId: 'athlete-b',
+        participantUserIds: ['athlete-a', 'athlete-b'],
+      })).not.toThrow();
+    }
+    expect(() => assertBookingRequestCanBeWithdrawn({
+      state: 'SELECTING',
+      actorUserId: 'outsider',
+      participantUserIds: ['athlete-a', 'athlete-b'],
+    })).toThrow(SchedulingPermissionDeniedError);
+    expect(() => assertBookingRequestCanBeWithdrawn({
+      state: 'CONFIRMED_PAIR',
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'],
+    })).toThrowError(expect.objectContaining({ reason: 'BOOKING_WITHDRAWAL_NOT_ALLOWED' }));
   });
 
   it('allows only reasoned future schedule mutations without active pair intent', () => {

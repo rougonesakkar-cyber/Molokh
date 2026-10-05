@@ -1794,6 +1794,7 @@ export const BookingIntentProjectionSchema = Type.Object(
       Type.Literal('SELECTING'),
       Type.Literal('HOST_CONFIRMATION_PENDING'),
       Type.Literal('CONFIRMED_PAIR'),
+      Type.Literal('CANCELLED'),
       Type.Literal('REJECTED'),
       Type.Literal('EXPIRED'),
     ]),
