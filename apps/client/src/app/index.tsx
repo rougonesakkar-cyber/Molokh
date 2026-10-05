@@ -20,6 +20,8 @@ import type {
   HostConfirmationCommandResponse,
   HostConfirmationQueueResponse,
   HostRejectionCommandResponse,
+  HomeVenueCommandResponse,
+  HomeVenueSettingsResponse,
   IdentityCommandResponse,
   IntegrityCaseListResponse,
   MeResponse,
@@ -92,6 +94,7 @@ import {
 import { sportLabel, sportOptions } from '../lib/sports';
 
 type Identity = MeResponse['data'];
+type HomeVenueSettings = HomeVenueSettingsResponse['data'];
 type CommunityContext = CommunityContextResponse['data'];
 type CommunityLifecycle = CommunityLifecycleResponse['data'];
 type CommunityClosureCandidate = CommunityClosureCandidatesResponse['data'][number];
@@ -476,6 +479,10 @@ export default function IdentityScreen() {
   const [displayName, setDisplayName] = useState('');
   const [primarySport, setPrimarySport] = useState('BOXING');
   const [secondarySport, setSecondarySport] = useState<string | null>(null);
+  const [homeVenueSettings, setHomeVenueSettings] = useState<HomeVenueSettings | null>(null);
+  const [selectedHomeVenueId, setSelectedHomeVenueId] = useState<string | null>(null);
+  const [savingHomeVenue, setSavingHomeVenue] = useState(false);
+  const [homeVenueNotice, setHomeVenueNotice] = useState<string | null>(null);
   const [coachInvites, setCoachInvites] = useState<CoachInvite[]>([]);
   const [hostConfirmations, setHostConfirmations] = useState<HostConfirmation[]>([]);
   const [venueAdminDashboard, setVenueAdminDashboard] =
@@ -566,6 +573,13 @@ export default function IdentityScreen() {
       setDisplayName(result.data.displayName);
       setPrimarySport(result.data.primarySport);
       setSecondarySport(result.data.secondarySport);
+      const homeVenueResponse = await fetch(`${apiUrl}/api/v1/me/home-venue`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!homeVenueResponse.ok) throw new Error(await apiErrorMessage(homeVenueResponse));
+      const homeVenueResult = (await homeVenueResponse.json()) as HomeVenueSettingsResponse;
+      setHomeVenueSettings(homeVenueResult.data);
+      setSelectedHomeVenueId(homeVenueResult.data.homeVenueId);
       const communityResponse = await fetch(`${apiUrl}/api/v1/me/community`, {
         headers: { Authorization: `Bearer ${localToken}` },
       });
@@ -876,6 +890,9 @@ export default function IdentityScreen() {
     primarySport.length > 0 &&
     primarySport !== secondarySport &&
     (primarySport !== identity.primarySport || secondarySport !== identity.secondarySport);
+  const canSaveHomeVenue = identity !== null && homeVenueSettings !== null
+    && selectedHomeVenueId !== null && selectedHomeVenueId !== homeVenueSettings.homeVenueId
+    && !savingHomeVenue;
   const canPublishAdminSchedule =
     venueAdminDashboard !== null &&
     !publishingSchedule &&
@@ -957,6 +974,42 @@ export default function IdentityScreen() {
     }
   };
 
+  const saveHomeVenue = async () => {
+    if (!identity || !canSaveHomeVenue || !selectedHomeVenueId) return;
+    setSavingHomeVenue(true);
+    setHomeVenueNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/me/home-venue`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': `identity:${identity.userId}:home-venue:${selectedHomeVenueId}:v${identity.version}`,
+          'If-Match': String(identity.version),
+        },
+        body: JSON.stringify({ venueId: selectedHomeVenueId }),
+      });
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as HomeVenueCommandResponse;
+      setIdentity((current) => current ? { ...current, version: result.data.version } : current);
+      setHomeVenueSettings((current) => current ? { ...current,
+        homeVenueId: result.data.homeVenueId, userVersion: result.data.version } : current);
+      setHomeVenueNotice(
+        `${result.data.venueDisplayName} теперь влияет на географию Discovery и порядок слотов.`,
+      );
+      await loadIdentity();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось изменить домашний зал');
+    } finally {
+      setSavingHomeVenue(false);
+    }
+  };
+
   const switchLocalAccount = (
     account: LocalTestAccount,
     persistToken = true,
@@ -975,6 +1028,10 @@ export default function IdentityScreen() {
     setAccountMenuOpen(false);
     openSection(account.startSection);
     setIdentity(null);
+    setHomeVenueSettings(null);
+    setSelectedHomeVenueId(null);
+    setHomeVenueNotice(null);
+    setSavingHomeVenue(false);
     setCommunityContext(null);
     setCommunityLifecycle(null);
     setCommunityLifecycleReason('');
@@ -3226,6 +3283,71 @@ export default function IdentityScreen() {
                       <Text style={styles.buttonText}>Сохранить виды спорта</Text>
                     )}
                   </Pressable>
+                </View>
+
+                <View style={styles.card}>
+                  <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                    Домашний зал
+                  </Text>
+                  <Text style={styles.hint}>
+                    Home Venue меняет только географический приоритет Discovery и слотов.
+                    Membership, спортивный статус, FIFO и Challenge остаются без изменений.
+                  </Text>
+                  {homeVenueSettings?.options.length ? (
+                    <View accessibilityRole="radiogroup" style={styles.sportOptions}>
+                      {homeVenueSettings.options.map((venue) => {
+                        const checked = selectedHomeVenueId === venue.venueId;
+                        return (
+                          <Pressable
+                            key={venue.venueId}
+                            aria-checked={checked}
+                            accessibilityRole="radio"
+                            accessibilityState={{ checked, disabled: savingHomeVenue }}
+                            disabled={savingHomeVenue}
+                            onPress={() => {
+                              setSelectedHomeVenueId(venue.venueId);
+                              setHomeVenueNotice(null);
+                            }}
+                            style={({ pressed }) => [
+                              styles.sportOption,
+                              checked && styles.sportOptionSelected,
+                              pressed && !savingHomeVenue && styles.buttonPressed,
+                            ]}
+                          >
+                            <Text style={[
+                              styles.sportOptionText,
+                              checked && styles.sportOptionTextSelected,
+                            ]}>{venue.displayName}</Text>
+                            <Text style={checked ? styles.choiceChipTextSelected : styles.muted}>
+                              {venue.address}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    <Text style={styles.muted}>Подключённых активных залов пока нет.</Text>
+                  )}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !canSaveHomeVenue }}
+                    disabled={!canSaveHomeVenue}
+                    onPress={() => void saveHomeVenue()}
+                    style={({ pressed }) => [
+                      styles.button,
+                      !canSaveHomeVenue && styles.buttonDisabled,
+                      pressed && canSaveHomeVenue && styles.buttonPressed,
+                    ]}
+                  >
+                    {savingHomeVenue ? <ActivityIndicator color="#ffffff" /> : (
+                      <Text style={styles.buttonText}>Сохранить домашний зал</Text>
+                    )}
+                  </Pressable>
+                  {homeVenueNotice ? (
+                    <Text accessibilityLiveRegion="polite" style={styles.successText}>
+                      {homeVenueNotice}
+                    </Text>
+                  ) : null}
                 </View>
 
                 <View style={styles.card}>

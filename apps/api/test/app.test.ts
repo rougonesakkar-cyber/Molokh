@@ -7,12 +7,14 @@ import {
 } from '@molokh/core';
 import type {
   ChangeDisplayNamePayload,
+  ChangeHomeVenuePayload,
   ChangeSportsPayload,
   CommunityContextProjection,
   CommunityLifecycleEffectIds,
   CommunityLifecycleProjection,
   DiscoveryCardProjection,
   IdentityEffectIds,
+  HomeVenueSelectionProjection,
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
   AppointGymAdminPayload,
@@ -252,6 +254,8 @@ describe('runtime contract', () => {
         readMe: async () => identity,
         changeDisplayName: vi.fn(),
         changeSports: vi.fn(),
+        readHomeVenueSettings: vi.fn(),
+        changeHomeVenue: vi.fn(),
       },
     });
     apps.push(app);
@@ -294,6 +298,8 @@ describe('runtime contract', () => {
         readMe: async () => identity,
         changeDisplayName,
         changeSports: vi.fn(),
+        readHomeVenueSettings: vi.fn(),
+        changeHomeVenue: vi.fn(),
       },
     });
     apps.push(app);
@@ -354,6 +360,8 @@ describe('runtime contract', () => {
         readMe: async () => identity,
         changeDisplayName: vi.fn(),
         changeSports,
+        readHomeVenueSettings: vi.fn(),
+        changeHomeVenue: vi.fn(),
       },
     });
     apps.push(app);
@@ -383,10 +391,50 @@ describe('runtime contract', () => {
     });
   });
 
+  it('[AC-017] reads and changes Home Venue through a versioned command', async () => {
+    const venueId = '0199a1b2-1234-7000-8000-000000000320';
+    const readHomeVenueSettings = vi.fn(async () => ({
+      homeVenueId: null, userVersion: 1, options: [{ venueId,
+        displayName: 'Новый зал', address: 'Москва, улица 1', cityCode: 'MOSCOW' }],
+    }));
+    const changeHomeVenue = vi.fn(async (
+      _command: CommandEnvelope<ChangeHomeVenuePayload>, _ids: IdentityEffectIds,
+    ): Promise<ExecutedCommand<HomeVenueSelectionProjection>> => ({
+      responseStatus: 200,
+      response: { homeVenueId: venueId, venueDisplayName: 'Новый зал', version: 2 },
+      eventId: '0199a1b2-1234-7000-8000-000000000321',
+      aggregateVersion: 2, replayed: false,
+    }));
+    const app = await buildApp({ identity: {
+      auth: new StaticBearerAuthAdapter(token, userId), readMe: async () => identity,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(), readHomeVenueSettings,
+      changeHomeVenue,
+    } });
+    apps.push(app);
+    const settings = await app.inject({ method: 'GET', url: '/api/v1/me/home-venue',
+      headers: { authorization: `Bearer ${token}` } });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.json()).toMatchObject({ data: { homeVenueId: null, userVersion: 1,
+      options: [{ venueId, displayName: 'Новый зал' }] } });
+
+    const changed = await app.inject({ method: 'PATCH', url: '/api/v1/me/home-venue',
+      headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'home-venue-test-1', 'if-match': '1' },
+      payload: { venueId } });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toMatchObject({ data: { homeVenueId: venueId,
+      venueDisplayName: 'Новый зал', version: 2 } });
+    expect(changeHomeVenue.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CHANGE_HOME_VENUE', aggregateId: userId, expectedVersion: 1,
+      payload: { venueId },
+    });
+  });
+
   it('keeps avatar upload disabled unless a private scan adapter is configured', async () => {
     const baseIdentity = {
       auth: new StaticBearerAuthAdapter(token, userId), readMe: async () => identity,
       changeDisplayName: vi.fn(), changeSports: vi.fn(),
+      readHomeVenueSettings: vi.fn(), changeHomeVenue: vi.fn(),
     };
     const disabledApp = await buildApp({ identity: baseIdentity });
     apps.push(disabledApp);

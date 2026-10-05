@@ -152,7 +152,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 |---|---|---|
 | `VerificationStarted/AccountVerified/VerificationRejected/Expired/Revoked` | Identity | permissions, UI, Governance |
 | `AgeDivisionChanged/UserAgeDivisionChanged/MembershipAgeDivisionChanged` | Identity timer | Membership, Competition succession, Scheduling retention, Discovery |
-| `DisplayNameChanged/AvatarChanged` | Identity | profile, audit, moderation; never verification reset |
+| `DisplayNameChanged/SportPreferencesChanged/HomeVenueChanged/AvatarChanged` | Identity | profile, Discovery/Slot priorities, audit, moderation; never verification or Competition reset |
 | `AccountRecoveryRequested/Approved/Completed/Rejected`, `AccountAccessIncidentConfirmed` | Identity | permissions, obligations, deadline review |
 | `DuplicateAccountReviewStarted/Cleared/Resolved` | Identity governance | holds, account projection, status disposition |
 | `LikeCreated/Withdrawn/Expired/RemovedBySkip` | Social | Discovery, notifications |

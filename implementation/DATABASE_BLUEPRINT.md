@@ -453,6 +453,10 @@ cooldown or reapply delay.
 
 Use time partitioning only after measured volume. Early partitioning is appropriate for `audit_events`, `domain_events`, `outbox_messages` and `notifications`, not every aggregate table.
 
+`athlete_profiles.home_venue_id` is a preference pointer, not Competition ownership. A versioned
+Home Venue change writes one Identity event/audit/outbox line and leaves Membership, status tenure,
+FIFO entries, Challenge and sporting history untouched; those remain scoped by Community.
+
 ## 6. Migration rules
 
 1. Forward-only numbered SQL migrations.

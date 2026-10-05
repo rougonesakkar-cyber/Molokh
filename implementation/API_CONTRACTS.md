@@ -74,6 +74,8 @@ HTTP mapping:
 | GET | `/me` | User/profile/capabilities/active processes |
 | PATCH | `/me/profile` | display name; never accepts state/status |
 | PATCH | `/me/sports` | primary and optional secondary sport; versioned critical command |
+| GET | `/me/home-venue` | current Home Venue and active connected Venue choices |
+| PATCH | `/me/home-venue` | owner changes only Discovery/Slot geography priority |
 | POST | `/me/avatar-uploads` | request an idempotent private upload ticket; disabled until a scan/storage adapter is configured |
 | POST | `/me/recovery-cases` | account recovery/phone change request |
 | GET | `/me/account-access` | latest recovery state, incident scope and 24h hold deadline |

@@ -170,6 +170,9 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - M1 exit: complete at the platform layer.
 - Story 4 Sprint 1 increment: complete. The 14+ User/AthleteProfile activation, arbitrary display name, private name audit, local replaceable auth adapter, public capability projection, typed API and minimal universal client run end to end. Phone-confirmed but Central-unverified Athletes can use Discovery and ordinary Training but receive an explicit Official Challenge denial.
 - Story 4 verification increment: complete. V-01 start, permission-protected Central FIFO queue and V-02 approval use checklist/version only, store no document/evidence, and immediately recompute Identity/Community capabilities.
+- Story 4 Home Venue increment: complete. The Athlete can choose any active connected Venue from
+  the universal profile. The versioned/idempotent command changes only Discovery/Slot geography,
+  records event/audit/outbox proof and preserves Membership, status, FIFO and Challenge state.
 - Story 4 authentication/account-access hardening: complete in code. A replaceable OTP transport
   boundary, five-attempt/10-minute challenge, opaque 15-minute access token, rotating 30-day refresh
   family, hash-only persistence, reuse-triggered family revocation, logout, trusted-session linkage
@@ -331,7 +334,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 146/214 (`140/196 P0`).
+  Acceptance traceability is 147/214 (`141/196 P0`).
 - M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
   exact 30-day recovery, owner cancellation and reasoned Central execution only after all
   obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one

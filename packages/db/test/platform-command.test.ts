@@ -54,6 +54,7 @@ import {
   decideBookingTrainingRetention,
   invalidateActiveBookingOfficialConversion,
   changeDisplayName,
+  changeHomeVenue,
   changeSports,
   changePrimaryAdmin,
   decideAppeal,
@@ -126,6 +127,7 @@ import {
   readActiveBlocks,
   readDiscoveryCards,
   readIdentityProjection,
+  readHomeVenueSettings,
   readAgeDivisionTransitionTimerSnapshot,
   readDiscoverySuppressionTimerSnapshot,
   readLikeTimerSnapshot,
@@ -2660,7 +2662,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).resolves.toBe(false);
   });
 
-  it('[AC-168][AC-192] activates, verifies and changes an arbitrary display name without identity drift', async () => {
+  it('[AC-017][AC-168][AC-192] changes profile priorities without identity or Competition drift', async () => {
     const activation: CommandEnvelope<ActivateIdentityInput> = {
       commandId: ids.activationCommand,
       commandType: 'ACTIVATE_ACCOUNT',
@@ -2883,6 +2885,80 @@ describePostgres('PostgreSQL critical command transaction', () => {
       memberships: '1',
     });
 
+    const secondVenueId = testId(12010);
+    const secondVenueConfigurationId = testId(12011);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into community.venues (
+          venue_id, legal_name, display_name, address, city_code, timezone, state,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          configuration_version_id, version
+        ) values (
+          ${secondVenueId}::uuid, 'Second Legal Gym', 'Second Gym', 'Second address',
+          'MOSCOW', 'Europe/Moscow', 'ACTIVE', 8, 30, '{}'::jsonb,
+          ${secondVenueConfigurationId}::uuid, 1
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.venue_configuration_versions (
+          configuration_id, venue_id, configuration_version,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          created_by, effective_at
+        ) values (
+          ${secondVenueConfigurationId}::uuid, ${secondVenueId}::uuid, 1,
+          8, 30, '{}'::jsonb, ${ids.centralActor}::uuid, '2026-09-06T08:00:00Z'
+        )
+      `.execute(transaction);
+    });
+    expect(await readHomeVenueSettings(database, ids.identityUser)).toMatchObject({
+      homeVenueId: null, userVersion: 3,
+      options: expect.arrayContaining([
+        expect.objectContaining({ venueId: ids.venue, displayName: 'Pilot Gym' }),
+        expect.objectContaining({ venueId: secondVenueId, displayName: 'Second Gym' }),
+      ]),
+    });
+    const membershipBeforeHomeVenueChange = await sql<Record<string, unknown>>`
+      select * from community.community_memberships
+      where membership_id = ${ids.membership}::uuid
+    `.execute(database);
+    const changeHomeVenueCommand = {
+      commandId: testId(12012), commandType: 'CHANGE_HOME_VENUE',
+      idempotencyKey: 'identity-home-venue-1',
+      actor: { type: 'USER', id: ids.identityUser, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'User', aggregateId: ids.identityUser, expectedVersion: 3,
+      correlationId: ids.identityCorrelation, causationId: testId(12001),
+      requestId: ids.identityRequest, source: 'api', payloadVersion: 1,
+      payload: { venueId: secondVenueId },
+    } satisfies CommandEnvelope<{ readonly venueId: string }>;
+    const homeVenueEffectIds = { eventId: testId(12013), auditId: testId(12014),
+      outboxMessageId: testId(12015) };
+    const changedHomeVenue = await changeHomeVenue(
+      database, changeHomeVenueCommand, homeVenueEffectIds,
+    );
+    const changedHomeVenueReplay = await changeHomeVenue(
+      database, changeHomeVenueCommand, homeVenueEffectIds,
+    );
+    expect(changedHomeVenue.response).toEqual({
+      homeVenueId: secondVenueId, venueDisplayName: 'Second Gym', version: 4,
+    });
+    expect(changedHomeVenueReplay).toMatchObject({ replayed: true,
+      response: changedHomeVenue.response });
+    expect((await readHomeVenueSettings(database, ids.identityUser))?.homeVenueId)
+      .toBe(secondVenueId);
+    const membershipAfterHomeVenueChange = await sql<Record<string, unknown>>`
+      select * from community.community_memberships
+      where membership_id = ${ids.membership}::uuid
+    `.execute(database);
+    expect(membershipAfterHomeVenueChange.rows).toEqual(membershipBeforeHomeVenueChange.rows);
+    const homeVenueAudit = await sql<{ readonly metadata: Record<string, unknown> }>`
+      select metadata from platform.audit_events where audit_id = ${testId(12014)}::uuid
+    `.execute(database);
+    expect(homeVenueAudit.rows[0]?.metadata).toMatchObject({
+      previousHomeVenueId: null, homeVenueId: secondVenueId,
+      competitionStateChanged: false,
+    });
+
     const verificationStart: CommandEnvelope<{
       readonly userId: string;
       readonly moderationChecklistVersion: string;
@@ -3018,7 +3094,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
           ...rename,
           commandId: '0199a1b2-1234-7000-8000-000000000212',
           idempotencyKey: 'identity-display-name-restricted',
-          expectedVersion: 3,
+          expectedVersion: 4,
           payload: { displayName: 'Скрытая смена' },
         },
         renameIds,

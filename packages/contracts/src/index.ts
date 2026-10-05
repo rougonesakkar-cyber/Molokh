@@ -2734,6 +2734,44 @@ export const ChangeSportsBodySchema = Type.Object(
 
 export type ChangeSportsBody = Static<typeof ChangeSportsBodySchema>;
 
+export const ChangeHomeVenueBodySchema = Type.Object(
+  { venueId: Type.String({ format: 'uuid' }) },
+  { $id: 'ChangeHomeVenueBody', additionalProperties: false },
+);
+export type ChangeHomeVenueBody = Static<typeof ChangeHomeVenueBodySchema>;
+
+export const HomeVenueOptionSchema = Type.Object({
+  venueId: Type.String({ format: 'uuid' }),
+  displayName: Type.String({ minLength: 1, maxLength: 120 }),
+  address: Type.String({ minLength: 1 }),
+  cityCode: Type.String({ minLength: 1 }),
+}, { $id: 'HomeVenueOption', additionalProperties: false });
+
+export const HomeVenueSettingsResponseSchema = Type.Object({
+  data: Type.Object({
+    homeVenueId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    userVersion: Type.Integer({ minimum: 1 }),
+    options: Type.Array(HomeVenueOptionSchema),
+  }, { additionalProperties: false }),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) },
+    { additionalProperties: false }),
+}, { $id: 'HomeVenueSettingsResponse', additionalProperties: false });
+export type HomeVenueSettingsResponse = Static<typeof HomeVenueSettingsResponseSchema>;
+
+export const HomeVenueCommandResponseSchema = Type.Object({
+  data: Type.Object({
+    homeVenueId: Type.String({ format: 'uuid' }),
+    venueDisplayName: Type.String({ minLength: 1, maxLength: 120 }),
+    version: Type.Integer({ minimum: 1 }),
+  }, { additionalProperties: false }),
+  meta: Type.Object({
+    requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }),
+    replayed: Type.Boolean(),
+  }, { additionalProperties: false }),
+}, { $id: 'HomeVenueCommandResponse', additionalProperties: false });
+export type HomeVenueCommandResponse = Static<typeof HomeVenueCommandResponseSchema>;
+
 export const RequestAvatarUploadBodySchema = Type.Object({
   mimeType: Type.Union([
     Type.Literal('image/jpeg'),

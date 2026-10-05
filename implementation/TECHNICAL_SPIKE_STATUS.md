@@ -20,6 +20,7 @@
 | Notification projection | atomic event-to-inbox projection, duplicate delivery and read ownership | Pass |
 | Request context | validated request/correlation/causation headers, response propagation and safe error mapping | Pass |
 | Identity vertical slice | 14+ activation, arbitrary display name, no-document Central verification, public capability projection, API/client path and private audit | Pass |
+| Home Venue preference | active-Venue selection changes Discovery/Slot geography only; Membership/status/FIFO/Challenge snapshots remain unchanged | Pass in API/client and real PostgreSQL |
 | Community scope foundation | pilot Venue/Community/Membership, immutable config ownership, role scope guard and universal client projection | Pass |
 | Membership onboarding | QR/invite activation with hashed expiring tokens, self-request, 12h Admin reminder, 24h Central escalation, FIFO approve/reject, seven-day reapply guard, requester withdrawal and local two-role walkthrough | Pass in Core/API/client/worker and real PostgreSQL |
 | Coach authorization slice | scoped 72h invite, invitee-only acceptance, audit/in-app notification and role-adaptive client path | Pass |
@@ -32,7 +33,7 @@
 | Production auth bootstrap | database sessions only, no local fixtures/static tokens, live Central-role check, required secrets/pilot IDs/HTTPS origins | Pass in code and automated config/auth/DB tests; external OTP provider remains unconfigured |
 | Avatar media boundary | authenticated/idempotent private upload-ticket port, JPEG/PNG/WebP 10 MiB contract, disabled adapter and no pre-scan attachment path | Pass in API contract tests; external object/scan provider remains unconfigured |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 146/214 mapped (`140/196 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 147/214 mapped (`141/196 P0`) as implementation grows |
 | Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
 | Final Result integrity | evidence-scoped Central review, Competition hold, immutable decision and deterministic status replay | Pass in Core/API/client and real PostgreSQL |
 | Status queue foundation | explicit GENESIS/status intent, server-time FIFO, member/outsider projection and no-loss withdrawal | Pass in Core/API/client and real PostgreSQL |
@@ -198,7 +199,7 @@ Verified on 2026-10-04:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 248 non-database automated tests pass across Core, DB, API, worker and testkit;
+- 249 non-database automated tests pass across Core, DB, API, worker and testkit;
 - the current PostgreSQL gate passes all 43 integration scenarios, including Membership request/approve/reject/withdraw/QR activation, timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
@@ -250,6 +251,6 @@ Verified on 2026-10-04:
   passes live/ready, runtime identity, security headers, configured CORS and unauthenticated-boundary
   probes with the correct SHA and rejects a deliberate release mismatch;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 146 scenarios (`140/196 P0`) and distinguishes traceability from complete coverage;
+- the generated acceptance matrix maps 147 scenarios (`141/196 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;
 - the Core specification validator reports 308 transitions, 308 registered events, 214 acceptance scenarios, zero open questions and zero errors.

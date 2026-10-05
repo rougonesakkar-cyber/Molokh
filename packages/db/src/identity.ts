@@ -56,6 +56,29 @@ export interface ChangeSportsPayload {
   readonly secondarySport: string | null;
 }
 
+export interface ChangeHomeVenuePayload {
+  readonly venueId: string;
+}
+
+export interface HomeVenueOptionProjection {
+  readonly venueId: string;
+  readonly displayName: string;
+  readonly address: string;
+  readonly cityCode: string;
+}
+
+export interface HomeVenueSettingsProjection {
+  readonly homeVenueId: string | null;
+  readonly userVersion: number;
+  readonly options: readonly HomeVenueOptionProjection[];
+}
+
+export interface HomeVenueSelectionProjection {
+  readonly homeVenueId: string;
+  readonly venueDisplayName: string;
+  readonly version: number;
+}
+
 export interface StartVerificationPayload {
   readonly userId: string;
   readonly moderationChecklistVersion: string;
@@ -466,6 +489,139 @@ export async function changeSports(
             payload: { userId: current.user_id, version: context.nextVersion, ...sports },
           },
         ],
+      };
+    },
+  });
+}
+
+export async function readHomeVenueSettings(
+  database: Kysely<Database>,
+  userId: string,
+): Promise<HomeVenueSettingsProjection | null> {
+  const current = await sql<{
+    readonly home_venue_id: string | null;
+    readonly version: string;
+  }>`
+    select profile.home_venue_id, users.version::text as version
+    from identity.users as users
+    join identity.athlete_profiles as profile on profile.user_id = users.user_id
+    where users.user_id = ${userId}::uuid
+  `.execute(database);
+  const row = current.rows[0];
+  if (!row) return null;
+  const venues = await sql<{
+    readonly venue_id: string;
+    readonly display_name: string;
+    readonly address: string;
+    readonly city_code: string;
+  }>`
+    select venue_id, display_name, address, city_code
+    from community.venues
+    where state = 'ACTIVE'
+    order by city_code, display_name, venue_id
+  `.execute(database);
+  return {
+    homeVenueId: row.home_venue_id,
+    userVersion: Number(row.version),
+    options: venues.rows.map((venue) => ({
+      venueId: venue.venue_id,
+      displayName: venue.display_name,
+      address: venue.address,
+      cityCode: venue.city_code,
+    })),
+  };
+}
+
+export async function changeHomeVenue(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ChangeHomeVenuePayload>,
+  ids: IdentityEffectIds,
+): Promise<ExecutedCommand<HomeVenueSelectionProjection>> {
+  if (command.actor.id !== command.aggregateId) throw new IdentityNotFoundError();
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const currentResult = await sql<{
+        readonly user_id: string;
+        readonly account_state: IdentityRow['account_state'];
+        readonly home_venue_id: string | null;
+      }>`
+        select users.user_id, users.account_state, profile.home_venue_id
+        from identity.users as users
+        join identity.athlete_profiles as profile on profile.user_id = users.user_id
+        where users.user_id = ${command.aggregateId}::uuid
+        for update of users, profile
+      `.execute(transaction);
+      const current = currentResult.rows[0];
+      if (!current) throw new IdentityNotFoundError();
+      if (current.account_state !== 'ACTIVE') {
+        throw new IdentityValidationError('accountState');
+      }
+      if (current.home_venue_id === command.payload.venueId) {
+        throw new IdentityValidationError('homeVenueId');
+      }
+      const venueResult = await sql<{
+        readonly venue_id: string;
+        readonly display_name: string;
+      }>`
+        select venue_id, display_name
+        from community.venues
+        where venue_id = ${command.payload.venueId}::uuid and state = 'ACTIVE'
+        for share
+      `.execute(transaction);
+      const venue = venueResult.rows[0];
+      if (!venue) throw new IdentityValidationError('homeVenueId');
+
+      await sql`
+        update identity.athlete_profiles
+        set home_venue_id = ${venue.venue_id}::uuid,
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where user_id = ${current.user_id}::uuid
+      `.execute(transaction);
+      await sql`
+        update identity.users
+        set version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where user_id = ${current.user_id}::uuid
+      `.execute(transaction);
+      const response: HomeVenueSelectionProjection = {
+        homeVenueId: venue.venue_id,
+        venueDisplayName: venue.display_name,
+        version: context.nextVersion,
+      };
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'HomeVenueChanged',
+          schemaVersion: 1,
+          transitionId: null,
+          payload: { userId: current.user_id, homeVenueId: venue.venue_id },
+          metadata: { policyVersion: 'identity-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'CHANGE_HOME_VENUE',
+          transitionId: null,
+          reasonCode: null,
+          beforeState: current.account_state,
+          afterState: current.account_state,
+          metadata: {
+            previousHomeVenueId: current.home_venue_id,
+            homeVenueId: venue.venue_id,
+            competitionStateChanged: false,
+          },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'identity.home_venue.changed.v1',
+          payload: {
+            userId: current.user_id,
+            homeVenueId: venue.venue_id,
+            version: context.nextVersion,
+          },
+        }],
       };
     },
   });

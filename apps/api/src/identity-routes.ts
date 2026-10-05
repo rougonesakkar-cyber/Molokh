@@ -7,13 +7,19 @@ import {
   ApiErrorSchema,
   AvatarUploadTicketResponseSchema,
   ChangeDisplayNameBodySchema,
+  ChangeHomeVenueBodySchema,
   ChangeSportsBodySchema,
+  HomeVenueCommandResponseSchema,
+  HomeVenueSettingsResponseSchema,
   IdentityCommandResponseSchema,
   MeResponseSchema,
   RequestAvatarUploadBodySchema,
   type AvatarUploadTicketResponse,
   type ChangeDisplayNameBody,
+  type ChangeHomeVenueBody,
   type ChangeSportsBody,
+  type HomeVenueCommandResponse,
+  type HomeVenueSettingsResponse,
   type IdentityCommandResponse,
   type IdentityProjectionContract,
   type MeResponse,
@@ -21,8 +27,11 @@ import {
 } from '@molokh/contracts';
 import type {
   ChangeDisplayNamePayload,
+  ChangeHomeVenuePayload,
   ChangeSportsPayload,
   ExecutedCommand,
+  HomeVenueSelectionProjection,
+  HomeVenueSettingsProjection,
   IdentityEffectIds,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -47,6 +56,13 @@ export interface IdentityRouteDependencies {
     command: CommandEnvelope<ChangeSportsPayload>,
     ids: IdentityEffectIds,
   ) => Promise<ExecutedCommand<IdentityProjection>>;
+  readonly readHomeVenueSettings: (
+    userId: string,
+  ) => Promise<HomeVenueSettingsProjection | null>;
+  readonly changeHomeVenue: (
+    command: CommandEnvelope<ChangeHomeVenuePayload>,
+    ids: IdentityEffectIds,
+  ) => Promise<ExecutedCommand<HomeVenueSelectionProjection>>;
   readonly avatarMedia?: AvatarMediaPort;
 }
 
@@ -248,6 +264,77 @@ export async function registerIdentityRoutes(
           replayed: executed.replayed,
         },
       };
+    },
+  );
+
+  app.get<{ Headers: IdentityHeaders }>(
+    '/api/v1/me/home-venue',
+    {
+      schema: {
+        operationId: 'readMyHomeVenueSettings',
+        response: {
+          200: HomeVenueSettingsResponseSchema,
+          401: ApiErrorSchema,
+          404: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<HomeVenueSettingsResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const settings = await dependencies.readHomeVenueSettings(authenticated.userId);
+      if (!settings) {
+        await reply.status(404).send({ code: 'IDENTITY_NOT_FOUND',
+          message: 'Identity was not found', requestId: requestContext(request).requestId });
+        return;
+      }
+      return { data: { ...settings, options: settings.options.map((option) => ({ ...option })) },
+        meta: { requestId: requestContext(request).requestId } };
+    },
+  );
+
+  app.patch<{
+    Body: ChangeHomeVenueBody;
+    Headers: IdentityHeaders;
+  }>(
+    '/api/v1/me/home-venue',
+    {
+      schema: {
+        operationId: 'changeMyHomeVenue',
+        body: ChangeHomeVenueBodySchema,
+        response: {
+          200: HomeVenueCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<HomeVenueCommandResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const idempotencyKey = request.headers['idempotency-key']?.trim();
+      if (!idempotencyKey) throw new InvalidCommandEnvelopeError('Idempotency-Key');
+      const context = requestContext(request);
+      const executed = await dependencies.changeHomeVenue({
+        commandId: newUuidV7(), commandType: 'CHANGE_HOME_VENUE', idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'User', aggregateId: authenticated.userId,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        correlationId: context.correlationId, causationId: context.causationId,
+        requestId: context.requestId, source: 'api', payloadVersion: 1,
+        payload: { venueId: request.body.venueId },
+      }, { eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7() });
+      return { data: { ...executed.response }, meta: { requestId: context.requestId,
+        eventId: executed.eventId, replayed: executed.replayed } };
     },
   );
 
