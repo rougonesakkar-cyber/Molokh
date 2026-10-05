@@ -297,6 +297,12 @@ administrative Result or Cooldown. After an ended Official Session, the assigned
 ordinary Result through the same versioned/idempotent command; only recorded `NO_SHOW` facts
 constrain that Result.
 
+The database applies the configured Community grace before accepting `NO_SHOW` Attendance.
+Attendance remains separate from Result: one recorded absence permits only a Coach-confirmed
+`NO_SHOW` Result naming the present Athlete as winner, while two absences permit only explained
+`NO_CONTEST`. The first uses the normal 48-hour Appeal/Cooldown policy; the second has no winner,
+status transition, loss or Cooldown.
+
 The Training conversion projection exposes its public state, exact deadline, required viewer role,
 recorded decisions and FIFO position where applicable. A direct conversion temporarily marks the
 Booking `OFFICIAL_CONVERSION_PENDING`; a Contender-bearing pair stays ordinary while its

@@ -2271,6 +2271,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const chat = testId(base + 7);
     const communityConfiguration = testId(base + 15);
     const boundary = '2026-10-02T00:00:00.000Z';
+    const guardianContactHash = createHash('sha256')
+      .update(`guardian-contact:${base}`).digest('hex');
+    const guardianTokenHash = createHash('sha256')
+      .update(`guardian-token:${base}`).digest('hex');
+    const guardianAuditHash = createHash('sha256')
+      .update(`guardian-audit:${base}`).digest('hex');
     const scheduledStart = started
       ? '2026-10-01T23:30:00.000Z'
       : '2026-10-03T10:00:00.000Z';
@@ -2401,9 +2407,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
         expires_at, version
       ) values (
         ${consent}::uuid, ${challenge}::uuid, ${seeded.athleteA}::uuid,
-        'youth-consent-mvp-v1', 'GRANTED', 'EMAIL', ${'a'.repeat(64)},
-        'g***@example.test', ${'b'.repeat(64)}, 'Guardian', 'PARENT',
-        ${'c'.repeat(64)}, ${testId(base + 32)}::uuid, ${testId(base + 33)}::uuid,
+        'youth-consent-mvp-v1', 'GRANTED', 'EMAIL', ${guardianContactHash},
+        'g***@example.test', ${guardianTokenHash}, 'Guardian', 'PARENT',
+        ${guardianAuditHash}, ${testId(base + 32)}::uuid, ${testId(base + 33)}::uuid,
         '2026-09-27T09:00:00.000Z', '2026-09-27T10:00:00.000Z',
         '2026-10-11T10:00:00.000Z', 2
       )
@@ -9736,6 +9742,227 @@ describePostgres('PostgreSQL critical command transaction', () => {
       reason_code: null, cooldown_source_result_id: resultId,
     });
     expect(persisted.rows[0]?.snapshot).toEqual(snapshotBefore.rows[0]?.snapshot);
+  });
+
+  it('[AC-203] records one NO_SHOW with Appeal and normalizes two absences to NO_CONTEST', async () => {
+    type Fixture = Awaited<ReturnType<typeof seedYouthOfficialAtAgeBoundary>>;
+    const snapshotFor = async (fixture: Fixture) => {
+      const snapshot = await sql<{ readonly value: unknown }>`
+        select to_jsonb(snapshot) as value
+        from scheduling.session_competitive_snapshots as snapshot
+        where session_id = ${fixture.session}::uuid
+      `.execute(database);
+      return snapshot.rows[0]?.value;
+    };
+    const attendanceCommand = (
+      fixture: Fixture,
+      athleteUserId: string,
+      status: 'PRESENT' | 'NO_SHOW',
+      expectedVersion: number,
+      base: number,
+    ): CommandEnvelope<RecordAttendancePayload> => ({
+      commandId: testId(base), commandType: 'RECORD_ATTENDANCE',
+      idempotencyKey: `ac-203-attendance:${fixture.session}:${athleteUserId}:${base}`,
+      actor: {
+        type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+      },
+      aggregateType: 'Session', aggregateId: fixture.session, expectedVersion,
+      correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+      source: 'api', payloadVersion: 1,
+      payload: { sessionId: fixture.session, athleteUserId, status, comment: null },
+    });
+    const attendanceEffects = (base: number) => ({
+      eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
+      attendanceId: testId(base + 6), attendanceEventId: testId(base + 7),
+    });
+    const recordAttendance = (
+      fixture: Fixture,
+      athleteUserId: string,
+      status: 'PRESENT' | 'NO_SHOW',
+      expectedVersion: number,
+      base: number,
+      occurredAt: string,
+    ) => recordSessionAttendance(
+      database,
+      attendanceCommand(fixture, athleteUserId, status, expectedVersion, base),
+      attendanceEffects(base),
+      () => new Date(occurredAt),
+    );
+    const endOfficial = (
+      fixture: Fixture,
+      base: number,
+      occurredAt: string,
+    ) => endSession(
+      database,
+      {
+        commandId: testId(base), commandType: 'END_SESSION',
+        idempotencyKey: `ac-203-end:${fixture.session}`,
+        actor: {
+          type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+        },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 3,
+        correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+        source: 'api', payloadVersion: 1, payload: { sessionId: fixture.session },
+      } satisfies CommandEnvelope<EndSessionPayload>,
+      {
+        eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
+        bookingEventId: testId(base + 6), slotEventId: testId(base + 7),
+        challengeEventId: testId(base + 8), challengeOutboxMessageId: testId(base + 9),
+      },
+      () => new Date(occurredAt),
+    );
+    const resultArtifacts = (base: number) => ({
+      eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
+      resultId: testId(base + 6), resultEventId: testId(base + 7),
+      cooldownId: testId(base + 8), cooldownEventId: testId(base + 9),
+      timerOutboxMessageId: testId(base + 10),
+      notificationOutboxMessageId: testId(base + 11),
+      notificationIds: [testId(base + 12), testId(base + 13)] as const,
+    });
+    const resultCommand = (
+      fixture: Fixture,
+      outcomeCode: 'NO_SHOW' | 'NO_CONTEST',
+      winnerUserId: string | null,
+      base: number,
+    ): CommandEnvelope<RecordSessionResultPayload> => ({
+      commandId: testId(base), commandType: 'RECORD_SESSION_RESULT',
+      idempotencyKey: `ac-203-result:${fixture.challenge}:${outcomeCode}`,
+      actor: {
+        type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+      },
+      aggregateType: 'Challenge', aggregateId: fixture.challenge, expectedVersion: 5,
+      correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId: fixture.challenge, sessionId: fixture.session,
+        outcomeCode, winnerUserId,
+        reasonCode: outcomeCode === 'NO_SHOW' ? 'ATTENDANCE_NO_SHOW' : 'DOUBLE_NO_SHOW',
+        comment: outcomeCode === 'NO_SHOW'
+          ? 'Неявка после grace period подтверждена назначенным Coach.'
+          : 'Оба Athlete отсутствовали после grace period.',
+        methodCode: null, methodText: null, scorePayload: null, methodPayload: null,
+      },
+    });
+
+    const single = await seedYouthOfficialAtAgeBoundary(122000, true);
+    await sql`
+      update scheduling.sessions set actual_start_at = scheduled_start_at
+      where session_id = ${single.session}::uuid
+    `.execute(database);
+    const singleSnapshot = await snapshotFor(single);
+    await recordAttendance(
+      single, single.athleteA, 'PRESENT', 1, 122100, '2026-10-01T23:31:00.000Z',
+    );
+    await expect(recordAttendance(
+      single, single.athleteB, 'NO_SHOW', 2, 122120, '2026-10-01T23:44:59.999Z',
+    )).rejects.toMatchObject<Partial<SchedulingConflictError>>({ reason: 'NO_SHOW_TOO_EARLY' });
+    await recordAttendance(
+      single, single.athleteB, 'NO_SHOW', 2, 122140, '2026-10-01T23:45:00.000Z',
+    );
+    const beforeSingleResult = await sql<{
+      readonly result_count: string;
+      readonly cooldown_count: string;
+    }>`
+      select
+        (select count(*)::text from competition.results
+          where challenge_id = ${single.challenge}::uuid) as result_count,
+        (select count(*)::text from competition.pair_cooldowns
+          where competition_id = ${single.competition}::uuid) as cooldown_count
+    `.execute(database);
+    expect(beforeSingleResult.rows[0]).toEqual({ result_count: '0', cooldown_count: '0' });
+    await endOfficial(single, 122160, '2026-10-01T23:50:00.000Z');
+
+    const singleCommand = resultCommand(single, 'NO_SHOW', single.athleteA, 122180);
+    const singleArtifacts = resultArtifacts(122180);
+    const singleResult = await recordSessionResult(
+      database, singleCommand, singleArtifacts,
+      () => new Date('2026-10-01T23:51:00.000Z'),
+    );
+    expect(singleResult.response).toMatchObject({
+      outcomeCode: 'NO_SHOW', winnerUserId: single.athleteA,
+      loserUserId: single.athleteB, reasonCode: 'ATTENDANCE_NO_SHOW',
+      appealDeadlineAt: '2026-10-03T23:51:00.000Z', provisional: true,
+      statusTransitionType: 'NONE', version: 1,
+    });
+    await expect(
+      readResult(database, singleArtifacts.resultId, single.athleteB, new Date('2026-10-01T23:51:00.000Z')),
+    ).resolves.toMatchObject({ viewerCanAppeal: true, viewerCanWaiveAppeal: true });
+    const singlePersisted = await sql<{
+      readonly cooldown_source_result_id: string;
+      readonly snapshot: unknown;
+    }>`
+      select cooldown.source_result_id as cooldown_source_result_id,
+        to_jsonb(snapshot) as snapshot
+      from competition.results as result
+      join competition.pair_cooldowns as cooldown on cooldown.source_result_id = result.result_id
+      join scheduling.session_competitive_snapshots as snapshot
+        on snapshot.snapshot_id = result.competitive_snapshot_id
+      where result.result_id = ${singleArtifacts.resultId}::uuid
+    `.execute(database);
+    expect(singlePersisted.rows[0]?.cooldown_source_result_id).toBe(singleArtifacts.resultId);
+    expect(singlePersisted.rows[0]?.snapshot).toEqual(singleSnapshot);
+
+    const double = await seedYouthOfficialAtAgeBoundary(123000, true);
+    const doubleSnapshot = await snapshotFor(double);
+    await recordAttendance(
+      double, double.athleteA, 'NO_SHOW', 1, 123100, '2026-10-01T23:51:00.000Z',
+    );
+    await recordAttendance(
+      double, double.athleteB, 'NO_SHOW', 2, 123120, '2026-10-01T23:52:00.000Z',
+    );
+    const beforeDoubleResult = await sql<{
+      readonly result_count: string;
+      readonly cooldown_count: string;
+    }>`
+      select
+        (select count(*)::text from competition.results
+          where challenge_id = ${double.challenge}::uuid) as result_count,
+        (select count(*)::text from competition.pair_cooldowns
+          where competition_id = ${double.competition}::uuid) as cooldown_count
+    `.execute(database);
+    expect(beforeDoubleResult.rows[0]).toEqual({ result_count: '0', cooldown_count: '0' });
+    await endOfficial(double, 123140, '2026-10-01T23:54:00.000Z');
+
+    const doubleCommand = resultCommand(double, 'NO_CONTEST', null, 123160);
+    const doubleArtifacts = resultArtifacts(123160);
+    const doubleResult = await recordSessionResult(
+      database, doubleCommand, doubleArtifacts,
+      () => new Date('2026-10-01T23:55:00.000Z'),
+    );
+    const doubleReplay = await recordSessionResult(
+      database, doubleCommand, doubleArtifacts,
+      () => new Date('2026-10-01T23:56:00.000Z'),
+    );
+    expect(doubleResult.response).toMatchObject({
+      outcomeCode: 'NO_CONTEST', winnerUserId: null, loserUserId: null,
+      reasonCode: 'DOUBLE_NO_SHOW', statusTransitionType: 'NONE', version: 1,
+    });
+    expect(doubleReplay).toMatchObject({
+      replayed: true, eventId: doubleResult.eventId, response: doubleResult.response,
+    });
+    const doublePersisted = await sql<{
+      readonly winner_user_id: string | null;
+      readonly loser_user_id: string | null;
+      readonly cooldown_count: string;
+      readonly transition_count: string;
+      readonly snapshot: unknown;
+    }>`
+      select result.winner_user_id, result.loser_user_id,
+        (select count(*)::text from competition.pair_cooldowns
+          where source_result_id = result.result_id) as cooldown_count,
+        (select count(*)::text from competition.status_transitions
+          where source_result_id = result.result_id) as transition_count,
+        to_jsonb(snapshot) as snapshot
+      from competition.results as result
+      join scheduling.session_competitive_snapshots as snapshot
+        on snapshot.snapshot_id = result.competitive_snapshot_id
+      where result.result_id = ${doubleArtifacts.resultId}::uuid
+    `.execute(database);
+    expect(doublePersisted.rows[0]).toMatchObject({
+      winner_user_id: null, loser_user_id: null,
+      cooldown_count: '0', transition_count: '0',
+    });
+    expect(doublePersisted.rows[0]?.snapshot).toEqual(doubleSnapshot);
   });
 
   it('persists PI-01 through PI-05 with Central authorization and idempotent completion', async () => {

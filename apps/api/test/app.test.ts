@@ -1590,7 +1590,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-153][AC-173] exposes role-owned schedule publication and participant Chat options', async () => {
+  it('[AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
     const venueId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const chatId = '0199a1b2-1234-7000-8000-000000000703';
@@ -2658,13 +2658,13 @@ describe('runtime contract', () => {
         'idempotency-key': 'session-attendance-api-1',
         'if-match': '2',
       },
-      payload: { athleteUserId: userId, status: 'PRESENT' },
+      payload: { athleteUserId: userId, status: 'NO_SHOW' },
     });
     expect(attendanceRecorded.statusCode).toBe(200);
     expect(recordSessionAttendance.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'RECORD_ATTENDANCE',
       expectedVersion: 2,
-      payload: { sessionId, athleteUserId: userId, status: 'PRESENT', comment: null },
+      payload: { sessionId, athleteUserId: userId, status: 'NO_SHOW', comment: null },
     });
 
     const sessionEnded = await app.inject({

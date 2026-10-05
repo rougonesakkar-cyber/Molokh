@@ -28,7 +28,7 @@ describe('Result and provisional status policy', () => {
       .toBe('2026-09-11T10:00:00.000Z');
   });
 
-  it('requires a winner and explanation for NO_SHOW or FORFEIT', () => {
+  it('[AC-203] requires a winner and explanation for NO_SHOW or FORFEIT', () => {
     expect(() => normalizeResultParticipants({
       outcomeCode: 'NO_SHOW', winnerUserId: null, participantUserIds: participants,
       reasonCode: 'ABSENT', comment: 'Неявка подтверждена Coach',
@@ -87,7 +87,7 @@ describe('Result and provisional status policy', () => {
     }
   });
 
-  it('[AC-087] permits two recorded NO_SHOW facts only as explained NO_CONTEST', () => {
+  it('[AC-087][AC-203] permits two recorded NO_SHOW facts only as explained NO_CONTEST', () => {
     expect(() => assertResultMatchesAttendance({
       outcomeCode: 'NO_CONTEST', winnerUserId: null,
       participantUserIds: participants, noShowUserIds: [...participants],
@@ -96,6 +96,23 @@ describe('Result and provisional status policy', () => {
       outcomeCode: 'WIN_A', winnerUserId: 'athlete-a',
       participantUserIds: participants, noShowUserIds: [...participants],
     })).toThrowError(new ResultValidationError('outcomeCode'));
+  });
+
+  it('[AC-203] binds one NO_SHOW fact to the present Athlete as winner', () => {
+    expect(() => assertResultMatchesAttendance({
+      outcomeCode: 'NO_SHOW', winnerUserId: 'athlete-a',
+      participantUserIds: participants, noShowUserIds: ['athlete-b'],
+    })).not.toThrow();
+    expect(() => assertResultMatchesAttendance({
+      outcomeCode: 'NO_SHOW', winnerUserId: 'athlete-b',
+      participantUserIds: participants, noShowUserIds: ['athlete-b'],
+    })).toThrowError(new ResultValidationError('outcomeCode'));
+    expect(normalizeResultParticipants({
+      outcomeCode: 'NO_SHOW', winnerUserId: 'athlete-a', participantUserIds: participants,
+      reasonCode: 'ATTENDANCE_NO_SHOW', comment: 'Неявка подтверждена Coach.',
+    })).toMatchObject({
+      winnerUserId: 'athlete-a', loserUserId: 'athlete-b', decisive: true,
+    });
   });
 
   it('[AC-202] permits an ordinary decisive Result when LATE created no NO_SHOW fact', () => {

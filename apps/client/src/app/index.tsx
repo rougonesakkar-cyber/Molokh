@@ -5532,7 +5532,11 @@ export default function IdentityScreen() {
                                 <Text style={styles.hint}>
                                   {missingResultReview?.viewerCanRecordConstrainedResult
                                     ? 'Central назначил вас независимым Coach. Доступен только исход, подтверждённый собранными фактами.'
-                                    : 'Результат сразу станет виден обоим спортсменам. Appeal доступен 48 часов.'}
+                                    : noShowUserIds.length === 2
+                                      ? 'Attendance не является Result. Отдельно подтвердите NO CONTEST без победителя и Cooldown.'
+                                      : noShowUserIds.length === 1
+                                        ? 'Attendance не является Result. Отдельно подтвердите неявку; Appeal будет доступен 48 часов.'
+                                        : 'Результат сразу станет виден обоим спортсменам. Appeal доступен 48 часов.'}
                                 </Text>
                                 <View style={styles.attendanceActions}>
                                   {missingResultReview?.viewerCanRecordConstrainedResult
@@ -5574,7 +5578,7 @@ export default function IdentityScreen() {
                                         pressed && actingResultKey === null && styles.buttonPressed,
                                       ]}
                                     >
-                                      <Text style={styles.attendanceButtonText}>Оба не явились</Text>
+                                      <Text style={styles.attendanceButtonText}>Подтвердить NO CONTEST</Text>
                                     </Pressable>
                                   ) : noShowUserIds.length === 1 ? (
                                     <Pressable
@@ -5592,7 +5596,7 @@ export default function IdentityScreen() {
                                         pressed && actingResultKey === null && styles.buttonPressed,
                                       ]}
                                     >
-                                      <Text style={styles.attendanceButtonText}>Подтвердить неявку</Text>
+                                      <Text style={styles.attendanceButtonText}>Подтвердить NO SHOW Result</Text>
                                     </Pressable>
                                   ) : (
                                     <>

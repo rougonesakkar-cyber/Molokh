@@ -49,7 +49,7 @@ afterEach(async () => {
 });
 
 describe('Result and Appeal routes', () => {
-  it('[AC-076][AC-088][AC-089][AC-202] exposes the ordinary Coach Result command surface', async () => {
+  it('[AC-076][AC-088][AC-089][AC-202][AC-203] exposes Coach Result and NO_SHOW facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
@@ -111,6 +111,27 @@ describe('Result and Appeal routes', () => {
     });
     expect(recordSessionResult.mock.calls[0]?.[1]).toMatchObject({
       notificationIds: expect.arrayContaining([expect.any(String), expect.any(String)]),
+    });
+
+    const noShow = await app.inject({
+      method: 'POST', url: `/api/v1/challenges/${challengeId}/result`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'record-no-show-route-1',
+        'if-match': '7',
+      },
+      payload: {
+        sessionId, outcomeCode: 'NO_SHOW', winnerUserId,
+        reasonCode: 'ATTENDANCE_NO_SHOW', comment: 'Неявка подтверждена Coach.',
+      },
+    });
+    expect(noShow.statusCode).toBe(201);
+    expect(recordSessionResult.mock.calls[1]?.[0]).toMatchObject({
+      actor: { id: actorUserId, roles: ['COACH'] },
+      payload: {
+        challengeId, sessionId, outcomeCode: 'NO_SHOW', winnerUserId,
+        reasonCode: 'ATTENDANCE_NO_SHOW', comment: 'Неявка подтверждена Coach.',
+      },
     });
 
     const appealed = await app.inject({

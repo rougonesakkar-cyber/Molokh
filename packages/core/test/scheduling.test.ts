@@ -225,7 +225,7 @@ describe('Scheduling publication policy', () => {
     ).toThrowError(expect.objectContaining({ reason: 'SESSION_OPERATION_WINDOW_CLOSED' }));
   });
 
-  it('[AC-074][AC-202] protects NO_SHOW grace and counts PRESENT or LATE as attendance', () => {
+  it('[AC-074][AC-202][AC-203] protects NO_SHOW grace and counts only attended Training', () => {
     expect(() =>
       assertAttendanceCanBeRecorded({
         state: 'IN_PROGRESS',
