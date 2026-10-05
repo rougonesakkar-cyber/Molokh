@@ -6,6 +6,7 @@ import {
   SchedulingPermissionDeniedError,
   SchedulingValidationError,
   assertHostConfirmationWindow,
+  assertAthleteScheduleAvailable,
   assertFutureScheduleCanBeMutated,
   assertAttendanceCanBeRecorded,
   assertCoachReplacementCanBeCommitted,
@@ -151,6 +152,15 @@ describe('Scheduling publication policy', () => {
         occurredAt,
       }),
     ).toThrowError(expect.objectContaining({ reason: 'HOST_CONFIRMATION_EXPIRED' }));
+  });
+
+  it('[AC-153] rejects an overlapping confirmed Session for either Athlete', () => {
+    expect(() => assertAthleteScheduleAvailable({
+      hasOverlappingConfirmedSession: false,
+    })).not.toThrow();
+    expect(() => assertAthleteScheduleAvailable({
+      hasOverlappingConfirmedSession: true,
+    })).toThrowError(expect.objectContaining({ reason: 'ATHLETE_SCHEDULE_CONFLICT' }));
   });
 
   it('opens the Session window only at the scheduled boundary', () => {

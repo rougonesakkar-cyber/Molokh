@@ -1,5 +1,6 @@
 import {
   IdempotencyKeyReusedError,
+  SchedulingConflictError,
   VersionConflictError,
   type CommandEnvelope,
   type IdentityProjection,
@@ -1589,7 +1590,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-173] exposes role-owned schedule publication and participant Chat options', async () => {
+  it('[AC-153][AC-173] exposes role-owned schedule publication and participant Chat options', async () => {
     const venueId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const chatId = '0199a1b2-1234-7000-8000-000000000703';
@@ -2463,6 +2464,22 @@ describe('runtime contract', () => {
       expectedVersion: 2,
       payload: { bookingId: booking.bookingId },
     });
+
+    confirmedByHost.mockRejectedValueOnce(
+      new SchedulingConflictError('ATHLETE_SCHEDULE_CONFLICT'),
+    );
+    const athleteConflict = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/host-confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'host-confirm-api-athlete-conflict',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(athleteConflict.statusCode).toBe(409);
+    expect(athleteConflict.json()).toMatchObject({ code: 'ATHLETE_SCHEDULE_CONFLICT' });
 
     const hostRejected = await app.inject({
       method: 'POST',

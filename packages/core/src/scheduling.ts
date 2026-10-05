@@ -7,6 +7,7 @@ export const TRAINING_RETENTION_TTL_MINUTES = 60;
 
 export type SchedulingConflictCode =
   | 'COACH_CONFLICT'
+  | 'ATHLETE_SCHEDULE_CONFLICT'
   | 'SLOT_UNAVAILABLE'
   | 'OFFERING_UNAVAILABLE'
   | 'PAIR_REQUEST_EXISTS'
@@ -240,6 +241,14 @@ export function assertHostConfirmationWindow(input: {
   }
   if (input.occurredAt >= deadline) {
     throw new SchedulingConflictError('HOST_CONFIRMATION_EXPIRED');
+  }
+}
+
+export function assertAthleteScheduleAvailable(input: {
+  readonly hasOverlappingConfirmedSession: boolean;
+}): void {
+  if (input.hasOverlappingConfirmedSession) {
+    throw new SchedulingConflictError('ATHLETE_SCHEDULE_CONFLICT');
   }
 }
 

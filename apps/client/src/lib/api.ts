@@ -60,6 +60,7 @@ const localizedApiErrors: Readonly<Record<string, string>> = {
   ROLE_GRANT_PERMISSION_DENIED: 'У вас нет полномочий для этого действия.',
   ROLE_GRANT_VALIDATION_FAILED: 'Проверьте данные приглашения.',
   SCHEDULING_VALIDATION_ERROR: 'Проверьте выбранную тренировку.',
+  ATHLETE_SCHEDULE_CONFLICT: 'У одного из спортсменов уже есть подтверждённая тренировка в это время. Выберите другой слот.',
   SESSION_NOT_READY: 'Session ещё не готова к этому действию.',
   ACCOUNT_NOT_VERIFIED: 'Для Official Challenge нужна верификация аккаунта.',
   MEMBERSHIP_NOT_ACTIVE: 'Для Official Challenge нужно активное участие в Community.',

@@ -33,7 +33,7 @@
 | Production auth bootstrap | database sessions only, no local fixtures/static tokens, live Central-role check, required secrets/pilot IDs/HTTPS origins | Pass in code and automated config/auth/DB tests; external OTP provider remains unconfigured |
 | Avatar media boundary | authenticated/idempotent private upload-ticket port, JPEG/PNG/WebP 10 MiB contract, disabled adapter and no pre-scan attachment path | Pass in API contract tests; external object/scan provider remains unconfigured |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 147/214 mapped (`141/196 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 148/214 mapped (`142/196 P0`) as implementation grows |
 | Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
 | Final Result integrity | evidence-scoped Central review, Competition hold, immutable decision and deterministic status replay | Pass in Core/API/client and real PostgreSQL |
 | Status queue foundation | explicit GENESIS/status intent, server-time FIFO, member/outsider projection and no-loss withdrawal | Pass in Core/API/client and real PostgreSQL |
@@ -195,12 +195,12 @@ unconfigured object-storage capability.
 
 ## Verification result
 
-Verified on 2026-10-04:
+Verified on 2026-10-05:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 249 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 43 integration scenarios, including Membership request/approve/reject/withdraw/QR activation, timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
+- 250 non-database automated tests pass across Core, DB, API, worker and testkit;
+- the current PostgreSQL gate passes all 44 integration scenarios, including Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-153 shared-Athlete confirmation race, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
@@ -251,6 +251,6 @@ Verified on 2026-10-04:
   passes live/ready, runtime identity, security headers, configured CORS and unauthenticated-boundary
   probes with the correct SHA and rejects a deliberate release mismatch;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 147 scenarios (`141/196 P0`) and distinguishes traceability from complete coverage;
+- the generated acceptance matrix maps 148 scenarios (`142/196 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;
 - the Core specification validator reports 308 transitions, 308 registered events, 214 acceptance scenarios, zero open questions and zero errors.

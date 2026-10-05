@@ -4564,6 +4564,193 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await verifySchedulingPublication(database);
   });
 
+  it('[AC-153] serializes overlapping host confirmations around the shared Athlete', async () => {
+    const occurredAt = '2026-10-05T08:00:00.000Z';
+    const sharedAthlete = testId(120000);
+    const firstPeer = testId(120001);
+    const secondPeer = testId(120002);
+    const firstCoach = testId(120003);
+    const secondCoach = testId(120004);
+    const admin = testId(120005);
+    const central = testId(120006);
+    const venue = testId(120007);
+    const community = testId(120008);
+    const firstChat = testId(120009);
+    const secondChat = testId(120010);
+    const firstMatch = testId(120011);
+    const secondMatch = testId(120012);
+    const firstSlot = testId(120013);
+    const secondSlot = testId(120014);
+    const firstBooking = testId(120015);
+    const secondBooking = testId(120016);
+    const firstStart = '2026-10-06T10:00:00.000Z';
+    const firstEnd = '2026-10-06T11:00:00.000Z';
+    const secondStart = '2026-10-06T10:30:00.000Z';
+    const secondEnd = '2026-10-06T11:30:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${sharedAthlete}::uuid, '+79992000000', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Shared Athlete', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${firstPeer}::uuid, '+79992000001', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'First Peer', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${secondPeer}::uuid, '+79992000002', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Second Peer', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${firstCoach}::uuid, '+79992000003', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'First Coach', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${secondCoach}::uuid, '+79992000004', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Second Coach', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${admin}::uuid, '+79992000005', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Venue Admin', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${central}::uuid, '+79992000006', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Central', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue,
+      venueConfigurationId: testId(120020),
+      communityId: community,
+      communityConfigurationId: testId(120021),
+      membershipId: testId(120022),
+      centralGrantId: testId(120023),
+      athleteUserId: sharedAthlete,
+      centralActorId: central,
+      legalName: 'Conflict Test Gym LLC',
+      venueDisplayName: 'Conflict Test Gym',
+      communityName: 'Conflict Test Community',
+      address: 'Москва',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: { phone: '+79990000501' },
+      occurredAt,
+    });
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values
+        (${testId(120024)}::uuid, ${firstCoach}::uuid, 'COACH', 'COMMUNITY', ${community}::uuid, 'ACTIVE', ${central}::uuid, ${occurredAt}::timestamptz, 1),
+        (${testId(120025)}::uuid, ${secondCoach}::uuid, 'COACH', 'COMMUNITY', ${community}::uuid, 'ACTIVE', ${central}::uuid, ${occurredAt}::timestamptz, 1),
+        (${testId(120026)}::uuid, ${admin}::uuid, 'GYM_ADMIN', 'VENUE', ${venue}::uuid, 'ACTIVE', ${central}::uuid, ${occurredAt}::timestamptz, 1)
+    `.execute(database);
+    await database.transaction().execute(async (transaction) => {
+      await sql`
+        insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+        values
+          (${firstChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+          (${secondChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.chat_participants (chat_id, user_id, joined_at) values
+          (${firstChat}::uuid, ${sharedAthlete}::uuid, ${occurredAt}::timestamptz),
+          (${firstChat}::uuid, ${firstPeer}::uuid, ${occurredAt}::timestamptz),
+          (${secondChat}::uuid, ${sharedAthlete}::uuid, ${occurredAt}::timestamptz),
+          (${secondChat}::uuid, ${secondPeer}::uuid, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.matches (
+          match_id, pair_low_id, pair_high_id, state, chat_id,
+          last_activity_at, version, created_at, updated_at
+        ) values
+          (${firstMatch}::uuid, least(${sharedAthlete}::uuid, ${firstPeer}::uuid), greatest(${sharedAthlete}::uuid, ${firstPeer}::uuid), 'ACTIVE', ${firstChat}::uuid, ${occurredAt}::timestamptz, 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+          (${secondMatch}::uuid, least(${sharedAthlete}::uuid, ${secondPeer}::uuid), greatest(${sharedAthlete}::uuid, ${secondPeer}::uuid), 'ACTIVE', ${secondChat}::uuid, ${occurredAt}::timestamptz, 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.slots (
+          slot_id, venue_id, coach_user_id, start_at, end_at, slot_type,
+          state, commercial_version, published_by, version, created_at, updated_at
+        ) values
+          (${firstSlot}::uuid, ${venue}::uuid, ${firstCoach}::uuid, ${firstStart}::timestamptz, ${firstEnd}::timestamptz, 'PERSONAL', 'PUBLISHED', 1, ${admin}::uuid, 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+          (${secondSlot}::uuid, ${venue}::uuid, ${secondCoach}::uuid, ${secondStart}::timestamptz, ${secondEnd}::timestamptz, 'PERSONAL', 'PUBLISHED', 1, ${admin}::uuid, 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      const firstSnapshot = JSON.stringify({
+        slotId: firstSlot, venueId: venue, venueDisplayName: 'Conflict Test Gym',
+        coachUserId: firstCoach, coachDisplayName: 'First Coach',
+        startAt: firstStart, endAt: firstEnd, priceAmount: null,
+        priceCurrency: null, priceText: null, cancellationTermsText: null,
+        commercialVersion: 1,
+      });
+      const secondSnapshot = JSON.stringify({
+        slotId: secondSlot, venueId: venue, venueDisplayName: 'Conflict Test Gym',
+        coachUserId: secondCoach, coachDisplayName: 'Second Coach',
+        startAt: secondStart, endAt: secondEnd, priceAmount: null,
+        priceCurrency: null, priceText: null, cancellationTermsText: null,
+        commercialVersion: 1,
+      });
+      await sql`
+        insert into scheduling.bookings (
+          booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+          purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+          selection_expires_at, host_confirmation_deadline_at,
+          commercial_terms_snapshot, version, created_at, updated_at
+        ) values
+          (${firstBooking}::uuid, ${firstChat}::uuid, ${firstMatch}::uuid, ${firstSlot}::uuid, least(${sharedAthlete}::uuid, ${firstPeer}::uuid), greatest(${sharedAthlete}::uuid, ${firstPeer}::uuid), 'TRAINING', 'HOST_CONFIRMATION_PENDING', ${sharedAthlete}::uuid, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz, '2026-10-05T09:00:00.000Z'::timestamptz, '2026-10-06T02:00:00.000Z'::timestamptz, ${firstSnapshot}::jsonb, 2, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+          (${secondBooking}::uuid, ${secondChat}::uuid, ${secondMatch}::uuid, ${secondSlot}::uuid, least(${sharedAthlete}::uuid, ${secondPeer}::uuid), greatest(${sharedAthlete}::uuid, ${secondPeer}::uuid), 'TRAINING', 'HOST_CONFIRMATION_PENDING', ${sharedAthlete}::uuid, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz, '2026-10-05T09:00:00.000Z'::timestamptz, '2026-10-06T02:30:00.000Z'::timestamptz, ${secondSnapshot}::jsonb, 2, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into platform.domain_events (
+          event_id, event_name, event_version, aggregate_type, aggregate_id,
+          aggregate_version, transition_id, correlation_id, actor_id, occurred_at,
+          payload, idempotency_key_hash
+        ) values
+          (${testId(120027)}::uuid, 'SlotMutuallySelected', 1, 'Booking', ${firstBooking}::uuid, 2, 'B-02', ${testId(120028)}::uuid, ${sharedAthlete}::uuid, ${occurredAt}::timestamptz, ${JSON.stringify({ bookingId: firstBooking, slotId: firstSlot })}::jsonb, 'fixture:first-mutual-selection'),
+          (${testId(120029)}::uuid, 'SlotMutuallySelected', 1, 'Booking', ${secondBooking}::uuid, 2, 'B-02', ${testId(120030)}::uuid, ${sharedAthlete}::uuid, ${occurredAt}::timestamptz, ${JSON.stringify({ bookingId: secondBooking, slotId: secondSlot })}::jsonb, 'fixture:second-mutual-selection')
+      `.execute(transaction);
+    });
+
+    const commandFor = (bookingId: string, base: number): CommandEnvelope<ConfirmBookingHostPayload> => ({
+      commandId: testId(base), commandType: 'CONFIRM_BOOKING_HOST',
+      idempotencyKey: `athlete-overlap:${bookingId}`,
+      actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+      aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 2,
+      correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+      source: 'api', payloadVersion: 1, payload: { bookingId },
+    });
+    const effectsFor = (base: number) => ({
+      eventId: testId(base), auditId: testId(base + 1), outboxMessageId: testId(base + 2),
+      slotEventId: testId(base + 3), sessionEventId: testId(base + 4),
+      sessionId: testId(base + 5), notificationIds: [testId(base + 6), testId(base + 7)] as const,
+      notificationOutboxMessageId: testId(base + 8), sessionTimerOutboxMessageId: testId(base + 9),
+    });
+    const results = await Promise.allSettled([
+      confirmBookingHost(database, commandFor(firstBooking, 120100), effectsFor(120110),
+        () => new Date('2026-10-05T08:15:00.000Z')),
+      confirmBookingHost(database, commandFor(secondBooking, 120200), effectsFor(120210),
+        () => new Date('2026-10-05T08:15:00.000Z')),
+    ]);
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof confirmBookingHost>>> =>
+        result.status === 'fulfilled',
+    );
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    const resultDiagnostics = results.map((result) => result.status === 'fulfilled'
+      ? `fulfilled:${result.value.response.outcome}`
+      : result.reason instanceof Error
+        ? `rejected:${result.reason.name}:${result.reason.message}`
+        : `rejected:${String(result.reason)}`);
+    expect(fulfilled, resultDiagnostics.join('\n')).toHaveLength(1);
+    expect(fulfilled[0]?.value.response.outcome).toBe('CONFIRMED');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toBeInstanceOf(SchedulingConflictError);
+    expect(rejected[0]?.reason).toMatchObject({ reason: 'ATHLETE_SCHEDULE_CONFLICT' });
+
+    const sessions = await sql<{ readonly count: string }>`
+      select count(*)::text as count from scheduling.sessions
+      where ${sharedAthlete}::uuid in (pair_low_id, pair_high_id)
+    `.execute(database);
+    expect(sessions.rows[0]?.count).toBe('1');
+    const resources = await sql<{
+      readonly slot_state: string;
+      readonly booking_state: string;
+    }>`
+      select slot.state as slot_state, booking.state as booking_state
+      from scheduling.slots slot
+      join scheduling.bookings booking on booking.slot_id = slot.slot_id
+      order by slot.slot_id
+    `.execute(database);
+    expect(resources.rows.map((row) => `${row.slot_state}/${row.booking_state}`).sort()).toEqual([
+      'BOOKED/CONFIRMED_PAIR',
+      'PUBLISHED/HOST_CONFIRMATION_PENDING',
+    ]);
+  });
+
   it('[AC-155] converts a confirmed Training only after both Athletes and the assigned Coach accept', async () => {
     const fixture = await seedConfirmedTrainingForConversion(18000);
     const conversionId = testId(18100);

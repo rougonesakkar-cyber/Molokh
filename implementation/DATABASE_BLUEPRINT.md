@@ -133,6 +133,10 @@ and database guards for immutable commercial/offering snapshots. Migration
 Slot and creates exactly one Session in the same transaction. `0020_session_lifecycle.sql`
 aligns it with the formal state machine: it starts as `SCHEDULED`, receives
 `window_opened_at` from a versioned server timer, and only then becomes `READY_FOR_COACH`.
+Before the claim, the command locks both Athlete identity rows in stable UUID order and checks
+their active Session ranges with half-open interval semantics. Concurrent confirmations for
+different Slots that share an Athlete therefore serialize without deadlock; a loser receives
+`ATHLETE_SCHEDULE_CONFLICT`, and its Slot/Booking remain unmodified.
 That migration also adds immutable-per-Athlete Attendance facts and separate actual start/end
 timestamps. `0021_backfill_session_window_timers.sql` schedules timers for Sessions confirmed
 before the lifecycle increment was deployed. `0057_reissue_current_session_window_timers.sql`

@@ -192,6 +192,9 @@ Host confirmation locks the Slot, changes the Booking to `CONFIRMED_PAIR` and cr
 one `SCHEDULED` Session in the same transaction. A versioned server timer changes it to
 `READY_FOR_COACH` at `scheduled_start_at` without asserting attendance. If another pair won the Slot race, the
 losing Booking receives an explicit resource-conflict rejection and no Session is created.
+If either Athlete already has an overlapping confirmed Session, confirmation returns
+`409 ATHLETE_SCHEDULE_CONFLICT`; the pending Booking and PUBLISHED Slot stay unchanged so users
+can deliberately choose another time instead of receiving an automatic replacement.
 An explicit host rejection stores its reason, notifies both Athletes and leaves an ordinary Slot
 available. For an Official Challenge it atomically returns the Challenge from `BOOKING_PENDING`
 to `ACCEPTED_UNSCHEDULED` without resetting its scheduling deadline or obligations. Schedule

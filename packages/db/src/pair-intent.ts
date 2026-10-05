@@ -6,6 +6,7 @@ import {
   SchedulingPermissionDeniedError,
   SchedulingValidationError,
   assertAcceptedChallengeCanStartBooking,
+  assertAthleteScheduleAvailable,
   assertChallengeBookingCanBeConfirmed,
   assertHostConfirmationWindow,
   bookingSelectionExpiresAt,
@@ -590,6 +591,42 @@ async function slotForHostConfirmation(
   return slot;
 }
 
+async function assertAthletesHaveNoConfirmedOverlap(
+  transaction: Transaction<Database>,
+  athleteUserIds: readonly [string, string],
+  startAt: Date,
+  endAt: Date,
+): Promise<void> {
+  for (const athleteUserId of [...athleteUserIds].sort()) {
+    await sql`
+      select user_id from identity.users
+      where user_id = ${athleteUserId}::uuid
+      for update
+    `.execute(transaction);
+  }
+  const overlap = await sql<{ readonly present: boolean }>`
+    select true as present
+    from scheduling.sessions
+    where state in ('SCHEDULED', 'READY_FOR_COACH', 'IN_PROGRESS')
+      and tstzrange(scheduled_start_at, scheduled_end_at, '[)')
+        && tstzrange(${startAt.toISOString()}::timestamptz, ${endAt.toISOString()}::timestamptz, '[)')
+      and (
+        solo_athlete_user_id in (${athleteUserIds[0]}::uuid, ${athleteUserIds[1]}::uuid)
+        or (
+          solo_athlete_user_id is null
+          and (
+            pair_low_id in (${athleteUserIds[0]}::uuid, ${athleteUserIds[1]}::uuid)
+            or pair_high_id in (${athleteUserIds[0]}::uuid, ${athleteUserIds[1]}::uuid)
+          )
+        )
+      )
+    limit 1
+  `.execute(transaction);
+  assertAthleteScheduleAvailable({
+    hasOverlappingConfirmedSession: overlap.rows[0]?.present === true,
+  });
+}
+
 export async function selectSlot(
   database: Kysely<Database>,
   command: CommandEnvelope<SelectSlotPayload>,
@@ -1083,6 +1120,12 @@ export async function confirmBookingHost(
       }
 
       const snapshot = booking.commercial_terms_snapshot;
+      await assertAthletesHaveNoConfirmedOverlap(
+        transaction,
+        [booking.pair_low_id, booking.pair_high_id],
+        slot.start_at,
+        slot.end_at,
+      );
       const slotNextVersion = Number(slot.version) + 1;
       await sql`
         update scheduling.slots
