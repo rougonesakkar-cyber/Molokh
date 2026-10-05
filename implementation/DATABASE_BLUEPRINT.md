@@ -187,6 +187,12 @@ and Session. Database checks require `TRAINING` rows to have no Challenge and
 `OFFICIAL_CHALLENGE` rows to have one; an index permits only one active Slot request per
 Challenge while retaining rejected/expired Booking history.
 
+`0060_challenge_reschedules.sql` adds the bounded `user_reschedule_count` (`0..2`) and immutable
+`challenge_reschedules` facts. Each row records initiator, A/B/MUTUAL/EXTERNAL attribution,
+private optional reason text, timestamp and optional Booking lineage. CH-22 locks a live Booking
+before its Challenge, atomically cancels that Booking, increments the Challenge version/count and
+reissues the original scheduling-deadline timer; the Slot and active obligations are not mutated.
+
 `0025_official_session_competitive_snapshot.sql` creates the one-per-Session immutable
 competitive snapshot. It records both planned and scheduled-boundary effective stakes together
 with status holders/version, frozen rules/config references, Venue, Coach, pair and logical time.
@@ -457,6 +463,10 @@ sporting history.
 Migration `0059_membership_invites.sql` stores only SHA-256 invite-token digests. Venue QR and
 direct invite resources have an explicit expiry, optional use limit and atomic use counter; raw
 tokens never enter domain events, audit metadata, projections or API responses.
+
+Migration `0060_challenge_reschedules.sql` keeps a user-supplied reason note only in the protected
+append-only row and audit metadata. Public domain/outbox/notification payloads receive the bounded
+reason category, never the note.
 
 Membership rejection uses the original `community_memberships` privacy split: the Athlete-facing
 projection, event and notification contain only a neutral public category and the seven-day

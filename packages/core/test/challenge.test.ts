@@ -22,6 +22,7 @@ import {
   effectiveChallengeStakeAtSessionWindow,
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
+  nextAthleteChallengeRescheduleCount,
   optionalChallengePairQuietEndsAt,
   optionalChallengeReminderDeadlines,
   optionalChallengeResponseDeadline,
@@ -196,6 +197,28 @@ describe('Official Challenge policy', () => {
       ...input,
       activeObligationCount: 1,
     })).toThrowError(new ChallengeConflictError('CHALLENGE_OBLIGATION_MISSING'));
+  });
+
+  it('[AC-061] counts only a participant reschedule before confirmed Booking', () => {
+    const input = {
+      state: 'BOOKING_PENDING' as const,
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const,
+      userRescheduleCount: 0,
+    };
+    expect(nextAthleteChallengeRescheduleCount(input)).toBe(1);
+    expect(nextAthleteChallengeRescheduleCount({
+      ...input, state: 'ACCEPTED_UNSCHEDULED', actorUserId: 'athlete-b',
+    })).toBe(1);
+    expect(() => nextAthleteChallengeRescheduleCount({
+      ...input, actorUserId: 'outsider',
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED'));
+    expect(() => nextAthleteChallengeRescheduleCount({
+      ...input, state: 'BOOKED',
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED'));
+    expect(() => nextAthleteChallengeRescheduleCount({
+      ...input, userRescheduleCount: 2,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
   });
 
   it('confirms only the Booking currently owned by the accepted Challenge', () => {

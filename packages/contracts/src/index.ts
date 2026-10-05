@@ -881,6 +881,8 @@ const ChallengeConflictCodeSchema = Type.Union([
   Type.Literal('CHALLENGE_SCHEDULING_NOT_DUE'),
   Type.Literal('CHALLENGE_PARTICIPANT_REQUIRED'),
   Type.Literal('CHALLENGE_OBLIGATION_MISSING'),
+  Type.Literal('CHALLENGE_RESCHEDULE_NOT_ALLOWED'),
+  Type.Literal('CHALLENGE_RESCHEDULE_LIMIT_REACHED'),
 ]);
 
 export const ChallengeProjectionSchema = Type.Object(
@@ -914,6 +916,7 @@ export const ChallengeProjectionSchema = Type.Object(
     responseDeadlineAt: Type.String({ format: 'date-time' }),
     acceptedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     schedulingDeadlineAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    userRescheduleCount: Type.Integer({ minimum: 0, maximum: 2 }),
     pairQuietUntil: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     viewerRole: Type.Union([Type.Literal('INITIATOR'), Type.Literal('RECIPIENT')]),
     version: Type.Integer({ minimum: 1 }),

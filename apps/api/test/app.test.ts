@@ -101,6 +101,8 @@ import type {
   WithdrawSlotPayload,
   ChallengeProjection,
   ChatChallengeProjection,
+  AthleteChallengeRescheduleEffectIds,
+  RescheduleChallengeByAthletePayload,
   PauseCommunityPayload,
   ReactivateCommunityPayload,
   CommunityClosureCommandPreparation,
@@ -2852,7 +2854,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');
   });
 
-  it('exposes the direct optional Official Challenge flow in a Match chat', async () => {
+  it('[AC-061] exposes the direct optional Official Challenge and Athlete reschedule flow', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000001101';
     const challengeId = '0199a1b2-1234-7000-8000-000000001102';
     const challenge: ChallengeProjection = {
@@ -2872,6 +2874,7 @@ describe('runtime contract', () => {
       responseDeadlineAt: '2026-09-10T10:00:00.000Z',
       acceptedAt: null,
       schedulingDeadlineAt: null,
+      userRescheduleCount: 0,
       pairQuietUntil: null,
       viewerRole: 'INITIATOR',
       version: 1,
@@ -2904,6 +2907,16 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     });
+    const rescheduled = vi.fn(async (
+      _command: CommandEnvelope<RescheduleChallengeByAthletePayload>,
+      _ids: AthleteChallengeRescheduleEffectIds,
+    ): Promise<ExecutedCommand<ChallengeProjection>> => ({
+      responseStatus: 200,
+      response: { ...acceptedProjection, userRescheduleCount: 1, version: 3 },
+      eventId: '0199a1b2-1234-7000-8000-000000001108',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
     const app = await buildApp({
       challenge: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -2912,6 +2925,7 @@ describe('runtime contract', () => {
         acceptOptionalChallenge: accepted,
         declineOptionalChallenge: vi.fn(),
         withdrawOptionalChallenge: vi.fn(),
+        rescheduleChallengeByAthlete: rescheduled,
       },
     });
     apps.push(app);
@@ -2960,11 +2974,38 @@ describe('runtime contract', () => {
       payload: { challengeId },
     });
 
+    const reschedule = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/reschedule`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-reschedule-api-1',
+        'if-match': '2',
+      },
+      payload: { reasonCode: 'SCHEDULE_CHANGED' },
+    });
+    expect(reschedule.statusCode).toBe(200);
+    expect(reschedule.json()).toMatchObject({
+      data: { state: 'ACCEPTED_UNSCHEDULED', userRescheduleCount: 1, version: 3 },
+    });
+    expect(rescheduled.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+      aggregateType: 'Challenge',
+      aggregateId: challengeId,
+      expectedVersion: 2,
+      payload: {
+        challengeId,
+        reasonCode: 'SCHEDULE_CHANGED',
+        reasonNote: null,
+      },
+    });
+
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/challenge');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/accept');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/decline');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/withdraw');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/reschedule');
   });
 });

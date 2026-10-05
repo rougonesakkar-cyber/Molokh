@@ -12,6 +12,8 @@ import {
   assertOptionalChallengeCanBeWithdrawn,
   assertMandatoryChallengeCanBeDeclined,
   assertMandatoryChallengeCanBeExpired,
+  nextAthleteChallengeRescheduleCount,
+  normalizeScheduleMutationReason,
   deriveProvisionalStatusTransition,
   extendedChallengeSchedulingDeadline,
   normalizeSocialPair,
@@ -22,6 +24,7 @@ import {
   type ChallengeConflictCode,
   type ChallengeState,
   type CommandEnvelope,
+  type ScheduleMutationReasonCode,
   type TimerAggregateSnapshot,
 } from '@molokh/core';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -51,6 +54,12 @@ export interface ExpireChallengeSchedulingPayload {
   readonly challengeId: string;
 }
 
+export interface RescheduleChallengeByAthletePayload {
+  readonly challengeId: string;
+  readonly reasonCode: ScheduleMutationReasonCode;
+  readonly reasonNote: string | null;
+}
+
 export interface ChallengeEffectIds {
   readonly eventId: string;
   readonly auditId: string;
@@ -68,6 +77,13 @@ export interface ChallengeEffectIds {
 }
 
 export interface ExpireChallengeSchedulingEffectIds extends ChallengeEffectIds {
+  readonly bookingEventId: string;
+  readonly bookingOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string];
+}
+
+export interface AthleteChallengeRescheduleEffectIds extends ChallengeEffectIds {
+  readonly rescheduleId: string;
   readonly bookingEventId: string;
   readonly bookingOutboxMessageId: string;
   readonly notificationIds: readonly [string, string];
@@ -106,6 +122,7 @@ export interface ChallengeProjection {
   readonly responseDeadlineAt: string;
   readonly acceptedAt: string | null;
   readonly schedulingDeadlineAt: string | null;
+  readonly userRescheduleCount: number;
   readonly pairQuietUntil: string | null;
   readonly viewerRole: 'INITIATOR' | 'RECIPIENT';
   readonly version: number;
@@ -180,6 +197,7 @@ interface ChallengeRow {
   readonly accepted_at: Date | null;
   readonly scheduling_deadline_at: Date | null;
   readonly scheduling_extension_count: number;
+  readonly user_reschedule_count: number;
   readonly quiet_until: Date | null;
   readonly cycle_no: number;
   readonly version: string;
@@ -283,6 +301,7 @@ function projection(row: ChallengeRow, viewerUserId: string): ChallengeProjectio
     responseDeadlineAt: row.response_deadline_at.toISOString(),
     acceptedAt: row.accepted_at?.toISOString() ?? null,
     schedulingDeadlineAt: row.scheduling_deadline_at?.toISOString() ?? null,
+    userRescheduleCount: row.user_reschedule_count,
     pairQuietUntil: row.quiet_until?.toISOString() ?? null,
     viewerRole: viewerUserId === row.initiator_user_id ? 'INITIATOR' : 'RECIPIENT',
     version: Number(row.version),
@@ -486,6 +505,7 @@ async function challengeRow(
       challenge.ruleset_snapshot_id, snapshot.ruleset_ref, snapshot.ruleset_ack_mode,
       challenge.response_deadline_at, challenge.accepted_at,
       challenge.scheduling_deadline_at, challenge.scheduling_extension_count,
+      challenge.user_reschedule_count,
       challenge.cycle_no,
       (select max(quiet.ends_at) from competition.optional_pair_quiet_periods as quiet
         where quiet.source_challenge_id = challenge.challenge_id) as quiet_until,
@@ -1263,6 +1283,234 @@ export async function withdrawOptionalChallenge(
         outbox: [
           { messageId: ids.outboxMessageId, topic: 'competition.challenge.withdrawn.v1', payload: { challengeId: row.challenge_id, competitionId: row.competition_id, responsePolicy: row.response_policy } },
           { messageId: ids.notificationOutboxMessageId, topic: 'notification.in_app.v1', payload: { notifications: [{ notificationId: ids.notificationId, recipientUserId: row.recipient_user_id, category: row.response_policy === 'MANDATORY' ? 'MANDATORY' : 'SOCIAL', renderKey: row.response_policy === 'MANDATORY' ? 'challenge.mandatory-withdrawn' : 'challenge.optional-withdrawn', actionTarget: { type: 'CHAT', chatId: row.source_chat_id }, payload: { challengeId: row.challenge_id, noLoss: true }, deadlineAt: null }] } },
+        ],
+      };
+    },
+  });
+}
+
+export async function rescheduleChallengeByAthlete(
+  database: Kysely<Database>,
+  command: CommandEnvelope<RescheduleChallengeByAthletePayload>,
+  ids: AthleteChallengeRescheduleEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ChallengeProjection>> {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'Challenge'
+    || command.aggregateId !== command.payload.challengeId
+    || command.commandType !== 'RESCHEDULE_CHALLENGE_BY_ATHLETE'
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  const reason = normalizeScheduleMutationReason(command.payload);
+  return executeCriticalCommand(database, {
+    command: { ...command, payload: { ...command.payload, ...reason } },
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const bookingResult = await sql<{
+        readonly booking_id: string;
+        readonly chat_id: string;
+        readonly slot_id: string;
+        readonly state: 'SELECTING' | 'HOST_CONFIRMATION_PENDING';
+        readonly coach_user_id: string | null;
+        readonly version: string;
+      }>`
+        select booking_id, chat_id, slot_id, state,
+          commercial_terms_snapshot ->> 'coachUserId' as coach_user_id,
+          version::text as version
+        from scheduling.bookings
+        where challenge_id = ${command.aggregateId}::uuid
+          and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        order by created_at desc, booking_id desc
+        limit 1
+        for update
+      `.execute(transaction);
+      const booking = bookingResult.rows[0] ?? null;
+      const row = await challengeRow(transaction, command.aggregateId, true);
+      const nextCount = nextAthleteChallengeRescheduleCount({
+        state: row.state,
+        actorUserId: command.actor.id!,
+        participantUserIds: [row.pair_low_id, row.pair_high_id],
+        userRescheduleCount: row.user_reschedule_count,
+      });
+      if (!row.scheduling_deadline_at) {
+        throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+      }
+      if (
+        (row.state === 'BOOKING_PENDING' && booking === null)
+        || (row.state === 'ACCEPTED_UNSCHEDULED' && booking !== null)
+      ) {
+        throw new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING');
+      }
+      await assertChallengeCompetitionOperational(transaction, row.competition_id);
+      if (booking) {
+        await sql`
+          update scheduling.bookings
+          set state = 'CANCELLED', version = version + 1,
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where booking_id = ${booking.booking_id}::uuid
+            and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        `.execute(transaction);
+      }
+      const faultAttribution = command.actor.id === row.pair_low_id ? 'A' : 'B';
+      await sql`
+        insert into competition.challenge_reschedules (
+          reschedule_id, challenge_id, booking_id, initiated_by_user_id,
+          fault_attribution, fault_user_id, reason_code, reason_note, created_at
+        ) values (
+          ${ids.rescheduleId}::uuid, ${row.challenge_id}::uuid,
+          ${booking?.booking_id ?? null}::uuid, ${command.actor.id}::uuid,
+          ${faultAttribution}, ${command.actor.id}::uuid,
+          ${reason.reasonCode}, ${reason.reasonNote},
+          ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        update competition.challenges
+        set state = 'ACCEPTED_UNSCHEDULED',
+          user_reschedule_count = ${nextCount}, version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid
+          and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+      `.execute(transaction);
+      const response = projection({
+        ...row,
+        state: 'ACCEPTED_UNSCHEDULED',
+        user_reschedule_count: nextCount,
+        version: String(context.nextVersion),
+      }, command.actor.id!);
+      const peerUserId = command.actor.id === row.pair_low_id
+        ? row.pair_high_id
+        : row.pair_low_id;
+      const notifications = [
+        {
+          notificationId: ids.notificationIds[0],
+          recipientUserId: peerUserId,
+          category: 'MANDATORY',
+          renderKey: 'challenge.rescheduled-by-athlete',
+          actionTarget: { type: 'CHALLENGE', challengeId: row.challenge_id },
+          payload: {
+            challengeId: row.challenge_id,
+            userRescheduleCount: nextCount,
+            reasonCode: reason.reasonCode,
+          },
+          deadlineAt: row.scheduling_deadline_at.toISOString(),
+        },
+        ...(booking?.coach_user_id
+          ? [{
+              notificationId: ids.notificationIds[1],
+              recipientUserId: booking.coach_user_id,
+              category: 'SERVICE',
+              renderKey: 'booking.host-request-cancelled-by-challenge-reschedule',
+              actionTarget: { type: 'BOOKING', bookingId: booking.booking_id },
+              payload: {
+                challengeId: row.challenge_id,
+                bookingId: booking.booking_id,
+                slotId: booking.slot_id,
+              },
+              deadlineAt: null,
+            }]
+          : []),
+      ];
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'ChallengeRescheduledByAthlete',
+          schemaVersion: 1,
+          transitionId: 'CH-22',
+          payload: {
+            challengeId: row.challenge_id,
+            rescheduleId: ids.rescheduleId,
+            bookingId: booking?.booking_id ?? null,
+            initiatedByUserId: command.actor.id,
+            faultAttribution,
+            reasonCode: reason.reasonCode,
+            userRescheduleCount: nextCount,
+            schedulingDeadlineAt: row.scheduling_deadline_at.toISOString(),
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        },
+        ...(booking
+          ? {
+              relatedEvents: [{
+                eventId: ids.bookingEventId,
+                eventName: 'BookingRequestWithdrawn',
+                schemaVersion: 1,
+                aggregateType: 'Booking',
+                aggregateId: booking.booking_id,
+                aggregateVersion: Number(booking.version) + 1,
+                transitionId: 'B-04',
+                payload: {
+                  bookingId: booking.booking_id,
+                  slotId: booking.slot_id,
+                  withdrawnByUserId: command.actor.id,
+                  previousState: booking.state,
+                  cause: 'ATHLETE_CHALLENGE_RESCHEDULE',
+                },
+                metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+              }],
+            }
+          : {}),
+        audit: {
+          auditId: ids.auditId,
+          action: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+          transitionId: 'CH-22',
+          reasonCode: reason.reasonCode,
+          beforeState: row.state,
+          afterState: 'ACCEPTED_UNSCHEDULED',
+          metadata: {
+            rescheduleId: ids.rescheduleId,
+            bookingId: booking?.booking_id ?? null,
+            reasonNote: reason.reasonNote,
+            faultAttribution,
+            userRescheduleCount: nextCount,
+            schedulingDeadlineAt: row.scheduling_deadline_at.toISOString(),
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'competition.challenge.rescheduled-by-athlete.v1',
+            payload: {
+              challengeId: row.challenge_id,
+              rescheduleId: ids.rescheduleId,
+              bookingId: booking?.booking_id ?? null,
+              initiatedByUserId: command.actor.id,
+              reasonCode: reason.reasonCode,
+              userRescheduleCount: nextCount,
+              timer: {
+                commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+                aggregateType: 'Challenge',
+                aggregateId: row.challenge_id,
+                deadlineAt: row.scheduling_deadline_at.toISOString(),
+                expectedState: 'ACCEPTED_UNSCHEDULED',
+                expectedVersion: context.nextVersion,
+                policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${row.challenge_id}:expire-scheduling:v${context.nextVersion}`,
+              },
+            },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: { notifications },
+          },
+          ...(booking
+            ? [{
+                messageId: ids.bookingOutboxMessageId,
+                topic: 'scheduling.booking.request-withdrawn.v1',
+                sourceEventId: ids.bookingEventId,
+                payload: {
+                  bookingId: booking.booking_id,
+                  chatId: booking.chat_id,
+                  slotId: booking.slot_id,
+                  cause: 'ATHLETE_CHALLENGE_RESCHEDULE',
+                },
+              }]
+            : []),
         ],
       };
     },

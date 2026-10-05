@@ -308,6 +308,63 @@ export default function ChatScreen() {
     }
   };
 
+  const runChallengeReschedule = async (reasonCode: 'SCHEDULE_CHANGED' | 'OTHER') => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge || actingChallenge) return;
+    const operation = `challenge:reschedule:${challenge.challengeId}:v${challenge.version}:${reasonCode}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingChallenge(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challenge.challengeId}/reschedule`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(challenge.version),
+          },
+          body: JSON.stringify({ reasonCode }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) {
+          await Promise.all([loadChallenge(), loadTrainingOptions()]);
+        }
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as ChallengeCommandResponse;
+      actionKeys.current.delete(operation);
+      setChatChallenge((current) => current ? { ...current, challenge: result.data } : current);
+      await Promise.all([loadChallenge(), loadTrainingOptions()]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось перенести Challenge');
+    } finally {
+      setActingChallenge(false);
+    }
+  };
+
+  const confirmChallengeReschedule = () => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge || challenge.userRescheduleCount >= 2) return;
+    Alert.alert(
+      'Перенести Challenge?',
+      `Будет использован перенос ${challenge.userRescheduleCount + 1} из 2. Текущий выбор слота отменится без поражения, а Challenge останется принятым.`,
+      [
+        { text: 'Не переносить', style: 'cancel' },
+        {
+          text: 'Изменилось расписание',
+          onPress: () => void runChallengeReschedule('SCHEDULE_CHANGED'),
+        },
+        { text: 'Другая причина', onPress: () => void runChallengeReschedule('OTHER') },
+      ],
+    );
+  };
+
   const requestGuardianConsent = async () => {
     const challengeId = chatChallenge?.challenge?.challengeId;
     const normalizedEmail = guardianEmail.trim();
@@ -785,6 +842,20 @@ export default function ChatScreen() {
                       <Text style={styles.trainingTerms}>
                         Договоритесь о времени до {chatChallenge.challenge.schedulingDeadlineAt ? formatDateTime(chatChallenge.challenge.schedulingDeadlineAt) : 'назначенного срока'}. Официальная Session будет связана с этим Challenge.
                       </Text>
+                      <Text style={styles.trainingTerms}>
+                        Пользовательские переносы: {chatChallenge.challenge.userRescheduleCount} из 2.
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2 }}
+                        disabled={actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2}
+                        onPress={confirmChallengeReschedule}
+                        style={({ pressed }) => [styles.secondaryChallengeButton, (actingChallenge || chatChallenge.challenge!.userRescheduleCount >= 2) && styles.disabled, pressed && styles.pressed]}
+                      >
+                        <Text style={styles.secondaryChallengeText}>
+                          {chatChallenge.challenge.userRescheduleCount >= 2 ? 'Лимит переносов использован' : 'Перенести Challenge'}
+                        </Text>
+                      </Pressable>
                     </>
                   ) : chatChallenge.challenge.state === 'BOOKING_PENDING' ? (
                     <>
@@ -792,6 +863,20 @@ export default function ChatScreen() {
                       <Text style={styles.trainingTerms}>
                         Подтвердите один вариант вместе. После этого зал или Coach создаст Official Session одной кнопкой.
                       </Text>
+                      <Text style={styles.trainingTerms}>
+                        «Отменить выбор слота» не расходует перенос. «Перенести Challenge» использует один из {2 - chatChallenge.challenge.userRescheduleCount} оставшихся переносов.
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2 }}
+                        disabled={actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2}
+                        onPress={confirmChallengeReschedule}
+                        style={({ pressed }) => [styles.secondaryChallengeButton, (actingChallenge || chatChallenge.challenge!.userRescheduleCount >= 2) && styles.disabled, pressed && styles.pressed]}
+                      >
+                        <Text style={styles.secondaryChallengeText}>
+                          {chatChallenge.challenge.userRescheduleCount >= 2 ? 'Лимит переносов использован' : 'Перенести Challenge'}
+                        </Text>
+                      </Pressable>
                     </>
                   ) : chatChallenge.challenge.state === 'BOOKED' ? (
                     <>

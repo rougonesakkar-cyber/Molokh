@@ -4,14 +4,17 @@ import {
   ChatChallengeResponseSchema,
   CreateDirectChallengeBodySchema,
   RespondToChallengeBodySchema,
+  ScheduleMutationReasonBodySchema,
   type ChallengeCommandResponse,
   type ChatChallengeResponse,
   type CreateDirectChallengeBody,
   type RespondToChallengeBody,
+  type ScheduleMutationReasonBody,
 } from '@molokh/contracts';
 import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core';
 import type {
   AcceptChallengeEffectIds,
+  AthleteChallengeRescheduleEffectIds,
   ChallengeEffectIds,
   ChallengeProjection,
   ChatChallengeProjection,
@@ -20,6 +23,7 @@ import type {
   DeclineChallengeEffectIds,
   ExecutedCommand,
   RespondToChallengePayload,
+  RescheduleChallengeByAthletePayload,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -58,6 +62,10 @@ export interface ChallengeRouteDependencies {
   readonly withdrawOptionalChallenge: (
     command: CommandEnvelope<RespondToChallengePayload>,
     ids: ChallengeEffectIds,
+  ) => Promise<ExecutedCommand<ChallengeProjection>>;
+  readonly rescheduleChallengeByAthlete: (
+    command: CommandEnvelope<RescheduleChallengeByAthletePayload>,
+    ids: AthleteChallengeRescheduleEffectIds,
   ) => Promise<ExecutedCommand<ChallengeProjection>>;
 }
 
@@ -102,6 +110,16 @@ function basicIds(): ChallengeEffectIds {
   };
 }
 
+function athleteRescheduleIds(): AthleteChallengeRescheduleEffectIds {
+  return {
+    ...basicIds(),
+    rescheduleId: newUuidV7(),
+    bookingEventId: newUuidV7(),
+    bookingOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7()],
+  };
+}
+
 function commandResponse(
   executed: ExecutedCommand<ChallengeProjection>,
   requestId: string,
@@ -118,9 +136,11 @@ function commandEnvelope(
   commandType: string,
   idempotencyKey: string,
   version: number,
-  payload: RespondToChallengePayload | CreateDirectChallengePayload,
+  payload: RespondToChallengePayload | CreateDirectChallengePayload
+    | RescheduleChallengeByAthletePayload,
   request: FastifyRequest,
-): CommandEnvelope<RespondToChallengePayload | CreateDirectChallengePayload> {
+): CommandEnvelope<RespondToChallengePayload | CreateDirectChallengePayload
+  | RescheduleChallengeByAthletePayload> {
   const context = requestContext(request);
   return {
     commandId: newUuidV7(),
@@ -202,6 +222,60 @@ export async function registerChallengeRoutes(
       };
       const executed = await dependencies.createDirectOpenChallenge(command, ids);
       await reply.status(executed.responseStatus).send(commandResponse(executed, requestContext(request).requestId));
+    },
+  );
+
+  app.post<{
+    Body: ScheduleMutationReasonBody;
+    Headers: ChallengeHeaders;
+    Params: ChallengeParams;
+  }>(
+    '/api/v1/challenges/:challengeId/reschedule',
+    {
+      schema: {
+        operationId: 'rescheduleChallengeByAthlete',
+        params: Type.Object(
+          { challengeId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: ScheduleMutationReasonBodySchema,
+        response: {
+          200: ChallengeCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const key = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const command = commandEnvelope(
+        authenticated.userId,
+        request.params.challengeId,
+        'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+        key,
+        expectedVersion(request.headers['if-match'], 1),
+        {
+          challengeId: request.params.challengeId,
+          reasonCode: request.body.reasonCode,
+          reasonNote: request.body.reasonNote ?? null,
+        },
+        request,
+      ) as CommandEnvelope<RescheduleChallengeByAthletePayload>;
+      const executed = await dependencies.rescheduleChallengeByAthlete(
+        command,
+        athleteRescheduleIds(),
+      );
+      await reply.status(executed.responseStatus).send(
+        commandResponse(executed, requestContext(request).requestId),
+      );
     },
   );
 

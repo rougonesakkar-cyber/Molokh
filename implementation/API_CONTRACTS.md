@@ -227,7 +227,7 @@ ordinary Training Sessions.
 | POST | `/challenges/{id}/accept` | implemented optional or mandatory recipient acceptance and atomic participant obligations |
 | POST | `/challenges/{id}/decline` | optional: no-loss decline/48-hour pair quiet; mandatory: appealable administrative Forfeit |
 | POST | `/challenges/{id}/withdraw` | implemented pre-accept initiator withdrawal, including no-fault direct-status withdrawal |
-| POST | `/challenges/{id}/reschedules` | actor/reason; server assigns fault/count |
+| POST | `/challenges/{id}/reschedule` | implemented Athlete CH-22; actor/reason supplied, server assigns fault/count |
 | POST | `/challenges/{id}/capacity-extension` | system/Central path only |
 | GET | `/me/competition` | implemented member/outsider-filtered status and FIFO projection |
 | POST | `/competitions/{id}/queue-entries` | implemented explicit status/GENESIS intent |
@@ -248,7 +248,13 @@ ordinary Training Sessions.
 The implemented direct slice returns the frozen ruleset reference/mode, response policy, stake,
 deadlines, state/version and viewer role. Its accepted state is linked through Booking to one
 confirmed `OFFICIAL_CHALLENGE` Session without a second UI mode. Acknowledgment proofs remain
-server-side append-only records. The first status slice now exposes the canonical holder cards,
+server-side append-only records. Before that confirmation, either participant may call the
+versioned/idempotent `reschedule` command in `ACCEPTED_UNSCHEDULED` or `BOOKING_PENDING`. CH-22
+increments the server-owned count, records initiator/category/A-or-B fault/time and optional
+Booking lineage, cancels the pending Booking and reissues the timer against the unchanged original
+deadline. The free-text note remains private; neither the peer notification nor public event/outbox
+payload exposes it. This command is deliberately distinct from no-count `POST /bookings/{id}/withdraw`.
+The first status slice now exposes the canonical holder cards,
 active status Challenge summary, FIFO rows and the viewer's mutual GENESIS action. GENESIS pairing,
 response expiry and accepted service-Chat scheduling are implemented. The strict direct-status
 head now activates only against the still-current Contender when the status slot is free. It creates
