@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertMembershipTransition,
+  membershipReapplyNotBefore,
   membershipRequestDeadline,
 } from '../src/membership.js';
 
@@ -47,5 +48,34 @@ describe('Membership lifecycle policy', () => {
       ...base, transition: 'APPROVE', currentMembershipState: 'PENDING',
       actorControlsVenue: true, hasOtherActiveCompetitiveMembership: true,
     })).toThrowError(expect.objectContaining({ code: 'MVP_ACTIVE_COMMUNITY_LIMIT' }));
+  });
+
+  it('[M-04] requires private and neutral reasons and starts an exact seven-day reapply wait', () => {
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'REJECT', currentMembershipState: 'PENDING',
+      actorControlsVenue: true, publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+      internalRejectionReasonCode: 'CAPACITY_LIMIT',
+    })).not.toThrow();
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'REJECT', currentMembershipState: 'PENDING',
+      actorControlsVenue: true, publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+    })).toThrowError(expect.objectContaining({ code: 'MEMBERSHIP_REJECTION_REASON_INVALID' }));
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'REJECT', currentMembershipState: 'PENDING',
+      actorControlsVenue: true, publicRejectionReasonCode: 'REQUEST_NOT_APPROVED',
+      internalRejectionReasonCode: 'SAFETY_REVIEW',
+    })).toThrowError(expect.objectContaining({ code: 'MEMBERSHIP_REJECTION_REASON_INVALID' }));
+    expect(membershipReapplyNotBefore(now)).toBe('2026-10-11T10:00:00.000Z');
+  });
+
+  it('[M-05] lets only the requester withdraw a pending application', () => {
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'WITHDRAW', currentMembershipState: 'PENDING',
+      actorIsRequester: true,
+    })).not.toThrow();
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'WITHDRAW', currentMembershipState: 'PENDING',
+      actorIsRequester: false,
+    })).toThrowError(expect.objectContaining({ code: 'MEMBERSHIP_REQUESTER_REQUIRED' }));
   });
 });

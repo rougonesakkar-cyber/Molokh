@@ -97,6 +97,7 @@ import {
   listAppealsForCentral,
   projectNotificationBatch,
   projectPendingMembershipNotification,
+  rejectMembership,
   readCommunityContext,
   readBookingOfficialConversionForSession,
   readBookingSoloContinuationForSession,
@@ -117,6 +118,7 @@ import {
   listVenueMembersForAdmin,
   requestMembershipRemoval,
   requestMembership,
+  withdrawMembershipRequest,
   readMembershipTimerSnapshot,
   readVacancyQueueReconciliationCandidate,
   reconcileVacancyQueue,
@@ -10864,11 +10866,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
       family_state: 'REVOKED', trusted_state: 'REVOKED' });
   });
 
-  it('[AC-013][AC-014][AC-015] governs Membership request, timers, approval and QR activation', async () => {
+  it('[AC-013][AC-014][AC-015][M-04][M-05] governs Membership entry and request decisions', async () => {
     const base = 29000;
     const seedUser = testId(base + 1);
     const applicant = testId(base + 2);
     const qrApplicant = testId(base + 3);
+    const lifecycleApplicant = testId(base + 50);
     const admin = testId(base + 4);
     const central = testId(base + 5);
     const venue = testId(base + 6);
@@ -10887,7 +10890,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
         (${admin}::uuid, '+79992900004', now(), '1989-01-01', 'ADULT',
           'Gym Admin', 'ACTIVE', 'ru-RU', 1, now()),
         (${central}::uuid, '+79992900005', now(), '1988-01-01', 'ADULT',
-          'Central', 'ACTIVE', 'ru-RU', 1, now())
+          'Central', 'ACTIVE', 'ru-RU', 1, now()),
+        (${lifecycleApplicant}::uuid, '+79992900050', now(), '1993-01-01', 'ADULT',
+          'Lifecycle Applicant', 'ACTIVE', 'ru-RU', 1, now())
     `.execute(database);
     await ensureLocalPilotCommunity(database, {
       venueId: venue, venueConfigurationId: testId(base + 8), communityId: community,
@@ -10981,6 +10986,130 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(projectPendingMembershipNotification(
       database, requestedMembership, 'ESCALATION', [testId(base + 32)],
     )).resolves.toBe(0);
+
+    const rejectedMembership = testId(base + 51);
+    const rejectedRequestIds = {
+      eventId: testId(base + 52), auditId: testId(base + 53),
+      outboxMessageId: testId(base + 54), notificationIds: [testId(base + 55)],
+      reminderTimerOutboxMessageId: testId(base + 56),
+      escalationTimerOutboxMessageId: testId(base + 57),
+    };
+    await requestMembership(database, {
+      commandId: testId(base + 58), commandType: 'REQUEST_MEMBERSHIP',
+      idempotencyKey: 'membership-request-reject-29000',
+      actor: { type: 'USER', id: lifecycleApplicant, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'CommunityMembership', aggregateId: rejectedMembership,
+      expectedVersion: 0, correlationId: testId(base + 59), causationId: null,
+      requestId: testId(base + 60), source: 'api', payloadVersion: 1,
+      payload: { communityId: community },
+    }, rejectedRequestIds);
+    const rejected = await rejectMembership(database, {
+      commandId: testId(base + 61), commandType: 'REJECT_MEMBERSHIP',
+      idempotencyKey: 'membership-reject-29000',
+      actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+      aggregateType: 'CommunityMembership', aggregateId: rejectedMembership,
+      expectedVersion: 1, correlationId: testId(base + 59),
+      causationId: rejectedRequestIds.eventId, requestId: testId(base + 62),
+      source: 'admin', payloadVersion: 1, payload: {
+        membershipId: rejectedMembership,
+        publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+        internalRejectionReasonCode: 'CAPACITY_LIMIT',
+      },
+    }, { eventId: testId(base + 63), auditId: testId(base + 64),
+      outboxMessageId: testId(base + 65), notificationIds: [testId(base + 66)] });
+    expect(rejected.response).toMatchObject({
+      state: 'REJECTED', publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE', version: 2,
+    });
+    expect(Date.parse(rejected.response.reapplyNotBeforeAt!)).toBeGreaterThan(Date.now());
+    const rejectedContext = await readCommunityContext(database, lifecycleApplicant, community);
+    expect(rejectedContext).toMatchObject({ membership: null,
+      membershipReapplyNotBeforeAt: rejected.response.reapplyNotBeforeAt,
+      membershipLatestRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+      access: { denials: expect.arrayContaining([expect.objectContaining({
+        capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_NOT_DUE',
+      })]) } });
+    const rejectionPrivacy = await sql<{
+      readonly reason_code: string; readonly audit_reason_code: string;
+      readonly public_code: string;
+      readonly event_payload: Record<string, unknown>;
+      readonly audit_metadata: Record<string, unknown>;
+      readonly outbox_payload: Record<string, unknown>;
+    }>`
+      select membership.reason_code,
+        membership.public_rejection_reason_code as public_code,
+        event.payload as event_payload, audit.reason_code as audit_reason_code,
+        audit.metadata as audit_metadata,
+        outbox.payload as outbox_payload
+      from community.community_memberships membership
+      join platform.domain_events event on event.event_id = ${testId(base + 63)}::uuid
+      join platform.audit_events audit on audit.audit_id = ${testId(base + 64)}::uuid
+      join platform.outbox_messages outbox
+        on outbox.message_id = ${testId(base + 65)}::uuid
+      where membership.membership_id = ${rejectedMembership}::uuid
+    `.execute(database);
+    expect(rejectionPrivacy.rows[0]).toMatchObject({
+      reason_code: 'CAPACITY_LIMIT', audit_reason_code: 'CAPACITY_LIMIT',
+      public_code: 'CAPACITY_UNAVAILABLE',
+      event_payload: { publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE' },
+      audit_metadata: { publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE' },
+      outbox_payload: { notifications: [expect.objectContaining({ payload: expect.objectContaining({
+        publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+      }) })] },
+    });
+    expect(JSON.stringify(rejectionPrivacy.rows[0]?.event_payload)).not.toContain('CAPACITY_LIMIT');
+    expect(JSON.stringify(rejectionPrivacy.rows[0]?.outbox_payload)).not.toContain('CAPACITY_LIMIT');
+
+    const replacementMembership = testId(base + 67);
+    const replacementRequest = {
+      commandId: testId(base + 68), commandType: 'REQUEST_MEMBERSHIP',
+      idempotencyKey: 'membership-request-replacement-29000',
+      actor: { type: 'USER' as const, id: lifecycleApplicant,
+        roles: ['ATHLETE'] as const, scopeIds: [] as const },
+      aggregateType: 'CommunityMembership', aggregateId: replacementMembership,
+      expectedVersion: 0, correlationId: testId(base + 69), causationId: null,
+      requestId: testId(base + 70), source: 'api' as const, payloadVersion: 1,
+      payload: { communityId: community },
+    } satisfies CommandEnvelope<{ readonly communityId: string }>;
+    const replacementIds = {
+      eventId: testId(base + 71), auditId: testId(base + 72),
+      outboxMessageId: testId(base + 73), notificationIds: [testId(base + 74)],
+      reminderTimerOutboxMessageId: testId(base + 75),
+      escalationTimerOutboxMessageId: testId(base + 76),
+    };
+    await expect(requestMembership(database, replacementRequest, replacementIds))
+      .rejects.toEqual(expect.objectContaining({ code: 'MEMBERSHIP_REAPPLY_NOT_DUE' }));
+    await sql`
+      update community.community_memberships set reapply_not_before_at = now() - interval '1 minute'
+      where membership_id = ${rejectedMembership}::uuid
+    `.execute(database);
+    const replacement = await requestMembership(database, replacementRequest, replacementIds);
+    expect(replacement.response.state).toBe('PENDING');
+    await expect(withdrawMembershipRequest(database, {
+      commandId: testId(base + 77), commandType: 'WITHDRAW_MEMBERSHIP_REQUEST',
+      idempotencyKey: 'membership-withdraw-wrong-user-29000',
+      actor: { type: 'USER', id: applicant, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'CommunityMembership', aggregateId: replacementMembership,
+      expectedVersion: 1, correlationId: testId(base + 69),
+      causationId: replacementIds.eventId, requestId: testId(base + 78),
+      source: 'api', payloadVersion: 1, payload: { membershipId: replacementMembership },
+    }, { eventId: testId(base + 79), auditId: testId(base + 80),
+      outboxMessageId: testId(base + 81), notificationIds: [testId(base + 82)] }))
+      .rejects.toEqual(expect.objectContaining({ code: 'MEMBERSHIP_REQUESTER_REQUIRED' }));
+    const withdrawn = await withdrawMembershipRequest(database, {
+      commandId: testId(base + 83), commandType: 'WITHDRAW_MEMBERSHIP_REQUEST',
+      idempotencyKey: 'membership-withdraw-29000',
+      actor: { type: 'USER', id: lifecycleApplicant, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'CommunityMembership', aggregateId: replacementMembership,
+      expectedVersion: 1, correlationId: testId(base + 69),
+      causationId: replacementIds.eventId, requestId: testId(base + 84),
+      source: 'api', payloadVersion: 1, payload: { membershipId: replacementMembership },
+    }, { eventId: testId(base + 85), auditId: testId(base + 86),
+      outboxMessageId: testId(base + 87), notificationIds: [testId(base + 88)] });
+    expect(withdrawn.response).toMatchObject({ state: 'LEFT', competitionEnabled: false,
+      version: 2 });
+    expect(await readMembershipTimerSnapshot(database, replacementMembership)).toEqual({
+      state: 'LEFT', version: 2,
+    });
 
     const inviteToken = 'membership-pilot-qr-token-29000';
     const tokenHash = createHash('sha256').update(inviteToken, 'utf8').digest('hex');

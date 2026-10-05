@@ -470,7 +470,10 @@ describe('runtime contract', () => {
         ageDivision: 'ADULT',
         competitionEnabled: true,
         joinPath: 'QR',
+        version: 1,
       },
+      membershipReapplyNotBeforeAt: null,
+      membershipLatestRejectionReasonCode: null,
       activeRoleGrants: [],
       access: {
         capabilities: ['VIEW_COMMUNITY'],

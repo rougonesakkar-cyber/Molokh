@@ -325,7 +325,10 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       ? 404
       : error.code === 'MEMBERSHIP_ADMIN_REQUIRED'
           || error.code === 'MEMBERSHIP_ACCOUNT_NOT_ACTIVE'
+          || error.code === 'MEMBERSHIP_REQUESTER_REQUIRED'
         ? 403
+        : error.code === 'MEMBERSHIP_REJECTION_REASON_INVALID'
+          ? 400
         : 409;
     return {
       statusCode,

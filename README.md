@@ -10,7 +10,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
 - executable acceptance traceability: **146/214** (`140/196 P0`);
 - open blocking product questions: **0**;
-- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin-approval Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
+- implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
 - database gate: PostgreSQL migrations `0001`–`0059` and **43/43** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   unresolved upstream `node-forge` and `braces` advisories are covered by narrow regression-tested
@@ -104,7 +104,8 @@ Community relationship, plus five temporary Discovery profiles.
 Use **«Сменить»** in the development-only **«Тестовый аккаунт»** panel to move between
 them without restarting Expo. No SMS or production credential is required for this local slice.
 Switch to **«Кирилл Старт»** to submit a Membership request, then to
-**«Пилотный администратор»** to approve it from the FIFO queue.
+**«Пилотный администратор»** to approve it or reject it with a neutral reason from the FIFO
+queue. Before an Admin decision Кирилл can withdraw the request without penalty.
 For the real database-backed authentication path, open **«Сменить» → «Настоящая сессия»**,
 leave the pilot number `+79990000001`, request a code and sign in. Only the development build
 shows and pre-fills that code. Web keeps refresh in an HttpOnly cookie and access only in memory;

@@ -4,12 +4,15 @@ import {
   MEMBERSHIP_POLICY_VERSION,
   MEMBERSHIP_REQUEST_ESCALATION_HOURS,
   MEMBERSHIP_REQUEST_REMINDER_HOURS,
+  membershipReapplyNotBefore,
   MembershipConflictError,
   assertMembershipTransition,
   membershipRequestDeadline,
   type AgeDivision,
   type CommandEnvelope,
   type MembershipJoinPath,
+  type MembershipInternalRejectionReasonCode,
+  type MembershipPublicRejectionReasonCode,
   type MembershipState,
   type TimerAggregateSnapshot,
 } from '@molokh/core';
@@ -29,6 +32,8 @@ export interface MembershipProjection {
   readonly requestedAt: string | null;
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
+  readonly publicRejectionReasonCode: MembershipPublicRejectionReasonCode | null;
+  readonly reapplyNotBeforeAt: string | null;
   readonly version: number;
 }
 
@@ -39,6 +44,13 @@ export interface PendingMembershipProjection extends MembershipProjection {
 export interface RequestMembershipPayload { readonly communityId: string }
 export interface ActivateMembershipPayload { readonly token: string }
 export interface ApproveMembershipPayload { readonly membershipId: string }
+export interface RejectMembershipPayload {
+  readonly membershipId: string;
+  readonly publicRejectionReasonCode: MembershipPublicRejectionReasonCode;
+  readonly internalRejectionReasonCode: MembershipInternalRejectionReasonCode;
+  readonly internalCaseRef?: string | null;
+}
+export interface WithdrawMembershipRequestPayload { readonly membershipId: string }
 
 export interface MembershipEffectIds {
   readonly eventId: string;
@@ -60,6 +72,8 @@ interface MembershipRow {
   readonly requested_at: Date | null;
   readonly decided_at: Date | null;
   readonly decided_by: string | null;
+  readonly public_rejection_reason_code: MembershipPublicRejectionReasonCode | null;
+  readonly reapply_not_before_at: Date | null;
   readonly version: string;
 }
 
@@ -104,6 +118,8 @@ function project(row: MembershipRow): MembershipProjection {
     requestedAt: row.requested_at?.toISOString() ?? null,
     decidedAt: row.decided_at?.toISOString() ?? null,
     decidedBy: row.decided_by,
+    publicRejectionReasonCode: row.public_rejection_reason_code,
+    reapplyNotBeforeAt: row.reapply_not_before_at?.toISOString() ?? null,
     version: Number(row.version),
   };
 }
@@ -117,6 +133,7 @@ async function selectMembership(
   const result = await sql<MembershipRow>`
     select membership_id, community_id, user_id, age_division, state,
       competition_enabled, join_path, requested_at, decided_at, decided_by,
+      public_rejection_reason_code, reapply_not_before_at,
       version::text as version
     from community.community_memberships
     where membership_id = ${membershipId}::uuid
@@ -230,12 +247,13 @@ function notificationDrafts(
   membershipId: string,
   communityId: string,
   deadlineAt: string | null,
+  extraPayload: Readonly<Record<string, unknown>> = {},
 ) {
   if (ids.length < recipients.length) throw new RangeError('Not enough notification IDs');
   return recipients.map((recipientUserId, index) => ({
     notificationId: ids[index]!, recipientUserId, category: 'SERVICE', renderKey,
     actionTarget: { type: 'MEMBERSHIP', id: membershipId },
-    payload: { membershipId, communityId }, deadlineAt,
+    payload: { membershipId, communityId, ...extraPayload }, deadlineAt,
   }));
 }
 
@@ -301,6 +319,7 @@ export async function requestMembership(
         userId, ageDivision: current.age_division, state: 'PENDING',
         competitionEnabled: false, joinPath: 'SELF_REQUEST', requestedAt,
         decidedAt: null, decidedBy: null, version: context.nextVersion,
+        publicRejectionReasonCode: null, reapplyNotBeforeAt: null,
       };
       const admins = await notificationRecipients(transaction, current.venue_id, 'ADMIN');
       const notifications = notificationDrafts(
@@ -391,6 +410,7 @@ export async function activateMembershipByInvite(
         membershipId: command.aggregateId, communityId: invite.community_id, userId,
         ageDivision: current.age_division, state: 'ACTIVE', competitionEnabled: true,
         joinPath: invite.join_path, requestedAt: null, decidedAt, decidedBy: userId,
+        publicRejectionReasonCode: null, reapplyNotBeforeAt: null,
         version: context.nextVersion,
       };
       const notifications = notificationDrafts(
@@ -487,6 +507,167 @@ export async function approveMembership(
   });
 }
 
+export async function rejectMembership(
+  database: Kysely<Database>,
+  command: CommandEnvelope<RejectMembershipPayload>,
+  ids: MembershipEffectIds,
+): Promise<ExecutedCommand<MembershipProjection>> {
+  const actorId = command.actor.id;
+  if (!actorId) throw new MembershipConflictError('MEMBERSHIP_ADMIN_REQUIRED');
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const current = await selectMembership(transaction, command.payload.membershipId, true);
+      if (!current) throw new MembershipNotFoundError();
+      const resourceResult = await sql<{
+        readonly account_state: CreationContextRow['account_state'];
+        readonly community_state: CreationContextRow['community_state'];
+        readonly venue_id: string;
+        readonly age_division: AgeDivision;
+      }>`
+        select users.account_state, target_community.state as community_state,
+          target_community.venue_id, users.age_division
+        from identity.users as users
+        join community.communities as target_community
+          on target_community.community_id = ${current.community_id}::uuid
+        where users.user_id = ${current.user_id}::uuid
+        for update of users, target_community
+      `.execute(transaction);
+      const resource = resourceResult.rows[0];
+      if (!resource) throw new MembershipNotFoundError();
+      const controlsVenue = await actorControlsVenue(transaction, actorId, resource.venue_id);
+      assertMembershipTransition({
+        transition: 'REJECT', accountState: resource.account_state,
+        communityState: resource.community_state, userAgeDivision: resource.age_division,
+        currentMembershipState: current.state, hasCurrentRelationship: true,
+        hasOtherActiveCompetitiveMembership: false, actorControlsVenue: controlsVenue,
+        publicRejectionReasonCode: command.payload.publicRejectionReasonCode,
+        internalRejectionReasonCode: command.payload.internalRejectionReasonCode,
+        ...(command.payload.internalCaseRef !== undefined
+          ? { internalCaseRef: command.payload.internalCaseRef } : {}),
+        now: context.occurredAt,
+      });
+      const decidedAt = context.occurredAt.toISOString();
+      const reapplyNotBeforeAt = membershipReapplyNotBefore(context.occurredAt);
+      await sql`
+        update community.community_memberships
+        set state = 'REJECTED', competition_enabled = false,
+          decided_at = ${decidedAt}::timestamptz, decided_by = ${actorId}::uuid,
+          reason_code = ${command.payload.internalRejectionReasonCode},
+          public_rejection_reason_code = ${command.payload.publicRejectionReasonCode},
+          internal_case_ref = ${command.payload.internalCaseRef?.trim() || null},
+          reapply_not_before_at = ${reapplyNotBeforeAt}::timestamptz,
+          version = ${context.nextVersion}, updated_at = ${decidedAt}::timestamptz
+        where membership_id = ${current.membership_id}::uuid
+      `.execute(transaction);
+      const response: MembershipProjection = {
+        ...project(current), state: 'REJECTED', competitionEnabled: false,
+        decidedAt, decidedBy: actorId,
+        publicRejectionReasonCode: command.payload.publicRejectionReasonCode,
+        reapplyNotBeforeAt, version: context.nextVersion,
+      };
+      const notifications = notificationDrafts(
+        [current.user_id], ids.notificationIds, 'community.membership_rejected',
+        current.membership_id, current.community_id, reapplyNotBeforeAt,
+        { publicRejectionReasonCode: command.payload.publicRejectionReasonCode,
+          reapplyNotBeforeAt },
+      );
+      return {
+        responseStatus: 200, response,
+        event: {
+          eventId: ids.eventId, eventName: 'MembershipRejected', schemaVersion: 1,
+          transitionId: 'M-04', payload: {
+            membershipId: current.membership_id, communityId: current.community_id,
+            userId: current.user_id,
+            publicRejectionReasonCode: command.payload.publicRejectionReasonCode,
+            reapplyNotBeforeAt,
+          }, metadata: { policyVersion: MEMBERSHIP_POLICY_VERSION },
+        },
+        audit: {
+          auditId: ids.auditId, action: 'REJECT_MEMBERSHIP', transitionId: 'M-04',
+          reasonCode: command.payload.internalRejectionReasonCode,
+          beforeState: current.state, afterState: 'REJECTED', metadata: {
+            communityId: current.community_id, userId: current.user_id,
+            publicRejectionReasonCode: command.payload.publicRejectionReasonCode,
+            internalCaseRef: command.payload.internalCaseRef?.trim() || null,
+          },
+        },
+        outbox: [{ messageId: ids.outboxMessageId, topic: 'notification.in_app.v1',
+          payload: { notifications } }],
+      };
+    },
+  });
+}
+
+export async function withdrawMembershipRequest(
+  database: Kysely<Database>,
+  command: CommandEnvelope<WithdrawMembershipRequestPayload>,
+  ids: MembershipEffectIds,
+): Promise<ExecutedCommand<MembershipProjection>> {
+  const actorId = command.actor.id;
+  if (!actorId) throw new MembershipConflictError('MEMBERSHIP_REQUESTER_REQUIRED');
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const current = await selectMembership(transaction, command.payload.membershipId, true);
+      if (!current) throw new MembershipNotFoundError();
+      const resourceResult = await sql<{
+        readonly account_state: CreationContextRow['account_state'];
+        readonly community_state: CreationContextRow['community_state'];
+      }>`
+        select users.account_state, target_community.state as community_state
+        from identity.users as users
+        join community.communities as target_community
+          on target_community.community_id = ${current.community_id}::uuid
+        where users.user_id = ${current.user_id}::uuid
+      `.execute(transaction);
+      const resource = resourceResult.rows[0];
+      if (!resource) throw new MembershipNotFoundError();
+      assertMembershipTransition({
+        transition: 'WITHDRAW', accountState: resource.account_state,
+        communityState: resource.community_state,
+        userAgeDivision: current.age_division, currentMembershipState: current.state,
+        hasCurrentRelationship: true, hasOtherActiveCompetitiveMembership: false,
+        actorIsRequester: current.user_id === actorId, now: context.occurredAt,
+      });
+      const decidedAt = context.occurredAt.toISOString();
+      await sql`
+        update community.community_memberships
+        set state = 'LEFT', competition_enabled = false,
+          decided_at = ${decidedAt}::timestamptz, decided_by = ${actorId}::uuid,
+          reason_code = 'WITHDRAWN_BY_REQUESTER', left_at = ${decidedAt}::timestamptz,
+          version = ${context.nextVersion}, updated_at = ${decidedAt}::timestamptz
+        where membership_id = ${current.membership_id}::uuid
+      `.execute(transaction);
+      const response: MembershipProjection = {
+        ...project(current), state: 'LEFT', competitionEnabled: false,
+        decidedAt, decidedBy: actorId, version: context.nextVersion,
+      };
+      const notifications = notificationDrafts(
+        [current.user_id], ids.notificationIds, 'community.membership_request_withdrawn',
+        current.membership_id, current.community_id, null,
+      );
+      return {
+        responseStatus: 200, response,
+        event: {
+          eventId: ids.eventId, eventName: 'MembershipRequestWithdrawn', schemaVersion: 1,
+          transitionId: 'M-05', payload: {
+            membershipId: current.membership_id, communityId: current.community_id,
+            userId: current.user_id,
+          }, metadata: { policyVersion: MEMBERSHIP_POLICY_VERSION },
+        },
+        audit: {
+          auditId: ids.auditId, action: 'WITHDRAW_MEMBERSHIP_REQUEST', transitionId: 'M-05',
+          reasonCode: 'WITHDRAWN_BY_REQUESTER', beforeState: current.state,
+          afterState: 'LEFT', metadata: { communityId: current.community_id },
+        },
+        outbox: [{ messageId: ids.outboxMessageId, topic: 'notification.in_app.v1',
+          payload: { notifications } }],
+      };
+    },
+  });
+}
+
 export async function listPendingMemberships(
   database: Kysely<Database>,
   actorId: string,
@@ -504,7 +685,9 @@ export async function listPendingMemberships(
     select membership.membership_id, membership.community_id, membership.user_id,
       membership.age_division, membership.state, membership.competition_enabled,
       membership.join_path, membership.requested_at, membership.decided_at,
-      membership.decided_by, membership.version::text as version, users.display_name
+      membership.decided_by, membership.public_rejection_reason_code,
+      membership.reapply_not_before_at, membership.version::text as version,
+      users.display_name
     from community.community_memberships as membership
     join identity.users as users on users.user_id = membership.user_id
     where membership.community_id = ${communityId}::uuid and membership.state = 'PENDING'

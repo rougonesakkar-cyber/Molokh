@@ -190,6 +190,8 @@ const localizedApiErrors: Readonly<Record<string, string>> = {
   MEMBERSHIP_AGE_CONTOUR_MISMATCH: 'Приглашение предназначено для другого возрастного контура.',
   MEMBERSHIP_NOT_PENDING: 'Эта заявка уже рассмотрена. Обновите список.',
   MEMBERSHIP_ADMIN_REQUIRED: 'Подтвердить Membership может только администратор этого зала.',
+  MEMBERSHIP_REQUESTER_REQUIRED: 'Отозвать заявку может только подавший её спортсмен.',
+  MEMBERSHIP_REJECTION_REASON_INVALID: 'Выберите корректную нейтральную причину отказа.',
   MEMBERSHIP_NOT_FOUND: 'Membership или заявка не найдены.',
   MEMBERSHIP_EXIT_ACCOUNT_NOT_ACTIVE: 'Выход недоступен, пока аккаунт не активен.',
   MEMBERSHIP_EXIT_MEMBERSHIP_NOT_ACTIVE: 'Активное Membership уже изменилось. Обновите экран.',

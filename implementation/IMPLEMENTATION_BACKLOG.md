@@ -187,6 +187,11 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - Story 5 foundation: complete. One deterministic pilot Venue/Community and active Membership render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and at most one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
 - Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
+- Story 5 Membership onboarding increment: complete. Hashed QR/invite activation, self-request,
+  12h Admin reminder, 24h Central escalation, scoped FIFO approval, neutral rejection with a
+  seven-day reapply guard and requester withdrawal now run through Core, API, universal client,
+  Worker and real PostgreSQL. Internal rejection reasons never enter Athlete-facing event or
+  notification payloads.
 - Story 5 remaining: no local pilot blocker. External private object/scan and opt-in OTP providers
   remain M2 deployment inputs; their fail-closed ports, production role-aware session wiring,
   recovery and duplicate-account governance are complete.

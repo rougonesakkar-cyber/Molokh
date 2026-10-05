@@ -56,7 +56,14 @@ export interface CommunityContextProjection {
     readonly ageDivision: AgeDivision;
     readonly competitionEnabled: boolean;
     readonly joinPath: 'QR' | 'INVITE' | 'SELF_REQUEST';
+    readonly version: number;
   } | null;
+  readonly membershipReapplyNotBeforeAt: string | null;
+  readonly membershipLatestRejectionReasonCode:
+    | 'CAPACITY_UNAVAILABLE'
+    | 'COMMUNITY_REQUIREMENTS'
+    | 'REQUEST_NOT_APPROVED'
+    | null;
   readonly activeRoleGrants: readonly ActiveRoleGrant[];
   readonly access: CommunityAccessProjection;
 }
@@ -93,6 +100,13 @@ interface CommunityContextRow {
   readonly membership_age_division: AgeDivision | null;
   readonly competition_enabled: boolean | null;
   readonly join_path: 'QR' | 'INVITE' | 'SELF_REQUEST' | null;
+  readonly membership_version: string | null;
+  readonly membership_reapply_not_before_at: Date | null;
+  readonly membership_latest_rejection_reason_code:
+    | 'CAPACITY_UNAVAILABLE'
+    | 'COMMUNITY_REQUIREMENTS'
+    | 'REQUEST_NOT_APPROVED'
+    | null;
   readonly has_other_active_competitive_membership: boolean;
 }
 
@@ -226,6 +240,27 @@ export async function readCommunityContext(
       membership.age_division as membership_age_division,
       membership.competition_enabled,
       membership.join_path,
+      membership.version::text as membership_version,
+      (
+        select rejected.reapply_not_before_at
+        from community.community_memberships as rejected
+        where rejected.community_id = community.community_id
+          and rejected.user_id = users.user_id
+          and rejected.state = 'REJECTED'
+          and rejected.join_path = 'SELF_REQUEST'
+        order by rejected.decided_at desc nulls last, rejected.created_at desc
+        limit 1
+      ) as membership_reapply_not_before_at,
+      (
+        select rejected.public_rejection_reason_code
+        from community.community_memberships as rejected
+        where rejected.community_id = community.community_id
+          and rejected.user_id = users.user_id
+          and rejected.state = 'REJECTED'
+          and rejected.join_path = 'SELF_REQUEST'
+        order by rejected.decided_at desc nulls last, rejected.created_at desc
+        limit 1
+      ) as membership_latest_rejection_reason_code,
       exists (
         select 1
         from community.community_memberships as other_membership
@@ -269,12 +304,14 @@ export async function readCommunityContext(
   }));
   const membership =
     row.membership_id && row.membership_state && row.membership_age_division && row.join_path
+      && row.membership_version
       ? {
           membershipId: row.membership_id,
           state: row.membership_state,
           ageDivision: row.membership_age_division,
           competitionEnabled: row.competition_enabled === true,
           joinPath: row.join_path,
+          version: Number(row.membership_version),
         }
       : null;
   const access = projectCommunityAccess({
@@ -286,6 +323,8 @@ export async function readCommunityContext(
     communityId: row.community_id,
     communityState: row.community_state,
     membership,
+    membershipReapplyBlocked:
+      (row.membership_reapply_not_before_at?.getTime() ?? 0) > Date.now(),
     hasOtherActiveCompetitiveMembership: row.has_other_active_competitive_membership,
     activeRoleGrants,
   });
@@ -312,6 +351,8 @@ export async function readCommunityContext(
       version: Number(row.community_version),
     },
     membership,
+    membershipReapplyNotBeforeAt: row.membership_reapply_not_before_at?.toISOString() ?? null,
+    membershipLatestRejectionReasonCode: row.membership_latest_rejection_reason_code,
     activeRoleGrants,
     access,
   };

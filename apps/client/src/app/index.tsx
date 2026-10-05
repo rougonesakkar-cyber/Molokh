@@ -101,6 +101,30 @@ type CompetitionStatus = CompetitionStatusResponse['data'];
 type StatusReleasePreview = StatusReleaseCommandResponse['data'];
 type MembershipExitPreview = MembershipExitCommandResponse['data'];
 type PendingMembership = PendingMembershipListResponse['data'][number];
+type MembershipPublicRejectionReason = Exclude<
+  MembershipCommandResponse['data']['publicRejectionReasonCode'], null
+>;
+type MembershipInternalRejectionReason =
+  | 'CAPACITY_LIMIT'
+  | 'ELIGIBILITY_REVIEW'
+  | 'ADMIN_OTHER';
+const membershipRejectionOptions: readonly {
+  readonly publicCode: MembershipPublicRejectionReason;
+  readonly internalCode: MembershipInternalRejectionReason;
+  readonly label: string;
+}[] = [
+  { publicCode: 'CAPACITY_UNAVAILABLE', internalCode: 'CAPACITY_LIMIT',
+    label: 'Сейчас нет мест' },
+  { publicCode: 'COMMUNITY_REQUIREMENTS', internalCode: 'ELIGIBILITY_REVIEW',
+    label: 'Требования Community' },
+  { publicCode: 'REQUEST_NOT_APPROVED', internalCode: 'ADMIN_OTHER',
+    label: 'Другая причина' },
+];
+const membershipRejectionLabels: Record<MembershipPublicRejectionReason, string> = {
+  CAPACITY_UNAVAILABLE: 'Сейчас нет мест',
+  COMMUNITY_REQUIREMENTS: 'Требования Community пока не выполнены',
+  REQUEST_NOT_APPROVED: 'Заявка пока не одобрена',
+};
 type MembershipRemoval = MembershipRemovalListResponse['data'][number];
 type VenueMember = VenueMemberListResponse['data'][number];
 type Capability = Identity['capabilities'][number];
@@ -385,6 +409,7 @@ const officialDenialLabels: Record<CommunityDenialCode, string> = {
   ACCOUNT_NOT_VERIFIED: 'Official Challenge откроется после верификации аккаунта Central.',
   COMMUNITY_NOT_ACTIVE: 'Новые Challenge недоступны, пока Community не активна.',
   MEMBERSHIP_ALREADY_EXISTS: 'Membership в этой Community уже существует.',
+  MEMBERSHIP_REAPPLY_NOT_DUE: 'Повторная заявка станет доступна после семидневной паузы.',
   MEMBERSHIP_NOT_ACTIVE: 'Для Official Challenge нужен активный competitive Membership.',
   AGE_CONTOUR_MISMATCH: 'Возрастной контур Membership должен совпадать с профилем.',
   MVP_ACTIVE_COMMUNITY_LIMIT: 'В MVP доступна одна активная competitive Community.',
@@ -395,6 +420,9 @@ const officialDenialLabels: Record<CommunityDenialCode, string> = {
 export default function IdentityScreen() {
   const router = useRouter();
   const scrollRef = useRef<ScrollView | null>(null);
+  const membershipRequestAttemptRef = useRef(
+    `membership-request-attempt:${Date.now().toString(36)}`,
+  );
   const [activeSection, setActiveSection] = useState<MainSection>(() =>
     localTestAccounts.find((account) => account.token === localToken)?.startSection
       ?? 'DISCOVERY');
@@ -432,6 +460,9 @@ export default function IdentityScreen() {
   const [pendingMemberships, setPendingMemberships] = useState<PendingMembership[]>([]);
   const [membershipNotice, setMembershipNotice] = useState<string | null>(null);
   const [actingMembershipId, setActingMembershipId] = useState<string | null>(null);
+  const [rejectingMembershipId, setRejectingMembershipId] = useState<string | null>(null);
+  const [membershipRejectionChoice, setMembershipRejectionChoice] =
+    useState(membershipRejectionOptions[0]!);
   const [membershipRemovals, setMembershipRemovals] = useState<MembershipRemoval[]>([]);
   const [venueMembers, setVenueMembers] = useState<VenueMember[]>([]);
   const [removalTargetId, setRemovalTargetId] = useState<string | null>(null);
@@ -967,6 +998,10 @@ export default function IdentityScreen() {
     setPendingMemberships([]);
     setMembershipNotice(null);
     setActingMembershipId(null);
+    setRejectingMembershipId(null);
+    setMembershipRejectionChoice(membershipRejectionOptions[0]!);
+    membershipRequestAttemptRef.current =
+      `membership-request-attempt:${Date.now().toString(36)}`;
     setMembershipRemovals([]);
     setVenueMembers([]);
     setRemovalTargetId(null);
@@ -2567,7 +2602,7 @@ export default function IdentityScreen() {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${localToken}`,
-            'Idempotency-Key': `membership-request:${communityId}:${identity?.userId ?? 'me'}:${new Date().toISOString().slice(0, 10)}`,
+            'Idempotency-Key': `${membershipRequestAttemptRef.current}:${communityId}:${identity?.userId ?? 'me'}`,
           },
         },
       );
@@ -2581,6 +2616,7 @@ export default function IdentityScreen() {
           ageDivision: result.data.ageDivision,
           competitionEnabled: result.data.competitionEnabled,
           joinPath: result.data.joinPath,
+          version: result.data.version,
         },
       } : current);
       setMembershipNotice(
@@ -2620,6 +2656,79 @@ export default function IdentityScreen() {
       setMembershipNotice(`${membership.displayName}: Membership активирована.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось одобрить Membership');
+    } finally {
+      setActingMembershipId(null);
+    }
+  };
+
+  const rejectPendingMembership = async (membership: PendingMembership) => {
+    if (actingMembershipId) return;
+    setActingMembershipId(membership.membershipId);
+    setMembershipNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/memberships/${membership.membershipId}/reject`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': `membership-reject:${membership.membershipId}:v${membership.version}`,
+            'If-Match': String(membership.version),
+          },
+          body: JSON.stringify({
+            publicRejectionReasonCode: membershipRejectionChoice.publicCode,
+            internalRejectionReasonCode: membershipRejectionChoice.internalCode,
+          }),
+        },
+      );
+      if (!response.ok) {
+        const message = await apiErrorMessage(response);
+        if (response.status === 409) await loadIdentity();
+        throw new Error(message);
+      }
+      const result = (await response.json()) as MembershipCommandResponse;
+      setPendingMemberships((current) =>
+        current.filter((item) => item.membershipId !== membership.membershipId));
+      setRejectingMembershipId(null);
+      setMembershipNotice(
+        `${membership.displayName}: заявка отклонена. Повторная подача доступна после ${
+          result.data.reapplyNotBeforeAt ? formatDateTime(result.data.reapplyNotBeforeAt) : '7 дней'
+        }.`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отклонить Membership');
+    } finally {
+      setActingMembershipId(null);
+    }
+  };
+
+  const withdrawPendingMembership = async () => {
+    const membership = communityContext?.membership;
+    if (!membership || membership.state !== 'PENDING' || actingMembershipId) return;
+    setActingMembershipId(membership.membershipId);
+    setMembershipNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/memberships/${membership.membershipId}/withdraw`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Idempotency-Key': `membership-withdraw:${membership.membershipId}:v${membership.version}`,
+            'If-Match': String(membership.version),
+          },
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      membershipRequestAttemptRef.current =
+        `membership-request-attempt:${Date.now().toString(36)}`;
+      await loadIdentity();
+      setMembershipNotice('Заявка отозвана. Вы сможете подать новую, когда будете готовы.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отозвать заявку');
     } finally {
       setActingMembershipId(null);
     }
@@ -3247,6 +3356,86 @@ export default function IdentityScreen() {
                             ? <ActivityIndicator color="#ffffff" />
                             : <Text style={styles.buttonText}>Принять в Community</Text>}
                         </Pressable>
+                        {rejectingMembershipId === membership.membershipId ? (
+                          <View style={styles.inlineForm}>
+                            <Text style={styles.label}>Нейтральная причина для спортсмена</Text>
+                            <View style={styles.chips}>
+                              {membershipRejectionOptions.map((option) => {
+                                const selected = option.publicCode
+                                  === membershipRejectionChoice.publicCode;
+                                return (
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected,
+                                      disabled: actingMembershipId !== null }}
+                                    disabled={actingMembershipId !== null}
+                                    key={option.publicCode}
+                                    onPress={() => setMembershipRejectionChoice(option)}
+                                    style={({ pressed }) => [
+                                      styles.choiceChip,
+                                      selected && styles.choiceChipSelected,
+                                      pressed && actingMembershipId === null
+                                        && styles.buttonPressed,
+                                    ]}
+                                  >
+                                    <Text style={[
+                                      styles.choiceChipText,
+                                      selected && styles.choiceChipTextSelected,
+                                    ]}>
+                                      {option.label}
+                                    </Text>
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                            <Text style={styles.hint}>
+                              Отказ не публикуется и не считается наказанием. Новая заявка — через 7 дней.
+                            </Text>
+                            <View style={styles.actionRow}>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityState={{ disabled: actingMembershipId !== null }}
+                                disabled={actingMembershipId !== null}
+                                onPress={() => setRejectingMembershipId(null)}
+                                style={({ pressed }) => [
+                                  styles.secondaryButton, pressed && styles.buttonPressed,
+                                ]}
+                              >
+                                <Text style={styles.secondaryButtonText}>Отмена</Text>
+                              </Pressable>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityState={{ disabled: actingMembershipId !== null }}
+                                disabled={actingMembershipId !== null}
+                                onPress={() => void rejectPendingMembership(membership)}
+                                style={({ pressed }) => [
+                                  styles.dangerButton,
+                                  actingMembershipId !== null && styles.buttonDisabled,
+                                  pressed && actingMembershipId === null && styles.buttonPressed,
+                                ]}
+                              >
+                                {actingMembershipId === membership.membershipId
+                                  ? <ActivityIndicator color="#ffffff" />
+                                  : <Text style={styles.dangerButtonText}>Подтвердить отказ</Text>}
+                              </Pressable>
+                            </View>
+                          </View>
+                        ) : (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: actingMembershipId !== null }}
+                            disabled={actingMembershipId !== null}
+                            onPress={() => {
+                              setMembershipRejectionChoice(membershipRejectionOptions[0]!);
+                              setRejectingMembershipId(membership.membershipId);
+                            }}
+                            style={({ pressed }) => [
+                              styles.secondaryButton, pressed && styles.buttonPressed,
+                            ]}
+                          >
+                            <Text style={styles.secondaryButtonText}>Отклонить</Text>
+                          </Pressable>
+                        )}
                       </View>
                     ))}
                     {membershipNotice ? (
@@ -5590,8 +5779,39 @@ export default function IdentityScreen() {
                       </Pressable>
                     ) : null}
                     {communityContext.membership?.state === 'PENDING' ? (
+                      <View style={styles.inlineForm}>
+                        <Text style={styles.hint}>
+                          Заявка рассматривается залом. Напоминание администратору уйдёт через 12 часов.
+                        </Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: actingMembershipId !== null }}
+                          disabled={actingMembershipId !== null}
+                          onPress={() => void withdrawPendingMembership()}
+                          style={({ pressed }) => [
+                            styles.secondaryButton,
+                            actingMembershipId !== null && styles.buttonDisabled,
+                            pressed && actingMembershipId === null && styles.buttonPressed,
+                          ]}
+                        >
+                          {actingMembershipId === communityContext.membership?.membershipId
+                            ? <ActivityIndicator color="#8b2f22" />
+                            : <Text style={styles.secondaryButtonText}>Отозвать заявку</Text>}
+                        </Pressable>
+                      </View>
+                    ) : null}
+                    {!communityContext.membership
+                      && communityContext.membershipReapplyNotBeforeAt
+                      && communityContext.access.denials.some((denial) =>
+                        denial.capability === 'REQUEST_MEMBERSHIP'
+                        && denial.code === 'MEMBERSHIP_REAPPLY_NOT_DUE') ? (
                       <Text style={styles.hint}>
-                        Заявка рассматривается залом. Напоминание администратору уйдёт через 12 часов.
+                        {communityContext.membershipLatestRejectionReasonCode
+                          ? `${membershipRejectionLabels[
+                            communityContext.membershipLatestRejectionReasonCode
+                          ]}. ` : ''}
+                        Повторная заявка станет доступна после{' '}
+                        {formatDateTime(communityContext.membershipReapplyNotBeforeAt)}.
                       </Text>
                     ) : null}
                     {membershipNotice ? (
@@ -5776,6 +5996,8 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 16,
   },
+  inlineForm: { gap: 10 },
+  actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   adminMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   adminMetric: {
     backgroundColor: '#faf9f6',

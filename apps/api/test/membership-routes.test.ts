@@ -3,7 +3,9 @@ import type {
   ApproveMembershipPayload,
   MembershipEffectIds,
   MembershipProjection,
+  RejectMembershipPayload,
   RequestMembershipPayload,
+  WithdrawMembershipRequestPayload,
 } from '@molokh/db';
 import type { CommandEnvelope } from '@molokh/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -22,7 +24,7 @@ function projection(overrides: Partial<MembershipProjection> = {}): MembershipPr
     membershipId, communityId, userId: athleteId, ageDivision: 'ADULT',
     state: 'PENDING', competitionEnabled: false, joinPath: 'SELF_REQUEST',
     requestedAt: '2026-10-04T10:00:00.000Z', decidedAt: null, decidedBy: null,
-    version: 1, ...overrides,
+    publicRejectionReasonCode: null, reapplyNotBeforeAt: null, version: 1, ...overrides,
   };
 }
 
@@ -46,6 +48,7 @@ describe('Membership routes', () => {
     const app = await buildApp({ membership: {
       auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership,
       activateMembershipByInvite: vi.fn(), approveMembership,
+      rejectMembership: vi.fn(), withdrawMembershipRequest: vi.fn(),
       listPendingMemberships: async () => [{ ...projection(), displayName: 'Свободный атлет' }],
     } });
     apps.push(app);
@@ -97,6 +100,7 @@ describe('Membership routes', () => {
     const app = await buildApp({ membership: {
       auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership: vi.fn(),
       activateMembershipByInvite, approveMembership: vi.fn(),
+      rejectMembership: vi.fn(), withdrawMembershipRequest: vi.fn(),
       listPendingMemberships: async () => [],
     } });
     apps.push(app);
@@ -110,6 +114,58 @@ describe('Membership routes', () => {
     expect(JSON.stringify(accepted.json())).not.toContain(inviteToken);
     expect(activateMembershipByInvite.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'JOIN_BY_QR_OR_INVITE', payload: { token: inviteToken },
+    });
+  });
+
+  it('[M-04][M-05] exposes reasoned Admin rejection and requester withdrawal', async () => {
+    const rejectMembership = vi.fn(async (
+      _command: CommandEnvelope<RejectMembershipPayload>, _ids: MembershipEffectIds,
+    ) => ({ responseStatus: 200, response: projection({
+      state: 'REJECTED', decidedAt: '2026-10-04T11:00:00.000Z',
+      decidedBy: athleteId, publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+      reapplyNotBeforeAt: '2026-10-11T11:00:00.000Z', version: 2,
+    }), eventId, aggregateVersion: 2, replayed: false }));
+    const withdrawMembershipRequest = vi.fn(async (
+      _command: CommandEnvelope<WithdrawMembershipRequestPayload>, _ids: MembershipEffectIds,
+    ) => ({ responseStatus: 200, response: projection({
+      state: 'LEFT', decidedAt: '2026-10-04T11:00:00.000Z',
+      decidedBy: athleteId, version: 2,
+    }), eventId, aggregateVersion: 2, replayed: false }));
+    const app = await buildApp({ membership: {
+      auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership: vi.fn(),
+      activateMembershipByInvite: vi.fn(), approveMembership: vi.fn(), rejectMembership,
+      withdrawMembershipRequest, listPendingMemberships: async () => [],
+    } });
+    apps.push(app);
+
+    const rejected = await app.inject({
+      method: 'POST', url: `/api/v1/memberships/${membershipId}/reject`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-reject-1',
+        'if-match': '1' },
+      body: { publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+        internalRejectionReasonCode: 'CAPACITY_LIMIT' },
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json()).toMatchObject({ data: { state: 'REJECTED',
+      publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+      reapplyNotBeforeAt: '2026-10-11T11:00:00.000Z' } });
+    expect(rejected.body).not.toContain('CAPACITY_LIMIT');
+    expect(rejectMembership.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REJECT_MEMBERSHIP', expectedVersion: 1,
+      payload: { membershipId, publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+        internalRejectionReasonCode: 'CAPACITY_LIMIT' }, source: 'admin',
+    });
+
+    const withdrawn = await app.inject({
+      method: 'POST', url: `/api/v1/memberships/${membershipId}/withdraw`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-withdraw-1',
+        'if-match': '1' },
+    });
+    expect(withdrawn.statusCode).toBe(200);
+    expect(withdrawn.json()).toMatchObject({ data: { state: 'LEFT', version: 2 } });
+    expect(withdrawMembershipRequest.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'WITHDRAW_MEMBERSHIP_REQUEST', expectedVersion: 1,
+      payload: { membershipId }, source: 'api',
     });
   });
 });

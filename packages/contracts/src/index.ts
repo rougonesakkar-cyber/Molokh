@@ -2828,6 +2828,7 @@ const CommunityDenialCodeSchema = Type.Union([
   Type.Literal('ACCOUNT_NOT_VERIFIED'),
   Type.Literal('COMMUNITY_NOT_ACTIVE'),
   Type.Literal('MEMBERSHIP_ALREADY_EXISTS'),
+  Type.Literal('MEMBERSHIP_REAPPLY_NOT_DUE'),
   Type.Literal('MEMBERSHIP_NOT_ACTIVE'),
   Type.Literal('AGE_CONTOUR_MISMATCH'),
   Type.Literal('MVP_ACTIVE_COMMUNITY_LIMIT'),
@@ -2910,9 +2911,19 @@ export const CommunityContextSchema = Type.Object(
             Type.Literal('INVITE'),
             Type.Literal('SELF_REQUEST'),
           ]),
+          version: Type.Integer({ minimum: 1 }),
         },
         { additionalProperties: false },
       ),
+      Type.Null(),
+    ]),
+    membershipReapplyNotBeforeAt: Type.Union([
+      Type.String({ format: 'date-time' }), Type.Null(),
+    ]),
+    membershipLatestRejectionReasonCode: Type.Union([
+      Type.Literal('CAPACITY_UNAVAILABLE'),
+      Type.Literal('COMMUNITY_REQUIREMENTS'),
+      Type.Literal('REQUEST_NOT_APPROVED'),
       Type.Null(),
     ]),
     activeRoleGrants: Type.Array(ActiveRoleGrantSchema),
@@ -2967,6 +2978,13 @@ export const MembershipProjectionSchema = Type.Object(
     requestedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     decidedBy: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    publicRejectionReasonCode: Type.Union([
+      Type.Literal('CAPACITY_UNAVAILABLE'),
+      Type.Literal('COMMUNITY_REQUIREMENTS'),
+      Type.Literal('REQUEST_NOT_APPROVED'),
+      Type.Null(),
+    ]),
+    reapplyNotBeforeAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     version: Type.Integer({ minimum: 1 }),
   },
   { $id: 'MembershipProjection', additionalProperties: false },
@@ -2985,6 +3003,27 @@ export const MembershipCommandResponseSchema = Type.Object(
   { $id: 'MembershipCommandResponse', additionalProperties: false },
 );
 export type MembershipCommandResponse = Static<typeof MembershipCommandResponseSchema>;
+
+export const RejectMembershipBodySchema = Type.Object(
+  {
+    publicRejectionReasonCode: Type.Union([
+      Type.Literal('CAPACITY_UNAVAILABLE'),
+      Type.Literal('COMMUNITY_REQUIREMENTS'),
+      Type.Literal('REQUEST_NOT_APPROVED'),
+    ]),
+    internalRejectionReasonCode: Type.Union([
+      Type.Literal('CAPACITY_LIMIT'),
+      Type.Literal('ELIGIBILITY_REVIEW'),
+      Type.Literal('SAFETY_REVIEW'),
+      Type.Literal('ADMIN_OTHER'),
+    ]),
+    internalCaseRef: Type.Optional(Type.Union([
+      Type.String({ minLength: 3, maxLength: 200 }), Type.Null(),
+    ])),
+  },
+  { $id: 'RejectMembershipBody', additionalProperties: false },
+);
+export type RejectMembershipBody = Static<typeof RejectMembershipBodySchema>;
 
 export const PendingMembershipListResponseSchema = Type.Object(
   {

@@ -20,6 +20,7 @@ const base: CommunityAccessInput = {
     ageDivision: 'ADULT',
     competitionEnabled: true,
   },
+  membershipReapplyBlocked: false,
   hasOtherActiveCompetitiveMembership: false,
   activeRoleGrants: [],
 };
@@ -107,6 +108,16 @@ describe('community access projection', () => {
         code: 'MVP_ACTIVE_COMMUNITY_LIMIT',
       }),
     );
+  });
+
+  it('[M-04] keeps a rejected self-request closed until its seven-day wait ends', () => {
+    const waiting = projectCommunityAccess({
+      ...base, membership: null, membershipReapplyBlocked: true,
+    });
+    expect(waiting.capabilities).not.toContain('REQUEST_MEMBERSHIP');
+    expect(waiting.denials).toContainEqual(expect.objectContaining({
+      capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_NOT_DUE', retryable: true,
+    }));
   });
 });
 

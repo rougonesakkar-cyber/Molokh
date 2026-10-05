@@ -445,6 +445,12 @@ Migration `0059_membership_invites.sql` stores only SHA-256 invite-token digests
 direct invite resources have an explicit expiry, optional use limit and atomic use counter; raw
 tokens never enter domain events, audit metadata, projections or API responses.
 
+Membership rejection uses the original `community_memberships` privacy split: the Athlete-facing
+projection, event and notification contain only a neutral public category and the seven-day
+`reapply_not_before_at`; the internal reason code and optional Case reference remain in the private
+row/audit path. Request withdrawal moves only the PENDING record to `LEFT` and creates no loss,
+cooldown or reapply delay.
+
 Use time partitioning only after measured volume. Early partitioning is appropriate for `audit_events`, `domain_events`, `outbox_messages` and `notifications`, not every aggregate table.
 
 ## 6. Migration rules

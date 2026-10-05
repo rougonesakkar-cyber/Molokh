@@ -82,7 +82,9 @@ import {
   listVenueMembersForAdmin,
   requestMembershipRemoval,
   requestMembership,
+  rejectMembership,
   respondToGenesisChallenge,
+  withdrawMembershipRequest,
   readVenueAdminDashboard,
   reportChatMessage,
   recordSessionAttendance,
@@ -1281,6 +1283,9 @@ const app = await buildApp({
     activateMembershipByInvite: (command, ids) =>
       activateMembershipByInvite(database, command, ids),
     approveMembership: (command, ids) => approveMembership(database, command, ids),
+    rejectMembership: (command, ids) => rejectMembership(database, command, ids),
+    withdrawMembershipRequest: (command, ids) =>
+      withdrawMembershipRequest(database, command, ids),
     listPendingMemberships: (actorId, communityId) =>
       listPendingMemberships(database, actorId, communityId),
   },

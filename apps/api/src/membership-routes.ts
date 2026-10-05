@@ -2,6 +2,8 @@ import {
   ApiErrorSchema,
   MembershipCommandResponseSchema,
   PendingMembershipListResponseSchema,
+  RejectMembershipBodySchema,
+  type RejectMembershipBody,
   type MembershipCommandResponse,
   type PendingMembershipListResponse,
 } from '@molokh/contracts';
@@ -13,7 +15,9 @@ import type {
   MembershipEffectIds,
   MembershipProjection,
   PendingMembershipProjection,
+  RejectMembershipPayload,
   RequestMembershipPayload,
+  WithdrawMembershipRequestPayload,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -40,6 +44,14 @@ export interface MembershipRouteDependencies {
   ) => Promise<ExecutedCommand<MembershipProjection>>;
   readonly approveMembership: (
     command: CommandEnvelope<ApproveMembershipPayload>,
+    ids: MembershipEffectIds,
+  ) => Promise<ExecutedCommand<MembershipProjection>>;
+  readonly rejectMembership: (
+    command: CommandEnvelope<RejectMembershipPayload>,
+    ids: MembershipEffectIds,
+  ) => Promise<ExecutedCommand<MembershipProjection>>;
+  readonly withdrawMembershipRequest: (
+    command: CommandEnvelope<WithdrawMembershipRequestPayload>,
     ids: MembershipEffectIds,
   ) => Promise<ExecutedCommand<MembershipProjection>>;
   readonly listPendingMemberships: (
@@ -236,6 +248,71 @@ export async function registerMembershipRoutes(
         commandType: 'APPROVE_MEMBERSHIP', idempotencyKey: key,
         expectedVersion: expectedVersion(request.headers['if-match']),
         payload: { membershipId: request.params.membershipId }, request, source: 'admin',
+      }), effectIds());
+      return response(executed, requestContext(request).requestId);
+    },
+  );
+
+  app.post<{
+    Headers: MembershipHeaders;
+    Params: { readonly membershipId: string };
+    Body: RejectMembershipBody;
+  }>(
+    '/api/v1/memberships/:membershipId/reject',
+    {
+      schema: {
+        operationId: 'rejectCommunityMembership',
+        params: Type.Object({ membershipId: Type.String({ format: 'uuid' }) }),
+        body: RejectMembershipBodySchema,
+        response: { 200: MembershipCommandResponseSchema, 400: ApiErrorSchema,
+          401: ApiErrorSchema, 403: ApiErrorSchema, 404: ApiErrorSchema,
+          409: ApiErrorSchema },
+      },
+    },
+    async (request, reply): Promise<MembershipCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const key = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const executed = await dependencies.rejectMembership(command({
+        actorId: authenticated.userId, aggregateId: request.params.membershipId,
+        commandType: 'REJECT_MEMBERSHIP', idempotencyKey: key,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        payload: { membershipId: request.params.membershipId, ...request.body },
+        request, source: 'admin',
+      }), effectIds());
+      return response(executed, requestContext(request).requestId);
+    },
+  );
+
+  app.post<{
+    Headers: MembershipHeaders;
+    Params: { readonly membershipId: string };
+  }>(
+    '/api/v1/memberships/:membershipId/withdraw',
+    {
+      schema: {
+        operationId: 'withdrawCommunityMembershipRequest',
+        params: Type.Object({ membershipId: Type.String({ format: 'uuid' }) }),
+        response: { 200: MembershipCommandResponseSchema, 400: ApiErrorSchema,
+          401: ApiErrorSchema, 403: ApiErrorSchema, 404: ApiErrorSchema,
+          409: ApiErrorSchema },
+      },
+    },
+    async (request, reply): Promise<MembershipCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const key = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const executed = await dependencies.withdrawMembershipRequest(command({
+        actorId: authenticated.userId, aggregateId: request.params.membershipId,
+        commandType: 'WITHDRAW_MEMBERSHIP_REQUEST', idempotencyKey: key,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        payload: { membershipId: request.params.membershipId }, request,
       }), effectIds());
       return response(executed, requestContext(request).requestId);
     },

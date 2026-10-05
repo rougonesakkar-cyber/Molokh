@@ -142,6 +142,7 @@ the blocker revokes it. Neither endpoint cascades from Match to Challenge or Boo
 | POST | `/me/coach-invites/{grant_id}/accept` | invitee activates Coach grant |
 | POST | `/memberships/{id}/approve` | Gym Admin |
 | POST | `/memberships/{id}/reject` | neutral + internal reason |
+| POST | `/memberships/{id}/withdraw` | requester closes a PENDING self-request without penalty |
 | POST | `/memberships/{id}/leave-preview` | exact status/obligation consequence token |
 | POST | `/memberships/{id}/leave-confirm` | consume preview token |
 | GET | `/venues/{venue_id}/members` | scoped Gym Admin participant/status projection |

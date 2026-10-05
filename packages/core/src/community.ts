@@ -148,6 +148,7 @@ export type CommunityDenialCode =
   | 'ACCOUNT_NOT_VERIFIED'
   | 'COMMUNITY_NOT_ACTIVE'
   | 'MEMBERSHIP_ALREADY_EXISTS'
+  | 'MEMBERSHIP_REAPPLY_NOT_DUE'
   | 'MEMBERSHIP_NOT_ACTIVE'
   | 'AGE_CONTOUR_MISMATCH'
   | 'MVP_ACTIVE_COMMUNITY_LIMIT'
@@ -170,6 +171,7 @@ export interface CommunityAccessInput {
   readonly communityId: string;
   readonly communityState: CommunityState;
   readonly membership: CommunityMembershipAccess | null;
+  readonly membershipReapplyBlocked: boolean;
   readonly hasOtherActiveCompetitiveMembership: boolean;
   readonly activeRoleGrants: readonly ActiveRoleGrant[];
 }
@@ -237,6 +239,7 @@ export function projectCommunityAccess(
     accountActive &&
     communityActive &&
     membershipCanBeRequested &&
+    !input.membershipReapplyBlocked &&
     !input.hasOtherActiveCompetitiveMembership
   ) {
     capabilities.push('REQUEST_MEMBERSHIP');
@@ -247,6 +250,8 @@ export function projectCommunityAccess(
         ? 'COMMUNITY_NOT_ACTIVE'
         : input.hasOtherActiveCompetitiveMembership
           ? 'MVP_ACTIVE_COMMUNITY_LIMIT'
+          : input.membershipReapplyBlocked
+            ? 'MEMBERSHIP_REAPPLY_NOT_DUE'
           : 'MEMBERSHIP_ALREADY_EXISTS';
     denials.push(denial('REQUEST_MEMBERSHIP', code, code !== 'MEMBERSHIP_ALREADY_EXISTS'));
   }

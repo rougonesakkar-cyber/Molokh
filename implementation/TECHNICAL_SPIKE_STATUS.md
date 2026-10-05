@@ -21,7 +21,7 @@
 | Request context | validated request/correlation/causation headers, response propagation and safe error mapping | Pass |
 | Identity vertical slice | 14+ activation, arbitrary display name, no-document Central verification, public capability projection, API/client path and private audit | Pass |
 | Community scope foundation | pilot Venue/Community/Membership, immutable config ownership, role scope guard and universal client projection | Pass |
-| Membership onboarding | QR/invite activation with hashed expiring tokens, self-request, 12h Admin reminder, 24h Central escalation, FIFO approval and local two-role walkthrough | Pass in Core/API/client/worker and real PostgreSQL |
+| Membership onboarding | QR/invite activation with hashed expiring tokens, self-request, 12h Admin reminder, 24h Central escalation, FIFO approve/reject, seven-day reapply guard, requester withdrawal and local two-role walkthrough | Pass in Core/API/client/worker and real PostgreSQL |
 | Coach authorization slice | scoped 72h invite, invitee-only acceptance, audit/in-app notification and role-adaptive client path | Pass |
 | Venue Admin role lifecycle | verified Gym Admin appointment plus serialized first/transfer Primary command and local operator path | Pass |
 | Discovery read slice | hard gates, radius-first deterministic order, typed API and universal-client candidate card | Pass |
@@ -198,8 +198,8 @@ Verified on 2026-10-04:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 244 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 43 integration scenarios, including Membership request/approval/QR activation, timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
+- 248 non-database automated tests pass across Core, DB, API, worker and testkit;
+- the current PostgreSQL gate passes all 43 integration scenarios, including Membership request/approve/reject/withdraw/QR activation, timer creation, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
