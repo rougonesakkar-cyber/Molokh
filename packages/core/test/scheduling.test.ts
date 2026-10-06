@@ -330,7 +330,7 @@ describe('Scheduling publication policy', () => {
     })).toThrowError(expect.objectContaining({ reason: 'COACH_REPLACEMENT_NOT_REJECTABLE' }));
   });
 
-  it('closes an external failure only while the Session has not actually started', () => {
+  it('[AC-063] closes an external failure only while the Session has not actually started', () => {
     expect(() => assertExternalSessionFailureCanBeCommitted({
       state: 'SCHEDULED', actualStartAt: null,
     })).not.toThrow();

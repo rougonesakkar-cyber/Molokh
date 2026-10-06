@@ -23,6 +23,7 @@ import {
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
   assertMutualChallengeRescheduleCanBeProposed,
+  externalChallengeRescheduleCount,
   nextAthleteChallengeRescheduleCount,
   nextMutualChallengeRescheduleCount,
   optionalChallengePairQuietEndsAt,
@@ -247,6 +248,18 @@ describe('Official Challenge policy', () => {
       state: 'BOOKED', proposedByUserId: 'athlete-a', confirmedByUserId: 'athlete-b',
       participantUserIds: proposal.participantUserIds, userRescheduleCount: 2,
     })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
+  });
+
+  it('[AC-063] keeps the user counter unchanged for an external booked-Session failure', () => {
+    expect(externalChallengeRescheduleCount({
+      state: 'BOOKED', activeObligationCount: 2, userRescheduleCount: 2,
+    })).toBe(2);
+    expect(() => externalChallengeRescheduleCount({
+      state: 'IN_SESSION', activeObligationCount: 2, userRescheduleCount: 1,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED'));
+    expect(() => externalChallengeRescheduleCount({
+      state: 'BOOKED', activeObligationCount: 1, userRescheduleCount: 1,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_OBLIGATION_MISSING'));
   });
 
   it('confirms only the Booking currently owned by the accepted Challenge', () => {

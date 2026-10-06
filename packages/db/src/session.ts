@@ -19,6 +19,7 @@ import {
   assertSessionWindowCanOpen,
   challengeResultReminderDeadlines,
   effectiveChallengeStakeAtSessionWindow,
+  externalChallengeRescheduleCount,
   type AttendanceStatus,
   type ChallengeStake,
   type ChallengeState,
@@ -97,6 +98,7 @@ export interface SessionEffectIds {
   readonly competitiveSnapshotId?: string;
   readonly challengeEventId?: string;
   readonly challengeOutboxMessageId?: string;
+  readonly rescheduleId?: string;
   readonly conversionEventId?: string;
   readonly conversionQueueEventId?: string;
   readonly conversionOutboxMessageId?: string;
@@ -245,6 +247,8 @@ interface OfficialSessionChallengeRow {
   readonly contender_user_id: string | null;
   readonly competition_status_version: string;
   readonly active_obligation_count: string;
+  readonly scheduling_deadline_at: Date | null;
+  readonly user_reschedule_count: number;
   readonly version: string;
 }
 
@@ -274,6 +278,18 @@ function requiredChallengeTransitionIds(ids: SessionEffectIds): {
     eventId: ids.challengeEventId,
     outboxMessageId: ids.challengeOutboxMessageId,
   };
+}
+
+function requiredExternalChallengeRescheduleIds(ids: SessionEffectIds): {
+  readonly eventId: string;
+  readonly outboxMessageId: string;
+  readonly rescheduleId: string;
+} {
+  const transition = requiredChallengeTransitionIds(ids);
+  if (!ids.rescheduleId) {
+    throw new TypeError('Official external reschedule ID is required');
+  }
+  return { ...transition, rescheduleId: ids.rescheduleId };
 }
 
 function requiredCompetitiveSnapshotId(ids: SessionEffectIds): string {
@@ -481,6 +497,7 @@ async function officialChallengeForSession(
         from competition.challenge_participant_obligations as obligation
         where obligation.challenge_id = challenge.challenge_id
           and obligation.released_at is null) as active_obligation_count,
+      challenge.scheduling_deadline_at, challenge.user_reschedule_count,
       challenge.version::text as version
     from competition.challenges as challenge
     join competition.competitions as competition
@@ -803,6 +820,7 @@ function noFaultCancellationOutbox(
   ids: SessionEffectIds,
   row: SessionRow,
   reasonCode: string,
+  challengeReturnedToScheduling = false,
 ) {
   if (!ids.notificationOutboxMessageId || !ids.notificationIds) {
     throw new SchedulingPermissionDeniedError();
@@ -822,9 +840,23 @@ function noFaultCancellationOutbox(
             notificationId: ids.notificationIds![index]!,
             recipientUserId,
             category: 'SERVICE',
-            renderKey: 'booking.cancelled-no-fault',
-            actionTarget: { type: 'SESSION', sessionId: row.session_id },
-            payload: { bookingId: row.booking_id, sessionId: row.session_id, reasonCode },
+            renderKey: challengeReturnedToScheduling && row.challenge_id
+              ? 'challenge.external-rescheduled'
+              : 'booking.cancelled-no-fault',
+            actionTarget: challengeReturnedToScheduling && row.challenge_id
+              ? { type: 'CHALLENGE', challengeId: row.challenge_id }
+              : { type: 'SESSION', sessionId: row.session_id },
+            payload: {
+              bookingId: row.booking_id,
+              sessionId: row.session_id,
+              reasonCode,
+              ...(challengeReturnedToScheduling && row.challenge_id
+                ? {
+                    challengeId: row.challenge_id,
+                    challengeState: 'ACCEPTED_UNSCHEDULED',
+                  }
+                : {}),
+            },
             deadlineAt: null,
           }),
         ),
@@ -1148,51 +1180,158 @@ export async function failSessionExternal(
     mutate: async (transaction, context) => {
       const row = await readSessionRow(transaction, command.aggregateId, true);
       if (!row) throw new SchedulingConflictError('EXTERNAL_FAILURE_NOT_ALLOWED');
-      const authorized = await hasActiveVenueAdminScope(
+      const authorized = await hasActiveCoachScope(transaction, row, command.actor.id!)
+        || await hasActiveVenueAdminScope(
         transaction, command.actor.id!, row.venue_id,
-      ) || await hasActiveCentralScope(transaction, command.actor.id!);
+        ) || await hasActiveCentralScope(transaction, command.actor.id!);
       if (!authorized) throw new SchedulingPermissionDeniedError();
       assertExternalSessionFailureCanBeCommitted({
         state: row.state,
         actualStartAt: row.actual_start_at?.toISOString() ?? null,
       });
       const resource = await readSessionResourcesForUpdate(transaction, row);
+      const challenge = await officialChallengeForSession(transaction, row);
+      const externalCount = challenge
+        ? externalChallengeRescheduleCount({
+            state: challenge.state,
+            activeObligationCount: Number(challenge.active_obligation_count),
+            userRescheduleCount: challenge.user_reschedule_count,
+          })
+        : null;
+      const challengeIds = challenge ? requiredExternalChallengeRescheduleIds(ids) : null;
+      if (challenge && !challenge.scheduling_deadline_at) {
+        throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+      }
       const cancelled = await cancelConfirmedSessionResources(
         transaction, row, resource, context, command.actor.id!, command.payload.reasonCode,
       );
-      const response = await sessionProjection(transaction, cancelled.updated, command.actor.id!);
+      const challengeNextVersion = challenge ? Number(challenge.version) + 1 : null;
+      if (challenge && challengeIds && externalCount !== null) {
+        await sql`
+          insert into competition.challenge_reschedules (
+            reschedule_id, challenge_id, booking_id, initiated_by_user_id,
+            fault_attribution, fault_user_id, reason_code, reason_note, created_at
+          ) values (
+            ${challengeIds.rescheduleId}::uuid, ${challenge.challenge_id}::uuid,
+            ${row.booking_id}::uuid, ${command.actor.id}::uuid,
+            'EXTERNAL', null, ${command.payload.reasonCode}, null,
+            ${context.occurredAt.toISOString()}::timestamptz
+          )
+        `.execute(transaction);
+        await sql`
+          update competition.challenges
+          set state = 'ACCEPTED_UNSCHEDULED', version = ${challengeNextVersion},
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where challenge_id = ${challenge.challenge_id}::uuid and state = 'BOOKED'
+        `.execute(transaction);
+      }
+      const updated = challenge
+        ? {
+            ...cancelled.updated,
+            challenge_state: 'ACCEPTED_UNSCHEDULED' as const,
+            challenge_version: String(challengeNextVersion),
+          }
+        : cancelled.updated;
+      const response = await sessionProjection(transaction, updated, command.actor.id!);
+      const relatedEvents = [
+        {
+          eventId: ids.bookingEventId!, eventName: 'BookingCancelledNoFault', schemaVersion: 1,
+          aggregateType: 'Booking', aggregateId: row.booking_id,
+          aggregateVersion: cancelled.bookingVersion, transitionId: 'B-15',
+          payload: { bookingId: row.booking_id, cause: 'EXTERNAL', userRescheduleCounted: false },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        {
+          eventId: ids.slotEventId!, eventName: 'SlotBookingCancelled', schemaVersion: 1,
+          aggregateType: 'Slot', aggregateId: resource.slot_id,
+          aggregateVersion: cancelled.slotVersion, transitionId: 'SL-06',
+          payload: { slotId: resource.slot_id, cause: 'EXTERNAL' },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        ...(challenge && challengeIds && challengeNextVersion !== null && externalCount !== null
+          ? [{
+              eventId: challengeIds.eventId,
+              eventName: 'ChallengeRescheduled',
+              schemaVersion: 1,
+              aggregateType: 'Challenge',
+              aggregateId: challenge.challenge_id,
+              aggregateVersion: challengeNextVersion,
+              transitionId: 'CH-21',
+              payload: {
+                challengeId: challenge.challenge_id,
+                rescheduleId: challengeIds.rescheduleId,
+                bookingId: row.booking_id,
+                sessionId: row.session_id,
+                initiatedByUserId: command.actor.id,
+                faultAttribution: 'EXTERNAL',
+                reasonCode: command.payload.reasonCode,
+                userRescheduleCount: externalCount,
+                schedulingDeadlineAt: challenge.scheduling_deadline_at!.toISOString(),
+              },
+              metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+            }]
+          : []),
+      ];
+      const outbox = [
+        ...noFaultCancellationOutbox(ids, row, command.payload.reasonCode, challenge !== null),
+        ...(challenge && challengeIds && challengeNextVersion !== null && externalCount !== null
+          ? [{
+              messageId: challengeIds.outboxMessageId,
+              topic: 'competition.challenge.rescheduled.v1',
+              sourceEventId: challengeIds.eventId,
+              payload: {
+                challengeId: challenge.challenge_id,
+                rescheduleId: challengeIds.rescheduleId,
+                bookingId: row.booking_id,
+                sessionId: row.session_id,
+                initiatedByUserId: command.actor.id,
+                faultAttribution: 'EXTERNAL',
+                reasonCode: command.payload.reasonCode,
+                userRescheduleCount: externalCount,
+                timer: {
+                  commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+                  aggregateType: 'Challenge',
+                  aggregateId: challenge.challenge_id,
+                  deadlineAt: challenge.scheduling_deadline_at!.toISOString(),
+                  expectedState: 'ACCEPTED_UNSCHEDULED',
+                  expectedVersion: challengeNextVersion,
+                  policyVersion: CHALLENGE_POLICY_VERSION,
+                  idempotencyKey:
+                    `challenge:${challenge.challenge_id}:expire-scheduling:v${challengeNextVersion}`,
+                },
+              },
+            }]
+          : []),
+      ];
       return {
         responseStatus: 200,
         response,
         event: {
           eventId: ids.eventId, eventName: 'SessionFailedExternal', schemaVersion: 1,
           transitionId: row.state === 'READY_FOR_COACH' ? 'S-11' : 'S-04',
-          payload: { sessionId: row.session_id, reasonCode: command.payload.reasonCode },
+          payload: {
+            sessionId: row.session_id,
+            challengeId: challenge?.challenge_id ?? null,
+            rescheduleId: challengeIds?.rescheduleId ?? null,
+            reasonCode: command.payload.reasonCode,
+          },
           metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
         },
-        relatedEvents: [
-          {
-            eventId: ids.bookingEventId!, eventName: 'BookingCancelledNoFault', schemaVersion: 1,
-            aggregateType: 'Booking', aggregateId: row.booking_id,
-            aggregateVersion: cancelled.bookingVersion, transitionId: 'B-15',
-            payload: { bookingId: row.booking_id, cause: 'EXTERNAL', userRescheduleCounted: false },
-            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
-          },
-          {
-            eventId: ids.slotEventId!, eventName: 'SlotBookingCancelled', schemaVersion: 1,
-            aggregateType: 'Slot', aggregateId: resource.slot_id,
-            aggregateVersion: cancelled.slotVersion, transitionId: 'SL-06',
-            payload: { slotId: resource.slot_id, cause: 'EXTERNAL' },
-            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
-          },
-        ],
+        relatedEvents,
         audit: {
           auditId: ids.auditId, action: 'FAIL_SESSION_EXTERNAL',
           transitionId: row.state === 'READY_FOR_COACH' ? 'S-11' : 'S-04',
           reasonCode: command.payload.reasonCode, beforeState: row.state,
-          afterState: 'CANCELLED', metadata: { fault: 'EXTERNAL' },
+          afterState: 'CANCELLED',
+          metadata: {
+            fault: 'EXTERNAL',
+            challengeId: challenge?.challenge_id ?? null,
+            rescheduleId: challengeIds?.rescheduleId ?? null,
+            userRescheduleCounted: false,
+            userRescheduleCount: externalCount,
+          },
         },
-        outbox: noFaultCancellationOutbox(ids, row, command.payload.reasonCode),
+        outbox,
       };
     },
   });

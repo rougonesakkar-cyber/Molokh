@@ -253,6 +253,27 @@ export function nextMutualChallengeRescheduleCount(input: {
   return input.userRescheduleCount + 1;
 }
 
+export function externalChallengeRescheduleCount(input: {
+  readonly state: ChallengeState;
+  readonly activeObligationCount: number;
+  readonly userRescheduleCount: number;
+}): number {
+  if (input.state !== 'BOOKED') {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (input.activeObligationCount !== 2) {
+    throw new ChallengeConflictError('CHALLENGE_OBLIGATION_MISSING');
+  }
+  if (
+    !Number.isSafeInteger(input.userRescheduleCount)
+    || input.userRescheduleCount < 0
+    || input.userRescheduleCount > MAX_USER_CHALLENGE_RESCHEDULES
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  return input.userRescheduleCount;
+}
+
 export function assertChallengeBookingCanBeConfirmed(input: {
   readonly state: ChallengeState;
   readonly activeObligationCount: number;

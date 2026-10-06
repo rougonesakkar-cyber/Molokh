@@ -1599,7 +1599,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
+  it('[AC-063][AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
     const venueId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const chatId = '0199a1b2-1234-7000-8000-000000000703';
@@ -2772,7 +2772,13 @@ describe('runtime contract', () => {
     expect(externalFailure.statusCode).toBe(200);
     expect(failSessionExternal.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'FAIL_SESSION_EXTERNAL',
+      actor: { id: userId, roles: [] },
       payload: { sessionId, reasonCode: 'VENUE_UNAVAILABLE' },
+    });
+    expect(failSessionExternal.mock.calls[0]?.[1]).toMatchObject({
+      rescheduleId: expect.any(String),
+      challengeEventId: expect.any(String),
+      challengeOutboxMessageId: expect.any(String),
     });
 
     const planProposed = await app.inject({

@@ -1545,7 +1545,9 @@ export default function IdentityScreen() {
                 ? 'Coach заменён без изменения времени, зала и условий. Спортсмены уведомлены.'
                 : action === 'cancel-after-coach-replacement'
                   ? 'Session отменена без штрафа и без влияния на статистику.'
-                  : 'Зал отменил Session по внешней причине. Для спортсменов нет штрафа.',
+                  : result.data.purpose === 'OFFICIAL_CHALLENGE'
+                    ? 'Coach/зал подтвердил внешнюю отмену. Challenge возвращён к выбору времени без виновного и без расхода переноса.'
+                    : 'Coach/зал отменил Session по внешней причине. Для спортсменов нет штрафа.',
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Session');
@@ -5262,55 +5264,85 @@ export default function IdentityScreen() {
                               Coach заменён залом. Время, место и стоимость не изменились.
                             </Text>
                           ) : null}
-                          {session.viewerCanAdminister
+                          {(session.viewerCanAdminister || session.viewerCanManage)
                             && (session.state === 'SCHEDULED' || session.state === 'READY_FOR_COACH') ? (
                               <View style={styles.attendanceList}>
-                                {session.replacementCoachOptions.length > 0 ? (
-                                  <>
-                                    <Text style={styles.hint}>Доступная равноценная замена:</Text>
-                                    {session.replacementCoachOptions.map((candidate) => (
-                                      <Pressable
-                                        key={candidate.userId}
-                                        accessibilityRole="button"
-                                        accessibilityState={{ disabled: sessionActionBlocked }}
-                                        disabled={sessionActionBlocked}
-                                        onPress={() => setPendingSessionAction({
-                                          action: 'replace-coach',
-                                          body: { replacementCoachUserId: candidate.userId },
-                                          confirmLabel: 'Назначить Coach',
-                                          description: `Назначить ${candidate.displayName}? Время, зал и условия Session не изменятся. Оба спортсмена получат уведомление.`,
-                                          operationSuffix: candidate.userId,
-                                          sessionId: session.sessionId,
-                                          title: 'Подтвердите замену Coach',
-                                          tone: 'neutral',
-                                        })}
-                                        style={({ pressed }) => [
-                                          styles.secondaryButton,
-                                          sessionActionBlocked && styles.buttonDisabled,
-                                          pressed && !sessionActionBlocked && styles.buttonPressed,
-                                        ]}
-                                      >
-                                        <Text style={styles.secondaryButtonText}>
-                                          Назначить: {candidate.displayName}
-                                        </Text>
-                                      </Pressable>
-                                    ))}
-                                  </>
-                                ) : (
-                                  <Text style={styles.hint}>Свободной равноценной замены Coach нет.</Text>
-                                )}
+                                {session.viewerCanAdminister ? (
+                                  session.replacementCoachOptions.length > 0 ? (
+                                    <>
+                                      <Text style={styles.hint}>Доступная равноценная замена:</Text>
+                                      {session.replacementCoachOptions.map((candidate) => (
+                                        <Pressable
+                                          key={candidate.userId}
+                                          accessibilityRole="button"
+                                          accessibilityState={{ disabled: sessionActionBlocked }}
+                                          disabled={sessionActionBlocked}
+                                          onPress={() => setPendingSessionAction({
+                                            action: 'replace-coach',
+                                            body: { replacementCoachUserId: candidate.userId },
+                                            confirmLabel: 'Назначить Coach',
+                                            description: `Назначить ${candidate.displayName}? Время, зал и условия Session не изменятся. Оба спортсмена получат уведомление.`,
+                                            operationSuffix: candidate.userId,
+                                            sessionId: session.sessionId,
+                                            title: 'Подтвердите замену Coach',
+                                            tone: 'neutral',
+                                          })}
+                                          style={({ pressed }) => [
+                                            styles.secondaryButton,
+                                            sessionActionBlocked && styles.buttonDisabled,
+                                            pressed && !sessionActionBlocked && styles.buttonPressed,
+                                          ]}
+                                        >
+                                          <Text style={styles.secondaryButtonText}>
+                                            Назначить: {candidate.displayName}
+                                          </Text>
+                                        </Pressable>
+                                      ))}
+                                    </>
+                                  ) : (
+                                    <Text style={styles.hint}>Свободной равноценной замены Coach нет.</Text>
+                                  )
+                                ) : null}
                                 <Pressable
                                   accessibilityRole="button"
                                   accessibilityState={{ disabled: sessionActionBlocked }}
                                   disabled={sessionActionBlocked}
                                   onPress={() => setPendingSessionAction({
                                     action: 'fail-external',
-                                    body: { reasonCode: 'OTHER_EXTERNAL' },
-                                    confirmLabel: 'Отменить Session',
-                                    description: 'Session будет отменена по внешней причине. У спортсменов не будет поражения, штрафа или записи в статистике.',
-                                    operationSuffix: 'other-external',
+                                    body: { reasonCode: 'COACH_UNAVAILABLE' },
+                                    confirmLabel: 'Подтвердить недоступность',
+                                    description: session.purpose === 'OFFICIAL_CHALLENGE'
+                                      ? 'Session будет закрыта без виновного, а Challenge вернётся к выбору времени с тем же deadline и без расхода пользовательского переноса.'
+                                      : 'Session будет отменена по внешней причине без штрафа и записи в статистике.',
+                                    operationSuffix: 'coach-unavailable',
                                     sessionId: session.sessionId,
-                                    title: 'Зал точно не может провести Session?',
+                                    title: 'Coach не может провести Session?',
+                                    tone: 'danger',
+                                  })}
+                                  style={({ pressed }) => [
+                                    styles.dangerButton,
+                                    sessionActionBlocked && styles.buttonDisabled,
+                                    pressed && !sessionActionBlocked && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.dangerButtonText}>
+                                    Coach не может провести Session
+                                  </Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityState={{ disabled: sessionActionBlocked }}
+                                  disabled={sessionActionBlocked}
+                                  onPress={() => setPendingSessionAction({
+                                    action: 'fail-external',
+                                    body: { reasonCode: 'VENUE_UNAVAILABLE' },
+                                    confirmLabel: 'Подтвердить недоступность',
+                                    description: session.purpose === 'OFFICIAL_CHALLENGE'
+                                      ? 'Session будет закрыта без виновного, а Challenge вернётся к выбору времени с тем же deadline и без расхода пользовательского переноса.'
+                                      : 'Session будет отменена по внешней причине без штрафа и записи в статистике.',
+                                    operationSuffix: 'venue-unavailable',
+                                    sessionId: session.sessionId,
+                                    title: 'Зал не может провести Session?',
                                     tone: 'danger',
                                   })}
                                   style={({ pressed }) => [

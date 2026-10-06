@@ -423,6 +423,7 @@ function sessionEffectIds(input?: {
     competitiveSnapshotId: newUuidV7(),
     challengeEventId: newUuidV7(),
     challengeOutboxMessageId: newUuidV7(),
+    rescheduleId: newUuidV7(),
   };
 }
 
@@ -1400,7 +1401,7 @@ export async function registerSchedulingRoutes(
       const executed = await dependencies.failSessionExternal(
         {
           commandId: newUuidV7(), commandType: 'FAIL_SESSION_EXTERNAL', idempotencyKey,
-          actor: { type: 'USER', id: authenticated.userId, roles: ['GYM_ADMIN'], scopeIds: [] },
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
           aggregateType: 'Session', aggregateId: request.params.sessionId,
           expectedVersion: requireExistingVersion(request.headers['if-match']),
           correlationId: context.correlationId, causationId: context.causationId,
