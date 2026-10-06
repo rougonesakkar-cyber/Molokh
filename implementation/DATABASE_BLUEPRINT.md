@@ -192,6 +192,9 @@ Challenge while retaining rejected/expired Booking history.
 private optional reason text, timestamp and optional Booking lineage. CH-22 locks a live Booking
 before its Challenge, atomically cancels that Booking, increments the Challenge version/count and
 reissues the original scheduling-deadline timer; the Slot and active obligations are not mutated.
+At the database-enforced limit, CH-23 reuses the same counter and Result tables without a migration:
+explicit consequence confirmation creates the administrative `FORFEIT`, leaves the counter at two,
+closes an optional pending Booking and deliberately inserts no third `challenge_reschedules` row.
 
 `0025_official_session_competitive_snapshot.sql` creates the one-per-Session immutable
 competitive snapshot. It records both planned and scheduled-boundary effective stakes together

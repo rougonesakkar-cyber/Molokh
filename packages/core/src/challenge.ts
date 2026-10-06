@@ -66,6 +66,7 @@ export type ChallengeConflictCode =
   | 'CHALLENGE_OBLIGATION_MISSING'
   | 'CHALLENGE_RESCHEDULE_NOT_ALLOWED'
   | 'CHALLENGE_RESCHEDULE_LIMIT_REACHED'
+  | 'CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED'
   | 'CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED'
   | 'CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS'
   | 'CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED';
@@ -197,6 +198,30 @@ export function nextAthleteChallengeRescheduleCount(input: {
     throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
   }
   return input.userRescheduleCount + 1;
+}
+
+export function challengeRescheduleLimitForfeitWinner(input: {
+  readonly state: ChallengeState;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly userRescheduleCount: number;
+  readonly consequencesConfirmed: boolean;
+}): string {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED');
+  }
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (input.userRescheduleCount !== MAX_USER_CHALLENGE_RESCHEDULES) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
+  }
+  if (!input.consequencesConfirmed) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED');
+  }
+  return input.participantUserIds[0] === input.actorUserId
+    ? input.participantUserIds[1]
+    : input.participantUserIds[0];
 }
 
 export function assertMutualChallengeRescheduleCanBeProposed(input: {

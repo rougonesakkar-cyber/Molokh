@@ -1,5 +1,6 @@
 import {
   ApiErrorSchema,
+  AthleteChallengeRescheduleBodySchema,
   ChallengeCommandResponseSchema,
   ChatChallengeResponseSchema,
   ConfirmMutualChallengeRescheduleBodySchema,
@@ -8,6 +9,7 @@ import {
   RespondToChallengeBodySchema,
   ScheduleMutationReasonBodySchema,
   type ChallengeCommandResponse,
+  type AthleteChallengeRescheduleBody,
   type ChatChallengeResponse,
   type ConfirmMutualChallengeRescheduleBody,
   type CreateDirectChallengeBody,
@@ -134,6 +136,7 @@ function athleteRescheduleIds(): AthleteChallengeRescheduleEffectIds {
     rescheduleId: newUuidV7(),
     bookingEventId: newUuidV7(),
     bookingOutboxMessageId: newUuidV7(),
+    hostNotificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7()],
   };
 }
@@ -267,7 +270,7 @@ export async function registerChallengeRoutes(
   );
 
   app.post<{
-    Body: ScheduleMutationReasonBody;
+    Body: AthleteChallengeRescheduleBody;
     Headers: ChallengeHeaders;
     Params: ChallengeParams;
   }>(
@@ -279,7 +282,7 @@ export async function registerChallengeRoutes(
           { challengeId: Type.String({ format: 'uuid' }) },
           { additionalProperties: false },
         ),
-        body: ScheduleMutationReasonBodySchema,
+        body: AthleteChallengeRescheduleBodySchema,
         response: {
           200: ChallengeCommandResponseSchema,
           400: ApiErrorSchema,
@@ -307,6 +310,7 @@ export async function registerChallengeRoutes(
           challengeId: request.params.challengeId,
           reasonCode: request.body.reasonCode,
           reasonNote: request.body.reasonNote ?? null,
+          confirmForfeit: request.body.confirmForfeit ?? false,
         },
         request,
       ) as CommandEnvelope<RescheduleChallengeByAthletePayload>;

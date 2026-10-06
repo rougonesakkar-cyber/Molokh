@@ -14,6 +14,7 @@ import {
   assertMandatoryChallengeCanBeExpired,
   assertMutualChallengeRescheduleCanBeProposed,
   assertExpectedVersion,
+  challengeRescheduleLimitForfeitWinner,
   nextAthleteChallengeRescheduleCount,
   nextMutualChallengeRescheduleCount,
   normalizeScheduleMutationReason,
@@ -35,6 +36,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
 import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
+import { recordAdministrativeForfeit } from './result.js';
 import {
   assertYouthChallengeConsentReady,
   assertYouthOfficialAvailableForUsers,
@@ -61,6 +63,7 @@ export interface RescheduleChallengeByAthletePayload {
   readonly challengeId: string;
   readonly reasonCode: ScheduleMutationReasonCode;
   readonly reasonNote: string | null;
+  readonly confirmForfeit?: boolean;
 }
 
 export interface ProposeMutualChallengeReschedulePayload {
@@ -102,6 +105,7 @@ export interface AthleteChallengeRescheduleEffectIds extends ChallengeEffectIds 
   readonly rescheduleId: string;
   readonly bookingEventId: string;
   readonly bookingOutboxMessageId: string;
+  readonly hostNotificationOutboxMessageId: string;
   readonly notificationIds: readonly [string, string];
 }
 
@@ -1492,6 +1496,7 @@ export async function rescheduleChallengeByAthlete(
   ) {
     throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
   }
+  const actorUserId = command.actor.id;
   const reason = normalizeScheduleMutationReason(command.payload);
   return executeCriticalCommand(database, {
     command: { ...command, payload: { ...command.payload, ...reason } },
@@ -1517,12 +1522,6 @@ export async function rescheduleChallengeByAthlete(
       `.execute(transaction);
       const booking = bookingResult.rows[0] ?? null;
       const row = await challengeRow(transaction, command.aggregateId, true);
-      const nextCount = nextAthleteChallengeRescheduleCount({
-        state: row.state,
-        actorUserId: command.actor.id!,
-        participantUserIds: [row.pair_low_id, row.pair_high_id],
-        userRescheduleCount: row.user_reschedule_count,
-      });
       if (!row.scheduling_deadline_at) {
         throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
       }
@@ -1533,6 +1532,177 @@ export async function rescheduleChallengeByAthlete(
         throw new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING');
       }
       await assertChallengeCompetitionOperational(transaction, row.competition_id);
+      if (row.user_reschedule_count === 2) {
+        const winnerUserId = challengeRescheduleLimitForfeitWinner({
+          state: row.state,
+          actorUserId,
+          participantUserIds: [row.pair_low_id, row.pair_high_id],
+          userRescheduleCount: row.user_reschedule_count,
+          consequencesConfirmed: command.payload.confirmForfeit === true,
+        });
+        const required = administrativeForfeitIds(ids);
+        if (!ids.notificationOutboxMessageId) {
+          throw new TypeError('Result notification outbox ID is required');
+        }
+        if (booking) {
+          await sql`
+            update scheduling.bookings
+            set state = 'CANCELLED', cancelled_at = ${context.occurredAt.toISOString()}::timestamptz,
+              cancel_actor = ${command.actor.id}::uuid,
+              cancel_reason = 'CHALLENGE_RESCHEDULE_LIMIT_FORFEIT',
+              version = version + 1,
+              updated_at = ${context.occurredAt.toISOString()}::timestamptz
+            where booking_id = ${booking.booking_id}::uuid
+              and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+          `.execute(transaction);
+        }
+        const forfeit = await recordAdministrativeForfeit(
+          transaction,
+          {
+            challengeId: row.challenge_id,
+            loserUserId: actorUserId,
+            recordedByUserId: actorUserId,
+            reasonCode: 'RESCHEDULE_LIMIT_EXCEEDED',
+            comment: 'The Athlete confirmed another culpable reschedule after using both allowances.',
+            sourceSessionId: null,
+            sourceCoachUserId: booking?.coach_user_id ?? null,
+            notificationRecipientUserIds: [row.pair_low_id, row.pair_high_id],
+            occurredAt: context.occurredAt,
+            expectedChallengeState: row.state as 'ACCEPTED_UNSCHEDULED' | 'BOOKING_PENDING',
+          },
+          {
+            resultId: required.resultId,
+            resultEventId: required.resultEventId,
+            statusTransitionId: required.statusTransitionId,
+            statusEventId: required.statusEventId,
+            cooldownId: required.cooldownId,
+            cooldownEventId: required.cooldownEventId,
+            resultOutboxMessageId: required.timerOutboxMessageId,
+            notificationOutboxMessageId: ids.notificationOutboxMessageId,
+            notificationIds: required.notificationIds,
+          },
+        );
+        const response = projection(
+          await challengeRow(transaction, row.challenge_id),
+          actorUserId,
+        );
+        return {
+          responseStatus: 200,
+          response,
+          event: {
+            eventId: ids.eventId,
+            eventName: 'RescheduleLimitForfeit',
+            schemaVersion: 1,
+            transitionId: 'CH-23',
+            payload: {
+              challengeId: row.challenge_id,
+              resultId: forfeit.resultId,
+              bookingId: booking?.booking_id ?? null,
+              initiatedByUserId: actorUserId,
+              winnerUserId,
+              loserUserId: actorUserId,
+              reasonCode: reason.reasonCode,
+              userRescheduleCount: row.user_reschedule_count,
+              appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+            },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          },
+          relatedEvents: [
+            ...(booking ? [{
+              eventId: ids.bookingEventId,
+              eventName: 'BookingRequestWithdrawn',
+              schemaVersion: 1,
+              aggregateType: 'Booking',
+              aggregateId: booking.booking_id,
+              aggregateVersion: Number(booking.version) + 1,
+              transitionId: 'B-04',
+              payload: {
+                bookingId: booking.booking_id,
+                slotId: booking.slot_id,
+                withdrawnByUserId: actorUserId,
+                previousState: booking.state,
+                cause: 'CHALLENGE_RESCHEDULE_LIMIT_FORFEIT',
+              },
+              metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+            }] : []),
+            ...forfeit.relatedEvents,
+          ],
+          audit: {
+            auditId: ids.auditId,
+            action: 'RESCHEDULE_LIMIT_FORFEIT',
+            transitionId: 'CH-23',
+            reasonCode: reason.reasonCode,
+            beforeState: row.state,
+            afterState: 'RESULT_RECORDED',
+            metadata: {
+              resultId: forfeit.resultId,
+              bookingId: booking?.booking_id ?? null,
+              initiatedByUserId: actorUserId,
+              winnerUserId,
+              loserUserId: actorUserId,
+              reasonNote: reason.reasonNote,
+              userRescheduleCount: row.user_reschedule_count,
+              statusTransitionType: forfeit.statusTransitionType,
+            },
+          },
+          outbox: [
+            {
+              messageId: ids.outboxMessageId,
+              topic: 'competition.challenge.reschedule-limit-forfeit.v1',
+              payload: {
+                challengeId: row.challenge_id,
+                resultId: forfeit.resultId,
+                bookingId: booking?.booking_id ?? null,
+                initiatedByUserId: actorUserId,
+                winnerUserId,
+                loserUserId: actorUserId,
+                reasonCode: reason.reasonCode,
+                userRescheduleCount: row.user_reschedule_count,
+                appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+              },
+            },
+            ...forfeit.outbox,
+            ...(booking ? [{
+              messageId: ids.bookingOutboxMessageId,
+              topic: 'scheduling.booking.request-withdrawn.v1',
+              sourceEventId: ids.bookingEventId,
+              payload: {
+                bookingId: booking.booking_id,
+                chatId: booking.chat_id,
+                slotId: booking.slot_id,
+                cause: 'CHALLENGE_RESCHEDULE_LIMIT_FORFEIT',
+              },
+            }] : []),
+            ...(booking?.coach_user_id ? [{
+              messageId: ids.hostNotificationOutboxMessageId,
+              topic: 'notification.in_app.v1',
+              sourceEventId: ids.bookingEventId,
+              payload: {
+                notifications: [{
+                  notificationId: ids.notificationId,
+                  recipientUserId: booking.coach_user_id,
+                  category: 'SERVICE',
+                  renderKey: 'challenge.reschedule-limit-forfeit-host',
+                  actionTarget: { type: 'BOOKING', bookingId: booking.booking_id },
+                  payload: {
+                    challengeId: row.challenge_id,
+                    bookingId: booking.booking_id,
+                    resultId: forfeit.resultId,
+                    outcomeCode: 'FORFEIT',
+                  },
+                  deadlineAt: null,
+                }],
+              },
+            }] : []),
+          ],
+        };
+      }
+      const nextCount = nextAthleteChallengeRescheduleCount({
+        state: row.state,
+        actorUserId,
+        participantUserIds: [row.pair_low_id, row.pair_high_id],
+        userRescheduleCount: row.user_reschedule_count,
+      });
       if (booking) {
         await sql`
           update scheduling.bookings

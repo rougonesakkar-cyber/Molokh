@@ -5670,6 +5670,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       eventId: testId(21723), auditId: testId(21724), outboxMessageId: testId(21725),
       notificationOutboxMessageId: testId(21726), rescheduleId: testId(21727),
       bookingEventId: testId(21728), bookingOutboxMessageId: testId(21729),
+      hostNotificationOutboxMessageId: testId(21736),
       notificationId: testId(21735),
       notificationIds: [testId(21730), testId(21731)] as const,
     } satisfies AthleteChallengeRescheduleEffectIds;
@@ -6751,6 +6752,291 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(cancellationEffects.rows[0]?.notification_payload.notifications
       .map((notification) => notification.recipientUserId).sort())
       .toEqual([fixture.athleteA, fixture.athleteB, fixture.coach].sort());
+  });
+
+  it('[AC-064] converts a confirmed third culpable reschedule attempt into an appealable Forfeit', async () => {
+    const fixture = await seedConfirmedTrainingForConversion(23500);
+    const sourceChatId = testId(23507);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        update scheduling.slots
+        set state = 'PUBLISHED', booking_id = null, version = 1
+        where slot_id = ${fixture.slot}::uuid
+      `.execute(transaction);
+      await sql`delete from scheduling.sessions where session_id = ${fixture.session}::uuid`
+        .execute(transaction);
+      await sql`delete from scheduling.bookings where booking_id = ${fixture.booking}::uuid`
+        .execute(transaction);
+    });
+
+    const challengeId = testId(23600);
+    await createDirectOpenChallenge(
+      database,
+      {
+        commandId: testId(23601), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+        idempotencyKey: 'reschedule-limit-create',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 0,
+        correlationId: testId(23602), causationId: null, requestId: testId(23603),
+        source: 'api', payloadVersion: 1, payload: { sourceChatId },
+      },
+      {
+        eventId: testId(23604), auditId: testId(23605), outboxMessageId: testId(23606),
+        notificationId: testId(23607), notificationOutboxMessageId: testId(23608),
+        serviceChatId: testId(23609), serviceChatEventId: testId(23610),
+        rulesetSnapshotId: testId(23611), acknowledgmentId: testId(23612),
+      },
+      () => new Date('2026-09-27T10:01:00.000Z'),
+    );
+    await acceptOptionalChallenge(
+      database,
+      {
+        commandId: testId(23613), commandType: 'ACCEPT_OPTIONAL_CHALLENGE',
+        idempotencyKey: 'reschedule-limit-accept',
+        actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 1,
+        correlationId: testId(23614), causationId: testId(23604), requestId: testId(23615),
+        source: 'api', payloadVersion: 1, payload: { challengeId },
+      },
+      {
+        eventId: testId(23616), auditId: testId(23617), outboxMessageId: testId(23618),
+        notificationId: testId(23619), notificationOutboxMessageId: testId(23620),
+        acknowledgmentId: testId(23621), obligationIds: [testId(23622), testId(23623)],
+      },
+      () => new Date('2026-09-27T10:02:00.000Z'),
+    );
+    await sql`
+      update competition.challenges set user_reschedule_count = 2
+      where challenge_id = ${challengeId}::uuid
+    `.execute(database);
+
+    const bookingId = testId(23700);
+    await selectSlot(
+      database,
+      {
+        commandId: testId(23701), commandType: 'SELECT_SLOT',
+        idempotencyKey: 'reschedule-limit-select',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 0,
+        correlationId: testId(23702), causationId: testId(23616), requestId: testId(23703),
+        source: 'api', payloadVersion: 1,
+        payload: {
+          chatId: sourceChatId, slotId: fixture.slot,
+          commercialVersion: 1, challengeId,
+        },
+      } satisfies CommandEnvelope<SelectSlotPayload>,
+      {
+        eventId: testId(23704), auditId: testId(23705), outboxMessageId: testId(23706),
+        notificationId: testId(23707), notificationOutboxMessageId: testId(23708),
+        challengeEventId: testId(23709), challengeOutboxMessageId: testId(23710),
+      },
+      () => new Date('2026-09-27T10:03:00.000Z'),
+    );
+    await selectSameSlot(
+      database,
+      {
+        commandId: testId(23711), commandType: 'SELECT_SAME_SLOT',
+        idempotencyKey: 'reschedule-limit-select-same',
+        actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 1,
+        correlationId: testId(23712), causationId: testId(23704), requestId: testId(23713),
+        source: 'api', payloadVersion: 1,
+        payload: { bookingId, commercialVersion: 1 },
+      } satisfies CommandEnvelope<SelectSameSlotPayload>,
+      {
+        eventId: testId(23714), auditId: testId(23715), outboxMessageId: testId(23716),
+        notificationId: testId(23717), notificationOutboxMessageId: testId(23718),
+      },
+      () => new Date('2026-09-27T10:04:00.000Z'),
+    );
+    await expect(readChatChallenge(database, sourceChatId, fixture.athleteA))
+      .resolves.toMatchObject({
+        challenge: {
+          challengeId, state: 'BOOKING_PENDING', userRescheduleCount: 2, version: 3,
+        },
+      });
+
+    const effects = {
+      eventId: testId(23820), auditId: testId(23821), outboxMessageId: testId(23822),
+      notificationId: testId(23823), notificationOutboxMessageId: testId(23824),
+      rescheduleId: testId(23825), bookingEventId: testId(23826),
+      bookingOutboxMessageId: testId(23827),
+      hostNotificationOutboxMessageId: testId(23828),
+      notificationIds: [testId(23829), testId(23830)] as const,
+      resultId: testId(23831), resultEventId: testId(23832),
+      statusTransitionId: testId(23833), statusEventId: testId(23834),
+      cooldownId: testId(23835), cooldownEventId: testId(23836),
+      timerOutboxMessageId: testId(23837),
+    } satisfies AthleteChallengeRescheduleEffectIds;
+    const baseCommand = {
+      commandId: testId(23800), commandType: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+      idempotencyKey: 'reschedule-limit-unconfirmed',
+      actor: { type: 'USER' as const, id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 3,
+      correlationId: testId(23801), causationId: testId(23714), requestId: testId(23802),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId, reasonCode: 'OTHER' as const,
+        reasonNote: 'Закрытая причина не должна выйти в публичные payload.',
+        confirmForfeit: false,
+      },
+    } satisfies CommandEnvelope<RescheduleChallengeByAthletePayload>;
+    await expect(rescheduleChallengeByAthlete(
+      database, baseCommand, effects,
+      () => new Date('2026-09-27T10:05:00.000Z'),
+    )).rejects.toMatchObject({
+      code: 'CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED',
+    });
+    await expect(rescheduleChallengeByAthlete(
+      database,
+      {
+        ...baseCommand, commandId: testId(23803), idempotencyKey: 'reschedule-limit-outsider',
+        actor: { type: 'USER', id: fixture.coach, roles: ['ATHLETE'], scopeIds: [] },
+        payload: { ...baseCommand.payload, confirmForfeit: true },
+      },
+      effects,
+      () => new Date('2026-09-27T10:05:00.000Z'),
+    )).rejects.toMatchObject({ code: 'CHALLENGE_PARTICIPANT_REQUIRED' });
+
+    const confirmedCommand = {
+      ...baseCommand,
+      commandId: testId(23810), idempotencyKey: 'reschedule-limit-confirmed',
+      payload: { ...baseCommand.payload, confirmForfeit: true },
+    } satisfies CommandEnvelope<RescheduleChallengeByAthletePayload>;
+    const forfeited = await rescheduleChallengeByAthlete(
+      database, confirmedCommand, effects,
+      () => new Date('2026-09-27T10:06:00.000Z'),
+    );
+    expect(forfeited.response).toMatchObject({
+      challengeId, state: 'RESULT_RECORDED', userRescheduleCount: 2, version: 4,
+    });
+    await expect(rescheduleChallengeByAthlete(
+      database, confirmedCommand, effects,
+      () => new Date('2026-09-27T10:07:00.000Z'),
+    )).resolves.toMatchObject({ replayed: true, response: { state: 'RESULT_RECORDED' } });
+    await expect(rescheduleChallengeByAthlete(
+      database,
+      {
+        ...confirmedCommand, commandId: testId(23811),
+        idempotencyKey: 'reschedule-limit-confirmed-stale',
+      },
+      { ...effects, eventId: testId(23812), auditId: testId(23813) },
+      () => new Date('2026-09-27T10:07:00.000Z'),
+    )).rejects.toBeInstanceOf(VersionConflictError);
+
+    const state = await sql<{
+      readonly booking_state: string;
+      readonly booking_cancel_actor: string | null;
+      readonly booking_cancel_reason: string | null;
+      readonly slot_state: string;
+      readonly slot_booking_id: string | null;
+      readonly challenge_state: string;
+      readonly user_reschedule_count: number;
+      readonly reschedules: string;
+      readonly obligations: string;
+      readonly result_origin: string;
+      readonly outcome_code: string;
+      readonly winner_user_id: string;
+      readonly loser_user_id: string;
+      readonly appeal_deadline_at: Date;
+      readonly cooldowns: string;
+    }>`
+      select booking.state as booking_state, booking.cancel_actor::text as booking_cancel_actor,
+        booking.cancel_reason as booking_cancel_reason, slot.state as slot_state,
+        slot.booking_id::text as slot_booking_id, challenge.state as challenge_state,
+        challenge.user_reschedule_count,
+        (select count(*)::text from competition.challenge_reschedules reschedule
+          where reschedule.challenge_id = challenge.challenge_id) as reschedules,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id
+            and obligation.released_at is null) as obligations,
+        result.origin as result_origin, result.recorded_outcome_code as outcome_code,
+        result.winner_user_id::text, result.loser_user_id::text, result.appeal_deadline_at,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.source_result_id = result.result_id) as cooldowns
+      from scheduling.bookings booking
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      join competition.challenges challenge on challenge.challenge_id = booking.challenge_id
+      join competition.results result on result.result_id = ${effects.resultId}::uuid
+      where booking.booking_id = ${bookingId}::uuid
+    `.execute(database);
+    expect(state.rows[0]).toEqual({
+      booking_state: 'CANCELLED', booking_cancel_actor: fixture.athleteA,
+      booking_cancel_reason: 'CHALLENGE_RESCHEDULE_LIMIT_FORFEIT',
+      slot_state: 'PUBLISHED', slot_booking_id: null,
+      challenge_state: 'RESULT_RECORDED', user_reschedule_count: 2,
+      reschedules: '0', obligations: '2', result_origin: 'ADMINISTRATIVE_FORFEIT',
+      outcome_code: 'FORFEIT', winner_user_id: fixture.athleteB,
+      loser_user_id: fixture.athleteA,
+      appeal_deadline_at: new Date('2026-09-29T10:06:00.000Z'), cooldowns: '1',
+    });
+    await expect(readResult(
+      database, effects.resultId!, fixture.athleteA,
+      new Date('2026-09-27T10:07:00.000Z'),
+    )).resolves.toMatchObject({
+      outcomeCode: 'FORFEIT', winnerUserId: fixture.athleteB,
+      loserUserId: fixture.athleteA, viewerCanAppeal: true,
+    });
+
+    const effectsState = await sql<{
+      readonly transitions: string[];
+      readonly audit_metadata: Record<string, unknown>;
+      readonly event_payload: Record<string, unknown>;
+      readonly outbox_payload: Record<string, unknown>;
+      readonly athlete_notifications: { readonly notifications: readonly {
+        readonly recipientUserId: string;
+      }[] };
+      readonly host_notifications: { readonly notifications: readonly {
+        readonly recipientUserId: string;
+        readonly actionTarget: { readonly type: string; readonly bookingId: string };
+      }[] };
+    }>`
+      select array_agg(event.transition_id order by event.transition_id)::text[] as transitions,
+        audit.metadata as audit_metadata, primary_event.payload as event_payload,
+        primary_outbox.payload as outbox_payload,
+        athlete_notification.payload as athlete_notifications,
+        host_notification.payload as host_notifications
+      from platform.domain_events event
+      cross join platform.domain_events primary_event
+      cross join platform.audit_events audit
+      cross join platform.outbox_messages primary_outbox
+      cross join platform.outbox_messages athlete_notification
+      cross join platform.outbox_messages host_notification
+      where event.event_id in (
+          ${effects.eventId}::uuid, ${effects.bookingEventId}::uuid,
+          ${effects.resultEventId}::uuid, ${effects.cooldownEventId}::uuid
+        )
+        and primary_event.event_id = ${effects.eventId}::uuid
+        and audit.audit_id = ${effects.auditId}::uuid
+        and primary_outbox.message_id = ${effects.outboxMessageId}::uuid
+        and athlete_notification.message_id = ${effects.notificationOutboxMessageId}::uuid
+        and host_notification.message_id = ${effects.hostNotificationOutboxMessageId}::uuid
+      group by audit.metadata, primary_event.payload, primary_outbox.payload,
+        athlete_notification.payload, host_notification.payload
+    `.execute(database);
+    expect(effectsState.rows[0]?.transitions).toEqual(['B-04', 'CD-01', 'CH-23', 'R-01']);
+    expect(effectsState.rows[0]?.event_payload).toMatchObject({
+      challengeId, resultId: effects.resultId, bookingId,
+      winnerUserId: fixture.athleteB, loserUserId: fixture.athleteA,
+      userRescheduleCount: 2,
+    });
+    expect(effectsState.rows[0]?.event_payload).not.toHaveProperty('reasonNote');
+    expect(effectsState.rows[0]?.outbox_payload).not.toHaveProperty('reasonNote');
+    expect(effectsState.rows[0]?.audit_metadata).toMatchObject({
+      resultId: effects.resultId, bookingId,
+      reasonNote: 'Закрытая причина не должна выйти в публичные payload.',
+      userRescheduleCount: 2,
+    });
+    expect(effectsState.rows[0]?.athlete_notifications.notifications
+      .map((notification) => notification.recipientUserId).sort())
+      .toEqual([fixture.athleteA, fixture.athleteB].sort());
+    expect(effectsState.rows[0]?.host_notifications.notifications).toEqual([
+      expect.objectContaining({
+        recipientUserId: fixture.coach,
+        actionTarget: { type: 'BOOKING', bookingId },
+      }),
+    ]);
   });
 
   it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205][AC-206] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {

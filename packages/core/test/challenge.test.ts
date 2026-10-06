@@ -19,6 +19,7 @@ import {
   assertOptionalChallengeCanBeWithdrawn,
   extendedChallengeSchedulingDeadline,
   challengeResultReminderDeadlines,
+  challengeRescheduleLimitForfeitWinner,
   effectiveChallengeStakeAtSessionWindow,
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
@@ -221,6 +222,28 @@ describe('Official Challenge policy', () => {
     })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED'));
     expect(() => nextAthleteChallengeRescheduleCount({
       ...input, userRescheduleCount: 2,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
+  });
+
+  it('[AC-064] requires explicit consequences before the third culpable reschedule forfeits', () => {
+    const input = {
+      state: 'BOOKING_PENDING' as const,
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const,
+      userRescheduleCount: 2,
+      consequencesConfirmed: true,
+    };
+    expect(challengeRescheduleLimitForfeitWinner(input)).toBe('athlete-b');
+    expect(() => challengeRescheduleLimitForfeitWinner({
+      ...input, consequencesConfirmed: false,
+    })).toThrowError(
+      new ChallengeConflictError('CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED'),
+    );
+    expect(() => challengeRescheduleLimitForfeitWinner({
+      ...input, actorUserId: 'outsider',
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED'));
+    expect(() => challengeRescheduleLimitForfeitWinner({
+      ...input, userRescheduleCount: 1,
     })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
   });
 

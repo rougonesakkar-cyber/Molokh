@@ -227,7 +227,7 @@ ordinary Training Sessions.
 | POST | `/challenges/{id}/accept` | implemented optional or mandatory recipient acceptance and atomic participant obligations |
 | POST | `/challenges/{id}/decline` | optional: no-loss decline/48-hour pair quiet; mandatory: appealable administrative Forfeit |
 | POST | `/challenges/{id}/withdraw` | implemented pre-accept initiator withdrawal, including no-fault direct-status withdrawal |
-| POST | `/challenges/{id}/reschedule` | implemented Athlete CH-22; actor/reason supplied, server assigns fault/count |
+| POST | `/challenges/{id}/reschedule` | implemented Athlete CH-22/CH-23; actor/reason supplied, explicit `confirmForfeit` required after two used transfers |
 | POST | `/challenges/{id}/capacity-extension` | system/Central path only |
 | GET | `/me/competition` | implemented member/outsider-filtered status and FIFO projection |
 | POST | `/competitions/{id}/queue-entries` | implemented explicit status/GENESIS intent |
@@ -254,6 +254,12 @@ increments the server-owned count, records initiator/category/A-or-B fault/time 
 Booking lineage, cancels the pending Booking and reissues the timer against the unchanged original
 deadline. The free-text note remains private; neither the peer notification nor public event/outbox
 payload exposes it. This command is deliberately distinct from no-count `POST /bookings/{id}/withdraw`.
+When the count is already two, omission or `false` `confirmForfeit` leaves every sporting and
+scheduling record unchanged. An explicit `true` confirms CH-23: the pending Booking closes, the
+Slot stays published, no third reschedule fact is written, and the existing administrative Result
+engine records the peer win plus the ordinary 48-hour Appeal, provisional status and Cooldown.
+The private reason note remains limited to audit metadata; the waiting Coach receives a separate
+Booking-scoped notification.
 The first status slice now exposes the canonical holder cards,
 active status Challenge summary, FIFO rows and the viewer's mutual GENESIS action. GENESIS pairing,
 response expiry and accepted service-Chat scheduling are implemented. The strict direct-status

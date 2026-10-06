@@ -309,10 +309,13 @@ export default function ChatScreen() {
     }
   };
 
-  const runChallengeReschedule = async (reasonCode: 'SCHEDULE_CHANGED' | 'OTHER') => {
+  const runChallengeReschedule = async (
+    reasonCode: 'SCHEDULE_CHANGED' | 'OTHER',
+    confirmForfeit = false,
+  ) => {
     const challenge = chatChallenge?.challenge;
     if (!challenge || actingChallenge) return;
-    const operation = `challenge:reschedule:${challenge.challengeId}:v${challenge.version}:${reasonCode}`;
+    const operation = `challenge:reschedule:${challenge.challengeId}:v${challenge.version}:${reasonCode}:${confirmForfeit}`;
     const idempotencyKey = actionKeys.current.get(operation)
       ?? newAsciiIdempotencyKey('scheduling');
     actionKeys.current.set(operation, idempotencyKey);
@@ -329,7 +332,7 @@ export default function ChatScreen() {
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(challenge.version),
           },
-          body: JSON.stringify({ reasonCode }),
+          body: JSON.stringify({ reasonCode, confirmForfeit }),
         },
       );
       if (!response.ok) {
@@ -351,7 +354,22 @@ export default function ChatScreen() {
 
   const confirmChallengeReschedule = () => {
     const challenge = chatChallenge?.challenge;
-    if (!challenge || challenge.userRescheduleCount >= 2) return;
+    if (!challenge) return;
+    if (challenge.userRescheduleCount >= 2) {
+      Alert.alert(
+        'Переносы закончились',
+        'Ещё один виновный перенос немедленно зафиксирует ваш FORFEIT и поражение. Партнёр станет победителем, возможное изменение статуса и Cooldown начнутся сразу. Result можно обжаловать в течение 48 часов.',
+        [
+          { text: 'Вернуться', style: 'cancel' },
+          {
+            text: 'Подтвердить FORFEIT',
+            style: 'destructive',
+            onPress: () => void runChallengeReschedule('OTHER', true),
+          },
+        ],
+      );
+      return;
+    }
     Alert.alert(
       'Перенести Challenge?',
       `Будет использован перенос ${challenge.userRescheduleCount + 1} из 2. Текущий выбор слота отменится без поражения, а Challenge останется принятым.`,
@@ -960,14 +978,27 @@ export default function ChatScreen() {
                         Пользовательские переносы: {chatChallenge.challenge.userRescheduleCount} из 2.
                       </Text>
                       <Pressable
+                        accessibilityLabel={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? 'Запросить ещё один перенос с немедленным FORFEIT'
+                          : 'Перенести Challenge без поражения'}
                         accessibilityRole="button"
-                        accessibilityState={{ disabled: actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2 }}
-                        disabled={actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2}
+                        accessibilityState={{ disabled: actingChallenge }}
+                        disabled={actingChallenge}
                         onPress={confirmChallengeReschedule}
-                        style={({ pressed }) => [styles.secondaryChallengeButton, (actingChallenge || chatChallenge.challenge!.userRescheduleCount >= 2) && styles.disabled, pressed && styles.pressed]}
+                        style={({ pressed }) => [
+                          chatChallenge.challenge!.userRescheduleCount >= 2
+                            ? styles.challengeButton
+                            : styles.secondaryChallengeButton,
+                          actingChallenge && styles.disabled,
+                          pressed && styles.pressed,
+                        ]}
                       >
-                        <Text style={styles.secondaryChallengeText}>
-                          {chatChallenge.challenge.userRescheduleCount >= 2 ? 'Лимит переносов использован' : 'Перенести Challenge'}
+                        <Text style={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? styles.trainingButtonText
+                          : styles.secondaryChallengeText}>
+                          {chatChallenge.challenge.userRescheduleCount >= 2
+                            ? 'Ещё один перенос · FORFEIT'
+                            : 'Перенести Challenge'}
                         </Text>
                       </Pressable>
                     </>
@@ -978,17 +1009,32 @@ export default function ChatScreen() {
                         Подтвердите один вариант вместе. После этого зал или Coach создаст Official Session одной кнопкой.
                       </Text>
                       <Text style={styles.trainingTerms}>
-                        «Отменить выбор слота» не расходует перенос. «Перенести Challenge» использует один из {2 - chatChallenge.challenge.userRescheduleCount} оставшихся переносов.
+                        {chatChallenge.challenge.userRescheduleCount >= 2
+                          ? '«Отменить выбор слота» не расходует перенос. Ещё один виновный перенос возможен только с немедленным FORFEIT.'
+                          : `«Отменить выбор слота» не расходует перенос. «Перенести Challenge» использует один из ${2 - chatChallenge.challenge.userRescheduleCount} оставшихся переносов.`}
                       </Text>
                       <Pressable
+                        accessibilityLabel={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? 'Запросить ещё один перенос с немедленным FORFEIT'
+                          : 'Перенести Challenge без поражения'}
                         accessibilityRole="button"
-                        accessibilityState={{ disabled: actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2 }}
-                        disabled={actingChallenge || chatChallenge.challenge.userRescheduleCount >= 2}
+                        accessibilityState={{ disabled: actingChallenge }}
+                        disabled={actingChallenge}
                         onPress={confirmChallengeReschedule}
-                        style={({ pressed }) => [styles.secondaryChallengeButton, (actingChallenge || chatChallenge.challenge!.userRescheduleCount >= 2) && styles.disabled, pressed && styles.pressed]}
+                        style={({ pressed }) => [
+                          chatChallenge.challenge!.userRescheduleCount >= 2
+                            ? styles.challengeButton
+                            : styles.secondaryChallengeButton,
+                          actingChallenge && styles.disabled,
+                          pressed && styles.pressed,
+                        ]}
                       >
-                        <Text style={styles.secondaryChallengeText}>
-                          {chatChallenge.challenge.userRescheduleCount >= 2 ? 'Лимит переносов использован' : 'Перенести Challenge'}
+                        <Text style={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? styles.trainingButtonText
+                          : styles.secondaryChallengeText}>
+                          {chatChallenge.challenge.userRescheduleCount >= 2
+                            ? 'Ещё один перенос · FORFEIT'
+                            : 'Перенести Challenge'}
                         </Text>
                       </Pressable>
                     </>

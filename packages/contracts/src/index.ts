@@ -883,6 +883,7 @@ const ChallengeConflictCodeSchema = Type.Union([
   Type.Literal('CHALLENGE_OBLIGATION_MISSING'),
   Type.Literal('CHALLENGE_RESCHEDULE_NOT_ALLOWED'),
   Type.Literal('CHALLENGE_RESCHEDULE_LIMIT_REACHED'),
+  Type.Literal('CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED'),
   Type.Literal('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED'),
   Type.Literal('CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS'),
   Type.Literal('CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED'),
@@ -2591,6 +2592,22 @@ export const ScheduleMutationReasonBodySchema = Type.Object(
 );
 
 export type ScheduleMutationReasonBody = Static<typeof ScheduleMutationReasonBodySchema>;
+
+export const AthleteChallengeRescheduleBodySchema = Type.Object(
+  {
+    reasonCode: ScheduleMutationReasonCodeSchema,
+    reasonNote: Type.Optional(Type.Union([
+      Type.String({ minLength: 1, maxLength: 500 }),
+      Type.Null(),
+    ])),
+    confirmForfeit: Type.Optional(Type.Boolean()),
+  },
+  { $id: 'AthleteChallengeRescheduleBody', additionalProperties: false },
+);
+
+export type AthleteChallengeRescheduleBody = Static<
+  typeof AthleteChallengeRescheduleBodySchema
+>;
 
 export const SelectSlotBodySchema = Type.Object(
   {

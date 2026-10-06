@@ -2916,7 +2916,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');
   });
 
-  it('[AC-061][AC-062] exposes unilateral and mutual Athlete reschedule flows', async () => {
+  it('[AC-061][AC-062][AC-064] exposes unilateral, mutual and limit-Forfeit reschedule flows', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000001101';
     const challengeId = '0199a1b2-1234-7000-8000-000000001102';
     const challenge: ChallengeProjection = {
@@ -2975,7 +2975,14 @@ describe('runtime contract', () => {
       _ids: AthleteChallengeRescheduleEffectIds,
     ): Promise<ExecutedCommand<ChallengeProjection>> => ({
       responseStatus: 200,
-      response: { ...acceptedProjection, userRescheduleCount: 1, version: 3 },
+      response: _command.payload.confirmForfeit
+        ? {
+            ...acceptedProjection,
+            state: 'RESULT_RECORDED',
+            userRescheduleCount: 2,
+            version: _command.expectedVersion + 1,
+          }
+        : { ...acceptedProjection, userRescheduleCount: 1, version: 3 },
       eventId: '0199a1b2-1234-7000-8000-000000001108',
       aggregateVersion: 3,
       replayed: false,
@@ -3096,7 +3103,41 @@ describe('runtime contract', () => {
         challengeId,
         reasonCode: 'SCHEDULE_CHANGED',
         reasonNote: null,
+        confirmForfeit: false,
       },
+    });
+
+    const limitForfeit = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/reschedule`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-reschedule-limit-forfeit-api-1',
+        'if-match': '4',
+      },
+      payload: { reasonCode: 'OTHER', confirmForfeit: true },
+    });
+    expect(limitForfeit.statusCode).toBe(200);
+    expect(limitForfeit.json()).toMatchObject({
+      data: { state: 'RESULT_RECORDED', userRescheduleCount: 2, version: 5 },
+    });
+    expect(rescheduled.mock.calls[1]?.[0]).toMatchObject({
+      commandType: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+      aggregateId: challengeId,
+      expectedVersion: 4,
+      payload: {
+        challengeId,
+        reasonCode: 'OTHER',
+        reasonNote: null,
+        confirmForfeit: true,
+      },
+    });
+    expect(rescheduled.mock.calls[1]?.[1]).toMatchObject({
+      hostNotificationOutboxMessageId: expect.any(String),
+      resultId: expect.any(String),
+      resultEventId: expect.any(String),
+      cooldownId: expect.any(String),
+      timerOutboxMessageId: expect.any(String),
     });
 
     const proposeMutual = await app.inject({
