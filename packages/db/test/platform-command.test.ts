@@ -98,6 +98,7 @@ import {
   listAppealsForCentral,
   projectNotificationBatch,
   projectPendingMembershipNotification,
+  projectPendingOptionalChallengeReminder,
   rejectMembership,
   readCommunityContext,
   readBookingOfficialConversionForSession,
@@ -192,6 +193,7 @@ import {
   finalizeResult,
   readChatChallenge,
   readChallengeTimerSnapshot,
+  readOptionalChallengeReminderTimerSnapshot,
   proposeMutualChallengeReschedule,
   confirmMutualChallengeReschedule,
   rescheduleChallengeByAthlete,
@@ -5473,6 +5475,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         notificationId: testId(21507), notificationOutboxMessageId: testId(21508),
         serviceChatId: testId(21509), serviceChatEventId: testId(21510),
         rulesetSnapshotId: testId(21511), acknowledgmentId: testId(21512),
+        reminderTimerOutboxMessageIds: [testId(32001), testId(32002)],
       },
       () => new Date('2026-09-27T10:01:00.000Z'),
     );
@@ -6786,6 +6789,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         notificationId: testId(23607), notificationOutboxMessageId: testId(23608),
         serviceChatId: testId(23609), serviceChatEventId: testId(23610),
         rulesetSnapshotId: testId(23611), acknowledgmentId: testId(23612),
+        reminderTimerOutboxMessageIds: [testId(32003), testId(32004)],
       },
       () => new Date('2026-09-27T10:01:00.000Z'),
     );
@@ -7098,6 +7102,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         notificationId: testId(1119), notificationOutboxMessageId: testId(1120),
         serviceChatId: testId(1121), serviceChatEventId: testId(1122),
         rulesetSnapshotId: testId(1123), acknowledgmentId: testId(1124),
+        reminderTimerOutboxMessageIds: [testId(32005), testId(32006)],
       },
       () => new Date('2026-09-08T10:00:00.000Z'),
     );
@@ -11801,6 +11806,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       notificationId: testId(24022), notificationOutboxMessageId: testId(24023),
       serviceChatId: testId(24024), serviceChatEventId: testId(24025),
       rulesetSnapshotId: testId(24026), acknowledgmentId: testId(24027),
+      reminderTimerOutboxMessageIds: [testId(32007), testId(32008)],
     }, () => new Date('2026-09-08T10:00:00.000Z'));
     expect(created.response.responseDeadlineAt).toBe('2026-09-10T10:00:00.000Z');
 
@@ -12271,6 +12277,226 @@ describePostgres('PostgreSQL critical command transaction', () => {
       .rejects.toEqual(expect.objectContaining<Partial<PlatformIncidentConflictError>>({
         code: 'PLATFORM_INCIDENT_SYSTEM_REQUIRED',
       }));
+  });
+
+  it('[AC-172] reminds only the recipient and expires an unanswered optional Challenge without fault', async () => {
+    const base = 32500;
+    const athleteA = testId(base);
+    const athleteB = testId(base + 1);
+    const central = testId(base + 2);
+    const venue = testId(base + 3);
+    const community = testId(base + 4);
+    const competition = testId(base + 5);
+    const sourceChat = testId(base + 6);
+    const match = testId(base + 7);
+    const challenge = testId(base + 8);
+    const createdAt = '2026-10-01T10:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${athleteA}::uuid, '+79993250000', ${createdAt}::timestamptz, '1995-01-01',
+          'ADULT', 'Reminder Athlete A', 'ACTIVE', 'ru-RU', 1, ${createdAt}::timestamptz),
+        (${athleteB}::uuid, '+79993250001', ${createdAt}::timestamptz, '1995-01-01',
+          'ADULT', 'Reminder Athlete B', 'ACTIVE', 'ru-RU', 1, ${createdAt}::timestamptz),
+        (${central}::uuid, '+79993250002', ${createdAt}::timestamptz, '1985-01-01',
+          'ADULT', 'Reminder Central', 'ACTIVE', 'ru-RU', 1, ${createdAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values
+        (${testId(base + 9)}::uuid, ${athleteA}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+          'identity-mvp-v1', true, ${createdAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
+        (${testId(base + 10)}::uuid, ${athleteB}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+          'identity-mvp-v1', true, ${createdAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: testId(base + 11), communityId: community,
+      communityConfigurationId: testId(base + 12), membershipId: testId(base + 13),
+      centralGrantId: testId(base + 14), athleteUserId: athleteA,
+      centralActorId: central, legalName: 'Reminder Pilot Gym LLC',
+      venueDisplayName: 'Reminder Pilot Gym', communityName: 'Reminder Community',
+      address: 'Москва', cityCode: 'MOSCOW', timezone: 'Europe/Moscow',
+      contactPayload: {}, occurredAt: createdAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community, centralActorId: central,
+      occurredAt: createdAt, memberships: [
+        { membershipId: testId(base + 13), userId: athleteA },
+        { membershipId: testId(base + 15), userId: athleteB },
+      ],
+    });
+    await database.transaction().execute(async (transaction) => {
+      await sql`insert into social.chats (
+        chat_id, scope, state, version, created_at, updated_at
+      ) values (${sourceChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+        ${createdAt}::timestamptz, ${createdAt}::timestamptz)`.execute(transaction);
+      await sql`insert into social.chat_participants (chat_id, user_id, joined_at) values
+        (${sourceChat}::uuid, ${athleteA}::uuid, ${createdAt}::timestamptz),
+        (${sourceChat}::uuid, ${athleteB}::uuid, ${createdAt}::timestamptz)`
+        .execute(transaction);
+      await sql`insert into social.matches (
+        match_id, pair_low_id, pair_high_id, state, chat_id, last_activity_at,
+        version, created_at, updated_at
+      ) values (${match}::uuid, least(${athleteA}::uuid, ${athleteB}::uuid),
+        greatest(${athleteA}::uuid, ${athleteB}::uuid), 'ACTIVE', ${sourceChat}::uuid,
+        ${createdAt}::timestamptz, 1, ${createdAt}::timestamptz, ${createdAt}::timestamptz)`
+        .execute(transaction);
+    });
+
+    const createIds = {
+      eventId: testId(base + 16), auditId: testId(base + 17),
+      outboxMessageId: testId(base + 18), notificationId: testId(base + 19),
+      notificationOutboxMessageId: testId(base + 20), serviceChatId: testId(base + 21),
+      serviceChatEventId: testId(base + 22), rulesetSnapshotId: testId(base + 23),
+      acknowledgmentId: testId(base + 24),
+      reminderTimerOutboxMessageIds: [testId(base + 25), testId(base + 26)] as const,
+    };
+    const created = await createDirectOpenChallenge(database, {
+      commandId: testId(base + 27), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+      idempotencyKey: 'ac172-create',
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 0,
+      correlationId: testId(base + 28), causationId: null, requestId: testId(base + 29),
+      source: 'api', payloadVersion: 1, payload: { sourceChatId: sourceChat },
+    }, createIds, () => new Date(createdAt));
+    expect(created.response).toMatchObject({ state: 'AWAITING_RESPONSE', version: 1,
+      responseDeadlineAt: '2026-10-03T10:00:00.000Z' });
+
+    const timerRows = await sql<{ readonly topic: string; readonly payload: {
+      readonly timer: { readonly commandType: string; readonly deadlineAt: string;
+        readonly expectedState: string; readonly expectedVersion: number } } }>`
+      select topic, payload from platform.outbox_messages
+      where message_id in (${createIds.outboxMessageId}::uuid,
+        ${createIds.reminderTimerOutboxMessageIds[0]}::uuid,
+        ${createIds.reminderTimerOutboxMessageIds[1]}::uuid)
+      order by payload->'timer'->>'deadlineAt'
+    `.execute(database);
+    expect(timerRows.rows.map((row) => ({
+      topic: row.topic,
+      commandType: row.payload.timer.commandType,
+      deadlineAt: row.payload.timer.deadlineAt,
+      expectedState: row.payload.timer.expectedState,
+      expectedVersion: row.payload.timer.expectedVersion,
+    })))
+      .toEqual([
+        { topic: 'competition.challenge.optional-response-reminder-12h-timer.v1',
+          commandType: 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H',
+          deadlineAt: '2026-10-01T22:00:00.000Z', expectedState: 'AWAITING_RESPONSE',
+          expectedVersion: 1 },
+        { topic: 'competition.challenge.optional-response-reminder-24h-timer.v1',
+          commandType: 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H',
+          deadlineAt: '2026-10-02T10:00:00.000Z', expectedState: 'AWAITING_RESPONSE',
+          expectedVersion: 1 },
+        { topic: 'competition.challenge.created.v1',
+          commandType: 'EXPIRE_OPTIONAL_CHALLENGE',
+          deadlineAt: '2026-10-03T10:00:00.000Z', expectedState: 'AWAITING_RESPONSE',
+          expectedVersion: 1 },
+      ]);
+    await expect(readOptionalChallengeReminderTimerSnapshot(database, challenge))
+      .resolves.toEqual({ state: 'AWAITING_RESPONSE', version: 1 });
+    await expect(projectPendingOptionalChallengeReminder(
+      database, challenge, 1, '12H', testId(base + 30),
+    )).resolves.toBe(1);
+    await expect(projectPendingOptionalChallengeReminder(
+      database, challenge, 1, '12H', testId(base + 31),
+    )).resolves.toBe(0);
+    await expect(projectPendingOptionalChallengeReminder(
+      database, challenge, 1, '24H', testId(base + 32),
+    )).resolves.toBe(1);
+    const reminderNotifications = await sql<{
+      readonly recipient_user_id: string; readonly category: string;
+      readonly render_key: string; readonly deadline_at: Date;
+    }>`select recipient_user_id, category, render_key, deadline_at
+      from platform.notifications
+      where source_event_id = ${createIds.eventId}::uuid
+      order by render_key`.execute(database);
+    expect(reminderNotifications.rows.map((row) => ({ ...row,
+      deadline_at: row.deadline_at.toISOString() }))).toEqual([
+      { recipient_user_id: athleteB, category: 'MANDATORY',
+        render_key: 'challenge.optional-response-reminder-12h',
+        deadline_at: '2026-10-03T10:00:00.000Z' },
+      { recipient_user_id: athleteB, category: 'MANDATORY',
+        render_key: 'challenge.optional-response-reminder-24h',
+        deadline_at: '2026-10-03T10:00:00.000Z' },
+    ]);
+
+    const expireCommand = {
+      commandId: testId(base + 33), commandType: 'EXPIRE_OPTIONAL_CHALLENGE',
+      idempotencyKey: 'ac172-expire',
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 1,
+      correlationId: testId(base + 28), causationId: createIds.eventId,
+      requestId: testId(base + 34), source: 'scheduler', payloadVersion: 1,
+      payload: { challengeId: challenge },
+    } satisfies CommandEnvelope<{ readonly challengeId: string }>;
+    const expireIds = {
+      eventId: testId(base + 35), auditId: testId(base + 36),
+      outboxMessageId: testId(base + 37), notificationId: testId(base + 38),
+      notificationOutboxMessageId: testId(base + 39),
+    };
+    await expect(expireOptionalChallenge(
+      database, expireCommand, expireIds, () => new Date('2026-10-03T09:59:59.999Z'),
+    )).rejects.toMatchObject({ code: 'CHALLENGE_RESPONSE_NOT_DUE' });
+    const expired = await expireOptionalChallenge(
+      database, expireCommand, expireIds, () => new Date('2026-10-03T10:00:00.000Z'),
+    );
+    const replay = await expireOptionalChallenge(
+      database, expireCommand, expireIds, () => new Date('2026-10-03T10:01:00.000Z'),
+    );
+    expect(expired.response).toMatchObject({ state: 'EXPIRED_NO_FAULT', version: 2 });
+    expect(replay).toMatchObject({ replayed: true, eventId: expireIds.eventId });
+    await expect(projectPendingOptionalChallengeReminder(
+      database, challenge, 1, '24H', testId(base + 40),
+    )).resolves.toBe(0);
+
+    const noFaultFacts = await sql<{
+      readonly results: string; readonly cooldowns: string; readonly obligations: string;
+      readonly quiet_periods: string; readonly expiry_events: string;
+      readonly expiry_audits: string; readonly expiry_outbox: string;
+    }>`select
+      (select count(*)::text from competition.results) as results,
+      (select count(*)::text from competition.pair_cooldowns) as cooldowns,
+      (select count(*)::text from competition.challenge_participant_obligations) as obligations,
+      (select count(*)::text from competition.optional_pair_quiet_periods) as quiet_periods,
+      (select count(*)::text from platform.domain_events
+        where event_id = ${expireIds.eventId}::uuid) as expiry_events,
+      (select count(*)::text from platform.audit_events
+        where audit_id = ${expireIds.auditId}::uuid) as expiry_audits,
+      (select count(*)::text from platform.outbox_messages
+        where message_id = ${expireIds.outboxMessageId}::uuid) as expiry_outbox`
+      .execute(database);
+    expect(noFaultFacts.rows[0]).toEqual({ results: '0', cooldowns: '0',
+      obligations: '0', quiet_periods: '0', expiry_events: '1', expiry_audits: '1',
+      expiry_outbox: '1' });
+    await expect(readChatChallenge(database, sourceChat, athleteA)).resolves.toMatchObject({
+      canCreate: true, createDenialCode: null,
+      challenge: { challengeId: challenge, state: 'EXPIRED_NO_FAULT' },
+    });
+
+    const nextChallenge = testId(base + 41);
+    const next = await createDirectOpenChallenge(database, {
+      commandId: testId(base + 42), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+      idempotencyKey: 'ac172-create-again',
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: nextChallenge, expectedVersion: 0,
+      correlationId: testId(base + 43), causationId: expireIds.eventId,
+      requestId: testId(base + 44), source: 'api', payloadVersion: 1,
+      payload: { sourceChatId: sourceChat },
+    }, {
+      eventId: testId(base + 45), auditId: testId(base + 46),
+      outboxMessageId: testId(base + 47), notificationId: testId(base + 48),
+      notificationOutboxMessageId: testId(base + 49), serviceChatId: testId(base + 50),
+      serviceChatEventId: testId(base + 51), rulesetSnapshotId: testId(base + 52),
+      acknowledgmentId: testId(base + 53),
+      reminderTimerOutboxMessageIds: [testId(base + 54), testId(base + 55)],
+    }, () => new Date('2026-10-03T10:02:00.000Z'));
+    expect(next.response).toMatchObject({ challengeId: nextChallenge,
+      state: 'AWAITING_RESPONSE', version: 1 });
   });
 
   it('[AC-196] compensates one already-final mandatory timeout append-only with deterministic replay', async () => {

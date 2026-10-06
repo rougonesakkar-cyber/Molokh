@@ -414,6 +414,12 @@ Critical constraints:
 - append-only audit/domain-event permissions;
 - outbox inserted in the same transaction as business change.
 
+Optional OPEN Challenge creation uses the existing outbox and notification tables without another
+migration: one expiry timer and two reminder timers all reference the immutable `ChallengeCreated`
+event. The reminder projector locks and rechecks Challenge state/version before inserting a unique
+recipient/event/render-key notification, so duplicate delivery is idempotent and a stale timer
+cannot notify after a terminal or accepted transition.
+
 Migrations `0049`–`0052` materialize the incident contour. Pausable deadlines remain on their
 own aggregates and are updated under the same optimistic version lock as their
 `IncidentImpact`: Challenge response/scheduling, Booking selection, status-queue reconfirmation,

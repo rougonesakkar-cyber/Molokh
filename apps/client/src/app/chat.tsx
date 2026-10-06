@@ -1066,7 +1066,7 @@ export default function ChatScreen() {
                         : chatChallenge.challenge.state === 'WITHDRAWN'
                           ? 'Инициатор отозвал приглашение без спортивных последствий.'
                           : chatChallenge.challenge.state === 'EXPIRED_NO_FAULT'
-                            ? 'Срок ответа истёк. Спортивных последствий нет.'
+                            ? 'Срок ответа истёк без вины сторон. Поражения и других спортивных последствий нет.'
                             : chatChallenge.challenge.state === 'RESULT_RECORDED'
                               ? 'Зафиксирован предварительный Result. Проигравший может подать Appeal в течение 48 часов.'
                             : `Статус: ${chatChallenge.challenge.state}`}

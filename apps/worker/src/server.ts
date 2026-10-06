@@ -46,6 +46,7 @@ import {
   outboxRetryDelayMilliseconds,
   projectNotificationBatch,
   projectPendingMembershipNotification,
+  projectPendingOptionalChallengeReminder,
   promoteSingleGenesisCandidate,
   readDiscoverySuppressionTimerSnapshot,
   readBookingIntentTimerSnapshot,
@@ -70,6 +71,7 @@ import {
   listMandatoryTimeoutCompensationCandidates,
   readSessionTimerSnapshot,
   readChallengeTimerSnapshot,
+  readOptionalChallengeReminderTimerSnapshot,
   readSlotTimerSnapshot,
   readStatusQueueActivationCandidate,
   readStatusQueueReconciliationCandidates,
@@ -521,6 +523,16 @@ const executeMembershipRequestNotification = async (payload: TimerCommandPayload
     payload.aggregateId,
     kind,
     Array.from({ length: 20 }, () => randomUUID()),
+  );
+};
+
+const executeOptionalChallengeReminder = async (payload: TimerCommandPayload) => {
+  await projectPendingOptionalChallengeReminder(
+    database,
+    payload.aggregateId,
+    payload.expectedVersion,
+    payload.commandType === 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H' ? '12H' : '24H',
+    randomUUID(),
   );
 };
 
@@ -1152,6 +1164,16 @@ const taskList = createTaskList({
           loadSnapshot: (timer) =>
             readChallengeTimerSnapshot(database, timer.aggregateId),
           execute: executeOptionalChallengeExpiry,
+        },
+        REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H: {
+          loadSnapshot: (timer) =>
+            readOptionalChallengeReminderTimerSnapshot(database, timer.aggregateId),
+          execute: executeOptionalChallengeReminder,
+        },
+        REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H: {
+          loadSnapshot: (timer) =>
+            readOptionalChallengeReminderTimerSnapshot(database, timer.aggregateId),
+          execute: executeOptionalChallengeReminder,
         },
         EXPIRE_MANDATORY_CHALLENGE: {
           loadSnapshot: (timer) =>

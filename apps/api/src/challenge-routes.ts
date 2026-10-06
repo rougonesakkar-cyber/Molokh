@@ -263,6 +263,7 @@ export async function registerChallengeRoutes(
         serviceChatEventId: newUuidV7(),
         rulesetSnapshotId: newUuidV7(),
         acknowledgmentId: newUuidV7(),
+        reminderTimerOutboxMessageIds: [newUuidV7(), newUuidV7()],
       };
       const executed = await dependencies.createDirectOpenChallenge(command, ids);
       await reply.status(executed.responseStatus).send(commandResponse(executed, requestContext(request).requestId));

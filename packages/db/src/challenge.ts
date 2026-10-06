@@ -127,6 +127,7 @@ export interface CreateChallengeEffectIds extends ChallengeEffectIds {
   readonly serviceChatEventId: string;
   readonly rulesetSnapshotId: string;
   readonly acknowledgmentId: string;
+  readonly reminderTimerOutboxMessageIds: readonly [string, string];
 }
 
 export interface AcceptChallengeEffectIds extends ChallengeEffectIds {
@@ -910,7 +911,6 @@ export async function createDirectOpenChallenge(
             topic: 'competition.challenge.created.v1',
             payload: {
               challengeId: response.challengeId,
-              reminderDeadlines: reminderDeadlines.map((deadlineAt) => deadlineAt.toISOString()),
               timer: {
                 commandType: 'EXPIRE_OPTIONAL_CHALLENGE',
                 aggregateType: 'Challenge',
@@ -923,6 +923,27 @@ export async function createDirectOpenChallenge(
               },
             },
           },
+          ...reminderDeadlines.map((deadlineAt, index) => ({
+            messageId: ids.reminderTimerOutboxMessageIds[index]!,
+            topic: index === 0
+              ? 'competition.challenge.optional-response-reminder-12h-timer.v1'
+              : 'competition.challenge.optional-response-reminder-24h-timer.v1',
+            payload: {
+              challengeId: response.challengeId,
+              timer: {
+                commandType: index === 0
+                  ? 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H'
+                  : 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H',
+                aggregateType: 'Challenge',
+                aggregateId: response.challengeId,
+                expectedState: 'AWAITING_RESPONSE',
+                expectedVersion: response.version,
+                deadlineAt: deadlineAt.toISOString(),
+                policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${response.challengeId}:optional-response-reminder-${index === 0 ? '12h' : '24h'}:v${response.version}`,
+              },
+            },
+          })),
           {
             messageId: ids.notificationOutboxMessageId,
             topic: 'notification.in_app.v1',
@@ -2390,6 +2411,61 @@ export async function readChallengeTimerSnapshot(
     : { state: 'MISSING', version: 0 };
 }
 
+export async function readOptionalChallengeReminderTimerSnapshot(
+  database: Kysely<Database>,
+  challengeId: string,
+): Promise<TimerAggregateSnapshot> {
+  const result = await sql<{ readonly state: ChallengeState; readonly version: string }>`
+    select state, version::text as version
+    from competition.challenges
+    where challenge_id = ${challengeId}::uuid
+  `.execute(database);
+  const row = result.rows[0];
+  return row ? { state: row.state, version: Number(row.version) }
+    : { state: 'MISSING', version: 0 };
+}
+
+export async function projectPendingOptionalChallengeReminder(
+  database: Kysely<Database>,
+  challengeId: string,
+  expectedVersion: number,
+  kind: '12H' | '24H',
+  notificationId: string,
+): Promise<number> {
+  return database.transaction().execute(async (transaction) => {
+    const current = await challengeRow(transaction, challengeId, true);
+    if (
+      current.response_policy !== 'OPTIONAL'
+      || current.state !== 'AWAITING_RESPONSE'
+      || Number(current.version) !== expectedVersion
+    ) return 0;
+    const source = await sql<{ readonly event_id: string }>`
+      select event_id from platform.domain_events
+      where aggregate_type = 'Challenge' and aggregate_id = ${challengeId}::uuid
+        and aggregate_version = 1 and event_name = 'ChallengeCreated'
+      limit 1
+    `.execute(transaction);
+    const sourceEventId = source.rows[0]?.event_id;
+    if (!sourceEventId) throw new ChallengeConflictError('PAIR_CHALLENGE_EXISTS');
+    const inserted = await sql<{ readonly notification_id: string }>`
+      insert into platform.notifications (
+        notification_id, recipient_user_id, source_event_id, category, render_key,
+        action_target, payload, deadline_at
+      ) values (
+        ${notificationId}::uuid, ${current.recipient_user_id}::uuid,
+        ${sourceEventId}::uuid, 'MANDATORY',
+        ${kind === '12H' ? 'challenge.optional-response-reminder-12h' :
+          'challenge.optional-response-reminder-24h'},
+        ${JSON.stringify({ type: 'CHAT', chatId: current.source_chat_id })}::jsonb,
+        ${JSON.stringify({ challengeId: current.challenge_id })}::jsonb,
+        ${current.response_deadline_at.toISOString()}::timestamptz
+      ) on conflict (recipient_user_id, source_event_id, render_key) do nothing
+      returning notification_id
+    `.execute(transaction);
+    return inserted.rows.length;
+  });
+}
+
 export async function expireChallengeScheduling(
   database: Kysely<Database>,
   command: CommandEnvelope<ExpireChallengeSchedulingPayload>,
@@ -2644,7 +2720,7 @@ export async function expireOptionalChallenge(
         response,
         event: {
           eventId: ids.eventId,
-          eventName: 'ChallengeExpiredNoFault',
+          eventName: 'ChallengeResponseExpired',
           schemaVersion: 1,
           transitionId: 'CH-06',
           payload: { challengeId: row.challenge_id, noLoss: true, pairQuietCreated: false },

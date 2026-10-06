@@ -23,6 +23,35 @@ describe('Challenge timer projection', () => {
     })).toThrow('does not match');
   });
 
+  it('[AC-172] routes both stale-safe optional response reminders', () => {
+    const reminder12h = {
+      ...timer,
+      commandType: 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H',
+      deadlineAt: '2026-09-08T22:00:00.000Z',
+      idempotencyKey:
+        'challenge:0199a1b2-1234-7000-8000-000000001201:optional-response-reminder-12h:v1',
+    };
+    const reminder24h = {
+      ...reminder12h,
+      commandType: 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H',
+      deadlineAt: '2026-09-09T10:00:00.000Z',
+      idempotencyKey:
+        'challenge:0199a1b2-1234-7000-8000-000000001201:optional-response-reminder-24h:v1',
+    };
+    expect(challengeTimerFromOutbox(
+      'competition.challenge.optional-response-reminder-12h-timer.v1',
+      { timer: reminder12h },
+    )).toEqual(reminder12h);
+    expect(challengeTimerFromOutbox(
+      'competition.challenge.optional-response-reminder-24h-timer.v1',
+      { timer: reminder24h },
+    )).toEqual(reminder24h);
+    expect(() => challengeTimerFromOutbox(
+      'competition.challenge.optional-response-reminder-12h-timer.v1',
+      { timer: reminder24h },
+    )).toThrow('does not match');
+  });
+
   it('routes the accepted Challenge scheduling deadline', () => {
     const schedulingTimer = {
       ...timer,

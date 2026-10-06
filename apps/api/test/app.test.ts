@@ -2916,7 +2916,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');
   });
 
-  it('[AC-061][AC-062][AC-064] exposes unilateral, mutual and limit-Forfeit reschedule flows', async () => {
+  it('[AC-061][AC-062][AC-064][AC-172] exposes Challenge creation timers and reschedule flows', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000001101';
     const challengeId = '0199a1b2-1234-7000-8000-000000001102';
     const challenge: ChallengeProjection = {
@@ -3061,6 +3061,8 @@ describe('runtime contract', () => {
       expectedVersion: 0,
       payload: { sourceChatId: chatId },
     });
+    expect(created.mock.calls[0]?.[1].reminderTimerOutboxMessageIds).toHaveLength(2);
+    expect(new Set(created.mock.calls[0]?.[1].reminderTimerOutboxMessageIds).size).toBe(2);
 
     const accept = await app.inject({
       method: 'POST',

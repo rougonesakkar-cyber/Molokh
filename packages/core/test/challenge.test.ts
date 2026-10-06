@@ -53,7 +53,7 @@ const eligible = {
 };
 
 describe('Official Challenge policy', () => {
-  it('uses transparent 12h/24h reminders, 48h response and 14d scheduling deadlines', () => {
+  it('[AC-172] uses transparent 12h/24h reminders, 48h response and 14d scheduling deadlines', () => {
     const startedAt = new Date('2026-09-08T10:00:00.000Z');
     expect(optionalChallengeReminderDeadlines(startedAt).map((value) => value.toISOString())).toEqual([
       '2026-09-08T22:00:00.000Z',

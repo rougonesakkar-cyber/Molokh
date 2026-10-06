@@ -248,7 +248,11 @@ ordinary Training Sessions.
 The implemented direct slice returns the frozen ruleset reference/mode, response policy, stake,
 deadlines, state/version and viewer role. Its accepted state is linked through Booking to one
 confirmed `OFFICIAL_CHALLENGE` Session without a second UI mode. Acknowledgment proofs remain
-server-side append-only records. Before that confirmation, either participant may call the
+server-side append-only records. Creation also publishes three independent state/version-guarded
+timers: recipient-only mandatory reminders at +12h and +24h, then CH-06 expiry at +48h. Reminder
+projection is idempotent and becomes a no-op after accept/decline/withdraw/expiry; only the
+recipient is addressed, the server deadline is unaffected by read state, and no event-SMS is
+created without an explicit future opt-in delivery adapter. Before that confirmation, either participant may call the
 versioned/idempotent `reschedule` command in `ACCEPTED_UNSCHEDULED` or `BOOKING_PENDING`. CH-22
 increments the server-owned count, records initiator/category/A-or-B fault/time and optional
 Booking lineage, cancels the pending Booking and reissues the timer against the unchanged original

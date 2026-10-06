@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **308**;
 - registered events: **309**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **156/214** (`150/196 P0`);
+- executable acceptance traceability: **157/214** (`151/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0061` and **48/48** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0061` and **49/49** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   unresolved upstream `node-forge` and `braces` advisories are covered by narrow regression-tested
   local backports that expire on 2026-10-16 and reject every other high/critical advisory;
@@ -239,7 +239,9 @@ Community. Open an active Match Chat to create a direct optional **Official Chal
 recipient may accept or decline without a loss, while the initiator may withdraw before the
 response. The ruleset is frozen when the invitation is created; acceptance atomically creates
 one active obligation for each Athlete and starts the 14-day scheduling deadline. An unanswered
-invitation expires after 48 hours through the Worker with no sporting consequence.
+invitation sends stale-safe recipient-only reminders after 12 and 24 hours, then expires after
+exactly 48 hours through the Worker with no loss, Result, Cooldown, obligation or additional pair
+quiet. The terminal pair may invite again after the ordinary eligibility checks pass again.
 
 After acceptance, either Athlete selects a published personal Slot in the same simple Chat flow.
 The Booking is explicitly linked to the Challenge and moves it to `BOOKING_PENDING`; the peer
