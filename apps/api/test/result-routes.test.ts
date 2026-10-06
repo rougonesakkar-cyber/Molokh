@@ -49,7 +49,7 @@ afterEach(async () => {
 });
 
 describe('Result and Appeal routes', () => {
-  it('[AC-076][AC-088][AC-089][AC-202][AC-203] exposes Coach Result and NO_SHOW facts', async () => {
+  it('[AC-076][AC-088][AC-089][AC-167][AC-202][AC-203] exposes media-free Coach Result facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
@@ -112,6 +112,16 @@ describe('Result and Appeal routes', () => {
     expect(recordSessionResult.mock.calls[0]?.[1]).toMatchObject({
       notificationIds: expect.arrayContaining([expect.any(String), expect.any(String)]),
     });
+    expect(JSON.stringify(created.json())).not.toMatch(/media|photo|video|upload|objectKey/i);
+
+    const unavailableMediaUpload = await app.inject({
+      method: 'POST',
+      url: `/api/v1/results/${resultId}/media`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { fileName: 'result.mp4', mimeType: 'video/mp4', sizeBytes: 1024 },
+    });
+    expect(unavailableMediaUpload.statusCode).toBe(404);
+    expect(recordSessionResult).toHaveBeenCalledTimes(1);
 
     const noShow = await app.inject({
       method: 'POST', url: `/api/v1/challenges/${challengeId}/result`,
@@ -164,10 +174,20 @@ describe('Result and Appeal routes', () => {
     });
 
     await app.ready();
-    expect(app.swagger().paths).toHaveProperty('/api/v1/results/{resultId}');
-    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/result');
-    expect(app.swagger().paths).toHaveProperty('/api/v1/results/{resultId}/appeal');
-    expect(app.swagger().paths).toHaveProperty('/api/v1/results/{resultId}/waive-appeal');
+    const openApi = app.swagger() as {
+      readonly paths: Record<string, { readonly post?: { readonly requestBody?: unknown } }>;
+    };
+    expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}');
+    expect(openApi.paths).toHaveProperty('/api/v1/challenges/{challengeId}/result');
+    expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}/appeal');
+    expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}/waive-appeal');
+    expect(Object.keys(openApi.paths).filter((path) =>
+      path.includes('/results/') && /media|photo|video|upload/i.test(path),
+    )).toEqual([]);
+    const recordBodySchema = openApi.paths['/api/v1/challenges/{challengeId}/result']
+      ?.post?.requestBody;
+    expect(JSON.stringify(recordBodySchema)).toContain('"additionalProperties":false');
+    expect(JSON.stringify(recordBodySchema)).not.toMatch(/media|photo|video|upload|objectKey/i);
   });
 
   it('requires optimistic concurrency and authentication for Result writes', async () => {

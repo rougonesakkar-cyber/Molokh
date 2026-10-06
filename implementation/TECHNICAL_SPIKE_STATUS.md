@@ -200,12 +200,12 @@ unconfigured object-storage capability.
 
 ## Verification result
 
-Verified on 2026-10-05:
+Verified on 2026-10-06:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
 - 259 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 49 integration scenarios, including Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-061/062/063/064/065/066 Athlete/mutual/external-reschedule/reschedule-limit/withdrawal/confirmed-cancellation/host-confirmation and AC-153 shared-Athlete confirmation races, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-164 mandatory push-intent/no-SMS delivery, AC-172 optional Challenge reminders/expiry, AC-202 LATE-to-ordinary-Result and AC-203 single/double-NO_SHOW semantics, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
+- the current PostgreSQL gate passes all 49 integration scenarios, including Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-061/062/063/064/065/066 Athlete/mutual/external-reschedule/reschedule-limit/withdrawal/confirmed-cancellation/host-confirmation and AC-153 shared-Athlete confirmation races, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-164 mandatory push-intent/no-SMS delivery, AC-167 media-free Result boundary, AC-172 optional Challenge reminders/expiry, AC-202 LATE-to-ordinary-Result and AC-203 single/double-NO_SHOW semantics, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;

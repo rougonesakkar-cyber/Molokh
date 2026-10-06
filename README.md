@@ -8,7 +8,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **308**;
 - registered events: **309**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **158/214** (`152/196 P0`);
+- executable acceptance traceability: **159/214** (`153/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
 - database gate: PostgreSQL migrations `0001`–`0062` and **49/49** integration scenarios pass locally;
@@ -271,6 +271,13 @@ configured pair Cooldown and schedules finalization exactly 48 hours later. The 
 may submit Appeal or explicitly waive it. A decisive Result finalizes early when its sole eligible
 loser waives; draw/no-contest requires both eligible Athletes. Otherwise the versioned Worker
 timer commits `CH-17`, releases obligations and removes the temporary status lock.
+
+Result photo/video is deliberately unavailable in the MVP. The closed Result request schema,
+API surface, database model and client expose sporting facts only: there is no upload capability,
+ticket, attachment table or object-storage write, and canonical event/audit/outbox payloads contain
+no media reference. The Coach UI states this boundary without presenting a disabled or misleading
+upload action. Media can be added later behind a separate capability without changing the current
+Result lifecycle.
 
 When an Athlete submits Appeal, switch to **«Central Operator»** and open Community. Central
 sees a small FIFO work queue, takes one Appeal into independent review and records one reasoned

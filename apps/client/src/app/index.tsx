@@ -5607,6 +5607,9 @@ export default function IdentityScreen() {
                                         ? 'Attendance не является Result. Отдельно подтвердите неявку; Appeal будет доступен 48 часов.'
                                         : 'Результат сразу станет виден обоим спортсменам. Appeal доступен 48 часов.'}
                                 </Text>
+                                <Text style={styles.hint}>
+                                  Фото и видео для Result в MVP не загружаются — подтвердите только спортивный исход.
+                                </Text>
                                 <View style={styles.attendanceActions}>
                                   {missingResultReview?.viewerCanRecordConstrainedResult
                                     && missingResultReview.allowedOutcomeCode ? (

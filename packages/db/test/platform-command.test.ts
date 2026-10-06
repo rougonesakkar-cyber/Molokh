@@ -7088,7 +7088,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ]);
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-171][AC-175][AC-179][AC-205][AC-206] runs a direct optional Official Challenge through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -7599,6 +7599,33 @@ describePostgres('PostgreSQL critical command transaction', () => {
       statusAfter: { contenderUserId: athleteB, statusVersion: 2 },
       version: 1,
     });
+    expect(JSON.stringify(recordedResult.response)).not.toMatch(
+      /media|photo|video|upload|objectKey|uploadToken/i,
+    );
+    const resultPublicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document
+      from platform.domain_events
+      where event_id in (${testId(1944)}::uuid, ${testId(1947)}::uuid)
+      union all
+      select metadata as document
+      from platform.audit_events
+      where audit_id = ${testId(1945)}::uuid
+      union all
+      select payload as document
+      from platform.outbox_messages
+      where message_id in (${testId(1946)}::uuid, ${testId(1953)}::uuid)
+    `.execute(database);
+    expect(resultPublicDocuments.rows).toHaveLength(5);
+    expect(JSON.stringify(resultPublicDocuments.rows)).not.toMatch(
+      /media|photo|video|upload|objectKey|uploadToken/i,
+    );
+    const resultMediaStorage = await sql<{ readonly count: string }>`
+      select count(*)::text as count
+      from information_schema.tables
+      where table_schema = 'competition'
+        and table_name in ('result_attachments', 'result_media', 'result_uploads')
+    `.execute(database);
+    expect(resultMediaStorage.rows[0]?.count).toBe('0');
     await expect(
       readResult(database, resultId, athleteA, new Date('2026-09-13T15:01:00.000Z')),
     ).resolves.toMatchObject({
