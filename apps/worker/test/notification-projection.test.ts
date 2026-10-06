@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { parseNotificationProjection } from '../src/notification-projection.js';
 
 describe('notification projection payload', () => {
-  it('parses the stable in-app notification envelope', () => {
+  it('[AC-164] parses the provider-independent mandatory notification envelope', () => {
     expect(
       parseNotificationProjection({
         messageId: 'message-1',

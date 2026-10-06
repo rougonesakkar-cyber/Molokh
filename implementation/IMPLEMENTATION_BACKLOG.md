@@ -167,6 +167,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - Outbox delivery increment: complete; leased `SKIP LOCKED` claim, bounded retry, crash-safe lease recovery, Graphile job deduplication and Inbox receipt handling are implemented.
 - Timer foundation increment: complete; canonical payload, exact deadline boundary, state/version stale guard, early reschedule and diagnostic-only stale path are implemented. Product handlers register with their owning modules.
 - Notification/observability increment: complete; event-to-inbox projection is atomic and duplicate-safe, notification reads enforce recipient ownership, and API request/correlation/causation IDs propagate through response headers and structured logs.
+- M1 critical-delivery-intent increment: complete. A mandatory in-app projection atomically creates
+  one provider-independent critical-push intent, while SMS requires an explicit database-backed
+  event opt-in and an absent preference means opt-out. Migration `0062` stores no private contact
+  destination, inbox replay and channel uniqueness prevent duplicates, and pending/failing external
+  delivery plus notification reads cannot change the server-owned Challenge deadline. AC-164 passes
+  Worker and real PostgreSQL coverage on the actual mandatory Challenge path without enabling a
+  provider or promising delivery in the client.
 - M1 exit: complete at the platform layer.
 - Story 4 Sprint 1 increment: complete. The 14+ User/AthleteProfile activation, arbitrary display name, private name audit, local replaceable auth adapter, public capability projection, typed API and minimal universal client run end to end. Phone-confirmed but Central-unverified Athletes can use Discovery and ordinary Training but receive an explicit Official Challenge denial.
 - Story 4 verification increment: complete. V-01 start, permission-protected Central FIFO queue and V-02 approval use checklist/version only, store no document/evidence, and immediately recompute Identity/Community capabilities.
@@ -366,7 +373,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 157/214 (`151/196 P0`).
+  Acceptance traceability is 158/214 (`152/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

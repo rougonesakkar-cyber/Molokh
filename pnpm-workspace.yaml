@@ -25,6 +25,7 @@ overrides:
   'compression@<1.8.2': 1.8.2
   'fast-uri@>=3.0.0 <3.1.8': 3.1.8
   'ip-address@<=10.7.0': 10.7.3
+  'shell-quote@>=1.8.4 <1.11.0': 1.11.0
   'source-map-js@>=1.0.0 <1.2.2': 1.2.2
   query-string>decode-uri-component: 0.5.0
   xcode>uuid: 11.1.1

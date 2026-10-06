@@ -399,6 +399,7 @@ Critical constraints:
 - `scheduled_jobs`
 - `notifications`
 - `notification_preferences`
+- `notification_delivery_intents`
 - `platform_incidents`
 - `incident_impacts`
 - `incident_timeout_compensations`
@@ -419,6 +420,14 @@ migration: one expiry timer and two reminder timers all reference the immutable 
 event. The reminder projector locks and rechecks Challenge state/version before inserting a unique
 recipient/event/render-key notification, so duplicate delivery is idempotent and a stale timer
 cannot notify after a terminal or accepted transition.
+
+Migration `0062_notification_delivery_intents.sql` keeps canonical in-app notification storage
+separate from replaceable external delivery. Every projected `MANDATORY` notification creates one
+unique provider-independent `CRITICAL/PUSH` intent. An `SMS` intent is created only by a
+database-authoritative explicit `event_sms_opt_in=true`; a missing preference row is opt-out.
+Intents store no address, phone, e-mail or provider payload. Inbox replay plus
+`unique(notification_id, channel)` makes delivery creation idempotent, and delivery/read state has
+no write path to business deadlines or aggregates.
 
 Migrations `0049`–`0052` materialize the incident contour. Pausable deadlines remain on their
 own aggregates and are updated under the same optimistic version lock as their

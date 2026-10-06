@@ -1257,6 +1257,8 @@ const taskList = createTaskList({
       logger.info(
         {
           createdCount: result.createdCount,
+          createdPushIntentCount: result.createdPushIntentCount,
+          createdSmsIntentCount: result.createdSmsIntentCount,
           eventId: message.eventId,
           messageId: message.messageId,
           replayed: result.replayed,

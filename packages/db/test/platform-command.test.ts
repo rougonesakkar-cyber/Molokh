@@ -2061,6 +2061,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         identity.athlete_profiles,
         identity.users,
         platform.feature_flags,
+        platform.notification_delivery_intents,
         platform.notifications,
         platform.notification_preferences,
         platform.outbox_messages,
@@ -2598,7 +2599,6 @@ describePostgres('PostgreSQL critical command transaction', () => {
       command: command(),
       mutate: (transaction, context) => mutate(transaction, context.nextVersion),
     });
-
     const [firstWorker, secondWorker] = await Promise.all([
       claimOutboxBatch(database, { workerId: 'worker-1', batchSize: 10 }),
       claimOutboxBatch(database, { workerId: 'worker-2', batchSize: 10 }),
@@ -2635,11 +2635,15 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).toEqual([]);
   });
 
-  it('[AC-141] projects an event into recipient notifications once and marks reads idempotently', async () => {
+  it('[AC-141][AC-164] projects canonical notifications and opt-in external delivery intents once', async () => {
     await executeCriticalCommand(database, {
       command: command(),
       mutate: (transaction, context) => mutate(transaction, context.nextVersion),
     });
+    await sql`
+      insert into platform.notification_preferences (user_id, event_sms_opt_in)
+      values (${ids.recipientTwo}::uuid, true)
+    `.execute(database);
 
     const drafts = [
       {
@@ -2654,7 +2658,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       {
         notificationId: ids.notificationTwo,
         recipientUserId: ids.recipientTwo,
-        category: 'SERVICE' as const,
+        category: 'MANDATORY' as const,
         renderKey: 'challenge.created',
         actionTarget: { type: 'CHALLENGE', id: ids.aggregate },
         payload: {},
@@ -2665,16 +2669,50 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(projectNotificationBatch(database, ids.event, drafts)).resolves.toEqual({
       replayed: false,
       createdCount: 2,
+      createdPushIntentCount: 2,
+      createdSmsIntentCount: 1,
     });
     await expect(projectNotificationBatch(database, ids.event, drafts)).resolves.toEqual({
       replayed: true,
       createdCount: 0,
+      createdPushIntentCount: 0,
+      createdSmsIntentCount: 0,
     });
 
     const count = await sql<{ readonly notifications: string }>`
       select count(*)::text as notifications from platform.notifications
     `.execute(database);
     expect(count.rows[0]?.notifications).toBe('2');
+    const intents = await sql<{
+      readonly channel: string;
+      readonly delivery_class: string;
+      readonly recipient_user_id: string;
+      readonly state: string;
+    }>`
+      select channel, delivery_class, recipient_user_id, state
+      from platform.notification_delivery_intents
+      order by recipient_user_id, channel
+    `.execute(database);
+    expect(intents.rows).toEqual([{
+      channel: 'PUSH',
+      delivery_class: 'CRITICAL',
+      recipient_user_id: ids.recipientOne,
+      state: 'PENDING',
+    }, {
+      channel: 'PUSH',
+      delivery_class: 'CRITICAL',
+      recipient_user_id: ids.recipientTwo,
+      state: 'PENDING',
+    }, {
+      channel: 'SMS',
+      delivery_class: 'CRITICAL',
+      recipient_user_id: ids.recipientTwo,
+      state: 'PENDING',
+    }]);
+    const deadlineBeforeRead = await sql<{ readonly deadline_at: Date }>`
+      select deadline_at from platform.notifications
+      where notification_id = ${ids.notificationOne}::uuid
+    `.execute(database);
     await expect(
       markNotificationRead(database, ids.notificationOne, ids.recipientOne),
     ).resolves.toBe(true);
@@ -2684,6 +2722,13 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(
       markNotificationRead(database, ids.notificationOne, ids.recipientTwo),
     ).resolves.toBe(false);
+    const deadlineAfterRead = await sql<{ readonly deadline_at: Date }>`
+      select deadline_at from platform.notifications
+      where notification_id = ${ids.notificationOne}::uuid
+    `.execute(database);
+    expect(deadlineAfterRead.rows[0]?.deadline_at.toISOString()).toBe(
+      deadlineBeforeRead.rows[0]?.deadline_at.toISOString(),
+    );
   });
 
   it('[AC-017][AC-168][AC-192] changes profile priorities without identity or Competition drift', async () => {
@@ -8366,7 +8411,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(bookingLineage.rows[0]?.match_id).toBeNull();
   });
 
-  it('[AC-044][AC-052][AC-095][AC-096][AC-097] runs direct FIFO, mandatory Forfeit and holder reconfirmation', async () => {
+  it('[AC-044][AC-052][AC-095][AC-096][AC-097][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
     const setup = async (base: number, phonePrefix: string) => {
       const challenger = testId(base);
       const contender = testId(base + 1);
@@ -8505,10 +8550,91 @@ describePostgres('PostgreSQL critical command transaction', () => {
         activeChallenge: { challengeId, serviceChatId, viewerIsParticipant: true },
         queueSize: 0,
       });
-      return { challenger, contender, champion, follower, competition, challengeId, serviceChatId };
+      return {
+        challenger,
+        contender,
+        champion,
+        follower,
+        competition,
+        challengeId,
+        serviceChatId,
+        activationEventId: testId(base + 43),
+        notificationOutboxMessageId: testId(base + 56),
+        challengeNotificationId: testId(base + 57),
+      };
     };
 
     const acceptedFixture = await setup(15000, '+7999150000');
+    const mandatoryOutbox = await sql<{
+      readonly event_id: string;
+      readonly payload: { readonly notifications: readonly unknown[] };
+    }>`
+      select event_id, payload
+      from platform.outbox_messages
+      where message_id = ${acceptedFixture.notificationOutboxMessageId}::uuid
+    `.execute(database);
+    const mandatoryProjection = mandatoryOutbox.rows[0];
+    if (!mandatoryProjection) throw new Error('Mandatory notification outbox is missing');
+    expect(mandatoryProjection.event_id).toBe(acceptedFixture.activationEventId);
+    expect(JSON.stringify(mandatoryProjection.payload)).not.toContain('+7999');
+    await expect(projectNotificationBatch(
+      database,
+      mandatoryProjection.event_id,
+      mandatoryProjection.payload.notifications as Parameters<typeof projectNotificationBatch>[2],
+    )).resolves.toEqual({
+      replayed: false,
+      createdCount: 2,
+      createdPushIntentCount: 2,
+      createdSmsIntentCount: 0,
+    });
+    await expect(projectNotificationBatch(
+      database,
+      mandatoryProjection.event_id,
+      mandatoryProjection.payload.notifications as Parameters<typeof projectNotificationBatch>[2],
+    )).resolves.toEqual({
+      replayed: true,
+      createdCount: 0,
+      createdPushIntentCount: 0,
+      createdSmsIntentCount: 0,
+    });
+    const challengeDelivery = await sql<{
+      readonly channel: string;
+      readonly delivery_class: string;
+      readonly recipient_user_id: string;
+    }>`
+      select channel, delivery_class, recipient_user_id
+      from platform.notification_delivery_intents
+      where notification_id = ${acceptedFixture.challengeNotificationId}::uuid
+    `.execute(database);
+    expect(challengeDelivery.rows).toEqual([{
+      channel: 'PUSH',
+      delivery_class: 'CRITICAL',
+      recipient_user_id: acceptedFixture.contender,
+    }]);
+    const challengeBeforeRead = await sql<{
+      readonly response_deadline_at: Date;
+      readonly state: string;
+      readonly version: string;
+    }>`
+      select response_deadline_at, state, version::text
+      from competition.challenges
+      where challenge_id = ${acceptedFixture.challengeId}::uuid
+    `.execute(database);
+    await expect(markNotificationRead(
+      database,
+      acceptedFixture.challengeNotificationId,
+      acceptedFixture.contender,
+    )).resolves.toBe(true);
+    const challengeAfterRead = await sql<{
+      readonly response_deadline_at: Date;
+      readonly state: string;
+      readonly version: string;
+    }>`
+      select response_deadline_at, state, version::text
+      from competition.challenges
+      where challenge_id = ${acceptedFixture.challengeId}::uuid
+    `.execute(database);
+    expect(challengeAfterRead.rows[0]).toEqual(challengeBeforeRead.rows[0]);
     const accepted = await acceptOptionalChallenge(
       database,
       {
