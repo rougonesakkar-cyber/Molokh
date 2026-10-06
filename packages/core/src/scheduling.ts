@@ -27,6 +27,7 @@ export type SchedulingConflictCode =
   | 'COACH_REPLACEMENT_UNAVAILABLE'
   | 'COACH_REPLACEMENT_NOT_REJECTABLE'
   | 'EXTERNAL_FAILURE_NOT_ALLOWED'
+  | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
   | 'OFFICIAL_CONVERSION_NOT_ALLOWED'
@@ -400,6 +401,32 @@ export function assertTrainingParticipantCanCancel(input: {
     occurredAt: input.occurredAt,
     scheduledStartAt: input.scheduledStartAt,
   });
+}
+
+export function officialCancellationWinner(input: {
+  readonly bookingState: string;
+  readonly bookingPurpose: string;
+  readonly challengeState: string | null;
+  readonly sessionState: SessionState;
+  readonly actualStartAt: string | null;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly resultExists: boolean;
+}): string {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  if (
+    input.bookingState !== 'CONFIRMED_PAIR'
+    || input.bookingPurpose !== 'OFFICIAL_CHALLENGE'
+    || input.challengeState !== 'BOOKED'
+    || !['SCHEDULED', 'READY_FOR_COACH'].includes(input.sessionState)
+    || input.actualStartAt !== null
+    || input.resultExists
+  ) {
+    throw new SchedulingConflictError('OFFICIAL_CANCELLATION_NOT_ALLOWED');
+  }
+  return input.participantUserIds.find((userId) => userId !== input.actorUserId)!;
 }
 
 export function assertSoloContinuationDecisionCanBeRecorded(input: {

@@ -20,6 +20,7 @@ import {
   challengeResultReminderDeadlines,
   effectiveChallengeStakeAtSessionWindow,
   externalChallengeRescheduleCount,
+  officialCancellationWinner,
   type AttendanceStatus,
   type ChallengeStake,
   type ChallengeState,
@@ -35,6 +36,10 @@ import {
   type BookingOfficialConversionProjection,
 } from './booking-conversion.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import {
+  recordAdministrativeForfeit,
+  type AdministrativeForfeitEffectIds,
+} from './result.js';
 import {
   readBookingSoloContinuationForSession,
   type BookingSoloContinuationProjection,
@@ -83,6 +88,10 @@ export interface FailSessionExternalPayload {
   readonly reasonCode: ExternalSessionFailureReason;
 }
 
+export interface CancelOfficialSessionByAthletePayload {
+  readonly sessionId: string;
+}
+
 export interface SessionEffectIds {
   readonly eventId: string;
   readonly auditId: string;
@@ -99,6 +108,15 @@ export interface SessionEffectIds {
   readonly challengeEventId?: string;
   readonly challengeOutboxMessageId?: string;
   readonly rescheduleId?: string;
+  readonly resultId?: string;
+  readonly resultEventId?: string;
+  readonly statusTransitionId?: string;
+  readonly statusEventId?: string;
+  readonly cooldownId?: string;
+  readonly cooldownEventId?: string;
+  readonly resultOutboxMessageId?: string;
+  readonly resultNotificationOutboxMessageId?: string;
+  readonly resultNotificationIds?: readonly [string, string, string];
   readonly conversionEventId?: string;
   readonly conversionQueueEventId?: string;
   readonly conversionOutboxMessageId?: string;
@@ -155,6 +173,7 @@ export interface SessionLifecycleProjection {
   readonly viewerCanRequestNoFaultReschedule: boolean;
   readonly viewerCanRequestOfficialConversion: boolean;
   readonly viewerCanCancelTraining: boolean;
+  readonly viewerCanCancelOfficial: boolean;
   readonly officialConversion: BookingOfficialConversionProjection | null;
   readonly soloContinuation: BookingSoloContinuationProjection | null;
   readonly trainingRetention: BookingTrainingRetentionProjection | null;
@@ -696,6 +715,14 @@ async function sessionProjection(
       && row.actual_start_at === null
       && row.scheduled_start_at > new Date()
       && soloContinuation === null,
+    viewerCanCancelOfficial:
+      activeAthleteUserIds.includes(viewerUserId)
+      && row.purpose === 'OFFICIAL_CHALLENGE'
+      && row.booking_state === 'CONFIRMED_PAIR'
+      && row.challenge_state === 'BOOKED'
+      && (row.state === 'SCHEDULED' || row.state === 'READY_FOR_COACH')
+      && row.actual_start_at === null
+      && row.result_id === null,
     officialConversion,
     soloContinuation,
     trainingRetention,
@@ -907,6 +934,39 @@ async function cancelConfirmedSessionResources(
       state: 'CANCELLED',
       cancellation_reason_code: reasonCode,
       version: String(context.nextVersion),
+    },
+  };
+}
+
+function requiredOfficialCancellationIds(ids: SessionEffectIds): {
+  readonly bookingEventId: string;
+  readonly slotEventId: string;
+  readonly challengeEventId: string;
+  readonly result: AdministrativeForfeitEffectIds;
+} {
+  if (
+    !ids.bookingEventId || !ids.slotEventId || !ids.challengeEventId
+    || !ids.resultId || !ids.resultEventId || !ids.statusTransitionId
+    || !ids.statusEventId || !ids.cooldownId || !ids.cooldownEventId
+    || !ids.resultOutboxMessageId || !ids.resultNotificationOutboxMessageId
+    || !ids.resultNotificationIds
+  ) {
+    throw new TypeError('Official cancellation effect IDs are required');
+  }
+  return {
+    bookingEventId: ids.bookingEventId,
+    slotEventId: ids.slotEventId,
+    challengeEventId: ids.challengeEventId,
+    result: {
+      resultId: ids.resultId,
+      resultEventId: ids.resultEventId,
+      statusTransitionId: ids.statusTransitionId,
+      statusEventId: ids.statusEventId,
+      cooldownId: ids.cooldownId,
+      cooldownEventId: ids.cooldownEventId,
+      resultOutboxMessageId: ids.resultOutboxMessageId,
+      notificationOutboxMessageId: ids.resultNotificationOutboxMessageId,
+      notificationIds: ids.resultNotificationIds,
     },
   };
 }
@@ -1332,6 +1392,175 @@ export async function failSessionExternal(
           },
         },
         outbox,
+      };
+    },
+  });
+}
+
+export async function cancelOfficialSessionByAthlete(
+  database: Kysely<Database>,
+  command: CommandEnvelope<CancelOfficialSessionByAthletePayload>,
+  ids: SessionEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<SessionLifecycleProjection>> {
+  if (
+    !command.actor.id
+    || command.commandType !== 'CANCEL_OFFICIAL_BY_ATHLETE'
+    || command.aggregateType !== 'Session'
+    || command.payload.sessionId !== command.aggregateId
+  ) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  const required = requiredOfficialCancellationIds(ids);
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await readSessionRow(transaction, command.aggregateId, true);
+      if (!row || !row.challenge_id) {
+        throw new SchedulingConflictError('OFFICIAL_CANCELLATION_NOT_ALLOWED');
+      }
+      const winnerUserId = officialCancellationWinner({
+        bookingState: row.booking_state,
+        bookingPurpose: row.purpose,
+        challengeState: row.challenge_state,
+        sessionState: row.state,
+        actualStartAt: row.actual_start_at?.toISOString() ?? null,
+        actorUserId: command.actor.id!,
+        participantUserIds: [row.pair_low_id, row.pair_high_id],
+        resultExists: row.result_id !== null,
+      });
+      const resource = await readSessionResourcesForUpdate(transaction, row);
+      const cancelled = await cancelConfirmedSessionResources(
+        transaction,
+        row,
+        resource,
+        context,
+        command.actor.id!,
+        'ATHLETE_CANCELLED_OFFICIAL',
+      );
+      const forfeit = await recordAdministrativeForfeit(
+        transaction,
+        {
+          challengeId: row.challenge_id,
+          loserUserId: command.actor.id!,
+          recordedByUserId: command.actor.id!,
+          reasonCode: 'ATHLETE_CANCELLED_CONFIRMED_OFFICIAL',
+          comment: 'The Athlete explicitly cancelled the confirmed Official Session before actual start.',
+          sourceSessionId: row.session_id,
+          sourceCoachUserId: row.coach_user_id,
+          notificationRecipientUserIds: [row.pair_low_id, row.pair_high_id, row.coach_user_id],
+          occurredAt: context.occurredAt,
+          expectedChallengeState: 'BOOKED',
+        },
+        required.result,
+      );
+      const updated: SessionRow = {
+        ...cancelled.updated,
+        challenge_state: 'RESULT_RECORDED',
+        challenge_version: String(forfeit.challengeVersion),
+        result_id: forfeit.resultId,
+      };
+      const response = await sessionProjection(transaction, updated, command.actor.id!);
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'SessionCancelled',
+          schemaVersion: 1,
+          transitionId: 'S-04',
+          payload: {
+            sessionId: row.session_id,
+            bookingId: row.booking_id,
+            challengeId: row.challenge_id,
+            resultId: forfeit.resultId,
+            cause: 'ATHLETE_CANCELLED_OFFICIAL',
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        relatedEvents: [
+          {
+            eventId: required.bookingEventId,
+            eventName: 'OfficialBookingCancelledByAthlete',
+            schemaVersion: 1,
+            aggregateType: 'Booking',
+            aggregateId: row.booking_id,
+            aggregateVersion: cancelled.bookingVersion,
+            transitionId: 'B-14',
+            payload: {
+              bookingId: row.booking_id,
+              sessionId: row.session_id,
+              challengeId: row.challenge_id,
+              resultId: forfeit.resultId,
+              cancelledByUserId: command.actor.id,
+            },
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+          {
+            eventId: required.slotEventId,
+            eventName: 'SlotBookingCancelled',
+            schemaVersion: 1,
+            aggregateType: 'Slot',
+            aggregateId: resource.slot_id,
+            aggregateVersion: cancelled.slotVersion,
+            transitionId: 'SL-06',
+            payload: { slotId: resource.slot_id, cause: 'ATHLETE_CANCELLED_OFFICIAL' },
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+          {
+            eventId: required.challengeEventId,
+            eventName: 'BookedChallengeCancelledByAthlete',
+            schemaVersion: 1,
+            aggregateType: 'Challenge',
+            aggregateId: row.challenge_id,
+            aggregateVersion: forfeit.challengeVersion,
+            transitionId: 'CH-12',
+            payload: {
+              challengeId: row.challenge_id,
+              bookingId: row.booking_id,
+              sessionId: row.session_id,
+              resultId: forfeit.resultId,
+              winnerUserId,
+              loserUserId: command.actor.id,
+              appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+            },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          },
+          ...forfeit.relatedEvents,
+        ],
+        audit: {
+          auditId: ids.auditId,
+          action: 'CANCEL_OFFICIAL_BY_ATHLETE',
+          transitionId: 'CH-12',
+          reasonCode: 'ATHLETE_CANCELLED_CONFIRMED_OFFICIAL',
+          beforeState: row.state,
+          afterState: 'CANCELLED',
+          metadata: {
+            bookingId: row.booking_id,
+            challengeId: row.challenge_id,
+            resultId: forfeit.resultId,
+            winnerUserId,
+            loserUserId: command.actor.id,
+            statusTransitionType: forfeit.statusTransitionType,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'scheduling.official-session.cancelled-by-athlete.v1',
+            payload: {
+              sessionId: row.session_id,
+              bookingId: row.booking_id,
+              challengeId: row.challenge_id,
+              resultId: forfeit.resultId,
+              winnerUserId,
+              loserUserId: command.actor.id,
+              appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+            },
+          },
+          ...forfeit.outbox,
+        ],
       };
     },
   });

@@ -114,6 +114,7 @@ import type {
   SlotProjection,
   EndSessionPayload,
   CancelAfterCoachReplacementPayload,
+  CancelOfficialSessionByAthletePayload,
   FailSessionExternalPayload,
   RecordAttendancePayload,
   ReplaceSessionCoachPayload,
@@ -261,6 +262,10 @@ export interface SchedulingRouteDependencies {
   ) => Promise<ExecutedCommand<SessionLifecycleProjection>>;
   readonly cancelSessionAfterCoachReplacement: (
     command: CommandEnvelope<CancelAfterCoachReplacementPayload>,
+    ids: SessionEffectIds,
+  ) => Promise<ExecutedCommand<SessionLifecycleProjection>>;
+  readonly cancelOfficialSessionByAthlete: (
+    command: CommandEnvelope<CancelOfficialSessionByAthletePayload>,
     ids: SessionEffectIds,
   ) => Promise<ExecutedCommand<SessionLifecycleProjection>>;
   readonly failSessionExternal: (
@@ -424,6 +429,21 @@ function sessionEffectIds(input?: {
     challengeEventId: newUuidV7(),
     challengeOutboxMessageId: newUuidV7(),
     rescheduleId: newUuidV7(),
+  };
+}
+
+function officialCancellationEffectIds(): SessionEffectIds {
+  return {
+    ...sessionEffectIds(),
+    resultId: newUuidV7(),
+    resultEventId: newUuidV7(),
+    statusTransitionId: newUuidV7(),
+    statusEventId: newUuidV7(),
+    cooldownId: newUuidV7(),
+    cooldownEventId: newUuidV7(),
+    resultOutboxMessageId: newUuidV7(),
+    resultNotificationOutboxMessageId: newUuidV7(),
+    resultNotificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
   };
 }
 
@@ -1359,6 +1379,57 @@ export async function registerSchedulingRoutes(
           payload: { sessionId: request.params.sessionId },
         },
         sessionEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return sessionCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: SessionParams;
+    Body: SessionActionBody;
+  }>(
+    '/api/v1/sessions/:sessionId/cancel-official',
+    {
+      schema: {
+        operationId: 'cancelOfficialSessionByAthlete',
+        params: Type.Object(
+          { sessionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: SessionActionBodySchema,
+        response: {
+          200: SessionCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SessionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.cancelOfficialSessionByAthlete(
+        {
+          commandId: newUuidV7(), commandType: 'CANCEL_OFFICIAL_BY_ATHLETE',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'Session', aggregateId: request.params.sessionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: { sessionId: request.params.sessionId },
+        },
+        officialCancellationEffectIds(),
       );
       reply.status(executed.responseStatus);
       return sessionCommandResponse(executed, context.requestId);

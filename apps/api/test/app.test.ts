@@ -90,6 +90,7 @@ import type {
   EndSessionPayload,
   ReplaceSessionCoachPayload,
   CancelAfterCoachReplacementPayload,
+  CancelOfficialSessionByAthletePayload,
   FailSessionExternalPayload,
   SlotProjection,
   TrainingOptionsProjection,
@@ -1599,7 +1600,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-063][AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
+  it('[AC-063][AC-065][AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
     const venueId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const chatId = '0199a1b2-1234-7000-8000-000000000703';
@@ -1935,6 +1936,7 @@ describe('runtime contract', () => {
       viewerCanRequestNoFaultReschedule: false,
       viewerCanRequestOfficialConversion: false,
       viewerCanCancelTraining: false,
+      viewerCanCancelOfficial: false,
       officialConversion: null,
       soloContinuation: null,
       trainingRetention: null,
@@ -2048,6 +2050,26 @@ describe('runtime contract', () => {
         version: 3,
       },
       eventId: '0199a1b2-1234-7000-8000-000000000724',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
+    const cancelOfficialSessionByAthlete = vi.fn(async (
+      _command: CommandEnvelope<CancelOfficialSessionByAthletePayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        purpose: 'OFFICIAL_CHALLENGE' as const,
+        state: 'CANCELLED' as const,
+        challengeId: '0199a1b2-1234-7000-8000-000000000725',
+        challengeState: 'RESULT_RECORDED' as const,
+        challengeVersion: 6,
+        resultId: '0199a1b2-1234-7000-8000-000000000726',
+        cancellationReasonCode: 'ATHLETE_CANCELLED_OFFICIAL',
+        version: 3,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000727',
       aggregateVersion: 3,
       replayed: false,
     }));
@@ -2204,6 +2226,7 @@ describe('runtime contract', () => {
         endSession,
         replaceSessionCoach,
         cancelSessionAfterCoachReplacement: cancelledAfterReplacement,
+        cancelOfficialSessionByAthlete,
         failSessionExternal,
         requestBookingOfficialConversion,
         decideBookingOfficialConversion,
@@ -2781,6 +2804,33 @@ describe('runtime contract', () => {
       challengeOutboxMessageId: expect.any(String),
     });
 
+    const officialCancelled = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/cancel-official`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-cancel-official-api-1',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(officialCancelled.statusCode).toBe(200);
+    expect(officialCancelled.json()).toMatchObject({
+      data: { state: 'CANCELLED', challengeState: 'RESULT_RECORDED' },
+    });
+    expect(cancelOfficialSessionByAthlete.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CANCEL_OFFICIAL_BY_ATHLETE',
+      actor: { id: userId, roles: [] },
+      aggregateType: 'Session', aggregateId: sessionId, expectedVersion: 2,
+      payload: { sessionId },
+    });
+    expect(cancelOfficialSessionByAthlete.mock.calls[0]?.[1]).toMatchObject({
+      resultId: expect.any(String), resultEventId: expect.any(String),
+      cooldownId: expect.any(String), resultNotificationIds: expect.arrayContaining([
+        expect.any(String), expect.any(String), expect.any(String),
+      ]),
+    });
+
     const planProposed = await app.inject({
       method: 'POST',
       url: '/api/v1/group-plans',
@@ -2860,6 +2910,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/end');
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/replace-coach');
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/cancel-after-coach-replacement');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/cancel-official');
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/fail-external');
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans');
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');

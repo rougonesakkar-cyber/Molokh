@@ -231,6 +231,14 @@ This sprint produces a demonstrable Training slice while establishing the same f
   both user reschedules are already spent. One append-only EXTERNAL/no-fault record, CH-21 event,
   replacement timer, audit and Athlete notifications retain Booking/Session lineage without a
   Result, loss, Forfeit or Cooldown. AC-063 passes Core/API/client and real PostgreSQL gates.
+- M5 confirmed Official cancellation increment: complete. Before actual start, either Athlete may
+  explicitly accept the sporting consequence and cancel the confirmed Booking/Session. B-14 and
+  CH-12 close Booking, Session and Slot atomically, keep the frozen competitive snapshot and
+  create one administrative `FORFEIT` through the existing Result engine: the cancelling Athlete
+  loses, the peer wins and the normal 48-hour Appeal, provisional status and Cooldown rules apply.
+  The user-reschedule counter and history remain untouched. Exact replay, stale versions,
+  DB-authoritative Athlete permission and races with Start/Result/reschedule are covered through
+  the shared resource locks. AC-065 passes Core/API/client and real PostgreSQL gates.
 - M5 Official Session lifecycle increment: complete in code. The scheduled boundary freezes one immutable competitive snapshot but no attendance; Coach Start or first Attendance atomically commits `CH-13` to `IN_SESSION`, and Coach End commits `CH-14` to `RESULT_PENDING`. The outbox carries 2h/12h/24h Result reminder deadlines while ordinary Training remains outside Competition.
 - M5 Result/status increment: complete in code. Authorized Coach Result commits `CH-15`, stores immutable source facts, derives status only from the Session snapshot, applies an immediate provisional transition and status lock, creates a configurable pair Cooldown after decisive loss, and schedules the 48-hour finalizer. AC-202 is explicit: `LATE` remains attendance metadata and cannot synthesize `NO_SHOW`, Forfeit, loss, administrative Result or Cooldown; the assigned Coach can record the ordinary Result against the frozen Session snapshot. AC-203 enforces configured grace, separates Attendance from Coach Result, binds one absence to the present winner plus normal Appeal, and normalizes two absences to `NO_CONTEST` without winner/status/loss/Cooldown. Duplicate Result and stale status snapshots fail atomically.
 - M6 Appeal lifecycle increment: complete. Only the eligible Athlete can submit Appeal or irreversibly waive it. Waiver may finalize early; otherwise a state/version-guarded Worker timer commits `CH-17`, releases both obligations and clears the status lock.
@@ -351,7 +359,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 154/214 (`148/196 P0`).
+  Acceptance traceability is 155/214 (`149/196 P0`).
 - M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
   exact 30-day recovery, owner cancellation and reasoned Central execution only after all
   obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one

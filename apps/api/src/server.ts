@@ -19,6 +19,7 @@ import {
   decideBookingTrainingRetention,
   rejectBookingHost,
   cancelSessionAfterCoachReplacement,
+  cancelOfficialSessionByAthlete,
   endSession,
   failSessionExternal,
   blockUser,
@@ -1447,6 +1448,8 @@ const app = await buildApp({
       replaceSessionCoach(database, command, ids),
     cancelSessionAfterCoachReplacement: (command, ids) =>
       cancelSessionAfterCoachReplacement(database, command, ids),
+    cancelOfficialSessionByAthlete: (command, ids) =>
+      cancelOfficialSessionByAthlete(database, command, ids),
     failSessionExternal: (command, ids) =>
       failSessionExternal(database, command, ids),
     requestBookingOfficialConversion: (command, ids) =>

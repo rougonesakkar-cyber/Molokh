@@ -203,6 +203,9 @@ updated or deleted.
 facts, Appeal/waiver records, append-only provisional status transitions and append-only
 finalization proofs. It also links decisive Results to pair Cooldown, locks Competition status
 while the 48-hour Appeal window is open and indexes both the finalization timer and Central queue.
+The same tables support B-14 without another migration: an explicit pre-start Athlete cancellation
+creates the constrained administrative `FORFEIT` through the Result engine, while Session/Booking
+lineage and any already-frozen competitive snapshot remain immutable in event/audit history.
 
 `0027_central_appeal_decisions.sql` adds independent review start metadata, immutable Appeal
 decisions and immutable status-transition compensations. Source Result fields remain protected;

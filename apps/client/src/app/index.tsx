@@ -164,6 +164,7 @@ type SessionAction =
   | 'replace-coach'
   | 'cancel-after-coach-replacement'
   | 'fail-external'
+  | 'cancel-official'
   | 'cancel-training-participation';
 
 interface PendingSessionAction {
@@ -1497,7 +1498,8 @@ export default function IdentityScreen() {
       | 'end'
       | 'replace-coach'
       | 'cancel-after-coach-replacement'
-      | 'fail-external',
+      | 'fail-external'
+      | 'cancel-official',
     body: Record<string, unknown>,
     operationSuffix: string,
   ) => {
@@ -1545,6 +1547,8 @@ export default function IdentityScreen() {
                 ? 'Coach заменён без изменения времени, зала и условий. Спортсмены уведомлены.'
                 : action === 'cancel-after-coach-replacement'
                   ? 'Session отменена без штрафа и без влияния на статистику.'
+                  : action === 'cancel-official'
+                    ? 'Official Session отменена. FORFEIT записан сразу; у вас есть 48 часов на Appeal.'
                   : result.data.purpose === 'OFFICIAL_CHALLENGE'
                     ? 'Coach/зал подтвердил внешнюю отмену. Challenge возвращён к выбору времени без виновного и без расхода переноса.'
                     : 'Coach/зал отменил Session по внешней причине. Для спортсменов нет штрафа.',
@@ -5149,6 +5153,39 @@ export default function IdentityScreen() {
                                 ]}
                               >
                                 <Text style={styles.secondaryButtonText}>Я не смогу прийти</Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
+                          {session.viewerCanCancelOfficial ? (
+                            <View style={styles.attendanceList}>
+                              <Text style={styles.hint}>
+                                Это подтверждённый Official Challenge. Ваша односторонняя отмена
+                                сразу запишет FORFEIT и поражение; статус и cooldown будут
+                                предварительными до окончания 48-часового Appeal.
+                              </Text>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityState={{ disabled: sessionActionBlocked }}
+                                disabled={sessionActionBlocked}
+                                onPress={() => setPendingSessionAction({
+                                  action: 'cancel-official',
+                                  body: {},
+                                  confirmLabel: 'Подтвердить FORFEIT',
+                                  description: 'Вы отменяете подтверждённый Official Challenge. Вам будет немедленно записан FORFEIT и поражение, второму спортсмену — победа. Решение можно обжаловать в течение 48 часов.',
+                                  operationSuffix: 'athlete-confirmed-forfeit',
+                                  sessionId: session.sessionId,
+                                  title: 'Отменить Official Challenge?',
+                                  tone: 'danger',
+                                })}
+                                style={({ pressed }) => [
+                                  styles.dangerButton,
+                                  sessionActionBlocked && styles.buttonDisabled,
+                                  pressed && !sessionActionBlocked && styles.buttonPressed,
+                                ]}
+                              >
+                                <Text style={styles.dangerButtonText}>
+                                  Отменить Official Challenge
+                                </Text>
                               </Pressable>
                             </View>
                           ) : null}

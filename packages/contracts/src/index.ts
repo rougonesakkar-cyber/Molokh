@@ -2125,6 +2125,7 @@ export const SessionLifecycleProjectionSchema = Type.Object(
     viewerCanRequestNoFaultReschedule: Type.Boolean(),
     viewerCanRequestOfficialConversion: Type.Boolean(),
     viewerCanCancelTraining: Type.Boolean(),
+    viewerCanCancelOfficial: Type.Boolean(),
     officialConversion: Type.Union([BookingOfficialConversionProjectionSchema, Type.Null()]),
     soloContinuation: Type.Union([BookingSoloContinuationProjectionSchema, Type.Null()]),
     trainingRetention: Type.Union([BookingTrainingRetentionProjectionSchema, Type.Null()]),

@@ -26,6 +26,7 @@ import {
   assertTrainingRetentionCanExpire,
   assertTrainingRetentionDecisionCanBeRecorded,
   assertTrainingParticipantCanCancel,
+  officialCancellationWinner,
   assertTrainingOfficialConversionCanBeRequested,
   attendanceCountsAsCompletedTraining,
   bookingSelectionExpiresAt,
@@ -337,6 +338,20 @@ describe('Scheduling publication policy', () => {
     expect(() => assertExternalSessionFailureCanBeCommitted({
       state: 'IN_PROGRESS', actualStartAt: occurredAt.toISOString(),
     })).toThrowError(expect.objectContaining({ reason: 'EXTERNAL_FAILURE_NOT_ALLOWED' }));
+  });
+
+  it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {
+    const input = {
+      bookingState: 'CONFIRMED_PAIR', bookingPurpose: 'OFFICIAL_CHALLENGE',
+      challengeState: 'BOOKED', sessionState: 'READY_FOR_COACH' as const,
+      actualStartAt: null, actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const, resultExists: false,
+    };
+    expect(officialCancellationWinner(input)).toBe('athlete-b');
+    expect(() => officialCancellationWinner({ ...input, actorUserId: 'outsider' }))
+      .toThrow(SchedulingPermissionDeniedError);
+    expect(() => officialCancellationWinner({ ...input, actualStartAt: '2026-10-01T10:01:00.000Z' }))
+      .toThrowError(new SchedulingConflictError('OFFICIAL_CANCELLATION_NOT_ALLOWED'));
   });
 
   it('AC-155 caps a Training-to-Official confirmation window at 72 hours or Session start', () => {
