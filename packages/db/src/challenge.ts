@@ -1171,21 +1171,31 @@ async function recordMandatoryResponseForfeit(input: {
     for update of competition
   `.execute(transaction);
   const competition = competitionResult.rows[0];
+  const stake = row.stake === 'TITLE'
+    ? 'TITLE'
+    : row.stake === 'CONTENDER'
+      ? 'CONTENDER'
+      : null;
+  const participantsMatchCurrentStatus = stake === 'TITLE'
+    ? competition?.contender_user_id === row.initiator_user_id
+      && competition.champion_user_id === row.recipient_user_id
+    : competition?.contender_user_id === row.recipient_user_id
+      && competition.champion_user_id !== row.initiator_user_id;
   if (
     !competition
+    || stake === null
     || competition.phase !== 'RUNNING'
     || competition.availability !== 'ACTIVE'
     || !competition.community_active
     || competition.integrity_hold_case_id !== null
     || competition.status_review_hold_active
     || competition.status_lock_result_id !== null
-    || competition.contender_user_id !== row.recipient_user_id
-    || competition.champion_user_id === row.initiator_user_id
+    || !participantsMatchCurrentStatus
   ) {
     throw new ChallengeConflictError('COMPETITION_NOT_ACTIVE');
   }
   const transition = deriveProvisionalStatusTransition({
-    stake: 'CONTENDER',
+    stake,
     outcomeCode: 'FORFEIT',
     winnerUserId: row.initiator_user_id,
     loserUserId: row.recipient_user_id,
@@ -1195,16 +1205,20 @@ async function recordMandatoryResponseForfeit(input: {
       statusVersion: Number(competition.status_version),
     },
   });
-  if (!transition.locksStatus || transition.type !== 'CONTENDER_TRANSFERRED') {
+  const expectedTransitionType = stake === 'TITLE'
+    ? 'TITLE_TRANSFERRED'
+    : 'CONTENDER_TRANSFERRED';
+  if (!transition.locksStatus || transition.type !== expectedTransitionType) {
     throw new ChallengeConflictError('PAIR_MATRIX_DENIED');
   }
   const appealDeadlineAt = resultAppealDeadline(occurredAt);
   const reasonCode = reason === 'DECLINED'
     ? 'MANDATORY_RESPONSE_DECLINED'
     : 'MANDATORY_RESPONSE_EXPIRED';
+  const recipientStatus = stake === 'TITLE' ? 'Champion' : 'Contender';
   const comment = reason === 'DECLINED'
-    ? 'The current Contender explicitly declined the mandatory status Challenge.'
-    : 'The current Contender did not answer the mandatory status Challenge before its deadline.';
+    ? `The current ${recipientStatus} explicitly declined the mandatory status Challenge.`
+    : `The current ${recipientStatus} did not answer the mandatory status Challenge before its deadline.`;
   const preStatus = {
     championUserId: transition.before.championUserId,
     contenderUserId: transition.before.contenderUserId,
@@ -1300,7 +1314,7 @@ async function recordMandatoryResponseForfeit(input: {
     coachUserId: null,
     appealDeadlineAt: appealDeadlineAt.toISOString(),
     preStatus,
-    stake: 'CONTENDER',
+    stake,
   };
   return {
     response,
@@ -2466,6 +2480,65 @@ export async function projectPendingOptionalChallengeReminder(
   });
 }
 
+export async function projectPendingMandatoryChallengeReminder(
+  database: Kysely<Database>,
+  challengeId: string,
+  expectedVersion: number,
+  notificationId: string,
+): Promise<number> {
+  return database.transaction().execute(async (transaction) => {
+    const current = await challengeRow(transaction, challengeId, true);
+    if (
+      current.response_policy !== 'MANDATORY'
+      || current.state !== 'AWAITING_RESPONSE'
+      || Number(current.version) !== expectedVersion
+    ) return 0;
+    const source = await sql<{ readonly event_id: string }>`
+      select event_id from platform.domain_events
+      where aggregate_type = 'Challenge' and aggregate_id = ${challengeId}::uuid
+        and aggregate_version = 1 and event_name = 'ChallengeCreated'
+      limit 1
+    `.execute(transaction);
+    const sourceEventId = source.rows[0]?.event_id;
+    if (!sourceEventId) throw new ChallengeConflictError('PAIR_CHALLENGE_EXISTS');
+    const inserted = await sql<{ readonly notification_id: string }>`
+      insert into platform.notifications (
+        notification_id, recipient_user_id, source_event_id, category, render_key,
+        action_target, payload, deadline_at
+      ) values (
+        ${notificationId}::uuid, ${current.recipient_user_id}::uuid,
+        ${sourceEventId}::uuid, 'MANDATORY', 'challenge.mandatory-response-reminder-48h',
+        ${JSON.stringify({ type: 'CHAT', chatId: current.source_chat_id })}::jsonb,
+        ${JSON.stringify({ challengeId: current.challenge_id })}::jsonb,
+        ${current.response_deadline_at.toISOString()}::timestamptz
+      ) on conflict (recipient_user_id, source_event_id, render_key) do nothing
+      returning notification_id
+    `.execute(transaction);
+    if (inserted.rows.length === 0) return 0;
+    await sql`
+      insert into platform.notification_delivery_intents (
+        delivery_intent_id, notification_id, source_event_id, recipient_user_id,
+        channel, delivery_class
+      ) values (
+        md5(${notificationId} || ':PUSH')::uuid, ${notificationId}::uuid,
+        ${sourceEventId}::uuid, ${current.recipient_user_id}::uuid, 'PUSH', 'CRITICAL'
+      ) on conflict (notification_id, channel) do nothing
+    `.execute(transaction);
+    await sql`
+      insert into platform.notification_delivery_intents (
+        delivery_intent_id, notification_id, source_event_id, recipient_user_id,
+        channel, delivery_class
+      )
+      select md5(${notificationId} || ':SMS')::uuid, ${notificationId}::uuid,
+        ${sourceEventId}::uuid, ${current.recipient_user_id}::uuid, 'SMS', 'CRITICAL'
+      from platform.notification_preferences
+      where user_id = ${current.recipient_user_id}::uuid and event_sms_opt_in = true
+      on conflict (notification_id, channel) do nothing
+    `.execute(transaction);
+    return 1;
+  });
+}
+
 export async function expireChallengeScheduling(
   database: Kysely<Database>,
   command: CommandEnvelope<ExpireChallengeSchedulingPayload>,
@@ -2670,6 +2743,7 @@ export async function expireOptionalChallenge(
     || command.actor.id !== null
     || command.aggregateType !== 'Challenge'
     || command.aggregateId !== command.payload.challengeId
+    || !['EXPIRE_OPTIONAL_CHALLENGE', 'EXPIRE_MANDATORY_CHALLENGE'].includes(command.commandType)
   ) {
     throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
   }
@@ -2685,6 +2759,9 @@ export async function expireOptionalChallenge(
       });
       await assertChallengeCompetitionOperational(transaction, row.competition_id);
       if (row.response_policy === 'MANDATORY') {
+        if (command.commandType !== 'EXPIRE_MANDATORY_CHALLENGE') {
+          throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
+        }
         assertMandatoryChallengeCanBeExpired(
           row.state,
           row.response_deadline_at,
@@ -2702,6 +2779,9 @@ export async function expireOptionalChallenge(
         return { responseStatus: 200, ...effect };
       }
       if (row.response_policy !== 'OPTIONAL') {
+        throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
+      }
+      if (command.commandType !== 'EXPIRE_OPTIONAL_CHALLENGE') {
         throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
       }
       assertOptionalChallengeCanBeExpired(row.state, row.response_deadline_at, context.occurredAt);

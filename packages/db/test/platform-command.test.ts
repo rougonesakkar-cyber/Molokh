@@ -99,6 +99,7 @@ import {
   listPendingMemberships,
   listAppealsForCentral,
   projectNotificationBatch,
+  projectPendingMandatoryChallengeReminder,
   projectPendingMembershipNotification,
   projectPendingOptionalChallengeReminder,
   rejectMembership,
@@ -285,6 +286,7 @@ import {
   type ExpireGroupPlanPayload,
   type ExpireBookingIntentPayload,
   type ExpireChallengeSchedulingPayload,
+  type ExpireOptionalChallengePayload,
   type ProposeGroupPlanPayload,
   type SelectSameSlotPayload,
   type SelectSlotPayload,
@@ -8913,6 +8915,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
           serviceChatEventId: testId(base + 49), rulesetSnapshotId: testId(base + 50),
           acknowledgmentId: testId(base + 51), pairedQueueEventId: testId(base + 52),
           timerOutboxMessageId: testId(base + 53), staleQueueEventId: testId(base + 54),
+          mandatoryReminderTimerOutboxMessageId: testId(base + 59),
           staleQueueOutboxMessageId: testId(base + 55),
           notificationOutboxMessageId: testId(base + 56),
           notificationIds: [testId(base + 57), testId(base + 58)],
@@ -8944,12 +8947,33 @@ describePostgres('PostgreSQL critical command transaction', () => {
         challengeId,
         serviceChatId,
         activationEventId: testId(base + 43),
+        mandatoryReminderTimerOutboxMessageId: testId(base + 59),
         notificationOutboxMessageId: testId(base + 56),
         challengeNotificationId: testId(base + 57),
       };
     };
 
     const acceptedFixture = await setup(15000, '+7999150000');
+    const mandatoryReminderOutbox = await sql<{
+      readonly topic: string;
+      readonly payload: { readonly timer: {
+        readonly commandType: string;
+        readonly expectedState: string;
+        readonly expectedVersion: number;
+        readonly deadlineAt: string;
+      } };
+    }>`
+      select topic, payload from platform.outbox_messages
+      where message_id = ${acceptedFixture.mandatoryReminderTimerOutboxMessageId}::uuid
+    `.execute(database);
+    expect(mandatoryReminderOutbox.rows[0]).toEqual({
+      topic: 'competition.challenge.mandatory-response-reminder-48h-timer.v1',
+      payload: expect.objectContaining({ timer: expect.objectContaining({
+        commandType: 'REMIND_MANDATORY_CHALLENGE_RESPONSE_48H',
+        expectedState: 'AWAITING_RESPONSE', expectedVersion: 1,
+        deadlineAt: '2026-09-30T10:00:00.000Z',
+      }) }),
+    });
     const mandatoryOutbox = await sql<{
       readonly event_id: string;
       readonly payload: { readonly notifications: readonly unknown[] };
@@ -9291,6 +9315,228 @@ describePostgres('PostgreSQL critical command transaction', () => {
       reconfirmationDeadlineAt: null,
       position: null,
       version: 5,
+    });
+  });
+
+  it('[AC-053] reminds Champion at 48h and records one TITLE Forfeit at 72h', async () => {
+    const contender = testId(28000);
+    const champion = testId(28001);
+    const central = testId(28002);
+    const venue = testId(28003);
+    const community = testId(28004);
+    const configuration = testId(28005);
+    const competition = testId(28006);
+    const challenge = testId(28007);
+    const chat = testId(28008);
+    const rulesetSnapshot = testId(28009);
+    const challengeCreatedEvent = testId(28010);
+    const createdAt = '2026-10-01T10:00:00.000Z';
+    const deadlineAt = '2026-10-04T10:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${contender}::uuid, '+79992800000', ${createdAt}::timestamptz,
+          '1995-01-01', 'ADULT', 'TITLE Contender', 'ACTIVE', 'ru-RU', 1,
+          ${createdAt}::timestamptz),
+        (${champion}::uuid, '+79992800001', ${createdAt}::timestamptz,
+          '1994-01-01', 'ADULT', 'TITLE Champion', 'ACTIVE', 'ru-RU', 1,
+          ${createdAt}::timestamptz),
+        (${central}::uuid, '+79992800002', ${createdAt}::timestamptz,
+          '1985-01-01', 'ADULT', 'TITLE Central', 'ACTIVE', 'ru-RU', 1,
+          ${createdAt}::timestamptz)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue,
+      venueConfigurationId: testId(28011),
+      communityId: community,
+      communityConfigurationId: configuration,
+      membershipId: testId(28012),
+      centralGrantId: testId(28013),
+      athleteUserId: contender,
+      centralActorId: central,
+      legalName: 'AC-053 TITLE Gym',
+      venueDisplayName: 'AC-053 TITLE Gym',
+      communityName: 'AC-053 TITLE Community',
+      address: 'Москва',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: {},
+      occurredAt: createdAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition,
+      communityId: community,
+      centralActorId: central,
+      occurredAt: createdAt,
+      memberships: [
+        { membershipId: testId(28012), userId: contender },
+        { membershipId: testId(28014), userId: champion },
+      ],
+    });
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${champion}::uuid,
+        contender_user_id = ${contender}::uuid, status_version = 2,
+        version = version + 1
+      where competition_id = ${competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+      values (${chat}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1,
+        ${createdAt}::timestamptz, ${createdAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into social.chat_participants (chat_id, user_id, joined_at)
+      values (${chat}::uuid, ${contender}::uuid, ${createdAt}::timestamptz),
+        (${chat}::uuid, ${champion}::uuid, ${createdAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (${rulesetSnapshot}::uuid, ${competition}::uuid, ${configuration}::uuid,
+        'molokh-recommended-v1', 'IMPLICIT_ON_ACCEPT', 'challenge-mvp-v1',
+        ${createdAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into competition.challenges (
+        challenge_id, competition_id, source_match_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+        version, created_at, updated_at
+      ) values (${challenge}::uuid, ${competition}::uuid, null, ${chat}::uuid, ${chat}::uuid,
+        ${contender}::uuid, ${champion}::uuid,
+        least(${contender}::uuid, ${champion}::uuid),
+        greatest(${contender}::uuid, ${champion}::uuid),
+        'MANDATORY', 'TITLE', 'AWAITING_RESPONSE', ${rulesetSnapshot}::uuid,
+        ${deadlineAt}::timestamptz, 1, ${createdAt}::timestamptz, ${createdAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+        actor_type, actor_roles, actor_scope_ids, occurred_at, idempotency_key_hash,
+        payload, metadata
+      ) values (${challengeCreatedEvent}::uuid, 'ChallengeCreated', 1, 'Challenge',
+        ${challenge}::uuid, 1, 'CH-01', ${testId(28015)}::uuid, null, ${contender}::uuid,
+        'USER', '["ATHLETE"]'::jsonb, '{}'::uuid[], ${createdAt}::timestamptz,
+        'ac-053-title-created',
+        ${JSON.stringify({ challengeId: challenge, competitionId: competition,
+          participants: [contender, champion], responsePolicy: 'MANDATORY', stake: 'TITLE',
+          responseDeadlineAt: deadlineAt })}::jsonb,
+        ${JSON.stringify({ policyVersion: 'challenge-mvp-v1', rulesetSnapshotId: rulesetSnapshot })}::jsonb)
+    `.execute(database);
+
+    const reminderNotificationId = testId(28016);
+    await expect(projectPendingMandatoryChallengeReminder(
+      database, challenge, 1, reminderNotificationId,
+    )).resolves.toBe(1);
+    await expect(projectPendingMandatoryChallengeReminder(
+      database, challenge, 1, reminderNotificationId,
+    )).resolves.toBe(0);
+    const reminderFacts = await sql<{
+      readonly recipient_user_id: string;
+      readonly render_key: string;
+      readonly deadline_at: Date;
+      readonly channels: string[];
+    }>`
+      select notification.recipient_user_id, notification.render_key,
+        notification.deadline_at,
+        array_agg(intent.channel order by intent.channel)::text[] as channels
+      from platform.notifications as notification
+      join platform.notification_delivery_intents as intent
+        on intent.notification_id = notification.notification_id
+      where notification.notification_id = ${reminderNotificationId}::uuid
+      group by notification.notification_id
+    `.execute(database);
+    expect(reminderFacts.rows[0]).toEqual({
+      recipient_user_id: champion,
+      render_key: 'challenge.mandatory-response-reminder-48h',
+      deadline_at: new Date(deadlineAt),
+      channels: ['PUSH'],
+    });
+
+    const resultId = testId(28020);
+    const command = {
+      commandId: testId(28021), commandType: 'EXPIRE_MANDATORY_CHALLENGE',
+      idempotencyKey: `challenge:${challenge}:expire-mandatory:v1`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge, expectedVersion: 1,
+      correlationId: testId(28015), causationId: challengeCreatedEvent,
+      requestId: testId(28022), source: 'scheduler', payloadVersion: 1,
+      payload: { challengeId: challenge },
+    } satisfies CommandEnvelope<ExpireOptionalChallengePayload>;
+    const effectIds = {
+      eventId: testId(28023), auditId: testId(28024),
+      outboxMessageId: testId(28025), notificationId: testId(28026),
+      notificationOutboxMessageId: testId(28027), resultId,
+      resultEventId: testId(28028), statusTransitionId: testId(28029),
+      statusEventId: testId(28030), cooldownId: testId(28031),
+      cooldownEventId: testId(28032), timerOutboxMessageId: testId(28033),
+      notificationIds: [testId(28034), testId(28035)] as const,
+    };
+    await expect(expireOptionalChallenge(
+      database, command, effectIds,
+      () => new Date('2026-10-04T09:59:59.999Z'),
+    )).rejects.toThrow('CHALLENGE_RESPONSE_NOT_DUE');
+    const expired = await expireOptionalChallenge(
+      database, command, effectIds, () => new Date(deadlineAt),
+    );
+    expect(expired.replayed).toBe(false);
+    expect(expired.response).toMatchObject({ state: 'RESULT_RECORDED', version: 2 });
+    const replay = await expireOptionalChallenge(
+      database, command, effectIds, () => new Date(deadlineAt),
+    );
+    expect(replay.replayed).toBe(true);
+    expect(replay.eventId).toBe(expired.eventId);
+    await expect(projectPendingMandatoryChallengeReminder(
+      database, challenge, 1, testId(28036),
+    )).resolves.toBe(0);
+    await expect(readResult(
+      database, resultId, champion, new Date('2026-10-04T10:01:00.000Z'),
+    )).resolves.toMatchObject({
+      state: 'RECORDED',
+      outcomeCode: 'FORFEIT',
+      winnerUserId: contender,
+      loserUserId: champion,
+      appealDeadlineAt: '2026-10-06T10:00:00.000Z',
+      statusTransitionType: 'TITLE_TRANSFERRED',
+      statusBefore: { championUserId: champion, contenderUserId: contender, statusVersion: 2 },
+      statusAfter: { championUserId: contender, contenderUserId: champion, statusVersion: 3 },
+      viewerCanAppeal: true,
+    });
+    const facts = await sql<{
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_lock_result_id: string;
+      readonly result_count: string;
+      readonly transition_count: string;
+      readonly cooldown_count: string;
+      readonly timeout_event_count: string;
+    }>`
+      select competition.champion_user_id, competition.contender_user_id,
+        competition.status_lock_result_id,
+        (select count(*)::text from competition.results
+          where challenge_id = ${challenge}::uuid) as result_count,
+        (select count(*)::text from competition.status_transitions
+          where source_result_id = ${resultId}::uuid) as transition_count,
+        (select count(*)::text from competition.pair_cooldowns
+          where source_result_id = ${resultId}::uuid) as cooldown_count,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Challenge' and aggregate_id = ${challenge}::uuid
+            and event_name = 'MandatoryChallengeExpired') as timeout_event_count
+      from competition.competitions as competition
+      where competition.competition_id = ${competition}::uuid
+    `.execute(database);
+    expect(facts.rows[0]).toEqual({
+      champion_user_id: contender,
+      contender_user_id: champion,
+      status_lock_result_id: resultId,
+      result_count: '1', transition_count: '1', cooldown_count: '1',
+      timeout_event_count: '1',
     });
   });
 

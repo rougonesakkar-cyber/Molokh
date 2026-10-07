@@ -101,6 +101,7 @@ export interface StatusQueueEffectIds {
   readonly acknowledgmentId: string;
   readonly pairedQueueEventId: string;
   readonly timerOutboxMessageId: string;
+  readonly mandatoryReminderTimerOutboxMessageId?: string;
   readonly staleQueueEventId: string;
   readonly staleQueueOutboxMessageId: string;
   readonly notificationOutboxMessageId: string;
@@ -1807,6 +1808,23 @@ export async function activateStatusQueueHead(
                 deadlineAt: responseDeadline.toISOString(),
                 policyVersion: CHALLENGE_POLICY_VERSION,
                 idempotencyKey: `challenge:${ids.challengeId}:expire-mandatory:v1`,
+              },
+            },
+          },
+          {
+            messageId: ids.mandatoryReminderTimerOutboxMessageId ?? ids.staleQueueOutboxMessageId,
+            topic: 'competition.challenge.mandatory-response-reminder-48h-timer.v1',
+            payload: {
+              challengeId: ids.challengeId,
+              timer: {
+                commandType: 'REMIND_MANDATORY_CHALLENGE_RESPONSE_48H',
+                aggregateType: 'Challenge',
+                aggregateId: ids.challengeId,
+                expectedState: 'AWAITING_RESPONSE',
+                expectedVersion: 1,
+                deadlineAt: reminderDeadlines[0].toISOString(),
+                policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${ids.challengeId}:mandatory-response-reminder-48h:v1`,
               },
             },
           },

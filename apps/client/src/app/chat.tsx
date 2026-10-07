@@ -926,7 +926,7 @@ export default function ChatScreen() {
                     && chatChallenge.challenge.responsePolicy === 'MANDATORY' ? (
                     <>
                       <Text style={styles.trainingTerms}>
-                        Обязательный статусный Challenge. Ответ до {formatDateTime(chatChallenge.challenge.responseDeadlineAt)}. Отказ или отсутствие ответа фиксируется как Forfeit; затем доступен Appeal в течение 48 часов.
+                        Обязательный статусный Challenge. Ответ до {formatDateTime(chatChallenge.challenge.responseDeadlineAt)}. Через 48 часов после вызова придёт напоминание. Отказ или отсутствие ответа фиксируется как Forfeit; затем доступен Appeal в течение 48 часов.
                       </Text>
                       {chatChallenge.challenge.viewerRole === 'RECIPIENT' ? (
                         <View style={styles.challengeActions}>

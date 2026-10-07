@@ -247,7 +247,10 @@ a Discovery Match; ordinary training Bookings still require their real Match lin
 must reference either a real Match or an Official Challenge. `0036_administrative_forfeit_context.sql`
 permits a mandatory-response Forfeit Result and its status transition without inventing a Session,
 competitive snapshot, Venue, Coach or recorder; Session-origin Results retain all of those required
-facts. Both forms remain immutable, appealable and auditable.
+facts. The same immutable path selects `CONTENDER_TRANSFERRED` or `TITLE_TRANSFERRED` from the
+Challenge stake/current holders; a separate versioned +48h timer projects only the recipient
+reminder and provider-independent delivery intents before the +72h expiry. Both forms remain
+immutable, appealable and auditable.
 
 `0037_voluntary_status_release.sql` adds the two-step Champion/Contender status-only release.
 The PREVIEWED row freezes the current holders, status version, exact ST-09/ST-10/ST-14 consequence

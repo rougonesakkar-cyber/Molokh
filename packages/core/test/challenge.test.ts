@@ -69,12 +69,19 @@ describe('Official Challenge policy', () => {
     ]);
   });
 
-  it('[AC-046] gives the current Champion 72 hours to answer a mandatory TITLE Challenge', () => {
+  it('[AC-046][AC-053] gives Champion a 48h reminder and enforces the 72h TITLE deadline', () => {
     const createdAt = new Date('2026-09-08T10:00:00.000Z');
     expect(mandatoryChallengeReminderDeadlines(createdAt).map((value) => value.toISOString())).toEqual([
       '2026-09-10T10:00:00.000Z',
     ]);
-    expect(mandatoryChallengeResponseDeadline(createdAt).toISOString()).toBe('2026-09-11T10:00:00.000Z');
+    const deadline = mandatoryChallengeResponseDeadline(createdAt);
+    expect(deadline.toISOString()).toBe('2026-09-11T10:00:00.000Z');
+    expect(() => assertMandatoryChallengeCanBeExpired(
+      'AWAITING_RESPONSE', deadline, new Date('2026-09-11T09:59:59.999Z'),
+    )).toThrowError(new ChallengeConflictError('CHALLENGE_RESPONSE_NOT_DUE'));
+    expect(() => assertMandatoryChallengeCanBeExpired(
+      'AWAITING_RESPONSE', deadline, deadline,
+    )).not.toThrow();
   });
 
   it('[AC-042][AC-043][AC-049] enforces the direct OPEN pair matrix without putting Champion status at stake', () => {

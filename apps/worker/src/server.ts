@@ -45,6 +45,7 @@ import {
   openSessionWindow,
   outboxRetryDelayMilliseconds,
   projectNotificationBatch,
+  projectPendingMandatoryChallengeReminder,
   projectPendingMembershipNotification,
   projectPendingOptionalChallengeReminder,
   promoteSingleGenesisCandidate,
@@ -532,6 +533,15 @@ const executeOptionalChallengeReminder = async (payload: TimerCommandPayload) =>
     payload.aggregateId,
     payload.expectedVersion,
     payload.commandType === 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H' ? '12H' : '24H',
+    randomUUID(),
+  );
+};
+
+const executeMandatoryChallengeReminder = async (payload: TimerCommandPayload) => {
+  await projectPendingMandatoryChallengeReminder(
+    database,
+    payload.aggregateId,
+    payload.expectedVersion,
     randomUUID(),
   );
 };
@@ -1174,6 +1184,11 @@ const taskList = createTaskList({
           loadSnapshot: (timer) =>
             readOptionalChallengeReminderTimerSnapshot(database, timer.aggregateId),
           execute: executeOptionalChallengeReminder,
+        },
+        REMIND_MANDATORY_CHALLENGE_RESPONSE_48H: {
+          loadSnapshot: (timer) =>
+            readOptionalChallengeReminderTimerSnapshot(database, timer.aggregateId),
+          execute: executeMandatoryChallengeReminder,
         },
         EXPIRE_MANDATORY_CHALLENGE: {
           loadSnapshot: (timer) =>

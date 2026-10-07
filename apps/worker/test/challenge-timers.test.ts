@@ -93,7 +93,7 @@ describe('Challenge timer projection', () => {
     )).toThrow('does not match');
   });
 
-  it('routes the 72-hour mandatory Challenge response timer', () => {
+  it('[AC-053] routes the stale-safe 48-hour reminder and 72-hour mandatory expiry', () => {
     const mandatoryTimer = {
       ...timer,
       commandType: 'EXPIRE_MANDATORY_CHALLENGE',
@@ -107,6 +107,21 @@ describe('Challenge timer projection', () => {
     expect(() => challengeTimerFromOutbox(
       'competition.challenge.mandatory-response-timer.v1',
       { timer },
+    )).toThrow('does not match');
+    const reminderTimer = {
+      ...timer,
+      commandType: 'REMIND_MANDATORY_CHALLENGE_RESPONSE_48H',
+      deadlineAt: '2026-09-10T10:00:00.000Z',
+      idempotencyKey:
+        'challenge:0199a1b2-1234-7000-8000-000000001201:mandatory-response-reminder-48h:v1',
+    };
+    expect(challengeTimerFromOutbox(
+      'competition.challenge.mandatory-response-reminder-48h-timer.v1',
+      { timer: reminderTimer },
+    )).toEqual(reminderTimer);
+    expect(() => challengeTimerFromOutbox(
+      'competition.challenge.mandatory-response-reminder-48h-timer.v1',
+      { timer: mandatoryTimer },
     )).toThrow('does not match');
   });
 });
