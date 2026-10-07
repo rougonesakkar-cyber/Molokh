@@ -9640,6 +9640,374 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
+  it('[AC-140] serializes competing status Results on the Competition row lock', async () => {
+    const base = 41000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const athleteC = testId(41030);
+    const secondChat = testId(41033);
+    const secondMatch = testId(41034);
+    const secondSlot = testId(41035);
+    const secondBooking = testId(41036);
+    const secondSession = testId(41037);
+    const rulesetSnapshot = testId(41038);
+    const titleChallenge = testId(41039);
+    const contenderChallenge = testId(41040);
+    const titleSnapshot = testId(41041);
+    const contenderSnapshot = testId(41042);
+    const occurredAt = '2026-10-01T14:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${athleteC}::uuid, '+79994100030', ${occurredAt}::timestamptz,
+        '1996-01-01', 'ADULT', 'Concurrent Challenger', 'ACTIVE', 'ru-RU', 1,
+        ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values (
+        ${testId(41031)}::uuid, ${athleteC}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+        'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${fixture.coach}::uuid,
+        'TEST_APPROVED', 1
+      )
+    `.execute(database);
+    await sql`
+      insert into community.community_memberships (
+        membership_id, community_id, user_id, age_division, state,
+        competition_enabled, join_path, decided_at, decided_by, version
+      ) values (
+        ${testId(41032)}::uuid, ${fixture.community}::uuid, ${athleteC}::uuid,
+        'ADULT', 'ACTIVE', true, 'INVITE', ${occurredAt}::timestamptz,
+        ${fixture.coach}::uuid, 1
+      )
+    `.execute(database);
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${fixture.athleteB}::uuid,
+        contender_user_id = ${fixture.athleteA}::uuid, status_version = 1,
+        status_lock_result_id = null, version = 2, updated_at = ${occurredAt}::timestamptz
+      where competition_id = ${fixture.competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+      values (${secondChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+        ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into social.chat_participants (chat_id, user_id, joined_at) values
+        (${secondChat}::uuid, ${fixture.athleteA}::uuid, ${occurredAt}::timestamptz),
+        (${secondChat}::uuid, ${athleteC}::uuid, ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into social.matches (
+        match_id, pair_low_id, pair_high_id, state, chat_id,
+        last_activity_at, version, created_at, updated_at
+      ) values (
+        ${secondMatch}::uuid, least(${fixture.athleteA}::uuid, ${athleteC}::uuid),
+        greatest(${fixture.athleteA}::uuid, ${athleteC}::uuid), 'ACTIVE',
+        ${secondChat}::uuid, ${occurredAt}::timestamptz, 1,
+        ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into competition.ruleset_snapshots (
+          ruleset_snapshot_id, competition_id, community_configuration_id,
+          ruleset_ref, ruleset_ack_mode, policy_version, created_at
+        ) values (
+          ${rulesetSnapshot}::uuid, ${fixture.competition}::uuid, ${testId(base + 15)}::uuid,
+          'pilot-boxing-v1', 'IMPLICIT_ON_ACCEPT', 'challenge-mvp-v1',
+          ${occurredAt}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenges (
+          challenge_id, competition_id, source_match_id, source_chat_id, service_chat_id,
+          initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+          response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+          accepted_at, scheduling_deadline_at, version, created_at, updated_at
+        ) values
+          (${titleChallenge}::uuid, ${fixture.competition}::uuid, ${testId(base + 8)}::uuid,
+            ${testId(base + 7)}::uuid, ${testId(base + 7)}::uuid,
+            ${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid,
+            least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+            greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+            'MANDATORY', 'TITLE', 'RESULT_PENDING', ${rulesetSnapshot}::uuid,
+            '2026-09-29T10:00:00.000Z', '2026-09-27T10:00:00.000Z',
+            '2026-10-11T10:00:00.000Z', 4, ${occurredAt}::timestamptz,
+            ${occurredAt}::timestamptz),
+          (${contenderChallenge}::uuid, ${fixture.competition}::uuid, ${secondMatch}::uuid,
+            ${secondChat}::uuid, ${secondChat}::uuid, ${fixture.athleteA}::uuid,
+            ${athleteC}::uuid, least(${fixture.athleteA}::uuid, ${athleteC}::uuid),
+            greatest(${fixture.athleteA}::uuid, ${athleteC}::uuid),
+            'MANDATORY', 'CONTENDER', 'RESULT_PENDING', ${rulesetSnapshot}::uuid,
+            '2026-09-29T12:00:00.000Z', '2026-09-27T12:00:00.000Z',
+            '2026-10-11T12:00:00.000Z', 4, ${occurredAt}::timestamptz,
+            ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        update scheduling.bookings
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${titleChallenge}::uuid
+        where booking_id = ${fixture.booking}::uuid
+      `.execute(transaction);
+      await sql`
+        update scheduling.sessions
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${titleChallenge}::uuid,
+          state = 'ENDED', window_opened_at = '2026-10-01T10:00:00.000Z',
+          actual_start_at = '2026-10-01T10:01:00.000Z',
+          actual_end_at = '2026-10-01T10:55:00.000Z', version = 5,
+          updated_at = ${occurredAt}::timestamptz
+        where session_id = ${fixture.session}::uuid
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.slots (
+          slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+          price_text, cancellation_terms_text, commercial_version, booking_id,
+          published_by, version, created_at, updated_at
+        ) values (
+          ${secondSlot}::uuid, ${fixture.venue}::uuid, ${fixture.coach}::uuid,
+          '2026-10-01T12:00:00.000Z', '2026-10-01T13:00:00.000Z', 'PERSONAL',
+          'BOOKED', 'Оплата залу', 'Условия зала', 1, ${secondBooking}::uuid,
+          ${fixture.coach}::uuid, 2, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.bookings (
+          booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+          purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+          selection_expires_at, host_confirmation_deadline_at, commercial_terms_snapshot,
+          host_confirmed_by, host_confirmed_at, version, created_at, updated_at, challenge_id
+        ) values (
+          ${secondBooking}::uuid, ${secondChat}::uuid, ${secondMatch}::uuid,
+          ${secondSlot}::uuid, least(${fixture.athleteA}::uuid, ${athleteC}::uuid),
+          greatest(${fixture.athleteA}::uuid, ${athleteC}::uuid), 'OFFICIAL_CHALLENGE',
+          'CONFIRMED_PAIR', ${fixture.athleteA}::uuid, ${occurredAt}::timestamptz,
+          ${occurredAt}::timestamptz, '2026-09-27T13:00:00.000Z',
+          '2026-09-29T12:00:00.000Z', '{}'::jsonb, ${fixture.coach}::uuid,
+          ${occurredAt}::timestamptz, 3, ${occurredAt}::timestamptz,
+          ${occurredAt}::timestamptz, ${contenderChallenge}::uuid
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.sessions (
+          session_id, booking_id, venue_id, coach_user_id, pair_low_id, pair_high_id,
+          purpose, state, scheduled_start_at, scheduled_end_at, commercial_terms_snapshot,
+          version, created_at, updated_at, window_opened_at, actual_start_at,
+          actual_end_at, challenge_id
+        ) values (
+          ${secondSession}::uuid, ${secondBooking}::uuid, ${fixture.venue}::uuid,
+          ${fixture.coach}::uuid, least(${fixture.athleteA}::uuid, ${athleteC}::uuid),
+          greatest(${fixture.athleteA}::uuid, ${athleteC}::uuid), 'OFFICIAL_CHALLENGE',
+          'ENDED', '2026-10-01T12:00:00.000Z', '2026-10-01T13:00:00.000Z',
+          '{}'::jsonb, 5, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz,
+          '2026-10-01T12:00:00.000Z', '2026-10-01T12:01:00.000Z',
+          '2026-10-01T12:55:00.000Z', ${contenderChallenge}::uuid
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.session_competitive_snapshots (
+          snapshot_id, session_id, challenge_id, competition_id, ruleset_snapshot_id,
+          community_configuration_id, planned_stake, effective_stake, champion_user_id,
+          contender_user_id, competition_status_version, venue_id, coach_user_id,
+          pair_low_id, pair_high_id, scheduled_start_at, scheduled_end_at, created_at
+        ) values
+          (${titleSnapshot}::uuid, ${fixture.session}::uuid, ${titleChallenge}::uuid,
+            ${fixture.competition}::uuid, ${rulesetSnapshot}::uuid, ${testId(base + 15)}::uuid,
+            'TITLE', 'TITLE', ${fixture.athleteB}::uuid, ${fixture.athleteA}::uuid, 1,
+            ${fixture.venue}::uuid, ${fixture.coach}::uuid,
+            least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+            greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+            '2026-10-01T10:00:00.000Z', '2026-10-01T11:00:00.000Z',
+            ${occurredAt}::timestamptz),
+          (${contenderSnapshot}::uuid, ${secondSession}::uuid, ${contenderChallenge}::uuid,
+            ${fixture.competition}::uuid, ${rulesetSnapshot}::uuid, ${testId(base + 15)}::uuid,
+            'CONTENDER', 'CONTENDER', ${fixture.athleteB}::uuid,
+            ${fixture.athleteA}::uuid, 1, ${fixture.venue}::uuid,
+            ${fixture.coach}::uuid, least(${fixture.athleteA}::uuid, ${athleteC}::uuid),
+            greatest(${fixture.athleteA}::uuid, ${athleteC}::uuid),
+            '2026-10-01T12:00:00.000Z', '2026-10-01T13:00:00.000Z',
+            ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into platform.domain_events (
+          event_id, event_name, event_version, aggregate_type, aggregate_id,
+          aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+          occurred_at, payload, idempotency_key_hash
+        ) values
+          (${testId(41043)}::uuid, 'ChallengeResultPending', 1, 'Challenge',
+            ${titleChallenge}::uuid, 4, 'CH-14', ${testId(41045)}::uuid, null,
+            ${fixture.coach}::uuid, ${occurredAt}::timestamptz,
+            ${JSON.stringify({ challengeId: titleChallenge, sessionId: fixture.session })}::jsonb,
+            'fixture:ac-140:title'),
+          (${testId(41044)}::uuid, 'ChallengeResultPending', 1, 'Challenge',
+            ${contenderChallenge}::uuid, 4, 'CH-14', ${testId(41046)}::uuid, null,
+            ${fixture.coach}::uuid, ${occurredAt}::timestamptz,
+            ${JSON.stringify({ challengeId: contenderChallenge, sessionId: secondSession })}::jsonb,
+            'fixture:ac-140:contender')
+      `.execute(transaction);
+    });
+
+    const snapshotsBefore = await sql<{ readonly value: unknown }>`
+      select jsonb_agg(to_jsonb(snapshot) order by snapshot.snapshot_id) as value
+      from scheduling.session_competitive_snapshots as snapshot
+      where snapshot.snapshot_id in (${titleSnapshot}::uuid, ${contenderSnapshot}::uuid)
+    `.execute(database);
+    const resultAttempt = (input: {
+      readonly challengeId: string;
+      readonly sessionId: string;
+      readonly outcomeCode: 'WIN_A' | 'WIN_B';
+      readonly baseId: number;
+      readonly privateMarker: string;
+    }) => {
+      const command = {
+        commandId: testId(input.baseId), commandType: 'RECORD_SESSION_RESULT',
+        idempotencyKey: `ac-140-result:${input.challengeId}`,
+        actor: {
+          type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+        },
+        aggregateType: 'Challenge', aggregateId: input.challengeId, expectedVersion: 4,
+        correlationId: testId(input.baseId + 1), causationId: null,
+        requestId: testId(input.baseId + 2), source: 'api', payloadVersion: 1,
+        payload: {
+          challengeId: input.challengeId, sessionId: input.sessionId,
+          outcomeCode: input.outcomeCode, winnerUserId: null, reasonCode: null,
+          comment: input.privateMarker, methodCode: null, methodText: null,
+          scorePayload: { privateMarker: input.privateMarker }, methodPayload: null,
+        },
+      } satisfies CommandEnvelope<RecordSessionResultPayload>;
+      const ids = {
+        eventId: testId(input.baseId + 3), auditId: testId(input.baseId + 4),
+        outboxMessageId: testId(input.baseId + 5), resultId: testId(input.baseId + 6),
+        resultEventId: testId(input.baseId + 7), statusTransitionId: testId(input.baseId + 8),
+        statusEventId: testId(input.baseId + 9), cooldownId: testId(input.baseId + 10),
+        cooldownEventId: testId(input.baseId + 11),
+        timerOutboxMessageId: testId(input.baseId + 12),
+        notificationOutboxMessageId: testId(input.baseId + 13),
+        notificationIds: [testId(input.baseId + 14), testId(input.baseId + 15)] as const,
+      };
+      return { command, ids };
+    };
+    const attempts = [
+      resultAttempt({
+        challengeId: titleChallenge, sessionId: fixture.session,
+        outcomeCode: 'WIN_A', baseId: 41100, privateMarker: 'private-score-title',
+      }),
+      resultAttempt({
+        challengeId: contenderChallenge, sessionId: secondSession,
+        outcomeCode: 'WIN_B', baseId: 41200, privateMarker: 'private-score-contender',
+      }),
+    ] as const;
+    const outcomes = await Promise.allSettled(attempts.map((attempt) =>
+      recordSessionResult(database, attempt.command, attempt.ids, () => new Date(occurredAt))));
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+    const winnerIndex = outcomes[0]?.status === 'fulfilled' ? 0 : 1;
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+    const winner = attempts[winnerIndex];
+    const loser = attempts[loserIndex];
+    const fulfilled = outcomes[winnerIndex];
+    const rejected = outcomes[loserIndex];
+    if (fulfilled?.status !== 'fulfilled' || rejected?.status !== 'rejected') {
+      throw new Error('Expected one committed and one rejected Result command');
+    }
+    expect(rejected.reason).toMatchObject<Partial<ResultConflictError>>({
+      code: 'COMPETITION_STATUS_LOCKED',
+    });
+    expect(fulfilled.value.response).toMatchObject({
+      resultId: winner.ids.resultId, state: 'RECORDED', provisional: true,
+      appealDeadlineAt: '2026-10-03T14:00:00.000Z',
+      statusTransitionType: winnerIndex === 0 ? 'TITLE_TRANSFERRED' : 'CONTENDER_TRANSFERRED',
+    });
+    await expect(recordSessionResult(
+      database, winner.command, winner.ids, () => new Date(occurredAt),
+    )).resolves.toMatchObject({ replayed: true, eventId: winner.ids.eventId });
+    await expect(recordSessionResult(
+      database, loser.command, loser.ids, () => new Date(occurredAt),
+    )).rejects.toMatchObject<Partial<ResultConflictError>>({
+      code: 'COMPETITION_STATUS_LOCKED',
+    });
+
+    const snapshotsAfter = await sql<{ readonly value: unknown }>`
+      select jsonb_agg(to_jsonb(snapshot) order by snapshot.snapshot_id) as value
+      from scheduling.session_competitive_snapshots as snapshot
+      where snapshot.snapshot_id in (${titleSnapshot}::uuid, ${contenderSnapshot}::uuid)
+    `.execute(database);
+    expect(snapshotsAfter.rows[0]?.value).toEqual(snapshotsBefore.rows[0]?.value);
+    const expectedChampion = winnerIndex === 0 ? fixture.athleteA : fixture.athleteB;
+    const expectedContender = winnerIndex === 0 ? fixture.athleteB : athleteC;
+    const facts = await sql<{
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string;
+      readonly result_count: string;
+      readonly transition_count: string;
+      readonly cooldown_count: string;
+      readonly recorded_challenges: string;
+      readonly pending_challenges: string;
+      readonly audit_count: string;
+      readonly outbox_count: string;
+      readonly idempotency_count: string;
+    }>`
+      select competition.champion_user_id, competition.contender_user_id,
+        competition.status_version::text as status_version,
+        competition.status_lock_result_id,
+        (select count(*)::text from competition.results
+          where challenge_id in (${titleChallenge}::uuid, ${contenderChallenge}::uuid))
+          as result_count,
+        (select count(*)::text from competition.status_transitions
+          where competition_id = ${fixture.competition}::uuid) as transition_count,
+        (select count(*)::text from competition.pair_cooldowns
+          where competition_id = ${fixture.competition}::uuid) as cooldown_count,
+        (select count(*)::text from competition.challenges
+          where challenge_id in (${titleChallenge}::uuid, ${contenderChallenge}::uuid)
+            and state = 'RESULT_RECORDED') as recorded_challenges,
+        (select count(*)::text from competition.challenges
+          where challenge_id in (${titleChallenge}::uuid, ${contenderChallenge}::uuid)
+            and state = 'RESULT_PENDING') as pending_challenges,
+        (select count(*)::text from platform.audit_events
+          where aggregate_type = 'Challenge'
+            and aggregate_id in (${titleChallenge}::uuid, ${contenderChallenge}::uuid)
+            and action = 'RECORD_RESULT') as audit_count,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (
+            ${attempts[0].ids.outboxMessageId}::uuid,
+            ${attempts[0].ids.notificationOutboxMessageId}::uuid,
+            ${attempts[1].ids.outboxMessageId}::uuid,
+            ${attempts[1].ids.notificationOutboxMessageId}::uuid
+          )) as outbox_count,
+        (select count(*)::text from platform.idempotency_records
+          where event_id in (${attempts[0].ids.eventId}::uuid, ${attempts[1].ids.eventId}::uuid))
+          as idempotency_count
+      from competition.competitions as competition
+      where competition.competition_id = ${fixture.competition}::uuid
+    `.execute(database);
+    expect(facts.rows[0]).toEqual({
+      champion_user_id: expectedChampion, contender_user_id: expectedContender,
+      status_version: '2', status_lock_result_id: winner.ids.resultId,
+      result_count: '1', transition_count: '1', cooldown_count: '1',
+      recorded_challenges: '1', pending_challenges: '1', audit_count: '1',
+      outbox_count: '2', idempotency_count: '1',
+    });
+    const publicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where metadata ->> 'commandId' = ${winner.command.commandId}
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (
+        ${winner.ids.outboxMessageId}::uuid, ${winner.ids.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-score');
+  });
+
   it('[AC-106][AC-108][AC-186] releases only the status and preserves Membership plus FIFO', async () => {
     const champion = testId(15700);
     const contender = testId(15701);
