@@ -197,6 +197,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - Story 5 foundation: complete. One deterministic pilot Venue/Community and active Membership render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and at most one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
 - Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
+- Story 5 Community configuration increment: complete. AC-166/CO-06 lets a database-authorized scoped Gym Admin, Primary Admin or Central publish Pair Cooldown only inside 7–30 days. Each change appends an immutable public version and atomically advances the Community pointer/version with event, audit and outbox; existing Challenge/Session snapshots and already-created Cooldowns retain the preceding version while new Challenge snapshots use the current one.
 - Story 5 Membership onboarding increment: complete. Hashed QR/invite activation, self-request,
   12h Admin reminder, 24h Central escalation, scoped FIFO approval, neutral rejection with a
   seven-day reapply guard and requester withdrawal now run through Core, API, universal client,
@@ -373,7 +374,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 159/214 (`153/196 P0`).
+  Acceptance traceability is 160/214 (`154/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

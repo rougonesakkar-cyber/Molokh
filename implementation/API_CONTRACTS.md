@@ -156,7 +156,7 @@ the blocker revokes it. Neither endpoint cascades from Match to Challenge or Boo
 | POST | `/central/venues/{venue_id}/admins` | Central appoints a verified Venue-scoped Gym Admin |
 | GET | `/central/venues/{venue_id}/roles` | Central reads active Gym/Primary grants and Primary version |
 | PUT | `/central/venues/{venue_id}/primary-admin` | Central-only atomic first appointment or transfer |
-| POST | `/communities/{id}/configuration-versions` | Admin within ranges |
+| POST | `/communities/{id}/configuration/pair-cooldown` | scoped Gym Admin/Primary/Central publishes a new 7–30d immutable version; `If-Match` + idempotency required |
 
 ## 7. Scheduling and Training
 

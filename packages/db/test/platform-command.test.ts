@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   AccountAccessConflictError,
   AccountLifecycleConflictError,
+  CommunityConfigurationConflictError,
   IdempotencyKeyReusedError,
   PlatformIncidentConflictError,
   IdentityPermissionDeniedError,
@@ -55,6 +56,7 @@ import {
   invalidateActiveBookingOfficialConversion,
   changeDisplayName,
   changeHomeVenue,
+  changeCommunityPairCooldown,
   changeSports,
   changePrimaryAdmin,
   decideAppeal,
@@ -3169,6 +3171,362 @@ describePostgres('PostgreSQL critical command transaction', () => {
         renameIds,
       ),
     ).rejects.toBeInstanceOf(IdentityValidationError);
+  });
+
+  it('[AC-166] versions Pair Cooldown without rewriting existing Challenge or Session snapshots', async () => {
+    const athleteA = testId(39000);
+    const athleteB = testId(39001);
+    const athleteC = testId(39002);
+    const athleteD = testId(39003);
+    const admin = testId(39004);
+    const central = testId(39005);
+    const coach = testId(39006);
+    const venue = testId(39007);
+    const venueConfiguration = testId(39008);
+    const community = testId(39009);
+    const originalConfiguration = testId(39010);
+    const competition = testId(39011);
+    const originalChat = testId(39020);
+    const nextChat = testId(39021);
+    const originalMatch = testId(39022);
+    const nextMatch = testId(39023);
+    const occurredAt = '2026-10-01T09:00:00.000Z';
+
+    await database.transaction().execute(async (transaction) => {
+      for (const [userId, phone, displayName] of [
+        [athleteA, '+79990390000', 'Config Athlete A'],
+        [athleteB, '+79990390001', 'Config Athlete B'],
+        [athleteC, '+79990390002', 'Config Athlete C'],
+        [athleteD, '+79990390003', 'Config Athlete D'],
+        [admin, '+79990390004', 'Config Gym Admin'],
+        [central, '+79990390005', 'Config Central'],
+        [coach, '+79990390006', 'Config Coach'],
+      ] as const) {
+        await sql`
+          insert into identity.users (
+            user_id, phone_e164, phone_verified_at, birth_date, age_division,
+            display_name, account_state, locale, version, activated_at
+          ) values (
+            ${userId}::uuid, ${phone}, ${occurredAt}::timestamptz,
+            '1990-01-01', 'ADULT', ${displayName}, 'ACTIVE', 'ru-RU', 1,
+            ${occurredAt}::timestamptz
+          )
+        `.execute(transaction);
+      }
+      for (const athlete of [athleteA, athleteB, athleteC, athleteD]) {
+        await sql`
+          insert into identity.athlete_profiles (
+            user_id, primary_sport, discovery_radius_km
+          ) values (${athlete}::uuid, 'BOXING', 15)
+        `.execute(transaction);
+        await sql`
+          insert into identity.account_verifications (
+            verification_id, user_id, state, method, moderation_checklist_version,
+            verified_at, decided_by, decision_reason, is_current, version
+          ) values (
+            ${athlete}::uuid, ${athlete}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+            'identity-mvp-v1', ${occurredAt}::timestamptz, ${central}::uuid,
+            'TEST_APPROVED', true, 1
+          )
+        `.execute(transaction);
+      }
+    });
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: venueConfiguration,
+      communityId: community, communityConfigurationId: originalConfiguration,
+      membershipId: testId(39012), centralGrantId: testId(39016),
+      athleteUserId: athleteA, centralActorId: central,
+      legalName: 'Config Gym LLC', venueDisplayName: 'Config Gym',
+      communityName: 'Config Community', address: 'Москва', cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow', contactPayload: {}, occurredAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community,
+      centralActorId: central, occurredAt,
+      memberships: [
+        { membershipId: testId(39012), userId: athleteA },
+        { membershipId: testId(39013), userId: athleteB },
+        { membershipId: testId(39014), userId: athleteC },
+        { membershipId: testId(39015), userId: athleteD },
+      ],
+    });
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values
+        (${testId(39017)}::uuid, ${admin}::uuid, 'GYM_ADMIN', 'VENUE', ${venue}::uuid,
+          'ACTIVE', ${central}::uuid, ${occurredAt}::timestamptz, 1),
+        (${testId(39018)}::uuid, ${coach}::uuid, 'COACH', 'COMMUNITY', ${community}::uuid,
+          'ACTIVE', ${central}::uuid, ${occurredAt}::timestamptz, 1)
+    `.execute(database);
+    await database.transaction().execute(async (transaction) => {
+      await sql`
+        insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+        values
+          (${originalChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+            ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+          (${nextChat}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+            ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.chat_participants (chat_id, user_id, joined_at)
+        values
+          (${originalChat}::uuid, ${athleteA}::uuid, ${occurredAt}::timestamptz),
+          (${originalChat}::uuid, ${athleteB}::uuid, ${occurredAt}::timestamptz),
+          (${nextChat}::uuid, ${athleteC}::uuid, ${occurredAt}::timestamptz),
+          (${nextChat}::uuid, ${athleteD}::uuid, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.matches (
+          match_id, pair_low_id, pair_high_id, state, chat_id,
+          last_activity_at, version, created_at, updated_at
+        ) values
+          (${originalMatch}::uuid, ${athleteA}::uuid, ${athleteB}::uuid, 'ACTIVE',
+            ${originalChat}::uuid, ${occurredAt}::timestamptz, 1,
+            ${occurredAt}::timestamptz, ${occurredAt}::timestamptz),
+          (${nextMatch}::uuid, ${athleteC}::uuid, ${athleteD}::uuid, 'ACTIVE',
+            ${nextChat}::uuid, ${occurredAt}::timestamptz, 1,
+            ${occurredAt}::timestamptz, ${occurredAt}::timestamptz)
+      `.execute(transaction);
+    });
+
+    const originalChallenge = testId(39030);
+    const originalRulesetSnapshot = testId(39038);
+    await createDirectOpenChallenge(database, {
+      commandId: testId(39031), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+      idempotencyKey: 'community-config-original-challenge',
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: originalChallenge, expectedVersion: 0,
+      correlationId: testId(39032), causationId: null, requestId: testId(39033),
+      source: 'api', payloadVersion: 1, payload: { sourceChatId: originalChat },
+    }, {
+      eventId: testId(39034), auditId: testId(39035), outboxMessageId: testId(39036),
+      notificationId: testId(39037), notificationOutboxMessageId: testId(39039),
+      serviceChatId: testId(39040), serviceChatEventId: testId(39041),
+      rulesetSnapshotId: originalRulesetSnapshot, acknowledgmentId: testId(39042),
+      reminderTimerOutboxMessageIds: [testId(39043), testId(39044)],
+    }, () => new Date('2026-10-01T10:00:00.000Z'));
+    await acceptOptionalChallenge(database, {
+      commandId: testId(39045), commandType: 'ACCEPT_OPTIONAL_CHALLENGE',
+      idempotencyKey: 'community-config-original-accept',
+      actor: { type: 'USER', id: athleteB, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: originalChallenge, expectedVersion: 1,
+      correlationId: testId(39046), causationId: testId(39034), requestId: testId(39047),
+      source: 'api', payloadVersion: 1, payload: { challengeId: originalChallenge },
+    }, {
+      eventId: testId(39048), auditId: testId(39049), outboxMessageId: testId(39050),
+      notificationId: testId(39051), notificationOutboxMessageId: testId(39052),
+      acknowledgmentId: testId(39053), obligationIds: [testId(39054), testId(39055)],
+    }, () => new Date('2026-10-01T11:00:00.000Z'));
+
+    const booking = testId(39056);
+    const slot = testId(39057);
+    const session = testId(39058);
+    const sessionSnapshot = testId(39059);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into scheduling.slots (
+          slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+          commercial_version, booking_id, published_by, version
+        ) values (
+          ${slot}::uuid, ${venue}::uuid, ${coach}::uuid,
+          '2026-10-02T08:00:00Z', '2026-10-02T09:00:00Z', 'PERSONAL', 'BOOKED',
+          1, ${booking}::uuid, ${admin}::uuid, 2
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.bookings (
+          booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+          purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+          selection_expires_at, host_confirmation_deadline_at,
+          commercial_terms_snapshot, host_confirmed_by, host_confirmed_at,
+          version, created_at, updated_at, challenge_id
+        ) values (
+          ${booking}::uuid, ${originalChat}::uuid, ${originalMatch}::uuid, ${slot}::uuid,
+          ${athleteA}::uuid, ${athleteB}::uuid, 'OFFICIAL_CHALLENGE', 'CONFIRMED_PAIR',
+          ${athleteA}::uuid, '2026-10-01T12:00:00Z', '2026-10-01T12:01:00Z',
+          '2026-10-01T13:00:00Z', '2026-10-02T12:00:00Z', '{}'::jsonb,
+          ${admin}::uuid, '2026-10-01T12:02:00Z', 3,
+          '2026-10-01T12:00:00Z', '2026-10-01T12:02:00Z', ${originalChallenge}::uuid
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.sessions (
+          session_id, booking_id, venue_id, coach_user_id, pair_low_id, pair_high_id,
+          purpose, state, scheduled_start_at, scheduled_end_at, window_opened_at,
+          commercial_terms_snapshot, version, created_at, updated_at, challenge_id
+        ) values (
+          ${session}::uuid, ${booking}::uuid, ${venue}::uuid, ${coach}::uuid,
+          ${athleteA}::uuid, ${athleteB}::uuid, 'OFFICIAL_CHALLENGE', 'READY_FOR_COACH',
+          '2026-10-02T08:00:00Z', '2026-10-02T09:00:00Z', '2026-10-02T08:00:00Z',
+          '{}'::jsonb, 1,
+          '2026-10-01T12:02:00Z', '2026-10-01T12:02:00Z', ${originalChallenge}::uuid
+        )
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.session_competitive_snapshots (
+          snapshot_id, session_id, challenge_id, competition_id, ruleset_snapshot_id,
+          community_configuration_id, planned_stake, effective_stake,
+          competition_status_version, venue_id, coach_user_id, pair_low_id, pair_high_id,
+          scheduled_start_at, scheduled_end_at, created_at
+        ) values (
+          ${sessionSnapshot}::uuid, ${session}::uuid, ${originalChallenge}::uuid,
+          ${competition}::uuid, ${originalRulesetSnapshot}::uuid,
+          ${originalConfiguration}::uuid, 'NONE', 'NONE', 0, ${venue}::uuid,
+          ${coach}::uuid, ${athleteA}::uuid, ${athleteB}::uuid,
+          '2026-10-02T08:00:00Z', '2026-10-02T09:00:00Z', '2026-10-02T08:00:00Z'
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.pair_cooldowns (
+          cooldown_id, competition_id, pair_low_id, pair_high_id, started_at, ends_at
+        ) values (
+          ${testId(39067)}::uuid, ${competition}::uuid,
+          ${athleteA}::uuid, ${athleteB}::uuid,
+          '2026-10-01T12:00:00Z', '2026-10-16T12:00:00Z'
+        )
+      `.execute(transaction);
+    });
+
+    const configurationCommand = {
+      commandId: testId(39060), commandType: 'CHANGE_COMMUNITY_PAIR_COOLDOWN',
+      idempotencyKey: 'community-config-cooldown-20',
+      actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+      aggregateType: 'Community', aggregateId: community, expectedVersion: 1,
+      correlationId: testId(39061), causationId: null, requestId: testId(39062),
+      source: 'admin', payloadVersion: 1,
+      payload: { communityId: community, pairCooldownDays: 20 },
+    } satisfies CommandEnvelope<{
+      readonly communityId: string;
+      readonly pairCooldownDays: number;
+    }>;
+    const configurationIds = {
+      configurationId: testId(39063), eventId: testId(39064),
+      auditId: testId(39065), outboxMessageId: testId(39066),
+    };
+    const changed = await changeCommunityPairCooldown(
+      database, configurationCommand, configurationIds,
+      () => new Date('2026-10-02T09:00:00.000Z'),
+    );
+    const replayed = await changeCommunityPairCooldown(
+      database, configurationCommand, configurationIds,
+      () => new Date('2026-10-02T09:00:00.000Z'),
+    );
+    expect(changed.response).toMatchObject({
+      communityId: community, configurationId: configurationIds.configurationId,
+      configurationVersion: 2, pairCooldownDays: 20,
+      noShowGraceMinutes: 15, version: 2,
+    });
+    expect(replayed).toMatchObject({ replayed: true, response: changed.response });
+    expect(await readCommunityContext(database, admin, community)).toMatchObject({
+      community: {
+        configurationId: configurationIds.configurationId,
+        configurationVersion: 2, pairCooldownDays: 20, version: 2,
+      },
+    });
+
+    const nextChallenge = testId(39070);
+    const nextRulesetSnapshot = testId(39078);
+    await createDirectOpenChallenge(database, {
+      commandId: testId(39071), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+      idempotencyKey: 'community-config-next-challenge',
+      actor: { type: 'USER', id: athleteC, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: nextChallenge, expectedVersion: 0,
+      correlationId: testId(39072), causationId: null, requestId: testId(39073),
+      source: 'api', payloadVersion: 1, payload: { sourceChatId: nextChat },
+    }, {
+      eventId: testId(39074), auditId: testId(39075), outboxMessageId: testId(39076),
+      notificationId: testId(39077), notificationOutboxMessageId: testId(39079),
+      serviceChatId: testId(39080), serviceChatEventId: testId(39081),
+      rulesetSnapshotId: nextRulesetSnapshot, acknowledgmentId: testId(39082),
+      reminderTimerOutboxMessageIds: [testId(39083), testId(39084)],
+    }, () => new Date('2026-10-02T10:00:00.000Z'));
+
+    const frozenReferences = await sql<{
+      readonly original_ruleset_configuration: string;
+      readonly session_configuration: string;
+      readonly next_ruleset_configuration: string;
+    }>`
+      select
+        (select community_configuration_id::text from competition.ruleset_snapshots
+          where ruleset_snapshot_id = ${originalRulesetSnapshot}::uuid)
+          as original_ruleset_configuration,
+        (select community_configuration_id::text from scheduling.session_competitive_snapshots
+          where snapshot_id = ${sessionSnapshot}::uuid) as session_configuration,
+        (select community_configuration_id::text from competition.ruleset_snapshots
+          where ruleset_snapshot_id = ${nextRulesetSnapshot}::uuid)
+          as next_ruleset_configuration
+    `.execute(database);
+    expect(frozenReferences.rows[0]).toEqual({
+      original_ruleset_configuration: originalConfiguration,
+      session_configuration: originalConfiguration,
+      next_ruleset_configuration: configurationIds.configurationId,
+    });
+    const versions = await sql<{
+      readonly configuration_version: number;
+      readonly pair_cooldown_days: number;
+    }>`
+      select configuration_version, pair_cooldown_days
+      from community.community_configuration_versions
+      where community_id = ${community}::uuid
+      order by configuration_version
+    `.execute(database);
+    expect(versions.rows).toEqual([
+      { configuration_version: 1, pair_cooldown_days: 15 },
+      { configuration_version: 2, pair_cooldown_days: 20 },
+    ]);
+    const preservedCooldown = await sql<{ readonly ends_at: Date }>`
+      select ends_at from competition.pair_cooldowns
+      where cooldown_id = ${testId(39067)}::uuid
+    `.execute(database);
+    expect(preservedCooldown.rows[0]?.ends_at.toISOString())
+      .toBe('2026-10-16T12:00:00.000Z');
+
+    await expect(changeCommunityPairCooldown(database, {
+      ...configurationCommand, commandId: testId(39085),
+      idempotencyKey: 'community-config-out-of-range', expectedVersion: 2,
+      payload: { communityId: community, pairCooldownDays: 31 },
+    }, {
+      configurationId: testId(39086), eventId: testId(39087),
+      auditId: testId(39088), outboxMessageId: testId(39089),
+    })).rejects.toMatchObject({ code: 'PAIR_COOLDOWN_OUT_OF_RANGE' });
+    await expect(changeCommunityPairCooldown(database, {
+      ...configurationCommand, commandId: testId(39090),
+      idempotencyKey: 'community-config-unauthorized', expectedVersion: 2,
+      actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      payload: { communityId: community, pairCooldownDays: 21 },
+    }, {
+      configurationId: testId(39091), eventId: testId(39092),
+      auditId: testId(39093), outboxMessageId: testId(39094),
+    })).rejects.toBeInstanceOf(CommunityConfigurationConflictError);
+    await expect(changeCommunityPairCooldown(database, {
+      ...configurationCommand, commandId: testId(39095),
+      idempotencyKey: 'community-config-stale', expectedVersion: 1,
+      payload: { communityId: community, pairCooldownDays: 21 },
+    }, {
+      configurationId: testId(39096), eventId: testId(39097),
+      auditId: testId(39098), outboxMessageId: testId(39099),
+    })).rejects.toBeInstanceOf(VersionConflictError);
+    const sideEffects = await sql<{
+      readonly events: string;
+      readonly audits: string;
+      readonly outbox: string;
+      readonly cooldowns: string;
+    }>`
+      select
+        (select count(*)::text from platform.domain_events
+          where event_id = ${configurationIds.eventId}::uuid) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${configurationIds.auditId}::uuid) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${configurationIds.outboxMessageId}::uuid) as outbox,
+        (select count(*)::text from competition.pair_cooldowns) as cooldowns
+    `.execute(database);
+    expect(sideEffects.rows[0]).toEqual({
+      events: '1', audits: '1', outbox: '1', cooldowns: '1',
+    });
   });
 
   it('[AC-018] invites and authorizes a verified Community Coach with database-backed scope checks', async () => {

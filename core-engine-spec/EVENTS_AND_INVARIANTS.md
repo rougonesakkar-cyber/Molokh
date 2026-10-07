@@ -165,7 +165,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 
 | Events | Producer | Primary consumers |
 |---|---|---|
-| `CommunityCreated/Paused/Reactivated/ClosureScheduled/Closed` | Central | Competition holds, Scheduling, UI |
+| `CommunityCreated/Paused/Reactivated/ConfigurationChanged/ClosureScheduled/Closed` | Central / scoped Gym Admin | Competition holds, Scheduling, Result, UI |
 | `MembershipRequested/Approved/Rejected/Activated/Left/Removed/ArchivedByCommunityClosure` | Community | Competition eligibility, queue, Governance |
 | `StatusHolderRemovalReviewStarted/MembershipRemovalConfirmed/Rejected` | Governance | ProcessHold, Status Engine |
 | `CoachInvited/Authorized/RoleRevoked/GuestCoachAuthorized/Expired` | Roles | Slot, Booking, Result permissions |
@@ -841,6 +841,7 @@ ChatRestrictedToServiceActions
 ChatServiceRestrictionReleased
 CommunityClosed
 CommunityClosureScheduled
+CommunityConfigurationChanged
 CommunityCreated
 CommunityPaused
 CommunityReactivated

@@ -17,6 +17,47 @@ export type CommunityRole =
 export type RoleScopeType = 'VENUE' | 'COMMUNITY' | 'SESSION' | 'GLOBAL';
 
 export const COMMUNITY_LIFECYCLE_POLICY_VERSION = 'community-lifecycle-mvp-v1' as const;
+export const COMMUNITY_CONFIGURATION_POLICY_VERSION = 'community-configuration-mvp-v1' as const;
+
+export type CommunityConfigurationConflictCode =
+  | 'COMMUNITY_CONFIGURATION_ADMIN_REQUIRED'
+  | 'COMMUNITY_CONFIGURATION_INVALID_STATE'
+  | 'PAIR_COOLDOWN_OUT_OF_RANGE'
+  | 'COMMUNITY_CONFIGURATION_UNCHANGED';
+
+export class CommunityConfigurationConflictError extends Error {
+  readonly code: CommunityConfigurationConflictCode;
+
+  constructor(readonly reason: CommunityConfigurationConflictCode) {
+    super(`Community configuration change is not allowed: ${reason}`);
+    this.name = 'CommunityConfigurationConflictError';
+    this.code = reason;
+  }
+}
+
+export function assertCommunityPairCooldownChange(input: {
+  readonly actorCanManage: boolean;
+  readonly currentState: CommunityState;
+  readonly currentPairCooldownDays: number;
+  readonly nextPairCooldownDays: number;
+}): void {
+  if (!input.actorCanManage) {
+    throw new CommunityConfigurationConflictError('COMMUNITY_CONFIGURATION_ADMIN_REQUIRED');
+  }
+  if (input.currentState !== 'ACTIVE' && input.currentState !== 'PAUSED') {
+    throw new CommunityConfigurationConflictError('COMMUNITY_CONFIGURATION_INVALID_STATE');
+  }
+  if (
+    !Number.isSafeInteger(input.nextPairCooldownDays)
+    || input.nextPairCooldownDays < 7
+    || input.nextPairCooldownDays > 30
+  ) {
+    throw new CommunityConfigurationConflictError('PAIR_COOLDOWN_OUT_OF_RANGE');
+  }
+  if (input.nextPairCooldownDays === input.currentPairCooldownDays) {
+    throw new CommunityConfigurationConflictError('COMMUNITY_CONFIGURATION_UNCHANGED');
+  }
+}
 
 export type CommunityLifecycleAction = 'PAUSE' | 'REACTIVATE';
 export type CommunityClosureAction = 'SCHEDULE_CLOSURE' | 'FINALIZE_CLOSURE';

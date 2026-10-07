@@ -10,6 +10,7 @@ import {
   approveMembership,
   changeDisplayName,
   changeHomeVenue,
+  changeCommunityPairCooldown,
   changeSports,
   confirmMissingResultVenue,
   changePrimaryAdmin,
@@ -1356,6 +1357,10 @@ const app = await buildApp({
   community: {
     auth: localAuth,
     readContext: (userId) => readCommunityContext(database, userId, localCommunityId),
+    configuration: {
+      updatePairCooldown: (command, ids) =>
+        changeCommunityPairCooldown(database, command, ids),
+    },
     lifecycle: {
       auth: localCentralAuth,
       read: (communityId) => readCommunityLifecycle(database, communityId),

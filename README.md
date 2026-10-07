@@ -5,13 +5,13 @@ Molokh — mobile-first продукт для поиска партнёров п
 ## Current state
 
 - Core Engine: **v1.0, product decisions closed**;
-- state transitions: **308**;
-- registered events: **309**;
+- state transitions: **309**;
+- registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **159/214** (`153/196 P0`);
+- executable acceptance traceability: **160/214** (`154/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0062` and **49/49** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0062` and **50/50** integration scenarios pass locally;
 - dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
   resolved `shell-quote` security release is pinned transitively; the unresolved upstream
   `node-forge` and `braces` advisories are covered by narrow regression-tested local backports that
@@ -337,6 +337,12 @@ by the exact pause duration, while Pair Cooldown endpoints stay unchanged. Confi
 their state and scheduled time. Timer workers re-read the current projection deadline, so a timer
 created before the pause cannot fire early after reactivation. The Central UI requires a reason and
 shows these consequences before the versioned command is available.
+
+Scoped Gym Admin and Central can now publish a new Pair Cooldown value from 7 to 30 days through
+`CO-06`. The client shows the current public configuration version and explains that publication
+affects only new processes. PostgreSQL appends an immutable configuration row and switches the
+Community pointer atomically with event/audit/outbox; previous Challenge and Session snapshots,
+Results and already-created Cooldowns keep their original configuration and dates.
 
 Permanent closure now follows a separate versioned `Closure Plan`; it is never an overloaded
 pause. Central records a future effective time (or an explicit emergency), a reason/category and

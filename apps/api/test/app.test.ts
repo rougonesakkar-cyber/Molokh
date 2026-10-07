@@ -1,4 +1,5 @@
 import {
+  CommunityConfigurationConflictError,
   IdempotencyKeyReusedError,
   SchedulingConflictError,
   VersionConflictError,
@@ -11,6 +12,8 @@ import type {
   ChangeHomeVenuePayload,
   ChangeSportsPayload,
   CommunityContextProjection,
+  CommunityConfigurationEffectIds,
+  CommunityConfigurationProjection,
   CommunityLifecycleEffectIds,
   CommunityLifecycleProjection,
   DiscoveryCardProjection,
@@ -117,6 +120,7 @@ import type {
   FinalizeCommunityClosurePayload,
   ScheduleCommunityClosureEffectIds,
   ScheduleCommunityClosurePayload,
+  ChangeCommunityPairCooldownPayload,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -255,6 +259,20 @@ describe('runtime contract', () => {
     expect(mapApiError(new IdempotencyKeyReusedError('scope'), requestId)).toMatchObject({
       statusCode: 409,
       body: { code: 'IDEMPOTENCY_KEY_REUSED', requestId },
+    });
+    expect(mapApiError(
+      new CommunityConfigurationConflictError('COMMUNITY_CONFIGURATION_ADMIN_REQUIRED'),
+      requestId,
+    )).toMatchObject({
+      statusCode: 403,
+      body: { code: 'COMMUNITY_CONFIGURATION_ADMIN_REQUIRED', requestId },
+    });
+    expect(mapApiError(
+      new CommunityConfigurationConflictError('PAIR_COOLDOWN_OUT_OF_RANGE'),
+      requestId,
+    )).toMatchObject({
+      statusCode: 422,
+      body: { code: 'PAIR_COOLDOWN_OUT_OF_RANGE', requestId },
     });
   });
 
@@ -501,10 +519,12 @@ describe('runtime contract', () => {
     expect(response.headers['x-content-type-options']).toBe('nosniff');
   });
 
-  it('returns the authenticated pilot Community with action-level denials', async () => {
+  it('[AC-166] returns public config and exposes a versioned scoped Pair Cooldown command', async () => {
+    const communityId = '0199a1b2-1234-7000-8000-000000000402';
+    const venueId = '0199a1b2-1234-7000-8000-000000000401';
     const context: CommunityContextProjection = {
       venue: {
-        venueId: '0199a1b2-1234-7000-8000-000000000401',
+        venueId,
         displayName: 'Pilot Gym',
         address: 'Pilot address',
         cityCode: 'MOSCOW',
@@ -514,9 +534,12 @@ describe('runtime contract', () => {
         contactPayload: { phone: '+79990000401' },
       },
       community: {
-        communityId: '0199a1b2-1234-7000-8000-000000000402',
+        communityId,
         name: 'Pilot Community',
         state: 'ACTIVE',
+        configurationId: '0199a1b2-1234-7000-8000-000000000404',
+        configurationVersion: 1,
+        configurationEffectiveAt: '2026-10-01T09:00:00.000Z',
         pairCooldownDays: 15,
         noShowGraceMinutes: 15,
         rulesetRef: 'MOLOKH_RECOMMENDED_V1',
@@ -533,9 +556,9 @@ describe('runtime contract', () => {
       },
       membershipReapplyNotBeforeAt: null,
       membershipLatestRejectionReasonCode: null,
-      activeRoleGrants: [],
+      activeRoleGrants: [{ role: 'GYM_ADMIN', scopeType: 'VENUE', scopeId: venueId }],
       access: {
-        capabilities: ['VIEW_COMMUNITY'],
+        capabilities: ['VIEW_COMMUNITY', 'MANAGE_VENUE_OPERATIONS'],
         denials: [
           {
             capability: 'CREATE_OFFICIAL_CHALLENGE',
@@ -546,10 +569,30 @@ describe('runtime contract', () => {
         ],
       },
     };
+    const changedConfiguration: CommunityConfigurationProjection = {
+      communityId,
+      configurationId: '0199a1b2-1234-7000-8000-000000000405',
+      configurationVersion: 2,
+      pairCooldownDays: 20,
+      noShowGraceMinutes: 15,
+      rulesetRef: 'MOLOKH_RECOMMENDED_V1',
+      rulesetAckMode: 'IMPLICIT_ON_ACCEPT',
+      effectiveAt: '2026-10-02T09:00:00.000Z',
+      version: 2,
+    };
+    const updatePairCooldown = vi.fn(async (
+      _command: CommandEnvelope<ChangeCommunityPairCooldownPayload>,
+      _ids: CommunityConfigurationEffectIds,
+    ) => ({
+      responseStatus: 200, response: changedConfiguration,
+      eventId: '0199a1b2-1234-7000-8000-000000000406',
+      aggregateVersion: 2, replayed: false,
+    }));
     const app = await buildApp({
       community: {
         auth: new StaticBearerAuthAdapter(token, userId),
         readContext: async () => context,
+        configuration: { updatePairCooldown },
       },
     });
     apps.push(app);
@@ -563,7 +606,9 @@ describe('runtime contract', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       data: {
-        community: { name: 'Pilot Community' },
+        community: {
+          name: 'Pilot Community', configurationVersion: 1, pairCooldownDays: 15,
+        },
         membership: { state: 'ACTIVE' },
         access: {
           denials: [
@@ -575,8 +620,48 @@ describe('runtime contract', () => {
         },
       },
     });
+    const changed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/communities/${communityId}/configuration/pair-cooldown`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'community-cooldown-20',
+        'if-match': '1',
+      },
+      payload: { pairCooldownDays: 20 },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toMatchObject({
+      data: { configurationVersion: 2, pairCooldownDays: 20, version: 2 },
+      meta: { replayed: false },
+    });
+    expect(updatePairCooldown.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CHANGE_COMMUNITY_PAIR_COOLDOWN',
+      aggregateType: 'Community', aggregateId: communityId, expectedVersion: 1,
+      actor: { id: userId, roles: ['GYM_ADMIN'], scopeIds: [venueId] },
+      payload: { communityId, pairCooldownDays: 20 },
+    });
+    expect(updatePairCooldown.mock.calls[0]?.[1]).toMatchObject({
+      configurationId: expect.any(String), eventId: expect.any(String),
+      auditId: expect.any(String), outboxMessageId: expect.any(String),
+    });
+    const outOfRange = await app.inject({
+      method: 'POST',
+      url: `/api/v1/communities/${communityId}/configuration/pair-cooldown`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'community-cooldown-invalid',
+        'if-match': '2',
+      },
+      payload: { pairCooldownDays: 31 },
+    });
+    expect(outOfRange.statusCode).toBe(400);
+    expect(updatePairCooldown).toHaveBeenCalledTimes(1);
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/community');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/communities/{communityId}/configuration/pair-cooldown',
+    );
   });
 
   it('[CO-02][CO-03] exposes versioned Central Community lifecycle commands', async () => {

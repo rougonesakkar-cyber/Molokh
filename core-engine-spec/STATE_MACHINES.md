@@ -510,6 +510,7 @@ States: `ACTIVE`, `PAUSED`, `CLOSING`, `CLOSED`.
 | CO-03 | PAUSED | `REACTIVATE_COMMUNITY` / CENTRAL | cause resolved | ACTIVE | `CommunityReactivated` | CA-02; extend pausable deadlines | — | no |
 | CO-04 | ACTIVE/PAUSED | `SCHEDULE_COMMUNITY_CLOSURE` / CENTRAL | versioned Closure Plan; future effective_at unless emergency; confirmed Session dispositions recorded | CLOSING | `CommunityClosureScheduled` | execute CA-03 for each Competition; notify members; no-fault close pending/unconfirmed processes; retain only plan-approved safe confirmed Sessions | effective_at/plan | no |
 | CO-05 | CLOSING | `FINALIZE_COMMUNITY_CLOSURE` / CENTRAL or SYSTEM | effective_at reached; retained Session Result/Appeal paths resolved or explicitly transferred to archival service path | CLOSED | `CommunityClosed` | C-11 Competitions; M-11 Memberships; close status tenures without W/L/Succession; preserve history | plan completion | yes |
+| CO-06 | ACTIVE/PAUSED | `CHANGE_COMMUNITY_PAIR_COOLDOWN` / scoped GYM_ADMIN, PRIMARY_ADMIN or CENTRAL | active role/account; expected Community version; changed integer 7–30d | state unchanged | `CommunityConfigurationChanged` | append immutable public configuration version and switch current pointer; existing Challenge/Session/Result/Cooldown snapshots unchanged | — | no |
 
 ## 24. Block and pair suppression
 

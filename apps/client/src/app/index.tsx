@@ -11,6 +11,7 @@ import type {
   CommunityClosureCandidatesResponse,
   CommunityClosureCommandResponse,
   CommunityClosurePlanResponse,
+  CommunityConfigurationCommandResponse,
   CommunityContextResponse,
   CompetitionStatusResponse,
   DiscoveryActionResponse,
@@ -437,6 +438,9 @@ export default function IdentityScreen() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [communityContext, setCommunityContext] = useState<CommunityContext | null>(null);
+  const [pairCooldownDraft, setPairCooldownDraft] = useState('15');
+  const [pairCooldownNotice, setPairCooldownNotice] = useState<string | null>(null);
+  const [savingPairCooldown, setSavingPairCooldown] = useState(false);
   const [communityLifecycle, setCommunityLifecycle] = useState<CommunityLifecycle | null>(null);
   const [communityLifecycleReason, setCommunityLifecycleReason] = useState('');
   const [communityLifecycleNotice, setCommunityLifecycleNotice] = useState<string | null>(null);
@@ -507,6 +511,7 @@ export default function IdentityScreen() {
   const resultActionKeys = useRef(new Map<string, string>());
   const statusQueueActionKeys = useRef(new Map<string, string>());
   const membershipRemovalActionKeys = useRef(new Map<string, string>());
+  const communityConfigurationKeys = useRef(new Map<string, string>());
   const [actingRelationshipId, setActingRelationshipId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -564,6 +569,7 @@ export default function IdentityScreen() {
     setLoading(true);
     setError(null);
     setDiscoveryNotice(null);
+    setPairCooldownNotice(null);
     try {
       const response = await fetch(`${apiUrl}/api/v1/me`, {
         headers: { Authorization: `Bearer ${localToken}` },
@@ -587,11 +593,13 @@ export default function IdentityScreen() {
       let loadedCommunity: CommunityContext | null = null;
       if (communityResponse.status === 404) {
         setCommunityContext(null);
+        setPairCooldownDraft('15');
       } else {
         if (!communityResponse.ok) throw new Error(await apiErrorMessage(communityResponse));
         const communityResult = (await communityResponse.json()) as CommunityContextResponse;
         loadedCommunity = communityResult.data;
         setCommunityContext(communityResult.data);
+        setPairCooldownDraft(String(communityResult.data.community.pairCooldownDays));
       }
       const competitionResponse = await fetch(`${apiUrl}/api/v1/me/competition`, {
         headers: { Authorization: `Bearer ${localToken}` },
@@ -876,6 +884,14 @@ export default function IdentityScreen() {
   const officialChallengeDenial = communityContext?.access.denials.find(
     (denial) => denial.capability === 'CREATE_OFFICIAL_CHALLENGE',
   );
+  const parsedPairCooldownDays = Number(pairCooldownDraft);
+  const canSavePairCooldown = communityContext !== null
+    && communityContext.access.capabilities.includes('MANAGE_VENUE_OPERATIONS')
+    && Number.isSafeInteger(parsedPairCooldownDays)
+    && parsedPairCooldownDays >= 7
+    && parsedPairCooldownDays <= 30
+    && parsedPairCooldownDays !== communityContext.community.pairCooldownDays
+    && !savingPairCooldown;
   const canSave = useMemo(
     () =>
       identity !== null &&
@@ -1034,6 +1050,9 @@ export default function IdentityScreen() {
     setHomeVenueNotice(null);
     setSavingHomeVenue(false);
     setCommunityContext(null);
+    setPairCooldownDraft('15');
+    setPairCooldownNotice(null);
+    setSavingPairCooldown(false);
     setCommunityLifecycle(null);
     setCommunityLifecycleReason('');
     setCommunityLifecycleNotice(null);
@@ -2764,6 +2783,57 @@ export default function IdentityScreen() {
       setError(caught instanceof Error ? caught.message : 'Не удалось отклонить Membership');
     } finally {
       setActingMembershipId(null);
+    }
+  };
+
+  const saveCommunityPairCooldown = async () => {
+    if (!communityContext || !canSavePairCooldown) return;
+    const communityId = communityContext.community.communityId;
+    const operation = `community-config:${communityId}:cooldown:${parsedPairCooldownDays}:v${communityContext.community.version}`;
+    const idempotencyKey = communityConfigurationKeys.current.get(operation)
+      ?? `${operation}:${Date.now().toString(36)}`;
+    communityConfigurationKeys.current.set(operation, idempotencyKey);
+    setSavingPairCooldown(true);
+    setPairCooldownNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/communities/${communityId}/configuration/pair-cooldown`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(communityContext.community.version),
+          },
+          body: JSON.stringify({ pairCooldownDays: parsedPairCooldownDays }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as CommunityConfigurationCommandResponse;
+      setCommunityContext((current) => current ? {
+        ...current,
+        community: {
+          ...current.community,
+          configurationId: result.data.configurationId,
+          configurationVersion: result.data.configurationVersion,
+          configurationEffectiveAt: result.data.effectiveAt,
+          pairCooldownDays: result.data.pairCooldownDays,
+          noShowGraceMinutes: result.data.noShowGraceMinutes,
+          rulesetRef: result.data.rulesetRef,
+          rulesetAckMode: result.data.rulesetAckMode,
+          version: result.data.version,
+        },
+      } : current);
+      setPairCooldownDraft(String(result.data.pairCooldownDays));
+      setPairCooldownNotice(
+        `Версия ${result.data.configurationVersion} опубликована. Новые процессы используют ${result.data.pairCooldownDays} дней.`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось обновить Pair Cooldown');
+    } finally {
+      setSavingPairCooldown(false);
     }
   };
 
@@ -6026,6 +6096,50 @@ export default function IdentityScreen() {
                       <Text style={styles.muted}>Pair Cooldown</Text>
                       <Text style={styles.value}>{communityContext.community.pairCooldownDays} дней</Text>
                     </View>
+                    <View style={styles.row}>
+                      <Text style={styles.muted}>Версия правил</Text>
+                      <Text style={styles.value}>
+                        v{communityContext.community.configurationVersion}
+                      </Text>
+                    </View>
+                    {communityContext.access.capabilities.includes('MANAGE_VENUE_OPERATIONS') ? (
+                      <View style={styles.inlineForm}>
+                        <Text style={styles.hint}>
+                          Выберите 7–30 дней. Новая публичная версия применяется только к новым
+                          Challenge и Session; уже созданные процессы не изменятся.
+                        </Text>
+                        <TextInput
+                          accessibilityLabel="Pair Cooldown в днях, от 7 до 30"
+                          keyboardType="number-pad"
+                          onChangeText={(value) => {
+                            setPairCooldownDraft(value.replace(/[^0-9]/g, ''));
+                            setPairCooldownNotice(null);
+                          }}
+                          style={styles.input}
+                          value={pairCooldownDraft}
+                        />
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: !canSavePairCooldown }}
+                          disabled={!canSavePairCooldown}
+                          onPress={() => void saveCommunityPairCooldown()}
+                          style={({ pressed }) => [
+                            styles.secondaryButton,
+                            !canSavePairCooldown && styles.buttonDisabled,
+                            pressed && canSavePairCooldown && styles.buttonPressed,
+                          ]}
+                        >
+                          {savingPairCooldown
+                            ? <ActivityIndicator color="#8b2f22" />
+                            : <Text style={styles.secondaryButtonText}>Опубликовать версию</Text>}
+                        </Pressable>
+                        {pairCooldownNotice ? (
+                          <Text accessibilityLiveRegion="polite" style={styles.successText}>
+                            {pairCooldownNotice}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ) : null}
                     <View style={styles.capabilityList}>
                       {communityContext.activeRoleGrants.some(
                         (grant) =>

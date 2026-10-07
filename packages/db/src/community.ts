@@ -44,6 +44,9 @@ export interface CommunityContextProjection {
     readonly communityId: string;
     readonly name: string;
     readonly state: CommunityState;
+    readonly configurationId: string;
+    readonly configurationVersion: number;
+    readonly configurationEffectiveAt: string;
     readonly pairCooldownDays: number;
     readonly noShowGraceMinutes: number;
     readonly rulesetRef: string;
@@ -90,6 +93,9 @@ interface CommunityContextRow {
   readonly community_id: string;
   readonly community_name: string;
   readonly community_state: CommunityState;
+  readonly configuration_id: string;
+  readonly configuration_version: number;
+  readonly configuration_effective_at: Date;
   readonly pair_cooldown_days: number;
   readonly no_show_grace_minutes: number;
   readonly ruleset_ref: string;
@@ -230,6 +236,9 @@ export async function readCommunityContext(
       community.community_id,
       community.name as community_name,
       community.state as community_state,
+      configuration.configuration_id,
+      configuration.configuration_version,
+      configuration.effective_at as configuration_effective_at,
       configuration.pair_cooldown_days,
       configuration.no_show_grace_minutes,
       configuration.ruleset_ref,
@@ -344,6 +353,9 @@ export async function readCommunityContext(
       communityId: row.community_id,
       name: row.community_name,
       state: row.community_state,
+      configurationId: row.configuration_id,
+      configurationVersion: row.configuration_version,
+      configurationEffectiveAt: row.configuration_effective_at.toISOString(),
       pairCooldownDays: row.pair_cooldown_days,
       noShowGraceMinutes: row.no_show_grace_minutes,
       rulesetRef: row.ruleset_ref,

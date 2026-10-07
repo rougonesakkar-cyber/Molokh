@@ -31,6 +31,7 @@ export * from './chat.js';
 export * from './chat-retention.js';
 export * from './challenge.js';
 export * from './community.js';
+export * from './community-configuration.js';
 export * from './community-closure.js';
 export * from './community-lifecycle.js';
 export * from './discovery.js';

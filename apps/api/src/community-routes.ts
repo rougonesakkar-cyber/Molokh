@@ -1,5 +1,7 @@
 import {
   ApiErrorSchema,
+  ChangeCommunityPairCooldownBodySchema,
+  CommunityConfigurationCommandResponseSchema,
   CommunityContextResponseSchema,
   CommunityClosureCandidatesResponseSchema,
   CommunityClosureCommandResponseSchema,
@@ -11,6 +13,8 @@ import {
   ScheduleCommunityClosureBodySchema,
   type CommunityContextContract,
   type CommunityContextResponse,
+  type ChangeCommunityPairCooldownBody,
+  type CommunityConfigurationCommandResponse,
   type CommunityClosureCandidatesResponse,
   type CommunityClosureCommandResponse,
   type CommunityClosurePlanResponse,
@@ -32,6 +36,9 @@ import type {
   ScheduleCommunityClosurePayload,
   CommunityLifecycleEffectIds,
   CommunityLifecycleProjection,
+  ChangeCommunityPairCooldownPayload,
+  CommunityConfigurationEffectIds,
+  CommunityConfigurationProjection,
   ExecutedCommand,
   PauseCommunityPayload,
   ReactivateCommunityPayload,
@@ -79,6 +86,12 @@ export interface CommunityLifecycleRouteDependencies {
 export interface CommunityRouteDependencies {
   readonly auth: AuthAdapter;
   readonly readContext: (userId: string) => Promise<CommunityContextProjection | null>;
+  readonly configuration?: {
+    readonly updatePairCooldown: (
+      command: CommandEnvelope<ChangeCommunityPairCooldownPayload>,
+      ids: CommunityConfigurationEffectIds,
+    ) => Promise<ExecutedCommand<CommunityConfigurationProjection>>;
+  };
   readonly lifecycle?: CommunityLifecycleRouteDependencies;
 }
 
@@ -116,6 +129,35 @@ function expectedVersion(value: string | undefined): number {
     throw new InvalidCommandEnvelopeError('If-Match');
   }
   return parsed;
+}
+
+function configurationCommand(
+  actorUserId: string,
+  context: CommunityContextProjection,
+  idempotencyKey: string,
+  version: number,
+  body: ChangeCommunityPairCooldownBody,
+  request: Parameters<typeof requestContext>[0],
+): CommandEnvelope<ChangeCommunityPairCooldownPayload> {
+  const transport = requestContext(request);
+  return {
+    commandId: newUuidV7(), commandType: 'CHANGE_COMMUNITY_PAIR_COOLDOWN',
+    idempotencyKey,
+    actor: {
+      type: 'USER', id: actorUserId,
+      roles: [...new Set(context.activeRoleGrants.map((grant) => grant.role))],
+      scopeIds: [...new Set(context.activeRoleGrants.flatMap((grant) =>
+        grant.scopeId ? [grant.scopeId] : []))],
+    },
+    aggregateType: 'Community', aggregateId: context.community.communityId,
+    expectedVersion: version, correlationId: transport.correlationId,
+    causationId: transport.causationId, requestId: transport.requestId,
+    source: 'admin', payloadVersion: 1,
+    payload: {
+      communityId: context.community.communityId,
+      pairCooldownDays: body.pairCooldownDays,
+    },
+  };
 }
 
 function lifecycleCommand(
@@ -287,6 +329,69 @@ export async function registerCommunityRoutes(
       };
     },
   );
+
+  const configuration = dependencies.configuration;
+  if (configuration) {
+    app.post<{
+      Body: ChangeCommunityPairCooldownBody;
+      Headers: LifecycleHeaders;
+      Params: CommunityParams;
+    }>(
+      '/api/v1/communities/:communityId/configuration/pair-cooldown',
+      {
+        schema: {
+          operationId: 'changeCommunityPairCooldown',
+          params: Type.Object({ communityId: Type.String({ format: 'uuid' }) }),
+          body: ChangeCommunityPairCooldownBodySchema,
+          response: {
+            200: CommunityConfigurationCommandResponseSchema,
+            400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema,
+            404: ApiErrorSchema, 409: ApiErrorSchema, 422: ApiErrorSchema,
+          },
+        },
+      },
+      async (request, reply): Promise<CommunityConfigurationCommandResponse | undefined> => {
+        const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+        const transport = requestContext(request);
+        if (!authenticated) {
+          await reply.status(401).send({
+            code: 'UNAUTHENTICATED', message: 'Authentication is required',
+            requestId: transport.requestId,
+          });
+          return;
+        }
+        const current = await dependencies.readContext(authenticated.userId);
+        if (!current || current.community.communityId !== request.params.communityId) {
+          await reply.status(404).send({
+            code: 'COMMUNITY_CONTEXT_NOT_FOUND', message: 'Community was not found',
+            requestId: transport.requestId,
+          });
+          return;
+        }
+        const key = requiredHeader(request.headers['idempotency-key'], 'Idempotency-Key');
+        const executed = await configuration.updatePairCooldown(
+          configurationCommand(
+            authenticated.userId, current, key,
+            expectedVersion(request.headers['if-match']), request.body, request,
+          ),
+          {
+            configurationId: idempotentResourceId(
+              'CommunityConfiguration', request.params.communityId, key,
+            ),
+            eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+          },
+        );
+        return {
+          data: { ...executed.response },
+          meta: {
+            requestId: transport.requestId,
+            eventId: executed.eventId,
+            replayed: executed.replayed,
+          },
+        };
+      },
+    );
+  }
 
   const lifecycle = dependencies.lifecycle;
   if (!lifecycle) return;

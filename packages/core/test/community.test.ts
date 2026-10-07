@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertCommunityPairCooldownChange,
   assertCommunityClosureTransition,
   assertCommunityLifecycleTransition,
   projectCommunityAccess,
@@ -122,6 +123,31 @@ describe('community access projection', () => {
 });
 
 describe('community lifecycle guard', () => {
+  it('[AC-166] constrains Pair Cooldown changes to scoped Admin values from 7 to 30 days', () => {
+    expect(() => assertCommunityPairCooldownChange({
+      actorCanManage: true, currentState: 'ACTIVE',
+      currentPairCooldownDays: 15, nextPairCooldownDays: 20,
+    })).not.toThrow();
+    for (const nextPairCooldownDays of [6, 31, 7.5]) {
+      expect(() => assertCommunityPairCooldownChange({
+        actorCanManage: true, currentState: 'ACTIVE',
+        currentPairCooldownDays: 15, nextPairCooldownDays,
+      })).toThrowError(expect.objectContaining({ code: 'PAIR_COOLDOWN_OUT_OF_RANGE' }));
+    }
+    expect(() => assertCommunityPairCooldownChange({
+      actorCanManage: false, currentState: 'ACTIVE',
+      currentPairCooldownDays: 15, nextPairCooldownDays: 20,
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CONFIGURATION_ADMIN_REQUIRED',
+    }));
+    expect(() => assertCommunityPairCooldownChange({
+      actorCanManage: true, currentState: 'CLOSING',
+      currentPairCooldownDays: 15, nextPairCooldownDays: 20,
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CONFIGURATION_INVALID_STATE',
+    }));
+  });
+
   it('[CO-02][CO-03] keeps pause/reactivation Central-only and state-explicit', () => {
     expect(() => assertCommunityLifecycleTransition({
       action: 'PAUSE', actorIsCentral: true, currentState: 'ACTIVE', reason: 'Плановые работы',

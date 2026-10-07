@@ -33,7 +33,7 @@
 | Production auth bootstrap | database sessions only, no local fixtures/static tokens, live Central-role check, required secrets/pilot IDs/HTTPS origins | Pass in code and automated config/auth/DB tests; external OTP provider remains unconfigured |
 | Avatar media boundary | authenticated/idempotent private upload-ticket port, JPEG/PNG/WebP 10 MiB contract, disabled adapter and no pre-scan attachment path | Pass in API contract tests; external object/scan provider remains unconfigured |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 156/214 mapped (`150/196 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 160/214 mapped (`154/196 P0`) as implementation grows |
 | Athlete Challenge reschedule | CH-22 bounded counter, immutable initiator/reason/fault/Booking fact, original deadline and Booking/host race serialization | Pass in Core/API/client and real PostgreSQL |
 | Exhausted reschedule Forfeit | CH-23 explicit consequence confirmation, capped counter, no third reschedule fact, pending-resource cleanup and ordinary Result/Appeal lifecycle | Pass in Core/API/client and real PostgreSQL |
 | Mutual Challenge reschedule | CH-21 peer confirmation, one shared counter, no fault user, private reason and atomic B-15/SL-06 pre-start cleanup | Pass in Core/API/client and real PostgreSQL |
@@ -200,12 +200,12 @@ unconfigured object-storage capability.
 
 ## Verification result
 
-Verified on 2026-10-06:
+Verified on 2026-10-07:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 259 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 49 integration scenarios, including Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-061/062/063/064/065/066 Athlete/mutual/external-reschedule/reschedule-limit/withdrawal/confirmed-cancellation/host-confirmation and AC-153 shared-Athlete confirmation races, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-164 mandatory push-intent/no-SMS delivery, AC-167 media-free Result boundary, AC-172 optional Challenge reminders/expiry, AC-202 LATE-to-ordinary-Result and AC-203 single/double-NO_SHOW semantics, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
+- 260 non-database automated tests pass across Core, DB, API, worker and testkit;
+- the current PostgreSQL gate passes all 50 integration scenarios, including AC-166 immutable Pair Cooldown configuration versions with frozen Challenge/Session/Cooldown snapshots, Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-061/062/063/064/065/066 Athlete/mutual/external-reschedule/reschedule-limit/withdrawal/confirmed-cancellation/host-confirmation and AC-153 shared-Athlete confirmation races, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-164 mandatory push-intent/no-SMS delivery, AC-167 media-free Result boundary, AC-172 optional Challenge reminders/expiry, AC-202 LATE-to-ordinary-Result and AC-203 single/double-NO_SHOW semantics, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
@@ -256,6 +256,6 @@ Verified on 2026-10-06:
   passes live/ready, runtime identity, security headers, configured CORS and unauthenticated-boundary
   probes with the correct SHA and rejects a deliberate release mismatch;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 156 scenarios (`150/196 P0`) and distinguishes traceability from complete coverage;
+- the generated acceptance matrix maps 160 scenarios (`154/196 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published transitive fixes, including `shell-quote@1.11.0`, are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16;
-- the Core specification validator reports 308 transitions, 309 registered events, 214 acceptance scenarios, zero open questions and zero errors.
+- the Core specification validator reports 309 transitions, 310 registered events, 214 acceptance scenarios, zero open questions and zero errors.

@@ -2996,6 +2996,9 @@ export const CommunityContextSchema = Type.Object(
           Type.Literal('CLOSING'),
           Type.Literal('CLOSED'),
         ]),
+        configurationId: Type.String({ format: 'uuid' }),
+        configurationVersion: Type.Integer({ minimum: 1 }),
+        configurationEffectiveAt: Type.String({ format: 'date-time' }),
         pairCooldownDays: Type.Integer({ minimum: 7, maximum: 30 }),
         noShowGraceMinutes: Type.Integer({ minimum: 5, maximum: 30 }),
         rulesetRef: Type.String(),
@@ -3075,6 +3078,47 @@ export const CommunityContextResponseSchema = Type.Object(
 );
 
 export type CommunityContextResponse = Static<typeof CommunityContextResponseSchema>;
+
+export const ChangeCommunityPairCooldownBodySchema = Type.Object(
+  { pairCooldownDays: Type.Integer({ minimum: 7, maximum: 30 }) },
+  { $id: 'ChangeCommunityPairCooldownBody', additionalProperties: false },
+);
+export type ChangeCommunityPairCooldownBody = Static<
+  typeof ChangeCommunityPairCooldownBodySchema
+>;
+
+export const CommunityConfigurationProjectionSchema = Type.Object(
+  {
+    communityId: Type.String({ format: 'uuid' }),
+    configurationId: Type.String({ format: 'uuid' }),
+    configurationVersion: Type.Integer({ minimum: 1 }),
+    pairCooldownDays: Type.Integer({ minimum: 7, maximum: 30 }),
+    noShowGraceMinutes: Type.Integer({ minimum: 5, maximum: 30 }),
+    rulesetRef: Type.String(),
+    rulesetAckMode: Type.Union([
+      Type.Literal('IMPLICIT_ON_ACCEPT'),
+      Type.Literal('EXPLICIT_ACK_REQUIRED'),
+    ]),
+    effectiveAt: Type.String({ format: 'date-time' }),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'CommunityConfigurationProjection', additionalProperties: false },
+);
+
+export const CommunityConfigurationCommandResponseSchema = Type.Object(
+  {
+    data: CommunityConfigurationProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }, { additionalProperties: false }),
+  },
+  { $id: 'CommunityConfigurationCommandResponse', additionalProperties: false },
+);
+export type CommunityConfigurationCommandResponse = Static<
+  typeof CommunityConfigurationCommandResponseSchema
+>;
 
 export const MembershipProjectionSchema = Type.Object(
   {

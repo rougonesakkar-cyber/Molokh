@@ -88,7 +88,9 @@ Critical constraints:
 - one active Community per Venue in MVP;
 - one active competitive Membership per User under feature policy;
 - one active PRIMARY_ADMIN grant per Venue;
-- configuration rows immutable after effective publication.
+- configuration rows immutable after effective publication;
+- changing Pair Cooldown appends a new row and atomically switches only the current Community
+  pointer/version; existing Challenge/Session snapshots and created Cooldowns retain the old ID.
 
 ### scheduling
 

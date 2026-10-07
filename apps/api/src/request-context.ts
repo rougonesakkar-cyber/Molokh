@@ -6,6 +6,7 @@ import {
   AccountLifecycleConflictError,
   AuthSessionConflictError,
   ChallengeConflictError,
+  CommunityConfigurationConflictError,
   CommunityLifecycleConflictError,
   IdempotencyKeyReusedError,
   IdentityPermissionDeniedError,
@@ -260,6 +261,25 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: {
         code: error.code,
         message: 'This Community lifecycle action is not available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof CommunityConfigurationConflictError) {
+    const statusCode = error.code === 'COMMUNITY_CONFIGURATION_ADMIN_REQUIRED'
+      ? 403
+      : error.code === 'PAIR_COOLDOWN_OUT_OF_RANGE'
+        ? 422
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: statusCode === 403
+          ? 'This Community configuration action is not permitted'
+          : statusCode === 422
+            ? 'Pair Cooldown must be an integer from 7 to 30 days'
+            : 'Community configuration no longer allows this action',
         requestId,
       },
     };
