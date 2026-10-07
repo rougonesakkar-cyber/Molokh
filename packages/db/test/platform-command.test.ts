@@ -8798,7 +8798,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(bookingLineage.rows[0]?.match_id).toBeNull();
   });
 
-  it('[AC-044][AC-052][AC-095][AC-096][AC-097][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
+  it('[AC-044][AC-052][AC-095][AC-096][AC-097][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
     const setup = async (base: number, phonePrefix: string) => {
       const challenger = testId(base);
       const contender = testId(base + 1);
@@ -9044,33 +9044,95 @@ describePostgres('PostgreSQL critical command transaction', () => {
       where challenge_id = ${acceptedFixture.challengeId}::uuid
     `.execute(database);
     expect(challengeAfterRead.rows[0]).toEqual(challengeBeforeRead.rows[0]);
+    const acceptCommand = {
+      commandId: testId(15100), commandType: 'ACCEPT_MANDATORY_CHALLENGE',
+      idempotencyKey: `mandatory-accept-${acceptedFixture.challengeId}`,
+      actor: { type: 'USER', id: acceptedFixture.contender, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: acceptedFixture.challengeId,
+      expectedVersion: 1, correlationId: testId(15101), causationId: null,
+      requestId: testId(15102), source: 'api', payloadVersion: 1,
+      payload: { challengeId: acceptedFixture.challengeId },
+    } satisfies CommandEnvelope<RespondToChallengePayload>;
+    const acceptEffectIds = {
+      eventId: testId(15103), auditId: testId(15104), outboxMessageId: testId(15105),
+      notificationId: testId(15106), notificationOutboxMessageId: testId(15107),
+      acknowledgmentId: testId(15108), obligationIds: [testId(15109), testId(15110)] as const,
+    };
+    const acceptedAt = '2026-10-01T09:59:59.999Z';
+    const schedulingDeadlineAt = '2026-10-15T09:59:59.999Z';
     const accepted = await acceptOptionalChallenge(
-      database,
-      {
-        commandId: testId(15100), commandType: 'ACCEPT_MANDATORY_CHALLENGE',
-        idempotencyKey: `mandatory-accept-${acceptedFixture.challengeId}`,
-        actor: { type: 'USER', id: acceptedFixture.contender, roles: ['ATHLETE'], scopeIds: [] },
-        aggregateType: 'Challenge', aggregateId: acceptedFixture.challengeId,
-        expectedVersion: 1, correlationId: testId(15101), causationId: null,
-        requestId: testId(15102), source: 'api', payloadVersion: 1,
-        payload: { challengeId: acceptedFixture.challengeId },
-      } satisfies CommandEnvelope<RespondToChallengePayload>,
-      {
-        eventId: testId(15103), auditId: testId(15104), outboxMessageId: testId(15105),
-        notificationId: testId(15106), notificationOutboxMessageId: testId(15107),
-        acknowledgmentId: testId(15108), obligationIds: [testId(15109), testId(15110)],
-      },
-      () => new Date('2026-09-28T11:00:00.000Z'),
+      database, acceptCommand, acceptEffectIds, () => new Date(acceptedAt),
     );
     expect(accepted.response).toMatchObject({
       state: 'ACCEPTED_UNSCHEDULED',
-      schedulingDeadlineAt: '2026-10-12T11:00:00.000Z',
+      version: 2,
+      responseDeadlineAt: '2026-10-01T10:00:00.000Z',
+      schedulingDeadlineAt,
     });
-    const acceptedObligations = await sql<{ readonly count: string }>`
-      select count(*)::text as count from competition.challenge_participant_obligations
-      where challenge_id = ${acceptedFixture.challengeId}::uuid and released_at is null
+    await expect(acceptOptionalChallenge(
+      database, acceptCommand, acceptEffectIds, () => new Date(acceptedAt),
+    )).resolves.toMatchObject({ replayed: true, eventId: acceptEffectIds.eventId });
+    await expect(readChallengeTimerSnapshot(
+      database, acceptedFixture.challengeId,
+    )).resolves.toEqual({
+      state: 'ACCEPTED_UNSCHEDULED', version: 2, deadlineAt: schedulingDeadlineAt,
+    });
+    const acceptedFacts = await sql<{
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_lock_result_id: string | null;
+      readonly obligations: string;
+      readonly results: string;
+      readonly status_transitions: string;
+      readonly cooldowns: string;
+      readonly accepted_events: string;
+      readonly expiry_events: string;
+      readonly accept_audits: string;
+      readonly accept_outbox: string;
+      readonly idempotency_records: string;
+    }>`
+      select competition.champion_user_id, competition.contender_user_id,
+        competition.status_lock_result_id,
+        (select count(*)::text from competition.challenge_participant_obligations
+          where challenge_id = ${acceptedFixture.challengeId}::uuid
+            and released_at is null) as obligations,
+        (select count(*)::text from competition.results
+          where challenge_id = ${acceptedFixture.challengeId}::uuid) as results,
+        (select count(*)::text from competition.status_transitions as transition
+          join competition.results as result
+            on result.result_id = transition.source_result_id
+          where result.challenge_id = ${acceptedFixture.challengeId}::uuid) as status_transitions,
+        (select count(*)::text from competition.pair_cooldowns as cooldown
+          join competition.results as result
+            on result.result_id = cooldown.source_result_id
+          where result.challenge_id = ${acceptedFixture.challengeId}::uuid) as cooldowns,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Challenge'
+            and aggregate_id = ${acceptedFixture.challengeId}::uuid
+            and event_name = 'ChallengeAccepted') as accepted_events,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Challenge'
+            and aggregate_id = ${acceptedFixture.challengeId}::uuid
+            and event_name = 'MandatoryChallengeExpired') as expiry_events,
+        (select count(*)::text from platform.audit_events
+          where aggregate_type = 'Challenge'
+            and aggregate_id = ${acceptedFixture.challengeId}::uuid
+            and action = 'ACCEPT_MANDATORY_CHALLENGE') as accept_audits,
+        (select count(*)::text from platform.outbox_messages
+          where event_id = ${acceptEffectIds.eventId}::uuid) as accept_outbox,
+        (select count(*)::text from platform.idempotency_records
+          where event_id = ${acceptEffectIds.eventId}::uuid) as idempotency_records
+      from competition.competitions as competition
+      where competition.competition_id = ${acceptedFixture.competition}::uuid
     `.execute(database);
-    expect(acceptedObligations.rows[0]?.count).toBe('2');
+    expect(acceptedFacts.rows[0]).toEqual({
+      champion_user_id: acceptedFixture.champion,
+      contender_user_id: acceptedFixture.contender,
+      status_lock_result_id: null,
+      obligations: '2', results: '0', status_transitions: '0', cooldowns: '0',
+      accepted_events: '1', expiry_events: '0', accept_audits: '1',
+      accept_outbox: '2', idempotency_records: '1',
+    });
 
     const refusedFixture = await setup(15400, '+7999154000');
     const followerQueueEntryId = testId(15600);

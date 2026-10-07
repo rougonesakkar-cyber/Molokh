@@ -308,7 +308,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 - `INV-CH-03`: Ordinary↔Ordinary и Champion→Ordinary требуют active Match; status path к Contender не требует Match.
 - `INV-CH-04`: Ordinary не может инициировать Official Challenge к Champion; Contender не инициирует Official к Ordinary в MVP.
 - `INV-CH-05`: любой физически начавшийся Official Champion↔Contender — TITLE.
-- `INV-CH-06`: Champion offer to Contender optional; Contender challenge to Champion mandatory for Champion, with a stale-safe +48h reminder and a +72h SYSTEM expiry that creates one appealable TITLE Forfeit through the Result engine.
+- `INV-CH-06`: Champion offer to Contender optional; Contender challenge to Champion mandatory for Champion, with a stale-safe +48h reminder and a +72h SYSTEM expiry that creates one appealable TITLE Forfeit through the Result engine; a manual accept committed first makes the old expiry timer a no-op even across the preflight/command race.
 - `INV-CH-07`: Ordinary challenge to Contender mandatory for Contender.
 - `INV-CH-08`: pre-accept withdrawal no loss; accepted unilateral Athlete abandonment is Forfeit unless external/mutual/Central no-fault.
 - `INV-CH-09`: scheduling 14d, one capacity extension +7d; unavailable capacity never Athlete fault.

@@ -1,5 +1,6 @@
 import {
   PlatformIncidentConflictError,
+  VersionConflictError,
   evaluateTimer,
   type TimerAggregateSnapshot,
   type TimerCommandPayload,
@@ -48,6 +49,14 @@ export async function processTimer(
     try {
       await handler.execute(payload);
     } catch (error) {
+      if (error instanceof VersionConflictError) {
+        const latestSnapshot = await handler.loadSnapshot(payload);
+        const latestDecision = evaluateTimer(payload, latestSnapshot, options.now());
+        if (latestDecision.kind === 'STALE') {
+          await options.recordStaleDiagnostic(payload, latestDecision);
+          return latestDecision;
+        }
+      }
       if (error instanceof PlatformIncidentConflictError
         && error.code === 'PLATFORM_INCIDENT_TIMEOUT_SUPPRESSED') {
         const retryAt = new Date(options.now().getTime() + 5 * 60 * 1_000);

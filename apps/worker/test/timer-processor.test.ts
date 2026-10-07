@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PlatformIncidentConflictError } from '@molokh/core';
+import { PlatformIncidentConflictError, VersionConflictError } from '@molokh/core';
 
 import { processTimer } from '../src/timer-processor.js';
 
@@ -52,6 +52,26 @@ describe('timer processor', () => {
       reason: 'STATE_CHANGED',
     });
     expect(test.execute).not.toHaveBeenCalled();
+    expect(test.recordStaleDiagnostic).toHaveBeenCalledOnce();
+  });
+
+  it('[AC-138] turns an accept-vs-expiry compare-and-set race into a stale no-op', async () => {
+    const test = options('PENDING', 3, payload.deadlineAt);
+    const loadSnapshot = test.value.handlers.EXPIRE_PROBE.loadSnapshot;
+    loadSnapshot
+      .mockResolvedValueOnce({ state: 'PENDING', version: 3 })
+      .mockResolvedValueOnce({ state: 'ACCEPTED', version: 4 });
+    test.execute.mockRejectedValueOnce(new VersionConflictError(3, 4));
+
+    await expect(processTimer(payload, test.value)).resolves.toEqual({
+      kind: 'STALE',
+      reason: 'STATE_CHANGED',
+      actualState: 'ACCEPTED',
+      actualVersion: 4,
+    });
+    expect(test.execute).toHaveBeenCalledOnce();
+    expect(loadSnapshot).toHaveBeenCalledTimes(2);
+    expect(test.reschedule).not.toHaveBeenCalled();
     expect(test.recordStaleDiagnostic).toHaveBeenCalledOnce();
   });
 
