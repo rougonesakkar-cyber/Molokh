@@ -330,7 +330,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 
 - `INV-RES-01`: Athlete никогда не является author attendance/result command.
 - `INV-RES-02`: Coach cannot arbitrate a Session in which the same User is an Athlete.
-- `INV-RES-03`: one effective Result per official Session or administrative obligation breach.
+- `INV-RES-03`: one effective Result per official Session or administrative obligation breach; duplicate or concurrent timeout jobs serialize to that single Result and its single status/Cooldown lifecycle.
 - `INV-RES-04`: FORFEIT, NO_SHOW, NO_CONTEST require reason/comment.
 - `INV-RES-05`: sport-specific score/method/ruleset never directly alters status.
 - `INV-RES-06`: Result `RECORDED` immediately applies provisional status projection.

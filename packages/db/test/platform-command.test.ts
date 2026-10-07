@@ -9318,7 +9318,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('[AC-053] reminds Champion at 48h and records one TITLE Forfeit at 72h', async () => {
+  it('[AC-053][AC-139] reminds Champion at 48h and serializes duplicate TITLE expiry jobs at 72h', async () => {
     const contender = testId(28000);
     const champion = testId(28001);
     const central = testId(28002);
@@ -9459,7 +9459,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       channels: ['PUSH'],
     });
 
-    const resultId = testId(28020);
+    const primaryResultId = testId(28020);
     const command = {
       commandId: testId(28021), commandType: 'EXPIRE_MANDATORY_CHALLENGE',
       idempotencyKey: `challenge:${challenge}:expire-mandatory:v1`,
@@ -9472,26 +9472,44 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const effectIds = {
       eventId: testId(28023), auditId: testId(28024),
       outboxMessageId: testId(28025), notificationId: testId(28026),
-      notificationOutboxMessageId: testId(28027), resultId,
+      notificationOutboxMessageId: testId(28027), resultId: primaryResultId,
       resultEventId: testId(28028), statusTransitionId: testId(28029),
       statusEventId: testId(28030), cooldownId: testId(28031),
       cooldownEventId: testId(28032), timerOutboxMessageId: testId(28033),
       notificationIds: [testId(28034), testId(28035)] as const,
     };
+    const duplicateCommand = {
+      ...command,
+      commandId: testId(28040),
+      correlationId: testId(28041),
+      requestId: testId(28042),
+    } satisfies CommandEnvelope<ExpireOptionalChallengePayload>;
+    const duplicateEffectIds = {
+      eventId: testId(28043), auditId: testId(28044),
+      outboxMessageId: testId(28045), notificationId: testId(28046),
+      notificationOutboxMessageId: testId(28047), resultId: testId(28048),
+      resultEventId: testId(28049), statusTransitionId: testId(28050),
+      statusEventId: testId(28051), cooldownId: testId(28052),
+      cooldownEventId: testId(28053), timerOutboxMessageId: testId(28054),
+      notificationIds: [testId(28055), testId(28056)] as const,
+    };
     await expect(expireOptionalChallenge(
       database, command, effectIds,
       () => new Date('2026-10-04T09:59:59.999Z'),
     )).rejects.toThrow('CHALLENGE_RESPONSE_NOT_DUE');
-    const expired = await expireOptionalChallenge(
-      database, command, effectIds, () => new Date(deadlineAt),
-    );
-    expect(expired.replayed).toBe(false);
-    expect(expired.response).toMatchObject({ state: 'RESULT_RECORDED', version: 2 });
-    const replay = await expireOptionalChallenge(
-      database, command, effectIds, () => new Date(deadlineAt),
-    );
-    expect(replay.replayed).toBe(true);
-    expect(replay.eventId).toBe(expired.eventId);
+    const outcomes = await Promise.all([
+      expireOptionalChallenge(database, command, effectIds, () => new Date(deadlineAt)),
+      expireOptionalChallenge(
+        database, duplicateCommand, duplicateEffectIds, () => new Date(deadlineAt),
+      ),
+    ]);
+    expect(outcomes.map((outcome) => outcome.replayed).sort()).toEqual([false, true]);
+    expect(outcomes[0].response).toEqual(outcomes[1].response);
+    expect(outcomes[0].response).toMatchObject({ state: 'RESULT_RECORDED', version: 2 });
+    expect(outcomes[0].eventId).toBe(outcomes[1].eventId);
+    const committedIds = outcomes[0].replayed ? duplicateEffectIds : effectIds;
+    const resultId = committedIds.resultId;
+    const timeoutEventId = outcomes[0].eventId;
     await expect(projectPendingMandatoryChallengeReminder(
       database, challenge, 1, testId(28036),
     )).resolves.toBe(0);
@@ -9516,6 +9534,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
       readonly transition_count: string;
       readonly cooldown_count: string;
       readonly timeout_event_count: string;
+      readonly result_event_count: string;
+      readonly audit_count: string;
+      readonly result_outbox_count: string;
+      readonly notification_outbox_count: string;
+      readonly idempotency_count: string;
     }>`
       select competition.champion_user_id, competition.contender_user_id,
         competition.status_lock_result_id,
@@ -9527,7 +9550,21 @@ describePostgres('PostgreSQL critical command transaction', () => {
           where source_result_id = ${resultId}::uuid) as cooldown_count,
         (select count(*)::text from platform.domain_events
           where aggregate_type = 'Challenge' and aggregate_id = ${challenge}::uuid
-            and event_name = 'MandatoryChallengeExpired') as timeout_event_count
+            and event_name = 'MandatoryChallengeExpired') as timeout_event_count,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Result' and aggregate_id = ${resultId}::uuid
+            and event_name = 'ResultRecorded') as result_event_count,
+        (select count(*)::text from platform.audit_events
+          where aggregate_type = 'Challenge' and aggregate_id = ${challenge}::uuid
+            and action = 'MandatoryChallengeExpired') as audit_count,
+        (select count(*)::text from platform.outbox_messages
+          where event_id = ${committedIds.resultEventId}::uuid
+            and topic = 'competition.result.recorded.v1') as result_outbox_count,
+        (select count(*)::text from platform.outbox_messages
+          where event_id = ${timeoutEventId}::uuid
+            and topic = 'notification.in_app.v1') as notification_outbox_count,
+        (select count(*)::text from platform.idempotency_records
+          where event_id = ${timeoutEventId}::uuid) as idempotency_count
       from competition.competitions as competition
       where competition.competition_id = ${competition}::uuid
     `.execute(database);
@@ -9536,7 +9573,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       contender_user_id: champion,
       status_lock_result_id: resultId,
       result_count: '1', transition_count: '1', cooldown_count: '1',
-      timeout_event_count: '1',
+      timeout_event_count: '1', result_event_count: '1', audit_count: '1',
+      result_outbox_count: '1', notification_outbox_count: '1', idempotency_count: '1',
     });
   });
 

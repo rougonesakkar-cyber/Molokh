@@ -374,7 +374,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 161/214 (`155/196 P0`).
+  Acceptance traceability is 162/214 (`156/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -385,7 +385,9 @@ This sprint produces a demonstrable Training slice while establishing the same f
   server deadline. The existing administrative Result engine records exactly one `FORFEIT`, swaps
   Champion/Contender provisionally under the `TITLE` stake, starts Pair Cooldown and the normal
   48-hour Appeal, while critical PUSH and opt-in-only SMS delivery remain provider-independent.
-  AC-053 passes Core/Worker/PostgreSQL and client-flow checks.
+  Concurrent duplicate expiry jobs use the same deterministic idempotency scope and aggregate
+  lock, so exactly one Result/status/Cooldown/Appeal lifecycle commits without duplicate audit,
+  events or outbox messages. AC-053 and AC-139 pass Core/Worker/PostgreSQL and client-flow checks.
 - M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
   exact 30-day recovery, owner cancellation and reasoned Central execution only after all
   obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one
