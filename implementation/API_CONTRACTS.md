@@ -366,7 +366,12 @@ outcome/winner with a normalized category, private reason and evidence reference
 event, audit, outbox and one neutral Central notification commit atomically as `SUBMITTED`.
 Result/status/Cooldown/Appeal rows are read-only in this transaction; public payloads contain no
 private text or evidence reference. Only one open request per Result is allowed. TC-02…TC-05
-review and decision endpoints are intentionally not part of AC-113.
+are separate from TC-01. AC-148 implements `POST
+/central/technical-corrections/{id}/start-review` and `POST
+/central/technical-corrections/{id}/reject`: only an independent active Central reviewer may take
+the versioned item, and only the assigned reviewer may reject it with a protected mandatory reason.
+The rejection event, outbox and requester notification are neutral and contain no reason text;
+Result/status/Cooldown/Appeal state remains read-only. TC-04 approval is intentionally excluded.
 
 The implemented Result command commits Result, `CH-15`, provisional status, status lock,
 Cooldown, domain events, audit and outbox atomically. `WIN_A/WIN_B` refer to the immutable ordered

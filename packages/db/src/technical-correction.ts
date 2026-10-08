@@ -3,6 +3,8 @@ import {
   ResultConflictError,
   ResultPermissionDeniedError,
   assertExpectedVersion,
+  assertTechnicalCorrectionReviewCanStart,
+  normalizeTechnicalCorrectionRejection,
   normalizeTechnicalCorrectionRequest,
   type CommandEnvelope,
   type ResultOutcomeCode,
@@ -34,6 +36,26 @@ export interface TechnicalCorrectionEffectIds {
   readonly notificationId: string;
 }
 
+export interface StartTechnicalCorrectionReviewPayload {
+  readonly correctionId: string;
+}
+
+export interface RejectTechnicalCorrectionPayload {
+  readonly correctionId: string;
+  readonly reason: string;
+}
+
+export interface TechnicalCorrectionReviewEffectIds {
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
+}
+
+export interface TechnicalCorrectionRejectionEffectIds extends TechnicalCorrectionReviewEffectIds {
+  readonly notificationOutboxMessageId: string;
+  readonly notificationId: string;
+}
+
 export interface TechnicalCorrectionProjection {
   readonly correctionId: string;
   readonly resultId: string;
@@ -50,6 +72,10 @@ export interface TechnicalCorrectionProjection {
   readonly internalReason: string | null;
   readonly evidenceReference: string | null;
   readonly submittedAt: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewStartedAt: string | null;
+  readonly decisionReason: string | null;
+  readonly decidedAt: string | null;
   readonly version: number;
 }
 
@@ -88,7 +114,18 @@ interface CorrectionRow {
   readonly internal_reason: string;
   readonly evidence_reference: string;
   readonly submitted_at: Date;
+  readonly assigned_reviewer_user_id: string | null;
+  readonly review_started_at: Date | null;
+  readonly decision_reason: string | null;
+  readonly decided_at: Date | null;
   readonly version: string;
+}
+
+interface CorrectionCommandRow extends CorrectionRow {
+  readonly pair_low_id: string;
+  readonly pair_high_id: string;
+  readonly result_coach_user_id: string | null;
+  readonly session_coach_user_id: string | null;
 }
 
 async function hasCentralGrant(
@@ -176,6 +213,8 @@ async function correctionRows(
       correction.original_winner_user_id, correction.proposed_outcome_code,
       correction.proposed_winner_user_id, correction.internal_reason,
       correction.evidence_reference, correction.submitted_at,
+      correction.assigned_reviewer_user_id, correction.review_started_at,
+      correction.decision_reason, correction.decided_at,
       correction.version::text as version
     from competition.technical_correction_requests correction
     join identity.users requester on requester.user_id = correction.requester_user_id
@@ -186,7 +225,36 @@ async function correctionRows(
   return result.rows;
 }
 
-function project(row: CorrectionRow, privateDetails: boolean): TechnicalCorrectionProjection {
+async function correctionCommandRow(
+  transaction: Transaction<Database>, correctionId: string,
+): Promise<CorrectionCommandRow | undefined> {
+  const result = await sql<CorrectionCommandRow>`
+    select correction.correction_id, correction.result_id, correction.challenge_id,
+      correction.competition_id, correction.requester_user_id,
+      requester.display_name as requester_display_name, correction.category,
+      correction.state, correction.original_outcome_code,
+      correction.original_winner_user_id, correction.proposed_outcome_code,
+      correction.proposed_winner_user_id, correction.internal_reason,
+      correction.evidence_reference, correction.submitted_at,
+      correction.assigned_reviewer_user_id, correction.review_started_at,
+      correction.decision_reason, correction.decided_at,
+      correction.version::text as version, challenge.pair_low_id,
+      challenge.pair_high_id, result.coach_user_id as result_coach_user_id,
+      session.coach_user_id as session_coach_user_id
+    from competition.technical_correction_requests correction
+    join identity.users requester on requester.user_id = correction.requester_user_id
+    join competition.results result on result.result_id = correction.result_id
+    join competition.challenges challenge on challenge.challenge_id = correction.challenge_id
+    left join scheduling.sessions session on session.session_id = result.session_id
+    where correction.correction_id = ${correctionId}::uuid
+    for update of correction
+  `.execute(transaction);
+  return result.rows[0];
+}
+
+function project(
+  row: CorrectionRow, requestDetails: boolean, decisionDetails: boolean,
+): TechnicalCorrectionProjection {
   return {
     correctionId: row.correction_id,
     resultId: row.result_id,
@@ -200,9 +268,13 @@ function project(row: CorrectionRow, privateDetails: boolean): TechnicalCorrecti
     originalWinnerUserId: row.original_winner_user_id,
     proposedOutcomeCode: row.proposed_outcome_code,
     proposedWinnerUserId: row.proposed_winner_user_id,
-    internalReason: privateDetails ? row.internal_reason : null,
-    evidenceReference: privateDetails ? row.evidence_reference : null,
+    internalReason: requestDetails ? row.internal_reason : null,
+    evidenceReference: requestDetails ? row.evidence_reference : null,
     submittedAt: row.submitted_at.toISOString(),
+    assignedReviewerUserId: row.assigned_reviewer_user_id,
+    reviewStartedAt: row.review_started_at?.toISOString() ?? null,
+    decisionReason: decisionDetails ? row.decision_reason : null,
+    decidedAt: row.decided_at?.toISOString() ?? null,
     version: Number(row.version),
   };
 }
@@ -213,7 +285,7 @@ export async function listTechnicalCorrectionsForCentral(
   if (!(await hasCentralGrant(database, centralUserId))) throw new ResultPermissionDeniedError();
   return (await correctionRows(database))
     .filter((row) => row.state === 'SUBMITTED' || row.state === 'UNDER_REVIEW')
-    .map((row) => project(row, true));
+    .map((row) => project(row, true, true));
 }
 
 export async function listTechnicalCorrectionsForViewer(
@@ -222,7 +294,7 @@ export async function listTechnicalCorrectionsForViewer(
   const central = await hasCentralGrant(database, viewerUserId);
   return (await correctionRows(database))
     .filter((row) => central || row.requester_user_id === viewerUserId)
-    .map((row) => project(row, true));
+    .map((row) => project(row, true, central));
 }
 
 export async function requestTechnicalCorrection(
@@ -291,7 +363,7 @@ export async function requestTechnicalCorrection(
       };
       return {
         responseStatus: 201,
-        response: project(row, true),
+        response: project(row, true, source.actor_is_central),
         event: {
           eventId: ids.eventId,
           eventName: 'TechnicalCorrectionRequested',
@@ -342,6 +414,128 @@ export async function requestTechnicalCorrection(
               }],
             },
           },
+        ],
+      };
+    },
+  });
+}
+
+function assertTransitionCommand(
+  command: CommandEnvelope<StartTechnicalCorrectionReviewPayload | RejectTechnicalCorrectionPayload>,
+  commandType: 'START_TECHNICAL_CORRECTION_REVIEW' | 'REJECT_TECHNICAL_CORRECTION',
+): void {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'TechnicalCorrection'
+    || command.commandType !== commandType
+    || command.payload.correctionId !== command.aggregateId
+  ) throw new ResultPermissionDeniedError();
+}
+
+export async function startTechnicalCorrectionReview(
+  database: Kysely<Database>,
+  command: CommandEnvelope<StartTechnicalCorrectionReviewPayload>,
+  ids: TechnicalCorrectionReviewEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<TechnicalCorrectionProjection>> {
+  assertTransitionCommand(command, 'START_TECHNICAL_CORRECTION_REVIEW');
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      if (!(await hasCentralGrant(transaction, command.actor.id!))) {
+        throw new ResultPermissionDeniedError();
+      }
+      const row = await correctionCommandRow(transaction, command.aggregateId);
+      if (!row) throw new ResultPermissionDeniedError();
+      assertExpectedVersion(Number(row.version), command.expectedVersion);
+      assertTechnicalCorrectionReviewCanStart({
+        state: row.state,
+        reviewerUserId: command.actor.id!,
+        protectedUserIds: [row.requester_user_id, row.pair_low_id, row.pair_high_id,
+          row.result_coach_user_id ?? '', row.session_coach_user_id ?? ''],
+      });
+      await sql`update competition.technical_correction_requests
+        set state = 'UNDER_REVIEW', assigned_reviewer_user_id = ${command.actor.id}::uuid,
+          review_started_at = ${context.occurredAt.toISOString()}::timestamptz,
+          version = ${context.nextVersion}
+        where correction_id = ${row.correction_id}::uuid and state = 'SUBMITTED'`
+        .execute(transaction);
+      const updated = (await correctionRows(transaction, row.correction_id))[0]!;
+      const publicPayload = {
+        correctionId: row.correction_id, resultId: row.result_id, state: 'UNDER_REVIEW',
+        reviewStartedAt: context.occurredAt.toISOString(),
+      };
+      return {
+        responseStatus: 200,
+        response: project(updated, true, true),
+        event: { eventId: ids.eventId, eventName: 'TechnicalCorrectionReviewStarted',
+          schemaVersion: 1, transitionId: 'TC-02', payload: publicPayload,
+          metadata: { policyVersion: RESULT_POLICY_VERSION } },
+        audit: { auditId: ids.auditId, action: 'START_TECHNICAL_CORRECTION_REVIEW',
+          transitionId: 'TC-02', reasonCode: null, beforeState: 'SUBMITTED',
+          afterState: 'UNDER_REVIEW', metadata: { resultId: row.result_id } },
+        outbox: [{ messageId: ids.outboxMessageId,
+          topic: 'competition.technical-correction.review-started.v1', payload: publicPayload }],
+      };
+    },
+  });
+}
+
+export async function rejectTechnicalCorrection(
+  database: Kysely<Database>,
+  command: CommandEnvelope<RejectTechnicalCorrectionPayload>,
+  ids: TechnicalCorrectionRejectionEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<TechnicalCorrectionProjection>> {
+  assertTransitionCommand(command, 'REJECT_TECHNICAL_CORRECTION');
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      if (!(await hasCentralGrant(transaction, command.actor.id!))) {
+        throw new ResultPermissionDeniedError();
+      }
+      const row = await correctionCommandRow(transaction, command.aggregateId);
+      if (!row) throw new ResultPermissionDeniedError();
+      assertExpectedVersion(Number(row.version), command.expectedVersion);
+      const reason = normalizeTechnicalCorrectionRejection({
+        state: row.state,
+        assignedReviewerUserId: row.assigned_reviewer_user_id,
+        reviewerUserId: command.actor.id!,
+        reason: command.payload.reason,
+      });
+      await sql`update competition.technical_correction_requests
+        set state = 'REJECTED', decision_reason = ${reason},
+          decided_at = ${context.occurredAt.toISOString()}::timestamptz,
+          version = ${context.nextVersion}
+        where correction_id = ${row.correction_id}::uuid and state = 'UNDER_REVIEW'`
+        .execute(transaction);
+      const updated = (await correctionRows(transaction, row.correction_id))[0]!;
+      const publicPayload = {
+        correctionId: row.correction_id, resultId: row.result_id, state: 'REJECTED',
+        decidedAt: context.occurredAt.toISOString(),
+      };
+      return {
+        responseStatus: 200,
+        response: project(updated, true, true),
+        event: { eventId: ids.eventId, eventName: 'TechnicalCorrectionRejected',
+          schemaVersion: 1, transitionId: 'TC-05', payload: publicPayload,
+          metadata: { policyVersion: RESULT_POLICY_VERSION } },
+        audit: { auditId: ids.auditId, action: 'REJECT_TECHNICAL_CORRECTION',
+          transitionId: 'TC-05', reasonCode: 'INSUFFICIENT_CORRECTION_BASIS',
+          beforeState: 'UNDER_REVIEW', afterState: 'REJECTED',
+          metadata: { resultId: row.result_id, decisionReason: reason } },
+        outbox: [
+          { messageId: ids.outboxMessageId,
+            topic: 'competition.technical-correction.rejected.v1', payload: publicPayload },
+          { messageId: ids.notificationOutboxMessageId, topic: 'notification.in_app.v1',
+            payload: { notifications: [{ notificationId: ids.notificationId,
+              recipientUserId: row.requester_user_id, category: 'MANDATORY',
+              renderKey: 'result.technical-correction-rejected',
+              actionTarget: { type: 'RESULT', resultId: row.result_id },
+              payload: { correctionId: row.correction_id, resultId: row.result_id,
+                state: 'REJECTED' }, deadlineAt: null }] } },
         ],
       };
     },

@@ -4323,6 +4323,12 @@ export default function IdentityScreen() {
                 <TechnicalCorrectionQueue
                   central={activeTestAccount.role === 'Central'}
                   corrections={technicalCorrections}
+                  token={activeTestToken}
+                  onUpdated={(updated) => setTechnicalCorrections((current) =>
+                    updated.state === 'REJECTED'
+                      ? current.filter((item) => item.correctionId !== updated.correctionId)
+                      : current.map((item) => item.correctionId === updated.correctionId
+                        ? updated : item))}
                 />
 
                 {activeTestAccount.role === 'Central' ? (

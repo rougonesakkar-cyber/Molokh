@@ -233,6 +233,8 @@ import {
   listTechnicalCorrectionsForCentral,
   listTechnicalCorrectionsForViewer,
   requestTechnicalCorrection,
+  rejectTechnicalCorrection,
+  startTechnicalCorrectionReview,
   submitResultAppeal,
   transitionYouthToAdult,
   withdrawAppeal,
@@ -322,6 +324,8 @@ import {
   type AssignMissingResultCoachPayload,
   type OpenIntegrityCasePayload,
   type RequestTechnicalCorrectionPayload,
+  type RejectTechnicalCorrectionPayload,
+  type StartTechnicalCorrectionReviewPayload,
   type StartIntegrityReviewPayload,
   type DecideIntegrityCasePayload,
   type SubmitStatusQueueEntryPayload,
@@ -7457,7 +7461,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ]);
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-113][AC-117][AC-118][AC-144][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-113][AC-117][AC-118][AC-144][AC-148][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -8140,6 +8144,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
     const acceptedCorrection = competing[acceptedCorrectionIndex]!;
     if (acceptedCorrection.status !== 'fulfilled') throw new Error('Expected one correction request');
+    const acceptedEffectIds = competingIds[acceptedCorrectionIndex]!;
+    const acceptedCorrectionId = acceptedEffectIds.correctionId;
     expect(acceptedCorrection.value.response).toMatchObject({
       resultId,
       requesterUserId: coachId,
@@ -8177,6 +8183,117 @@ describePostgres('PostgreSQL critical command transaction', () => {
       correctionIds(5),
     )).rejects.toMatchObject({ code: 'TECHNICAL_CORRECTION_ALREADY_OPEN' });
 
+    const startCorrectionReviewCommand: CommandEnvelope<StartTechnicalCorrectionReviewPayload> = {
+      commandId: testId(35110), commandType: 'START_TECHNICAL_CORRECTION_REVIEW',
+      idempotencyKey: `technical-correction-start-${acceptedCorrectionId}`,
+      actor: { type: 'USER', id: centralId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'TechnicalCorrection', aggregateId: acceptedCorrectionId,
+      expectedVersion: 1, correlationId: testId(35111), causationId: acceptedEffectIds.eventId,
+      requestId: testId(35112), source: 'admin', payloadVersion: 1,
+      payload: { correctionId: acceptedCorrectionId },
+    };
+    const startCorrectionReviewIds = {
+      eventId: testId(35113), auditId: testId(35114), outboxMessageId: testId(35115),
+    };
+    await expect(startTechnicalCorrectionReview(database, {
+      ...startCorrectionReviewCommand, commandId: testId(35116),
+      idempotencyKey: `technical-correction-start-coach-${acceptedCorrectionId}`,
+      actor: { type: 'USER', id: coachId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+    }, { eventId: testId(35117), auditId: testId(35118), outboxMessageId: testId(35119) }))
+      .rejects.toBeInstanceOf(ResultPermissionDeniedError);
+    await expect(startTechnicalCorrectionReview(database, {
+      ...startCorrectionReviewCommand, commandId: testId(35120),
+      idempotencyKey: `technical-correction-start-stale-${acceptedCorrectionId}`,
+      expectedVersion: 2,
+    }, { eventId: testId(35121), auditId: testId(35122), outboxMessageId: testId(35123) }))
+      .rejects.toBeInstanceOf(VersionConflictError);
+    const startedCorrectionReview = await startTechnicalCorrectionReview(
+      database, startCorrectionReviewCommand, startCorrectionReviewIds,
+      () => new Date('2026-09-13T15:03:00.000Z'),
+    );
+    expect(startedCorrectionReview.response).toMatchObject({
+      correctionId: acceptedCorrectionId, state: 'UNDER_REVIEW',
+      assignedReviewerUserId: centralId, reviewStartedAt: '2026-09-13T15:03:00.000Z',
+      decisionReason: null, version: 2,
+    });
+    expect((await startTechnicalCorrectionReview(
+      database, startCorrectionReviewCommand, startCorrectionReviewIds,
+    )).replayed).toBe(true);
+
+    await sql`insert into community.role_grants (
+      grant_id, user_id, role, scope_type, scope_id, state, authorized_by, authorized_at, version
+    ) values (${testId(35124)}::uuid, ${adminId}::uuid, 'CENTRAL_ADMIN', 'GLOBAL', null,
+      'ACTIVE', ${centralId}::uuid, '2026-09-13T15:03:30.000Z', 1)`.execute(database);
+    const rejectCorrectionCommand: CommandEnvelope<RejectTechnicalCorrectionPayload> = {
+      commandId: testId(35125), commandType: 'REJECT_TECHNICAL_CORRECTION',
+      idempotencyKey: `technical-correction-reject-${acceptedCorrectionId}`,
+      actor: { type: 'USER', id: centralId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'TechnicalCorrection', aggregateId: acceptedCorrectionId,
+      expectedVersion: 2, correlationId: testId(35126),
+      causationId: startCorrectionReviewIds.eventId, requestId: testId(35127), source: 'admin',
+      payloadVersion: 1, payload: { correctionId: acceptedCorrectionId,
+        reason: '  Evidence does not support changing the official Result.  ' },
+    };
+    const rejectCorrectionIds = {
+      eventId: testId(35128), auditId: testId(35129), outboxMessageId: testId(35130),
+      notificationOutboxMessageId: testId(35131), notificationId: testId(35132),
+    };
+    await expect(rejectTechnicalCorrection(database, {
+      ...rejectCorrectionCommand, commandId: testId(35133),
+      idempotencyKey: `technical-correction-reject-other-${acceptedCorrectionId}`,
+      actor: { type: 'USER', id: adminId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+    }, { eventId: testId(35134), auditId: testId(35135), outboxMessageId: testId(35136),
+      notificationOutboxMessageId: testId(35137), notificationId: testId(35138) }))
+      .rejects.toMatchObject({ code: 'TECHNICAL_CORRECTION_REVIEWER_MISMATCH' });
+    const rejectedCorrectionResult = await rejectTechnicalCorrection(
+      database, rejectCorrectionCommand, rejectCorrectionIds,
+      () => new Date('2026-09-13T15:04:00.000Z'),
+    );
+    expect(rejectedCorrectionResult.response).toMatchObject({
+      state: 'REJECTED', assignedReviewerUserId: centralId,
+      decisionReason: 'Evidence does not support changing the official Result.',
+      decidedAt: '2026-09-13T15:04:00.000Z', version: 3,
+    });
+    expect((await rejectTechnicalCorrection(
+      database, rejectCorrectionCommand, rejectCorrectionIds,
+    )).replayed).toBe(true);
+    await expect(listTechnicalCorrectionsForCentral(database, centralId)).resolves.toEqual([]);
+    await expect(listTechnicalCorrectionsForViewer(database, coachId)).resolves.toEqual([
+      expect.objectContaining({ state: 'REJECTED', decisionReason: null, version: 3 }),
+    ]);
+
+    const correctionDecisionEffects = await sql<{
+      readonly audit_metadata: unknown;
+      readonly event_payload: unknown;
+      readonly outbox_payload: unknown;
+      readonly notification_payload: unknown;
+      readonly start_audit_count: string;
+      readonly reject_audit_count: string;
+    }>`select audit.metadata as audit_metadata, event.payload as event_payload,
+        outbox.payload as outbox_payload, notification.payload as notification_payload,
+        (select count(*)::text from platform.audit_events
+          where action = 'START_TECHNICAL_CORRECTION_REVIEW') as start_audit_count,
+        (select count(*)::text from platform.audit_events
+          where action = 'REJECT_TECHNICAL_CORRECTION') as reject_audit_count
+      from platform.audit_events audit, platform.domain_events event,
+        platform.outbox_messages outbox, platform.outbox_messages notification
+      where audit.audit_id = ${rejectCorrectionIds.auditId}::uuid
+        and event.event_id = ${rejectCorrectionIds.eventId}::uuid
+        and outbox.message_id = ${rejectCorrectionIds.outboxMessageId}::uuid
+        and notification.message_id = ${rejectCorrectionIds.notificationOutboxMessageId}::uuid`
+      .execute(database);
+    expect(correctionDecisionEffects.rows[0]).toMatchObject({
+      start_audit_count: '1', reject_audit_count: '1',
+      audit_metadata: { decisionReason: 'Evidence does not support changing the official Result.' },
+      notification_payload: { notifications: [{ recipientUserId: coachId,
+        renderKey: 'result.technical-correction-rejected',
+        payload: { correctionId: acceptedCorrectionId, state: 'REJECTED' } }] },
+    });
+    expect(JSON.stringify({ event: correctionDecisionEffects.rows[0]?.event_payload,
+      outbox: correctionDecisionEffects.rows[0]?.outbox_payload,
+      notification: correctionDecisionEffects.rows[0]?.notification_payload }))
+      .not.toContain('Evidence does not support');
+
     const afterCorrection = await sql<{
       readonly result_state: string;
       readonly result_version: string;
@@ -8197,8 +8314,6 @@ describePostgres('PostgreSQL critical command transaction', () => {
         on competition.competition_id = challenge.competition_id
       where result.result_id = ${resultId}::uuid`.execute(database);
     expect(afterCorrection.rows).toEqual(beforeCorrection.rows);
-    const acceptedEffectIds = competingIds[acceptedCorrectionIndex]!;
-    const acceptedCorrectionId = acceptedEffectIds.correctionId;
     const correctionEffects = await sql<{
       readonly event_payload: unknown;
       readonly event_metadata: unknown;

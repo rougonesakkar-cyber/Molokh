@@ -6,11 +6,13 @@ import {
   assertAppealActionCanBeTaken,
   assertAppealCanBeWithdrawn,
   assertAppealReviewCanStart,
+  assertTechnicalCorrectionReviewCanStart,
   assertResultMatchesAttendance,
   assertResultCanFinalize,
   deriveProvisionalStatusTransition,
   normalizeResultParticipants,
   normalizeTechnicalCorrectionRequest,
+  normalizeTechnicalCorrectionRejection,
   normalizeAppealDecision,
   normalizeAppealResponse,
   normalizeAppealSlaExtension,
@@ -73,6 +75,28 @@ describe('Result and provisional status policy', () => {
     expect(() => normalizeTechnicalCorrectionRequest({
       ...input, existingOpenRequest: true,
     })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_ALREADY_OPEN'));
+  });
+
+  it('[AC-148] requires an independent reviewer and a protected rejection reason', () => {
+    expect(() => assertTechnicalCorrectionReviewCanStart({
+      state: 'SUBMITTED', reviewerUserId: 'coach',
+      protectedUserIds: ['athlete-a', 'athlete-b', 'coach'],
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_CONFLICT'));
+    expect(() => assertTechnicalCorrectionReviewCanStart({
+      state: 'UNDER_REVIEW', reviewerUserId: 'central', protectedUserIds: [],
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_NOT_SUBMITTED'));
+    expect(normalizeTechnicalCorrectionRejection({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      reason: '  Evidence does not support changing the official Result.  ',
+    })).toBe('Evidence does not support changing the official Result.');
+    expect(() => normalizeTechnicalCorrectionRejection({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central-a', reviewerUserId: 'central-b',
+      reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH'));
+    expect(() => normalizeTechnicalCorrectionRejection({
+      state: 'REJECTED', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_NOT_UNDER_REVIEW'));
   });
 
   it('[AC-080] transfers Contender provisionally only from the frozen snapshot', () => {

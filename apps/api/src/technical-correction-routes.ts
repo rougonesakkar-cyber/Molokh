@@ -1,18 +1,26 @@
 import {
   ApiErrorSchema,
+  RejectTechnicalCorrectionBodySchema,
   RequestTechnicalCorrectionBodySchema,
+  StartTechnicalCorrectionReviewBodySchema,
   TechnicalCorrectionCommandResponseSchema,
   TechnicalCorrectionListResponseSchema,
+  type RejectTechnicalCorrectionBody,
   type RequestTechnicalCorrectionBody,
+  type StartTechnicalCorrectionReviewBody,
   type TechnicalCorrectionCommandResponse,
   type TechnicalCorrectionListResponse,
 } from '@molokh/contracts';
 import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core';
 import type {
   ExecutedCommand,
+  RejectTechnicalCorrectionPayload,
   RequestTechnicalCorrectionPayload,
+  StartTechnicalCorrectionReviewPayload,
   TechnicalCorrectionEffectIds,
   TechnicalCorrectionProjection,
+  TechnicalCorrectionRejectionEffectIds,
+  TechnicalCorrectionReviewEffectIds,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -27,6 +35,7 @@ interface Headers {
   readonly 'if-match'?: string;
 }
 interface Params { readonly resultId: string }
+interface CorrectionParams { readonly correctionId: string }
 
 export interface TechnicalCorrectionRouteDependencies {
   readonly auth: AuthAdapter;
@@ -36,6 +45,14 @@ export interface TechnicalCorrectionRouteDependencies {
   readonly request: (
     command: CommandEnvelope<RequestTechnicalCorrectionPayload>,
     ids: TechnicalCorrectionEffectIds,
+  ) => Promise<ExecutedCommand<TechnicalCorrectionProjection>>;
+  readonly startReview: (
+    command: CommandEnvelope<StartTechnicalCorrectionReviewPayload>,
+    ids: TechnicalCorrectionReviewEffectIds,
+  ) => Promise<ExecutedCommand<TechnicalCorrectionProjection>>;
+  readonly reject: (
+    command: CommandEnvelope<RejectTechnicalCorrectionPayload>,
+    ids: TechnicalCorrectionRejectionEffectIds,
   ) => Promise<ExecutedCommand<TechnicalCorrectionProjection>>;
 }
 
@@ -91,6 +108,36 @@ function effectIds(correctionId: string): TechnicalCorrectionEffectIds {
     notificationOutboxMessageId: newUuidV7(),
     notificationId: newUuidV7(),
   };
+}
+
+function transitionEnvelope<TPayload extends { readonly correctionId: string }>(input: {
+  readonly actorUserId: string;
+  readonly correctionId: string;
+  readonly commandType: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly payload: TPayload;
+  readonly request: FastifyRequest;
+}): CommandEnvelope<TPayload> {
+  const context = requestContext(input.request);
+  return {
+    commandId: newUuidV7(), commandType: input.commandType,
+    idempotencyKey: input.idempotencyKey,
+    actor: { type: 'USER', id: input.actorUserId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+    aggregateType: 'TechnicalCorrection', aggregateId: input.correctionId,
+    expectedVersion: input.expectedVersion, correlationId: context.correlationId,
+    causationId: context.causationId, requestId: context.requestId,
+    source: 'admin', payloadVersion: 1, payload: input.payload,
+  };
+}
+
+function transitionIds(): TechnicalCorrectionReviewEffectIds {
+  return { eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7() };
+}
+
+function rejectionIds(): TechnicalCorrectionRejectionEffectIds {
+  return { ...transitionIds(), notificationOutboxMessageId: newUuidV7(),
+    notificationId: newUuidV7() };
 }
 
 export async function registerTechnicalCorrectionRoutes(
@@ -192,4 +239,60 @@ export async function registerTechnicalCorrectionRoutes(
       resultId: request.params.resultId, body: request.body,
     }),
   );
+
+  const correctionParams = Type.Object({ correctionId: Type.String({ format: 'uuid' }) },
+    { additionalProperties: false });
+  const transitionResponses = { 200: TechnicalCorrectionCommandResponseSchema,
+    400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema, 409: ApiErrorSchema };
+  const runTransition = async <TPayload extends { readonly correctionId: string },
+    TIds extends TechnicalCorrectionReviewEffectIds>(input: {
+    readonly request: FastifyRequest;
+    readonly reply: FastifyReply;
+    readonly authorization: string | undefined;
+    readonly keyHeader: string | undefined;
+    readonly ifMatch: string | undefined;
+    readonly correctionId: string;
+    readonly commandType: string;
+    readonly payload: TPayload;
+    readonly run: (command: CommandEnvelope<TPayload>, ids: TIds) =>
+      Promise<ExecutedCommand<TechnicalCorrectionProjection>>;
+    readonly ids: TIds;
+  }): Promise<void> => {
+    const authenticated = await dependencies.centralAuth.authenticate(input.authorization);
+    if (!authenticated) { await input.reply.status(401).send(unauthorized(input.request)); return; }
+    const executed = await input.run(transitionEnvelope({
+      actorUserId: authenticated.userId, correctionId: input.correctionId,
+      commandType: input.commandType, idempotencyKey: operationKey(input.keyHeader),
+      expectedVersion: sourceVersion(input.ifMatch), payload: input.payload,
+      request: input.request,
+    }), input.ids);
+    const response: TechnicalCorrectionCommandResponse = {
+      data: executed.response as TechnicalCorrectionCommandResponse['data'],
+      meta: { requestId: requestContext(input.request).requestId,
+        eventId: executed.eventId, replayed: executed.replayed },
+    };
+    await input.reply.status(executed.responseStatus).send(response);
+  };
+
+  app.post<{ Body: StartTechnicalCorrectionReviewBody; Headers: Headers;
+    Params: CorrectionParams }>('/api/v1/central/technical-corrections/:correctionId/start-review', {
+      schema: { operationId: 'startTechnicalCorrectionReview', params: correctionParams,
+        body: StartTechnicalCorrectionReviewBodySchema, response: transitionResponses },
+    }, async (request, reply) => runTransition({ request: request as FastifyRequest, reply,
+      authorization: request.headers.authorization, keyHeader: request.headers['idempotency-key'],
+      ifMatch: request.headers['if-match'], correctionId: request.params.correctionId,
+      commandType: 'START_TECHNICAL_CORRECTION_REVIEW',
+      payload: { correctionId: request.params.correctionId }, run: dependencies.startReview,
+      ids: transitionIds() }));
+
+  app.post<{ Body: RejectTechnicalCorrectionBody; Headers: Headers;
+    Params: CorrectionParams }>('/api/v1/central/technical-corrections/:correctionId/reject', {
+      schema: { operationId: 'rejectTechnicalCorrection', params: correctionParams,
+        body: RejectTechnicalCorrectionBodySchema, response: transitionResponses },
+    }, async (request, reply) => runTransition({ request: request as FastifyRequest, reply,
+      authorization: request.headers.authorization, keyHeader: request.headers['idempotency-key'],
+      ifMatch: request.headers['if-match'], correctionId: request.params.correctionId,
+      commandType: 'REJECT_TECHNICAL_CORRECTION',
+      payload: { correctionId: request.params.correctionId, reason: request.body.reason },
+      run: dependencies.reject, ids: rejectionIds() }));
 }

@@ -96,6 +96,10 @@ export type ResultConflictCode =
   | 'TECHNICAL_CORRECTION_ALREADY_OPEN'
   | 'TECHNICAL_CORRECTION_NO_CHANGE'
   | 'TECHNICAL_CORRECTION_CENTRAL_UNAVAILABLE'
+  | 'TECHNICAL_CORRECTION_NOT_SUBMITTED'
+  | 'TECHNICAL_CORRECTION_REVIEWER_CONFLICT'
+  | 'TECHNICAL_CORRECTION_NOT_UNDER_REVIEW'
+  | 'TECHNICAL_CORRECTION_REVIEWER_MISMATCH'
   | 'COMPETITION_INTEGRITY_HOLD'
   | 'COMPETITION_STATUS_SNAPSHOT_STALE'
   | 'COMPETITION_STATUS_LOCKED';
@@ -267,6 +271,34 @@ export function normalizeTechnicalCorrectionRequest(input: {
     internalReason: requiredText(input.internalReason, 'internalReason', 2000),
     evidenceReference: requiredText(input.evidenceReference, 'evidenceReference', 500),
   };
+}
+
+export function assertTechnicalCorrectionReviewCanStart(input: {
+  readonly state: TechnicalCorrectionState;
+  readonly reviewerUserId: string;
+  readonly protectedUserIds: readonly string[];
+}): void {
+  if (input.state !== 'SUBMITTED') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NOT_SUBMITTED');
+  }
+  if (input.protectedUserIds.includes(input.reviewerUserId)) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_CONFLICT');
+  }
+}
+
+export function normalizeTechnicalCorrectionRejection(input: {
+  readonly state: TechnicalCorrectionState;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly reason: string;
+}): string {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH');
+  }
+  return requiredText(input.reason, 'decisionReason', 2000);
 }
 
 export function assertResultMatchesAttendance(input: {

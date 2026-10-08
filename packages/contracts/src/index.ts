@@ -1663,6 +1663,10 @@ export const TechnicalCorrectionProjectionSchema = Type.Object({
   internalReason: Type.Union([Type.String({ minLength: 1, maxLength: 2000 }), Type.Null()]),
   evidenceReference: Type.Union([Type.String({ minLength: 1, maxLength: 500 }), Type.Null()]),
   submittedAt: Type.String({ format: 'date-time' }),
+  assignedReviewerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  reviewStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  decisionReason: Type.Union([Type.String({ minLength: 1, maxLength: 2000 }), Type.Null()]),
+  decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
   version: Type.Integer({ minimum: 1 }),
 }, { $id: 'TechnicalCorrectionProjection', additionalProperties: false });
 export type TechnicalCorrectionContract = Static<typeof TechnicalCorrectionProjectionSchema>;
@@ -1765,6 +1769,17 @@ export const RequestTechnicalCorrectionBodySchema = Type.Object({
   evidenceReference: Type.String({ minLength: 1, maxLength: 500 }),
 }, { $id: 'RequestTechnicalCorrectionBody', additionalProperties: false });
 export type RequestTechnicalCorrectionBody = Static<typeof RequestTechnicalCorrectionBodySchema>;
+
+export const StartTechnicalCorrectionReviewBodySchema = Type.Object(
+  {}, { $id: 'StartTechnicalCorrectionReviewBody', additionalProperties: false },
+);
+export type StartTechnicalCorrectionReviewBody =
+  Static<typeof StartTechnicalCorrectionReviewBodySchema>;
+
+export const RejectTechnicalCorrectionBodySchema = Type.Object({
+  reason: Type.String({ minLength: 1, maxLength: 2000 }),
+}, { $id: 'RejectTechnicalCorrectionBody', additionalProperties: false });
+export type RejectTechnicalCorrectionBody = Static<typeof RejectTechnicalCorrectionBodySchema>;
 
 export const StartIntegrityReviewBodySchema = Type.Object(
   {}, { $id: 'StartIntegrityReviewBody', additionalProperties: false },

@@ -124,6 +124,7 @@ import {
   withdrawStatusQueueEntry,
   openIntegrityCase,
   requestTechnicalCorrection,
+  rejectTechnicalCorrection,
   pauseCommunity,
   reactivateCommunity,
   readCommunityClosure,
@@ -131,6 +132,7 @@ import {
   scheduleCommunityClosure,
   finalizeCommunityClosure,
   startIntegrityReview,
+  startTechnicalCorrectionReview,
   decideIntegrityCase,
   decideYouthConsent,
   readPublicYouthConsent,
@@ -1261,6 +1263,8 @@ const app = await buildApp({
     listForCentral: (centralUserId) =>
       listTechnicalCorrectionsForCentral(database, centralUserId),
     request: (command, ids) => requestTechnicalCorrection(database, command, ids),
+    startReview: (command, ids) => startTechnicalCorrectionReview(database, command, ids),
+    reject: (command, ids) => rejectTechnicalCorrection(database, command, ids),
   },
   statusQueue: {
     auth: localAuth,

@@ -32,7 +32,22 @@ const submitted: TechnicalCorrectionProjection = {
   internalReason: 'Перепутан угол победителя.',
   evidenceReference: 'session-log:42',
   submittedAt: '2026-10-08T10:00:00.000Z',
+  assignedReviewerUserId: null,
+  reviewStartedAt: null,
+  decisionReason: null,
+  decidedAt: null,
   version: 1,
+};
+
+const underReview: TechnicalCorrectionProjection = {
+  ...submitted, state: 'UNDER_REVIEW', assignedReviewerUserId: centralId,
+  reviewStartedAt: '2026-10-08T11:00:00.000Z', version: 2,
+};
+
+const rejected: TechnicalCorrectionProjection = {
+  ...underReview, state: 'REJECTED',
+  decisionReason: 'Evidence does not support changing the Result.',
+  decidedAt: '2026-10-08T12:00:00.000Z', version: 3,
 };
 
 afterEach(async () => {
@@ -55,6 +70,7 @@ describe('Technical Correction routes', () => {
         listForViewer: vi.fn().mockResolvedValue([submitted]),
         listForCentral: vi.fn().mockResolvedValue([submitted]),
         request: requestCorrection,
+        startReview: vi.fn(), reject: vi.fn(),
       },
     });
     apps.push(app);
@@ -104,12 +120,53 @@ describe('Technical Correction routes', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/central/technical-corrections');
   });
 
+  it('[AC-148] starts independent review and rejects without exposing a decision mutation', async () => {
+    const startReview = vi.fn().mockResolvedValue({ responseStatus: 200,
+      response: underReview, eventId: '0199a1b2-1234-7000-8000-000000005010',
+      aggregateVersion: 2, replayed: false });
+    const reject = vi.fn().mockResolvedValue({ responseStatus: 200,
+      response: rejected, eventId: '0199a1b2-1234-7000-8000-000000005011',
+      aggregateVersion: 3, replayed: false });
+    const app = await buildApp({ technicalCorrection: {
+      auth: new StaticBearerAuthAdapter(coachToken, coachId),
+      centralAuth: new StaticBearerAuthAdapter(centralToken, centralId),
+      listForViewer: vi.fn(), listForCentral: vi.fn(), request: vi.fn(),
+      startReview, reject,
+    } });
+    apps.push(app);
+    const started = await app.inject({ method: 'POST',
+      url: `/api/v1/central/technical-corrections/${correctionId}/start-review`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'start-1',
+        'if-match': '1' }, payload: {} });
+    expect(started.statusCode).toBe(200);
+    expect(started.json()).toMatchObject({ data: { state: 'UNDER_REVIEW', version: 2 } });
+    expect(startReview.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'START_TECHNICAL_CORRECTION_REVIEW', expectedVersion: 1,
+      aggregateId: correctionId, actor: { id: centralId, roles: ['CENTRAL_ADMIN'] },
+    });
+    const decided = await app.inject({ method: 'POST',
+      url: `/api/v1/central/technical-corrections/${correctionId}/reject`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'reject-1',
+        'if-match': '2' }, payload: { reason: 'Evidence does not support changing the Result.' } });
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json()).toMatchObject({ data: { state: 'REJECTED', version: 3 } });
+    expect(reject.mock.calls[0]?.[0]).toMatchObject({ commandType: 'REJECT_TECHNICAL_CORRECTION',
+      expectedVersion: 2, payload: { correctionId,
+        reason: 'Evidence does not support changing the Result.' } });
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/central/technical-corrections/{correctionId}/start-review');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/central/technical-corrections/{correctionId}/reject');
+  });
+
   it('requires authentication, an idempotency key and a source Result version', async () => {
     const app = await buildApp({
       technicalCorrection: {
         auth: new StaticBearerAuthAdapter(coachToken, coachId),
         centralAuth: new StaticBearerAuthAdapter(centralToken, centralId),
         listForViewer: vi.fn(), listForCentral: vi.fn(), request: vi.fn(),
+        startReview: vi.fn(), reject: vi.fn(),
       },
     });
     apps.push(app);

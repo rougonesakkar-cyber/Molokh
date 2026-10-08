@@ -239,6 +239,12 @@ unique index permits one `SUBMITTED/UNDER_REVIEW` request per Result, a FIFO ind
 and triggers protect source facts from update and every request from deletion. Result, status,
 Cooldown and Appeal tables are not mutated by request creation.
 
+`0064_technical_correction_review.sql` adds the minimal TC-02/TC-05 lifecycle fields: assigned
+reviewer, review start, protected decision reason and decision time. Database checks bind their
+presence to `UNDER_REVIEW` and `REJECTED`; source proposal facts remain trigger-protected. The
+existing aggregate lock, versioned events and row lock serialize start/reject commands, while the
+partial FIFO index naturally removes terminal rejections from the active Central queue.
+
 AC-143 adds no storage table: the current MVP treats Competition holder columns and
 `pair_cooldowns` as replaceable materialized state, while StatusTenure is a deterministic view of
 the immutable Competition event stream. The Central-only rebuild takes the Competition row lock,

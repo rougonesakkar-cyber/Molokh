@@ -204,20 +204,64 @@ export function TechnicalCorrectionRequestCard(props: {
 export function TechnicalCorrectionQueue(props: {
   readonly corrections: readonly Correction[];
   readonly central: boolean;
+  readonly token: string;
+  readonly onUpdated: (correction: Correction) => void;
 }) {
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const keys = useRef(new Map<string, string>());
   const visible = useMemo(
     () => props.corrections.filter((item) => item.state === 'SUBMITTED' || item.state === 'UNDER_REVIEW'),
     [props.corrections],
   );
   if (!props.central) return null;
+
+  const transition = async (item: Correction, action: 'start-review' | 'reject') => {
+    if (action === 'reject' && reason.trim().length === 0) return;
+    const operation = `${action}:${item.correctionId}:v${item.version}:${reason.trim()}`;
+    const key = keys.current.get(operation)
+      ?? `technical-correction:${operation}:${Date.now().toString(36)}`;
+    keys.current.set(operation, key);
+    setActingId(item.correctionId);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/central/technical-corrections/${item.correctionId}/${action}`,
+        { method: 'POST', headers: { Authorization: `Bearer ${props.token}`,
+          'Content-Type': 'application/json', 'Idempotency-Key': key,
+          'If-Match': String(item.version) },
+        body: JSON.stringify(action === 'reject' ? { reason: reason.trim() } : {}) },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const updated = (await response.json()) as TechnicalCorrectionCommandResponse;
+      keys.current.delete(operation);
+      props.onUpdated(updated.data);
+      setRejectingId(null);
+      setReason('');
+      setNotice(action === 'start-review'
+        ? 'Запрос взят в независимое рассмотрение.'
+        : 'Запрос отклонён. Исходный Result, статус и Cooldown не изменились.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось изменить запрос');
+    } finally {
+      setActingId(null);
+    }
+  };
+
   return (
     <View style={styles.queue}>
       <Text accessibilityRole="header" aria-level={2} style={styles.heading}>
         Technical Corrections · Central
       </Text>
       <Text style={styles.hint}>
-        Независимая FIFO-очередь запросов Coach. В этом этапе доступен только приём заявки.
+        Независимая FIFO-очередь запросов Coach. Отклонение не меняет исходный Result.
       </Text>
+      {notice ? <Text accessibilityRole="alert" style={styles.success}>{notice}</Text> : null}
+      {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
       {visible.length === 0 ? <Text style={styles.hint}>Новых запросов нет.</Text> : visible.map((item) => (
         <View key={item.correctionId} style={styles.noticeCard}>
           <Text style={styles.label}>{item.requesterDisplayName} · {categoryLabels[item.category]}</Text>
@@ -227,6 +271,46 @@ export function TechnicalCorrectionQueue(props: {
           <Text style={styles.hint}>Причина: {item.internalReason}</Text>
           <Text style={styles.hint}>Подтверждение: {item.evidenceReference}</Text>
           <Text style={styles.hint}>Result ID: {item.resultId} · версия заявки {item.version}</Text>
+          {item.state === 'SUBMITTED' ? (
+            <Pressable accessibilityRole="button"
+              accessibilityState={{ disabled: actingId !== null }} disabled={actingId !== null}
+              onPress={() => void transition(item, 'start-review')}
+              style={[styles.primaryButton, actingId !== null && styles.disabled]}>
+              <Text style={styles.primaryButtonText}>
+                {actingId === item.correctionId ? 'Берём в работу…' : 'Взять в рассмотрение'}
+              </Text>
+            </Pressable>
+          ) : rejectingId === item.correctionId ? (
+            <View style={styles.form}>
+              <Text style={styles.hint}>
+                Причина хранится в защищённом аудите и не публикуется в уведомлении Coach.
+              </Text>
+              <TextInput accessibilityLabel="Закрытая причина отклонения"
+                maxLength={2000} multiline onChangeText={setReason}
+                placeholder="Почему исправление не подтверждено"
+                style={styles.input} value={reason} />
+              <Pressable accessibilityRole="button"
+                accessibilityState={{ disabled: actingId !== null || reason.trim().length === 0 }}
+                disabled={actingId !== null || reason.trim().length === 0}
+                onPress={() => void transition(item, 'reject')}
+                style={[styles.primaryButton,
+                  (actingId !== null || reason.trim().length === 0) && styles.disabled]}>
+                <Text style={styles.primaryButtonText}>
+                  {actingId === item.correctionId ? 'Отклоняем…' : 'Подтвердить отклонение'}
+                </Text>
+              </Pressable>
+              <Pressable accessibilityRole="button"
+                onPress={() => { setRejectingId(null); setReason(''); }}
+                style={styles.secondaryButton}>
+                <Text style={styles.secondaryButtonText}>Назад</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable accessibilityRole="button" onPress={() => setRejectingId(item.correctionId)}
+              style={styles.secondaryButton}>
+              <Text style={styles.secondaryButtonText}>Отклонить запрос</Text>
+            </Pressable>
+          )}
         </View>
       ))}
     </View>
