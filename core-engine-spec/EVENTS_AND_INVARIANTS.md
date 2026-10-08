@@ -350,6 +350,7 @@ Challenge и obligations завершаются по frozen Youth snapshot.
 - `INV-RES-20`: after actual start, injury/voluntary withdrawal follows the frozen ruleset and may be a decisive Result without medical documents. NO_CONTEST/no-fault requires an external Safety/Venue/equipment impossibility, not merely an Athlete's wish to stop.
 - `INV-RES-21`: FINAL ordinary Appeal never reopens. Only a Central independent IntegrityCase for FRAUD/SYSTEM_ERROR/IDENTITY_ERROR may alter effective outcome through append-only decisions, compensations and deterministic replay.
 - `INV-RES-22`: provisional Result/status is public immediately with a neutral review marker. Final removes it; reversal changes public stats/last-five to the effective outcome while retaining only a neutral review-history fact.
+- `INV-RES-23`: Competition status, StatusTenure and Cooldown projections are deterministically rebuildable from the immutable canonical event journal. Rebuild holds the Competition lock, verifies the canonical version and projection hash, and never rewrites Result, decision, snapshot or source-event facts.
 
 ### Appeal
 

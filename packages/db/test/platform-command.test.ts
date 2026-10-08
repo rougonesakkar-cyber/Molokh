@@ -86,6 +86,8 @@ import {
   readPlatformIncidentTimerSuppression,
   listMandatoryTimeoutCompensationCandidates,
   compensateMandatoryChallengeTimeout,
+  rebuildCompetitionProjection,
+  readCompetitionProjection,
   replayCompetitionStatusExcludingResults,
   executeCriticalCommand,
   ensureLocalPilotCommunity,
@@ -302,6 +304,7 @@ import {
   type RequestYouthConsentPayload,
   type YouthConsentEffectIds,
   type RecordSessionResultPayload,
+  type RebuildCompetitionProjectionPayload,
   type SubmitResultAppealPayload,
   type AddAppealResponsePayload,
   type ExtendAppealSlaPayload,
@@ -10006,6 +10009,209 @@ describePostgres('PostgreSQL critical command transaction', () => {
       )
     `.execute(database);
     expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-score');
+  });
+
+  it('[AC-143] rebuilds the Competition projection from its canonical event journal', async () => {
+    const base = 42000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const central = testId(base + 3);
+    const genesisEventId = testId(42040);
+    const contenderEventId = testId(42041);
+    const cooldownId = testId(42042);
+    const cooldownEventId = testId(42043);
+    const finalizationEventId = testId(42047);
+    const genesisAt = '2026-10-02T10:00:00.000Z';
+    const contenderAt = '2026-10-02T11:00:00.000Z';
+    const finalizationAt = '2026-10-02T11:30:00.000Z';
+    const cooldownAt = '2026-10-02T12:00:00.000Z';
+    const cooldownEndsAt = '2026-10-17T12:00:00.000Z';
+
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+        occurred_at, payload, idempotency_key_hash
+      ) values
+        (${genesisEventId}::uuid, 'GenesisWithoutOpponent', 1, 'Competition',
+          ${fixture.competition}::uuid, 2, 'C-03', ${testId(42044)}::uuid, null,
+          ${central}::uuid, ${genesisAt}::timestamptz,
+          ${JSON.stringify({ userId: fixture.athleteA, assignedStatus: 'CHAMPION',
+            statusVersion: 1, phase: 'RUNNING', noOpponent: true })}::jsonb,
+          'fixture:ac-143:genesis'),
+        (${contenderEventId}::uuid, 'ContenderAssigned', 1, 'Competition',
+          ${fixture.competition}::uuid, 3, 'ST-04', ${testId(42045)}::uuid,
+          ${genesisEventId}::uuid, ${central}::uuid, ${contenderAt}::timestamptz,
+          ${JSON.stringify({
+            before: { championUserId: fixture.athleteA, contenderUserId: null, statusVersion: 1 },
+            after: { championUserId: fixture.athleteA,
+              contenderUserId: fixture.athleteB, statusVersion: 2 },
+            sourceResultId: testId(42048), transitionType: 'CONTENDER_ASSIGNED', provisional: true,
+          })}::jsonb, 'fixture:ac-143:contender'),
+        (${finalizationEventId}::uuid, 'StatusTransitionFinalized', 1, 'Competition',
+          ${fixture.competition}::uuid, 4, 'ST-13', ${testId(42049)}::uuid,
+          ${contenderEventId}::uuid, ${central}::uuid, ${finalizationAt}::timestamptz,
+          ${JSON.stringify({ resultId: testId(42048), transitionId: testId(42049) })}::jsonb,
+          'fixture:ac-143:finalization'),
+        (${cooldownEventId}::uuid, 'PairCooldownStarted', 1, 'PairCooldown',
+          ${cooldownId}::uuid, 1, 'CD-01', ${testId(42046)}::uuid,
+          ${contenderEventId}::uuid, ${central}::uuid, ${cooldownAt}::timestamptz,
+          ${JSON.stringify({ cooldownId, competitionId: fixture.competition,
+            participantIds: [fixture.athleteA, fixture.athleteB], sourceResultId: null,
+            startedAt: cooldownAt, endsAt: cooldownEndsAt })}::jsonb,
+          'fixture:ac-143:cooldown')
+    `.execute(database);
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${fixture.athleteA}::uuid,
+        contender_user_id = ${fixture.athleteB}::uuid, status_version = 3,
+        status_lock_result_id = null, version = 4,
+        updated_at = ${cooldownAt}::timestamptz
+      where competition_id = ${fixture.competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into competition.pair_cooldowns (
+        cooldown_id, competition_id, pair_low_id, pair_high_id,
+        source_result_id, started_at, ends_at
+      ) values (
+        ${cooldownId}::uuid, ${fixture.competition}::uuid,
+        least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+        greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+        null, ${cooldownAt}::timestamptz, ${cooldownEndsAt}::timestamptz
+      )
+    `.execute(database);
+
+    const before = await readCompetitionProjection(database, fixture.competition);
+    expect(before).toMatchObject({
+      championUserId: fixture.athleteA,
+      contenderUserId: fixture.athleteB,
+      statusVersion: 3,
+      statusLockResultId: null,
+      sourceEventCount: 5,
+      tenures: [
+        { status: 'CHAMPION', userId: fixture.athleteA, provisional: false, endedAt: null },
+        { status: 'CONTENDER', userId: fixture.athleteB, provisional: false, endedAt: null },
+      ],
+      cooldowns: [{
+        cooldownId, sourceResultId: null, startedAt: cooldownAt,
+        endsAt: cooldownEndsAt, invalidatedAt: null,
+      }],
+    });
+    expect(before?.projectionHash).toMatch(/^[0-9a-f]{64}$/);
+
+    await expect(rebuildCompetitionProjection(
+      database,
+      {
+        commandId: testId(42050), commandType: 'REBUILD_COMPETITION_PROJECTION',
+        idempotencyKey: 'ac-143-rebuild-unauthorized',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Competition', aggregateId: fixture.competition, expectedVersion: 4,
+        correlationId: testId(42051), causationId: null, requestId: testId(42052),
+        source: 'api', payloadVersion: 1,
+        payload: { competitionId: fixture.competition, reason: 'Attempt outside Central scope' },
+      } satisfies CommandEnvelope<RebuildCompetitionProjectionPayload>,
+      { eventId: testId(42053), auditId: testId(42054), outboxMessageId: testId(42055) },
+      () => new Date('2026-10-02T12:30:00.000Z'),
+    )).rejects.toMatchObject({ code: 'COMPETITION_PROJECTION_PERMISSION_DENIED' });
+
+    await sql`
+      update competition.competitions
+      set champion_user_id = null, contender_user_id = null,
+        status_version = 0, status_lock_result_id = null
+      where competition_id = ${fixture.competition}::uuid
+    `.execute(database);
+    await sql`delete from competition.pair_cooldowns
+      where competition_id = ${fixture.competition}::uuid`.execute(database);
+    const deleted = await readCompetitionProjection(database, fixture.competition);
+    expect(deleted).toMatchObject({
+      championUserId: null, contenderUserId: null, statusVersion: 0, cooldowns: [],
+    });
+    expect(deleted?.projectionHash).not.toBe(before?.projectionHash);
+
+    const privateReason = 'private-rebuild-incident-reference';
+    const command = {
+      commandId: testId(42100), commandType: 'REBUILD_COMPETITION_PROJECTION',
+      idempotencyKey: 'ac-143-rebuild',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'Competition', aggregateId: fixture.competition, expectedVersion: 4,
+      correlationId: testId(42101), causationId: null, requestId: testId(42102),
+      source: 'api', payloadVersion: 1,
+      payload: { competitionId: fixture.competition, reason: privateReason },
+    } satisfies CommandEnvelope<RebuildCompetitionProjectionPayload>;
+    const effectIds = {
+      eventId: testId(42103), auditId: testId(42104), outboxMessageId: testId(42105),
+    };
+    const rebuilt = await rebuildCompetitionProjection(
+      database, command, effectIds, () => new Date('2026-10-02T13:00:00.000Z'),
+    );
+    expect(rebuilt.response).toMatchObject({
+      championUserId: before?.championUserId,
+      contenderUserId: before?.contenderUserId,
+      statusVersion: before?.statusVersion,
+      statusLockResultId: before?.statusLockResultId,
+      tenures: before?.tenures,
+      cooldowns: before?.cooldowns,
+      projectionHash: before?.projectionHash,
+      sourceEventCount: 5,
+    });
+    const after = await readCompetitionProjection(database, fixture.competition);
+    expect(after).toMatchObject({
+      championUserId: before?.championUserId,
+      contenderUserId: before?.contenderUserId,
+      statusVersion: before?.statusVersion,
+      statusLockResultId: before?.statusLockResultId,
+      tenures: before?.tenures,
+      cooldowns: before?.cooldowns,
+      projectionHash: before?.projectionHash,
+    });
+    expect(after?.sourceEventCount).toBe(6);
+
+    await expect(rebuildCompetitionProjection(
+      database, command, effectIds, () => new Date('2026-10-02T13:01:00.000Z'),
+    )).resolves.toMatchObject({ replayed: true, eventId: effectIds.eventId });
+    await expect(rebuildCompetitionProjection(
+      database,
+      {
+        ...command, commandId: testId(42110), idempotencyKey: 'ac-143-stale-rebuild',
+        requestId: testId(42111),
+      },
+      { eventId: testId(42112), auditId: testId(42113), outboxMessageId: testId(42114) },
+      () => new Date('2026-10-02T13:02:00.000Z'),
+    )).rejects.toBeInstanceOf(VersionConflictError);
+
+    const facts = await sql<{
+      readonly canonical_events: string;
+      readonly rebuild_events: string;
+      readonly audits: string;
+      readonly outbox: string;
+      readonly idempotency: string;
+      readonly audit_document: unknown;
+      readonly public_documents: unknown;
+    }>`
+      select
+        (select count(*)::text from platform.domain_events
+          where event_id in (${genesisEventId}::uuid, ${contenderEventId}::uuid,
+            ${finalizationEventId}::uuid, ${cooldownEventId}::uuid)) as canonical_events,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${effectIds.eventId}::uuid) as rebuild_events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${effectIds.auditId}::uuid) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${effectIds.outboxMessageId}::uuid) as outbox,
+        (select count(*)::text from platform.idempotency_records
+          where event_id = ${effectIds.eventId}::uuid) as idempotency,
+        (select metadata from platform.audit_events
+          where audit_id = ${effectIds.auditId}::uuid) as audit_document,
+        jsonb_build_array(
+          (select payload from platform.domain_events where event_id = ${effectIds.eventId}::uuid),
+          (select payload from platform.outbox_messages
+            where message_id = ${effectIds.outboxMessageId}::uuid)
+        ) as public_documents
+    `.execute(database);
+    expect(facts.rows[0]).toMatchObject({
+      canonical_events: '4', rebuild_events: '1', audits: '1', outbox: '1', idempotency: '1',
+    });
+    expect(JSON.stringify(facts.rows[0]?.audit_document)).toContain(privateReason);
+    expect(JSON.stringify(facts.rows[0]?.public_documents)).not.toContain(privateReason);
   });
 
   it('[AC-106][AC-108][AC-186] releases only the status and preserves Membership plus FIFO', async () => {

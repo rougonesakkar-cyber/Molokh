@@ -232,6 +232,13 @@ Competition carries at most one active integrity hold. Challenge obligations gai
 cycle number so an eligible post-Final repeat creates a new cycle without deleting the released
 history of the previous one.
 
+AC-143 adds no storage table: the current MVP treats Competition holder columns and
+`pair_cooldowns` as replaceable materialized state, while StatusTenure is a deterministic view of
+the immutable Competition event stream. The Central-only rebuild takes the Competition row lock,
+rechecks the canonical aggregate version after the lock, derives all three projections, replaces
+only disposable rows and verifies a SHA-256 projection hash in the same transaction. Exact replay
+is idempotent; canonical Results, decisions, snapshots, transitions and events remain untouched.
+
 `0032_status_queue_foundation.sql` aligns the Competition phase vocabulary with the canonical
 state machine and creates `challenge_queue_entries`. A partial unique index permits only one live
 intent per Athlete/target, while the partial FIFO index fixes ordering to immutable server

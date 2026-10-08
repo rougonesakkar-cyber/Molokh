@@ -8,11 +8,11 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **164/214** (`158/196 P0`);
+- executable acceptance traceability: **165/214** (`159/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0062` and **52/52** integration scenarios pass locally;
-- dependency gate: Expo patch releases are aligned; all published fixes are installed, and the
+- database gate: PostgreSQL migrations `0001`–`0062` and **53/53** integration scenarios pass locally;
+- production dependency gate: Expo patch releases are aligned; all published production-runtime fixes are installed, and the
   resolved `shell-quote` security release is pinned transitively; the unresolved upstream
   `node-forge` and `braces` advisories are covered by narrow regression-tested local backports that
   expire on 2026-10-16 and reject every other high/critical advisory;
@@ -271,6 +271,13 @@ configured pair Cooldown and schedules finalization exactly 48 hours later. The 
 may submit Appeal or explicitly waive it. A decisive Result finalizes early when its sole eligible
 loser waives; draw/no-contest requires both eligible Athletes. Otherwise the versioned Worker
 timer commits `CH-17`, releases obligations and removes the temporary status lock.
+
+The Competition status projection is recoverable rather than authoritative. A Central-only,
+versioned rebuild locks the Competition, derives Champion/Contender, status version, tenure
+history and Cooldowns from the immutable event journal, replaces only disposable projection
+state and verifies the same deterministic hash before commit. Canonical Result, decision,
+snapshot and event facts are never deleted or rewritten; a concurrent Result advances the
+canonical version and makes the rebuild fail safely before partial effects.
 
 Result photo/video is deliberately unavailable in the MVP. The closed Result request schema,
 API surface, database model and client expose sporting facts only: there is no upload capability,
