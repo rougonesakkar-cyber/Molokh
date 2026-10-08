@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **166/214** (`160/196 P0`);
+- executable acceptance traceability: **167/214** (`161/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0062` and **53/53** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0063` and **53/53** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -303,6 +303,14 @@ cannot file again for the same Result. A decisive Result then finalizes immediat
 draw/no-contest, the other eligible Athlete retains the original 48-hour choice. The assigned
 Central reviewer may extend the visible 72-hour SLA once by 24 or 48 hours with a mandatory public
 reason. The status lock stays active and the system never auto-decides an overdue Appeal.
+
+An assigned, actively authorized Coach does not use the Athlete Appeal action to correct a winner
+or outcome. The Result card opens a separate Technical Correction form and makes clear that this
+only submits an immutable `SUBMITTED` request to Central. The private explanation and evidence
+reference stay in protected state and audit metadata; notifications are neutral. The original
+Result, Challenge, provisional status, Cooldown and Appeal clock do not change. Concurrent or
+replayed submissions create at most one open request for the Result. Central currently receives a
+read-only FIFO queue; approve/reject decisions remain a separate later slice.
 
 If no Result is recorded after an Official Session, versioned Worker timers remind the original
 Coach after 2 hours, escalate to the Venue after 12 hours and open exactly one structured review

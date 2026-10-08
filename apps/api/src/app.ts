@@ -43,6 +43,10 @@ import { registerResultRoutes, type ResultRouteDependencies } from './result-rou
 import { registerAppealRoutes, type AppealRouteDependencies } from './appeal-routes.js';
 import { registerMissingResultRoutes, type MissingResultRouteDependencies } from './missing-result-routes.js';
 import { registerIntegrityCaseRoutes, type IntegrityCaseRouteDependencies } from './integrity-case-routes.js';
+import {
+  registerTechnicalCorrectionRoutes,
+  type TechnicalCorrectionRouteDependencies,
+} from './technical-correction-routes.js';
 import { registerStatusQueueRoutes, type StatusQueueRouteDependencies } from './status-queue-routes.js';
 import { registerStatusReleaseRoutes, type StatusReleaseRouteDependencies } from './status-release-routes.js';
 import { registerMembershipExitRoutes, type MembershipExitRouteDependencies } from './membership-exit-routes.js';
@@ -72,6 +76,7 @@ export interface BuildAppOptions extends FastifyServerOptions {
   readonly discovery?: DiscoveryRouteDependencies;
   readonly identity?: IdentityRouteDependencies;
   readonly integrityCase?: IntegrityCaseRouteDependencies;
+  readonly technicalCorrection?: TechnicalCorrectionRouteDependencies;
   readonly statusQueue?: StatusQueueRouteDependencies;
   readonly statusRelease?: StatusReleaseRouteDependencies;
   readonly membershipExit?: MembershipExitRouteDependencies;
@@ -101,6 +106,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     discovery,
     identity,
     integrityCase,
+    technicalCorrection,
     statusQueue,
     statusRelease,
     membershipExit,
@@ -161,6 +167,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   if (identity) await registerIdentityRoutes(app, identity);
   if (integrityCase) await registerIntegrityCaseRoutes(app, integrityCase);
+  if (technicalCorrection) await registerTechnicalCorrectionRoutes(app, technicalCorrection);
   if (statusQueue) await registerStatusQueueRoutes(app, statusQueue);
   if (statusRelease) await registerStatusReleaseRoutes(app, statusRelease);
   if (membershipExit) await registerMembershipExitRoutes(app, membershipExit);

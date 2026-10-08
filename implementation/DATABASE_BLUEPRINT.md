@@ -232,6 +232,13 @@ Competition carries at most one active integrity hold. Challenge obligations gai
 cycle number so an eligible post-Final repeat creates a new cycle without deleting the released
 history of the previous one.
 
+`0063_technical_correction_requests.sql` adds the pre-Final TC-01 contour without changing the
+Result schema. Each request freezes source Result version, original/proposed outcome and winner,
+normalized category, requester, server time and protected reason/evidence reference. A partial
+unique index permits one `SUBMITTED/UNDER_REVIEW` request per Result, a FIFO index serves Central,
+and triggers protect source facts from update and every request from deletion. Result, status,
+Cooldown and Appeal tables are not mutated by request creation.
+
 AC-143 adds no storage table: the current MVP treats Competition holder columns and
 `pair_cooldowns` as replaceable materialized state, while StatusTenure is a deterministic view of
 the immutable Competition event stream. The Central-only rebuild takes the Competition row lock,
@@ -374,6 +381,7 @@ Critical constraints:
 - one Appeal history per Result/appellant;
 - waiver unique per Result/User;
 - one open IntegrityCase per Final Result;
+- one open TechnicalCorrectionRequest per provisional Result;
 - Integrity evidence/source facts, decision and status compensation are append-only;
 - correction uses IntegrityDecision plus deterministic replay, never update of source Result;
 - one Competition integrity hold points to the case currently under review;

@@ -54,4 +54,5 @@ export * from './social.js';
 export * from './status-queue.js';
 export * from './status-release.js';
 export * from './status-replay.js';
+export * from './technical-correction.js';
 export * from './youth-consent.js';

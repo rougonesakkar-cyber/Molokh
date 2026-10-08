@@ -33,7 +33,7 @@
 | Production auth bootstrap | database sessions only, no local fixtures/static tokens, live Central-role check, required secrets/pilot IDs/HTTPS origins | Pass in code and automated config/auth/DB tests; external OTP provider remains unconfigured |
 | Avatar media boundary | authenticated/idempotent private upload-ticket port, JPEG/PNG/WebP 10 MiB contract, disabled adapter and no pre-scan attachment path | Pass in API contract tests; external object/scan provider remains unconfigured |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 166/214 mapped (`160/196 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 167/214 mapped (`161/196 P0`) as implementation grows |
 | Critical role audit completeness | DB-authorized Coach, scoped Gym Admin and assigned Central actor/scope/reason/state/lineage/server-time facts; append-only and privacy guards | Pass in real PostgreSQL |
 | Athlete Challenge reschedule | CH-22 bounded counter, immutable initiator/reason/fault/Booking fact, original deadline and Booking/host race serialization | Pass in Core/API/client and real PostgreSQL |
 | Exhausted reschedule Forfeit | CH-23 explicit consequence confirmation, capped counter, no third reschedule fact, pending-resource cleanup and ordinary Result/Appeal lifecycle | Pass in Core/API/client and real PostgreSQL |
@@ -205,7 +205,7 @@ Verified on 2026-10-08:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 261 non-database automated tests pass across Core, DB, API, worker and testkit;
+- 264 non-database automated tests pass across Core, DB, API, worker and testkit;
 - the current PostgreSQL gate passes all 53 integration scenarios, including AC-053 mandatory TITLE reminder/expiry with provisional role swap and Appeal, AC-138 accepted-Challenge stale expiry safety, AC-139 concurrent duplicate-job serialization, AC-140 competing status-Result serialization, AC-143 hash-verified Competition projection rebuild under the row lock, AC-144 complete append-only critical-role audit lineage, AC-166 immutable Pair Cooldown configuration versions with frozen Challenge/Session/Cooldown snapshots, Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-061/062/063/064/065/066 Athlete/mutual/external-reschedule/reschedule-limit/withdrawal/confirmed-cancellation/host-confirmation and AC-153 shared-Athlete confirmation races, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-164 mandatory push-intent/no-SMS delivery, AC-167 media-free Result boundary, AC-172 optional Challenge reminders/expiry, AC-202 LATE-to-ordinary-Result and AC-203 single/double-NO_SHOW semantics, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
@@ -213,7 +213,7 @@ Verified on 2026-10-08:
 - Expo produces a static Web export for `/chat`, `/guardian-consent`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.8.1 and PostgreSQL 18 are healthy after moving only the inaccessible transient host runtime-socket directory into quarantine; no project, WSL disk or Docker data volume was reset;
-- migrations `0001`–`0062` apply successfully with checksum verification; `0057` reissues only missing current-version Session window timers, `0058` adds audited policy-bound Chat cleanup, `0059` adds hashed expiring QR/invite resources, `0060` adds bounded immutable Challenge-reschedule history, `0061` adds versioned mutual-reschedule proposals, `0062` adds contact-free provider-independent critical delivery intents and `YOUTH_OFFICIAL` remains disabled by default;
+- migrations `0001`–`0063` apply successfully with checksum verification; `0057` reissues only missing current-version Session window timers, `0058` adds audited policy-bound Chat cleanup, `0059` adds hashed expiring QR/invite resources, `0060` adds bounded immutable Challenge-reschedule history, `0061` adds versioned mutual-reschedule proposals, `0062` adds contact-free provider-independent critical delivery intents, `0063` adds immutable TC-01 requests and `YOUTH_OFFICIAL` remains disabled by default;
 - the live universal client renders the empty GENESIS state, submits a position-1 status intent and withdraws it without loss; the queue immediately returns to empty and no browser error is produced by the flow;
 - the live Worker revalidates a fresh GENESIS intent, records the exact three-day single-candidate deadline, projects its mandatory notification and makes the pending timer stale after a no-loss withdrawal; the visible queue returns to empty;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
@@ -257,6 +257,6 @@ Verified on 2026-10-08:
   passes live/ready, runtime identity, security headers, configured CORS and unauthenticated-boundary
   probes with the correct SHA and rejects a deliberate release mismatch;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 166 scenarios (`160/196 P0`) and distinguishes traceability from complete coverage;
+- the generated acceptance matrix maps 167 scenarios (`161/196 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published production-runtime transitive fixes, including `shell-quote@1.11.0`, are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the production audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16. The whole-workspace raw audit separately reports advisory paths confined to the `eas-cli` development toolchain;
 - the Core specification validator reports 309 transitions, 310 registered events, 214 acceptance scenarios, zero open questions and zero errors.

@@ -34,6 +34,17 @@ export type AppealDecision = 'UPHOLD' | 'REVERSE' | 'ANNUL' | 'REPEAT';
 export type AppealResponseRole = 'OPPONENT' | 'COACH';
 export type AppealSlaExtensionHours = 24 | 48;
 
+export type TechnicalCorrectionCategory =
+  | 'OUTCOME_OR_WINNER_ERROR'
+  | 'LATE_RESULT_CORRECTION';
+
+export type TechnicalCorrectionState =
+  | 'SUBMITTED'
+  | 'UNDER_REVIEW'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'WITHDRAWN';
+
 export type StatusTransitionType =
   | 'NONE'
   | 'GENESIS_APPLIED'
@@ -81,6 +92,10 @@ export type ResultConflictCode =
   | 'INTEGRITY_REVIEWER_MISMATCH'
   | 'INTEGRITY_DECISION_INVALID'
   | 'INTEGRITY_REPEAT_NOT_ALLOWED'
+  | 'TECHNICAL_CORRECTION_RESULT_NOT_PROVISIONAL'
+  | 'TECHNICAL_CORRECTION_ALREADY_OPEN'
+  | 'TECHNICAL_CORRECTION_NO_CHANGE'
+  | 'TECHNICAL_CORRECTION_CENTRAL_UNAVAILABLE'
   | 'COMPETITION_INTEGRITY_HOLD'
   | 'COMPETITION_STATUS_SNAPSHOT_STALE'
   | 'COMPETITION_STATUS_LOCKED';
@@ -201,6 +216,56 @@ export function normalizeResultParticipants(input: {
     decisive,
     reasonCode,
     comment,
+  };
+}
+
+export function normalizeTechnicalCorrectionRequest(input: {
+  readonly resultState: ResultState;
+  readonly existingOpenRequest: boolean;
+  readonly originalOutcomeCode: ResultOutcomeCode;
+  readonly originalWinnerUserId: string | null;
+  readonly proposedOutcomeCode: ResultOutcomeCode;
+  readonly proposedWinnerUserId: string | null;
+  readonly participantUserIds: readonly [string, string];
+  readonly category: TechnicalCorrectionCategory;
+  readonly internalReason: string;
+  readonly evidenceReference: string;
+}): {
+  readonly proposedOutcomeCode: ResultOutcomeCode;
+  readonly proposedWinnerUserId: string | null;
+  readonly category: TechnicalCorrectionCategory;
+  readonly internalReason: string;
+  readonly evidenceReference: string;
+} {
+  if (input.resultState !== 'RECORDED' && input.resultState !== 'UNDER_APPEAL') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_RESULT_NOT_PROVISIONAL');
+  }
+  if (input.existingOpenRequest) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_ALREADY_OPEN');
+  }
+  const normalized = normalizeResultParticipants({
+    outcomeCode: input.proposedOutcomeCode,
+    winnerUserId: input.proposedWinnerUserId,
+    participantUserIds: input.participantUserIds,
+    reasonCode: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.category
+      : null,
+    comment: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.internalReason
+      : null,
+  });
+  if (
+    input.originalOutcomeCode === input.proposedOutcomeCode
+    && input.originalWinnerUserId === normalized.winnerUserId
+  ) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NO_CHANGE');
+  }
+  return {
+    proposedOutcomeCode: input.proposedOutcomeCode,
+    proposedWinnerUserId: normalized.winnerUserId,
+    category: input.category,
+    internalReason: requiredText(input.internalReason, 'internalReason', 2000),
+    evidenceReference: requiredText(input.evidenceReference, 'evidenceReference', 500),
   };
 }
 

@@ -310,7 +310,7 @@ contact and action token are omitted from projections and audit metadata.
 | GET | `/results/{id}` | Athlete/Coach/scoped Admin Result projection and currently allowed Appeal action |
 | POST | `/challenges/{id}/result` | assigned non-participant Coach, one effective Result after ended Official Session |
 | POST | `/results/{id}/metadata-revisions` | recording Coach ≤24h |
-| POST | `/results/{id}/technical-corrections` | governed correction request |
+| POST | `/results/{id}/technical-corrections` | implemented assigned-Coach TC-01 request; source Result `If-Match` |
 
 `scheduled_start_at`, `window_opened_at` and `actual_start_at` are separate fields. A READY Session never contributes Training stats. For the closed-pilot MVP, Coach records both Athlete facts before manual End; only `PRESENT/LATE` on an `ENDED` Training Session contributes to the count. Equivalent replacement changes Session and booked Slot assignment atomically while preserving the original commercial snapshot. It is append-only audited and exposes a pre-start Athlete opt-out. An assigned Coach, scoped Gym Admin or Central may confirm a normalized pre-start Venue/Coach failure; Booking, Session and Slot then close with `EXTERNAL` fault and no Athlete penalty. An Official Challenge returns to `ACCEPTED_UNSCHEDULED` with its original obligations, deadline and user-reschedule count, while the immutable competitive snapshot remains retained if the Session window already opened. By contrast, an Athlete explicitly cancelling a confirmed Official before actual start must confirm the sporting consequence: the resources close, the peer wins one administrative `FORFEIT`, and the normal 48-hour Appeal, status and Cooldown lifecycle begins. The client never presents that action as a no-fault reschedule.
 
@@ -345,6 +345,9 @@ source start restores/preserves Training without a Result, loss or Cooldown.
 | POST | `/appeals/{id}/withdraw` | implemented appellant-only withdrawal; no refiling |
 | POST | `/appeals/{id}/responses` | implemented one non-blocking response per opponent/Coach |
 | POST | `/central/appeals/{id}/extend-sla` | implemented one reasoned 24h/48h extension by assigned reviewer |
+| GET | `/me/technical-corrections` | recording Coach sees own protected requests; Athlete receives no correction capability |
+| GET | `/central/technical-corrections` | implemented permission-protected FIFO Central queue |
+| POST | `/central/results/{id}/technical-corrections` | implemented internal Central TC-01 request; source Result `If-Match` |
 | POST | `/reports` | scoped REPORT or Safety cancellation |
 | POST | `/cases/{id}/evidence-upload-intents` | obtain private upload target after limits |
 | POST | `/cases/{id}/evidence-attachments/{id}/complete` | submit for scan |
@@ -356,6 +359,14 @@ source start restores/preserves Training without a Result, loss or Cooldown.
 | POST | `/central/integrity-cases/{id}/decision` | implemented uphold/correct/annul/repeat plus deterministic replay |
 
 Evidence API accepts only Appeal/Safety allowlisted media. There is no Result attachment endpoint.
+
+TC-01 is deliberately separate from Athlete Appeal. A recording/assigned Coach with a current
+DB role grant, or an active global Central actor in the internal contour, proposes a different
+outcome/winner with a normalized category, private reason and evidence reference. The request,
+event, audit, outbox and one neutral Central notification commit atomically as `SUBMITTED`.
+Result/status/Cooldown/Appeal rows are read-only in this transaction; public payloads contain no
+private text or evidence reference. Only one open request per Result is allowed. TC-02…TC-05
+review and decision endpoints are intentionally not part of AC-113.
 
 The implemented Result command commits Result, `CH-15`, provisional status, status lock,
 Cooldown, domain events, audit and outbox atomically. `WIN_A/WIN_B` refer to the immutable ordered

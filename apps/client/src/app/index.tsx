@@ -25,6 +25,7 @@ import type {
   HomeVenueSettingsResponse,
   IdentityCommandResponse,
   IntegrityCaseListResponse,
+  TechnicalCorrectionListResponse,
   MeResponse,
   MatchesResponse,
   MissingResultReviewListResponse,
@@ -68,6 +69,10 @@ import {
 } from '../features/discovery/DiscoverySection';
 import { MissingResultReviewSection } from '../features/missing-result/MissingResultReviewSection';
 import { IntegrityCaseSection } from '../features/integrity-case/IntegrityCaseSection';
+import {
+  TechnicalCorrectionQueue,
+  TechnicalCorrectionRequestCard,
+} from '../features/technical-correction/TechnicalCorrectionSection';
 import { PlatformIncidentSection } from '../features/platform-incident/PlatformIncidentSection';
 import {
   AccountLifecycleSection,
@@ -146,6 +151,7 @@ type Match = MatchesResponse['data'][number];
 type BlockedUser = BlockedUsersResponse['data'][number];
 type MissingResultReview = MissingResultReviewListResponse['data'][number];
 type IntegrityCase = IntegrityCaseListResponse['data'][number];
+type TechnicalCorrection = TechnicalCorrectionListResponse['data'][number];
 type VenueAdminDashboard = VenueAdminDashboardResponse['data'];
 type MainSection = 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
 type AdminPublicationKind = 'SLOT' | 'GROUP';
@@ -534,6 +540,7 @@ export default function IdentityScreen() {
   const [centralAppeals, setCentralAppeals] = useState<CentralAppeal[]>([]);
   const [missingResultReviews, setMissingResultReviews] = useState<MissingResultReview[]>([]);
   const [integrityCases, setIntegrityCases] = useState<IntegrityCase[]>([]);
+  const [technicalCorrections, setTechnicalCorrections] = useState<TechnicalCorrection[]>([]);
   const [actingCentralAppealId, setActingCentralAppealId] = useState<string | null>(null);
   const [centralDecisionAppealId, setCentralDecisionAppealId] = useState<string | null>(null);
   const [centralDecisionReason, setCentralDecisionReason] = useState('');
@@ -762,6 +769,18 @@ export default function IdentityScreen() {
       const integrityCasesResult =
         (await integrityCasesResponse.json()) as IntegrityCaseListResponse;
       setIntegrityCases(integrityCasesResult.data);
+      const technicalCorrectionsResponse = await fetch(
+        currentAccount?.role === 'Central'
+          ? `${apiUrl}/api/v1/central/technical-corrections`
+          : `${apiUrl}/api/v1/me/technical-corrections`,
+        { headers: { Authorization: `Bearer ${localToken}` } },
+      );
+      if (!technicalCorrectionsResponse.ok) {
+        throw new Error(await apiErrorMessage(technicalCorrectionsResponse));
+      }
+      const technicalCorrectionsResult =
+        (await technicalCorrectionsResponse.json()) as TechnicalCorrectionListResponse;
+      setTechnicalCorrections(technicalCorrectionsResult.data);
       const officialResults = await Promise.all(
         sessionsResult.data.sessions
           .filter((session) => session.resultId !== null)
@@ -1126,6 +1145,7 @@ export default function IdentityScreen() {
     setCentralAppeals([]);
     setMissingResultReviews([]);
     setIntegrityCases([]);
+    setTechnicalCorrections([]);
     setActingCentralAppealId(null);
     setCentralDecisionAppealId(null);
     setCentralDecisionReason('');
@@ -4300,6 +4320,11 @@ export default function IdentityScreen() {
                   }}
                 />
 
+                <TechnicalCorrectionQueue
+                  central={activeTestAccount.role === 'Central'}
+                  corrections={technicalCorrections}
+                />
+
                 {activeTestAccount.role === 'Central' ? (
                   <>
                     <PlatformIncidentSection token={activeTestToken} />
@@ -5998,6 +6023,20 @@ export default function IdentityScreen() {
                                   </Text>
                                 </Pressable>
                               ) : null}
+                              <TechnicalCorrectionRequestCard
+                                correction={technicalCorrections.find(
+                                  (item) => item.resultId === officialResult.resultId,
+                                ) ?? null}
+                                currentRole={activeTestAccount.role}
+                                currentUserId={identity?.userId ?? null}
+                                onCreated={(correction) => setTechnicalCorrections((current) => [
+                                  ...current.filter((item) => item.correctionId !== correction.correctionId),
+                                  correction,
+                                ])}
+                                result={officialResult}
+                                session={session}
+                                token={activeTestToken}
+                              />
                             </View>
                           ) : session.resultId ? (
                             <Text style={styles.hint}>Загружаем официальный Result…</Text>

@@ -40,6 +40,8 @@ import {
   listMissingResultReviewsForViewer,
   listIntegrityCasesForCentral,
   listIntegrityCasesForViewer,
+  listTechnicalCorrectionsForCentral,
+  listTechnicalCorrectionsForViewer,
   listAppealsForCentral,
   listPendingVerifications,
   probeDatabase,
@@ -121,6 +123,7 @@ import {
   withdrawAppeal,
   withdrawStatusQueueEntry,
   openIntegrityCase,
+  requestTechnicalCorrection,
   pauseCommunity,
   reactivateCommunity,
   readCommunityClosure,
@@ -1249,6 +1252,15 @@ const app = await buildApp({
     open: (command, ids) => openIntegrityCase(database, command, ids),
     startReview: (command, ids) => startIntegrityReview(database, command, ids),
     decide: (command, ids) => decideIntegrityCase(database, command, ids),
+  },
+  technicalCorrection: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    listForViewer: (viewerUserId) =>
+      listTechnicalCorrectionsForViewer(database, viewerUserId),
+    listForCentral: (centralUserId) =>
+      listTechnicalCorrectionsForCentral(database, centralUserId),
+    request: (command, ids) => requestTechnicalCorrection(database, command, ids),
   },
   statusQueue: {
     auth: localAuth,

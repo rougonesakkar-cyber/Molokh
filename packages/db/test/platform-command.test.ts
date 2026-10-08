@@ -14,6 +14,7 @@ import {
   RoleGrantPermissionDeniedError,
   RoleGrantValidationError,
   ResultConflictError,
+  ResultPermissionDeniedError,
   SchedulingConflictError,
   SchedulingPermissionDeniedError,
   VersionConflictError,
@@ -229,6 +230,9 @@ import {
   requestYouthConsent,
   youthConsentTokenHash,
   readIntegrityCase,
+  listTechnicalCorrectionsForCentral,
+  listTechnicalCorrectionsForViewer,
+  requestTechnicalCorrection,
   submitResultAppeal,
   transitionYouthToAdult,
   withdrawAppeal,
@@ -317,6 +321,7 @@ import {
   type StartMissingResultReviewPayload,
   type AssignMissingResultCoachPayload,
   type OpenIntegrityCasePayload,
+  type RequestTechnicalCorrectionPayload,
   type StartIntegrityReviewPayload,
   type DecideIntegrityCasePayload,
   type SubmitStatusQueueEntryPayload,
@@ -2025,6 +2030,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         competition.missing_result_venue_confirmations,
         competition.missing_result_statements,
         competition.missing_result_reviews,
+        competition.technical_correction_requests,
         competition.status_transition_finalizations,
         competition.status_transitions,
         competition.pair_cooldowns,
@@ -7451,7 +7457,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ]);
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-144][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-113][AC-117][AC-118][AC-144][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -8014,6 +8020,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ).resolves.toMatchObject({
       viewerCanAppeal: true, viewerCanWaiveAppeal: true,
     });
+    await expect(
+      readResult(database, resultId, coachId, new Date('2026-09-13T15:01:00.000Z')),
+    ).resolves.toMatchObject({ viewerCanAppeal: false, viewerCanWaiveAppeal: false });
     await expect(readSession(database, sessionId, coachId)).resolves.toMatchObject({
       challengeState: 'RESULT_RECORDED', challengeVersion: 12, resultId,
     });
@@ -8037,6 +8046,202 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(provisionalStatus.rows[0]).toEqual({
       contender_user_id: athleteB, status_lock_result_id: resultId, status_version: '2',
     });
+
+    const beforeCorrection = await sql<{
+      readonly result_state: string;
+      readonly result_version: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string | null;
+      readonly cooldown_count: string;
+      readonly appeal_count: string;
+    }>`select result.state as result_state, result.version::text as result_version,
+        competition.status_version::text as status_version,
+        competition.status_lock_result_id,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.source_result_id = result.result_id) as cooldown_count,
+        (select count(*)::text from competition.appeals appeal
+          where appeal.result_id = result.result_id) as appeal_count
+      from competition.results result
+      join competition.challenges challenge on challenge.challenge_id = result.challenge_id
+      join competition.competitions competition
+        on competition.competition_id = challenge.competition_id
+      where result.result_id = ${resultId}::uuid`.execute(database);
+    const correctionPayload: RequestTechnicalCorrectionPayload = {
+      resultId,
+      expectedResultVersion: 1,
+      category: 'OUTCOME_OR_WINNER_ERROR',
+      proposedOutcomeCode: 'WIN_A',
+      proposedWinnerUserId: athleteA,
+      internalReason: '  Победитель внесён не в тот угол.  ',
+      evidenceReference: '  session-log:result-1101  ',
+    };
+    const correctionCommand = (suffix: number): CommandEnvelope<RequestTechnicalCorrectionPayload> => ({
+      commandId: testId(35000 + suffix),
+      commandType: 'REQUEST_TECHNICAL_CORRECTION',
+      idempotencyKey: `technical-correction-${suffix}-${resultId}`,
+      actor: { type: 'USER', id: coachId, roles: ['COACH'], scopeIds: [communityId] },
+      aggregateType: 'TechnicalCorrection',
+      aggregateId: testId(35010 + suffix),
+      expectedVersion: 0,
+      correlationId: testId(35020 + suffix),
+      causationId: testId(1944),
+      requestId: testId(35030 + suffix),
+      source: 'api',
+      payloadVersion: 1,
+      payload: correctionPayload,
+    });
+    const correctionIds = (suffix: number) => ({
+      correctionId: testId(35010 + suffix),
+      eventId: testId(35040 + suffix),
+      auditId: testId(35050 + suffix),
+      outboxMessageId: testId(35060 + suffix),
+      notificationOutboxMessageId: testId(35070 + suffix),
+      notificationId: testId(35080 + suffix),
+    });
+
+    await expect(requestTechnicalCorrection(
+      database,
+      {
+        ...correctionCommand(1),
+        commandId: testId(35090),
+        idempotencyKey: `technical-correction-athlete-${resultId}`,
+        actor: { type: 'USER', id: athleteA, roles: ['COACH'], scopeIds: [communityId] },
+        aggregateId: testId(35091),
+      },
+      { ...correctionIds(1), correctionId: testId(35091), eventId: testId(35092),
+        auditId: testId(35093), outboxMessageId: testId(35094),
+        notificationOutboxMessageId: testId(35095), notificationId: testId(35096) },
+    )).rejects.toBeInstanceOf(ResultPermissionDeniedError);
+    await expect(requestTechnicalCorrection(
+      database,
+      {
+        ...correctionCommand(2),
+        commandId: testId(35100),
+        idempotencyKey: `technical-correction-stale-${resultId}`,
+        aggregateId: testId(35101),
+        payload: { ...correctionPayload, expectedResultVersion: 2 },
+      },
+      { ...correctionIds(2), correctionId: testId(35101), eventId: testId(35102),
+        auditId: testId(35103), outboxMessageId: testId(35104),
+        notificationOutboxMessageId: testId(35105), notificationId: testId(35106) },
+    )).rejects.toBeInstanceOf(VersionConflictError);
+
+    const competingCommands = [correctionCommand(3), correctionCommand(4)] as const;
+    const competingIds = [correctionIds(3), correctionIds(4)] as const;
+    const competing = await Promise.allSettled(competingCommands.map((command, index) =>
+      requestTechnicalCorrection(database, command, competingIds[index]!)));
+    const acceptedCorrectionIndex = competing.findIndex((entry) => entry.status === 'fulfilled');
+    expect(acceptedCorrectionIndex).toBeGreaterThanOrEqual(0);
+    expect(competing.filter((entry) => entry.status === 'fulfilled')).toHaveLength(1);
+    expect(competing.filter((entry) => entry.status === 'rejected')).toHaveLength(1);
+    const rejectedCorrection = competing.find((entry) => entry.status === 'rejected');
+    expect(rejectedCorrection).toMatchObject({
+      reason: expect.objectContaining({ code: 'TECHNICAL_CORRECTION_ALREADY_OPEN' }),
+    });
+    const acceptedCorrection = competing[acceptedCorrectionIndex]!;
+    if (acceptedCorrection.status !== 'fulfilled') throw new Error('Expected one correction request');
+    expect(acceptedCorrection.value.response).toMatchObject({
+      resultId,
+      requesterUserId: coachId,
+      category: 'OUTCOME_OR_WINNER_ERROR',
+      state: 'SUBMITTED',
+      originalOutcomeCode: 'WIN_B',
+      originalWinnerUserId: athleteB,
+      proposedOutcomeCode: 'WIN_A',
+      proposedWinnerUserId: athleteA,
+      internalReason: 'Победитель внесён не в тот угол.',
+      evidenceReference: 'session-log:result-1101',
+      version: 1,
+    });
+    const replayedCorrection = await requestTechnicalCorrection(
+      database,
+      competingCommands[acceptedCorrectionIndex]!,
+      competingIds[acceptedCorrectionIndex]!,
+    );
+    expect(replayedCorrection.replayed).toBe(true);
+    expect(replayedCorrection.response).toEqual(acceptedCorrection.value.response);
+
+    await expect(listTechnicalCorrectionsForViewer(database, coachId)).resolves.toEqual([
+      expect.objectContaining({ resultId, internalReason: 'Победитель внесён не в тот угол.' }),
+    ]);
+    await expect(listTechnicalCorrectionsForViewer(database, athleteA)).resolves.toEqual([]);
+    await expect(listTechnicalCorrectionsForCentral(database, centralId)).resolves.toEqual([
+      expect.objectContaining({ resultId, evidenceReference: 'session-log:result-1101' }),
+    ]);
+    await expect(requestTechnicalCorrection(
+      database,
+      {
+        ...correctionCommand(5),
+        actor: { type: 'USER', id: centralId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      },
+      correctionIds(5),
+    )).rejects.toMatchObject({ code: 'TECHNICAL_CORRECTION_ALREADY_OPEN' });
+
+    const afterCorrection = await sql<{
+      readonly result_state: string;
+      readonly result_version: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string | null;
+      readonly cooldown_count: string;
+      readonly appeal_count: string;
+    }>`select result.state as result_state, result.version::text as result_version,
+        competition.status_version::text as status_version,
+        competition.status_lock_result_id,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.source_result_id = result.result_id) as cooldown_count,
+        (select count(*)::text from competition.appeals appeal
+          where appeal.result_id = result.result_id) as appeal_count
+      from competition.results result
+      join competition.challenges challenge on challenge.challenge_id = result.challenge_id
+      join competition.competitions competition
+        on competition.competition_id = challenge.competition_id
+      where result.result_id = ${resultId}::uuid`.execute(database);
+    expect(afterCorrection.rows).toEqual(beforeCorrection.rows);
+    const acceptedEffectIds = competingIds[acceptedCorrectionIndex]!;
+    const acceptedCorrectionId = acceptedEffectIds.correctionId;
+    const correctionEffects = await sql<{
+      readonly event_payload: unknown;
+      readonly event_metadata: unknown;
+      readonly audit_metadata: unknown;
+      readonly outbox_payload: unknown;
+      readonly notification_payload: unknown;
+      readonly audit_count: string;
+    }>`select event.payload as event_payload, event.metadata as event_metadata,
+        audit.metadata as audit_metadata, outbox.payload as outbox_payload,
+        notification.payload as notification_payload,
+        (select count(*)::text from platform.audit_events
+          where action = 'REQUEST_TECHNICAL_CORRECTION') as audit_count
+      from platform.domain_events event, platform.audit_events audit,
+        platform.outbox_messages outbox, platform.outbox_messages notification
+      where event.event_id = ${acceptedEffectIds.eventId}::uuid
+        and audit.audit_id = ${acceptedEffectIds.auditId}::uuid
+        and outbox.message_id = ${acceptedEffectIds.outboxMessageId}::uuid
+        and notification.message_id = ${acceptedEffectIds.notificationOutboxMessageId}::uuid`
+      .execute(database);
+    expect(correctionEffects.rows).toHaveLength(1);
+    expect(correctionEffects.rows[0]?.audit_count).toBe('1');
+    expect(JSON.stringify({
+      event: correctionEffects.rows[0]?.event_payload,
+      metadata: correctionEffects.rows[0]?.event_metadata,
+      outbox: correctionEffects.rows[0]?.outbox_payload,
+      notification: correctionEffects.rows[0]?.notification_payload,
+    })).not.toMatch(/Победитель|session-log:result-1101/);
+    expect(correctionEffects.rows[0]?.audit_metadata).toMatchObject({
+      internalReason: 'Победитель внесён не в тот угол.',
+      evidenceReference: 'session-log:result-1101',
+    });
+    expect(correctionEffects.rows[0]?.notification_payload).toMatchObject({
+      notifications: [{
+        recipientUserId: centralId,
+        renderKey: 'result.technical-correction-requested',
+        payload: { resultId },
+      }],
+    });
+    await expect(sql`update competition.technical_correction_requests
+      set internal_reason = 'changed' where correction_id = ${acceptedCorrectionId}::uuid`
+      .execute(database)).rejects.toThrow(/immutable/);
+    await expect(sql`delete from competition.technical_correction_requests
+      where correction_id = ${acceptedCorrectionId}::uuid`.execute(database)).rejects.toThrow();
 
     await expect(recordSessionResult(
       database,

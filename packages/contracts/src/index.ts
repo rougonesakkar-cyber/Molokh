@@ -1640,6 +1640,48 @@ export const IntegrityCaseCommandResponseSchema = Type.Object({
 }, { $id: 'IntegrityCaseCommandResponse', additionalProperties: false });
 export type IntegrityCaseCommandResponse = Static<typeof IntegrityCaseCommandResponseSchema>;
 
+export const TechnicalCorrectionCategorySchema = Type.Union([
+  Type.Literal('OUTCOME_OR_WINNER_ERROR'), Type.Literal('LATE_RESULT_CORRECTION'),
+]);
+export const TechnicalCorrectionStateSchema = Type.Union([
+  Type.Literal('SUBMITTED'), Type.Literal('UNDER_REVIEW'), Type.Literal('APPROVED'),
+  Type.Literal('REJECTED'), Type.Literal('WITHDRAWN'),
+]);
+export const TechnicalCorrectionProjectionSchema = Type.Object({
+  correctionId: Type.String({ format: 'uuid' }),
+  resultId: Type.String({ format: 'uuid' }),
+  challengeId: Type.String({ format: 'uuid' }),
+  competitionId: Type.String({ format: 'uuid' }),
+  requesterUserId: Type.String({ format: 'uuid' }),
+  requesterDisplayName: Type.String({ minLength: 1, maxLength: 80 }),
+  category: TechnicalCorrectionCategorySchema,
+  state: TechnicalCorrectionStateSchema,
+  originalOutcomeCode: ResultOutcomeCodeSchema,
+  originalWinnerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  proposedOutcomeCode: ResultOutcomeCodeSchema,
+  proposedWinnerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  internalReason: Type.Union([Type.String({ minLength: 1, maxLength: 2000 }), Type.Null()]),
+  evidenceReference: Type.Union([Type.String({ minLength: 1, maxLength: 500 }), Type.Null()]),
+  submittedAt: Type.String({ format: 'date-time' }),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'TechnicalCorrectionProjection', additionalProperties: false });
+export type TechnicalCorrectionContract = Static<typeof TechnicalCorrectionProjectionSchema>;
+
+export const TechnicalCorrectionListResponseSchema = Type.Object({
+  data: Type.Array(TechnicalCorrectionProjectionSchema),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+}, { $id: 'TechnicalCorrectionListResponse', additionalProperties: false });
+export type TechnicalCorrectionListResponse = Static<typeof TechnicalCorrectionListResponseSchema>;
+
+export const TechnicalCorrectionCommandResponseSchema = Type.Object({
+  data: TechnicalCorrectionProjectionSchema,
+  meta: Type.Object({
+    requestId: Type.String({ format: 'uuid' }), eventId: Type.String({ format: 'uuid' }),
+    replayed: Type.Boolean(),
+  }, { additionalProperties: false }),
+}, { $id: 'TechnicalCorrectionCommandResponse', additionalProperties: false });
+export type TechnicalCorrectionCommandResponse = Static<typeof TechnicalCorrectionCommandResponseSchema>;
+
 export const PlatformIncidentStateSchema = Type.Union([
   Type.Literal('DETECTED'), Type.Literal('CONFIRMED_ACTIVE'), Type.Literal('RESOLVED'),
   Type.Literal('COMPENSATED'), Type.Literal('REJECTED'),
@@ -1712,6 +1754,17 @@ export const OpenIntegrityCaseBodySchema = Type.Object({
   internalReason: Type.String({ minLength: 1, maxLength: 2000 }),
 }, { $id: 'OpenIntegrityCaseBody', additionalProperties: false });
 export type OpenIntegrityCaseBody = Static<typeof OpenIntegrityCaseBodySchema>;
+
+export const RequestTechnicalCorrectionBodySchema = Type.Object({
+  category: TechnicalCorrectionCategorySchema,
+  proposedOutcomeCode: ResultOutcomeCodeSchema,
+  proposedWinnerUserId: Type.Optional(Type.Union([
+    Type.String({ format: 'uuid' }), Type.Null(),
+  ])),
+  internalReason: Type.String({ minLength: 1, maxLength: 2000 }),
+  evidenceReference: Type.String({ minLength: 1, maxLength: 500 }),
+}, { $id: 'RequestTechnicalCorrectionBody', additionalProperties: false });
+export type RequestTechnicalCorrectionBody = Static<typeof RequestTechnicalCorrectionBodySchema>;
 
 export const StartIntegrityReviewBodySchema = Type.Object(
   {}, { $id: 'StartIntegrityReviewBody', additionalProperties: false },

@@ -10,6 +10,7 @@ import {
   assertResultCanFinalize,
   deriveProvisionalStatusTransition,
   normalizeResultParticipants,
+  normalizeTechnicalCorrectionRequest,
   normalizeAppealDecision,
   normalizeAppealResponse,
   normalizeAppealSlaExtension,
@@ -41,6 +42,37 @@ describe('Result and provisional status policy', () => {
       outcomeCode: 'WIN_A', winnerUserId: null, participantUserIds: participants,
       reasonCode: 'x'.repeat(81), comment: null,
     })).toThrowError(new ResultValidationError('reasonCode'));
+  });
+
+  it('[AC-113] normalizes a separate Coach correction request without mutating Result', () => {
+    const input = {
+      resultState: 'RECORDED' as const,
+      existingOpenRequest: false,
+      originalOutcomeCode: 'WIN_A' as const,
+      originalWinnerUserId: 'athlete-a',
+      proposedOutcomeCode: 'WIN_B' as const,
+      proposedWinnerUserId: null,
+      participantUserIds: participants,
+      category: 'OUTCOME_OR_WINNER_ERROR' as const,
+      internalReason: '  Outcome was entered for the wrong corner.  ',
+      evidenceReference: '  session-log:42  ',
+    };
+    expect(normalizeTechnicalCorrectionRequest(input)).toEqual({
+      proposedOutcomeCode: 'WIN_B',
+      proposedWinnerUserId: 'athlete-b',
+      category: 'OUTCOME_OR_WINNER_ERROR',
+      internalReason: 'Outcome was entered for the wrong corner.',
+      evidenceReference: 'session-log:42',
+    });
+    expect(() => normalizeTechnicalCorrectionRequest({
+      ...input, proposedOutcomeCode: 'WIN_A', proposedWinnerUserId: 'athlete-a',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_NO_CHANGE'));
+    expect(() => normalizeTechnicalCorrectionRequest({
+      ...input, resultState: 'FINAL',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_RESULT_NOT_PROVISIONAL'));
+    expect(() => normalizeTechnicalCorrectionRequest({
+      ...input, existingOpenRequest: true,
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_ALREADY_OPEN'));
   });
 
   it('[AC-080] transfers Contender provisionally only from the frozen snapshot', () => {
