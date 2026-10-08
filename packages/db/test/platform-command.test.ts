@@ -7451,7 +7451,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ]);
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-117][AC-118][AC-144][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -7864,6 +7864,26 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(firstStatement.response.statements).toHaveLength(1);
     const secondStatement = await submitMissingStatement(athleteB, 2, 2350);
     expect(secondStatement.response.statements).toHaveLength(2);
+    await expect(confirmMissingResultVenue(
+      database,
+      {
+        commandId: testId(2390), commandType: 'CONFIRM_MISSING_RESULT_VENUE',
+        idempotencyKey: `missing-result-venue-unauthorized:${missingResultReviewId}`,
+        actor: { type: 'USER', id: athleteA, roles: ['GYM_ADMIN'], scopeIds: [venueId] },
+        aggregateType: 'MissingResultReview', aggregateId: missingResultReviewId,
+        expectedVersion: 3, correlationId: testId(2391), causationId: testId(2329),
+        requestId: testId(2392), source: 'api', payloadVersion: 1,
+        payload: {
+          reviewId: missingResultReviewId, attendanceConfirmed: true,
+          note: 'Заявленная роль не заменяет действующий grant.',
+        },
+      } satisfies CommandEnvelope<ConfirmMissingResultVenuePayload>,
+      {
+        eventId: testId(2393), auditId: testId(2394),
+        outboxMessageId: testId(2395), confirmationId: testId(2396),
+      },
+      () => new Date('2026-09-13T14:57:00.000Z'),
+    )).rejects.toMatchObject({ code: 'RESULT_PERMISSION_DENIED' });
     await confirmMissingResultVenue(
       database,
       {
@@ -8159,24 +8179,24 @@ describePostgres('PostgreSQL critical command transaction', () => {
       slaExtension: { durationHours: 24, reason: 'Нужна сверка видеозаписи.' },
     });
 
+    const decideCommand = {
+      commandId: testId(2022), commandType: 'DECIDE_APPEAL',
+      idempotencyKey: `reverse-appeal-${appealId}`,
+      actor: { type: 'USER', id: centralId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'Appeal', aggregateId: appealId, expectedVersion: 5,
+      correlationId: testId(2023), causationId: testId(2015), requestId: testId(2024),
+      source: 'api', payloadVersion: 1,
+      payload: { appealId, decision: 'REVERSE', reason: 'Coach подтвердил ошибку победителя.' },
+    } satisfies CommandEnvelope<DecideAppealPayload>;
+    const decideIds = {
+      eventId: testId(2025), auditId: testId(2026), outboxMessageId: testId(2027),
+      decisionId: testId(2028), resultEventId: testId(2029), challengeEventId: testId(2030),
+      statusCompensationId: testId(2031), statusEventId: testId(2032),
+      cooldownEventId: testId(2033), notificationOutboxMessageId: testId(2034),
+      notificationIds: [testId(2035), testId(2036), testId(2037)],
+    };
     const decided = await decideAppeal(
-      database,
-      {
-        commandId: testId(2022), commandType: 'DECIDE_APPEAL',
-        idempotencyKey: `reverse-appeal-${appealId}`,
-        actor: { type: 'USER', id: centralId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
-        aggregateType: 'Appeal', aggregateId: appealId, expectedVersion: 5,
-        correlationId: testId(2023), causationId: testId(2015), requestId: testId(2024),
-        source: 'api', payloadVersion: 1,
-        payload: { appealId, decision: 'REVERSE', reason: 'Coach подтвердил ошибку победителя.' },
-      } satisfies CommandEnvelope<DecideAppealPayload>,
-      {
-        eventId: testId(2025), auditId: testId(2026), outboxMessageId: testId(2027),
-        decisionId: testId(2028), resultEventId: testId(2029), challengeEventId: testId(2030),
-        statusCompensationId: testId(2031), statusEventId: testId(2032),
-        cooldownEventId: testId(2033), notificationOutboxMessageId: testId(2034),
-        notificationIds: [testId(2035), testId(2036), testId(2037)],
-      },
+      database, decideCommand, decideIds,
       () => new Date('2026-09-13T15:20:00.000Z'),
     );
     expect(decided.response).toMatchObject({
@@ -8215,6 +8235,110 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(compensation.rows[0]).toEqual({
       corrected_transition_type: 'CONTENDER_DEFENDED', to_contender_user_id: athleteA,
     });
+
+    const replayedDecision = await decideAppeal(
+      database, decideCommand, decideIds,
+      () => new Date('2026-09-13T15:21:00.000Z'),
+    );
+    expect(replayedDecision.replayed).toBe(true);
+    expect(replayedDecision.response).toEqual(decided.response);
+
+    interface CriticalRoleAuditRow {
+      readonly audit_id: string;
+      readonly action: string;
+      readonly actor_id: string;
+      readonly actor_type: string;
+      readonly actor_roles: readonly string[];
+      readonly actor_scope_ids: readonly string[];
+      readonly aggregate_type: string;
+      readonly aggregate_id: string;
+      readonly transition_id: string | null;
+      readonly request_id: string;
+      readonly correlation_id: string;
+      readonly causation_id: string | null;
+      readonly reason_code: string | null;
+      readonly before_state: string | null;
+      readonly after_state: string | null;
+      readonly occurred_at: Date;
+      readonly metadata: Readonly<Record<string, unknown>>;
+    }
+    const criticalRoleAudits = await sql<CriticalRoleAuditRow>`
+      select audit_id, action, actor_id, actor_type, actor_roles, actor_scope_ids,
+        aggregate_type, aggregate_id, transition_id, request_id, correlation_id,
+        causation_id, reason_code, before_state, after_state, occurred_at, metadata
+      from platform.audit_events
+      where audit_id in (
+        ${testId(2364)}::uuid, ${testId(1945)}::uuid, ${testId(2026)}::uuid
+      )
+      order by occurred_at
+    `.execute(database);
+    expect(criticalRoleAudits.rows).toEqual([
+      expect.objectContaining({
+        audit_id: testId(2364), action: 'CONFIRM_MISSING_RESULT_VENUE',
+        actor_id: adminId, actor_type: 'USER', actor_roles: ['GYM_ADMIN'],
+        actor_scope_ids: [venueId], aggregate_type: 'MissingResultReview',
+        aggregate_id: missingResultReviewId, transition_id: null,
+        request_id: testId(2362), correlation_id: testId(2361), causation_id: testId(2329),
+        reason_code: 'ATTENDANCE_CONFIRMED', before_state: 'OPEN', after_state: 'OPEN',
+        occurred_at: new Date('2026-09-13T14:58:00.000Z'),
+        metadata: expect.objectContaining({
+          commandId: testId(2360), commandType: 'CONFIRM_MISSING_RESULT_VENUE',
+          confirmationId: testId(2366), source: 'api',
+        }),
+      }),
+      expect.objectContaining({
+        audit_id: testId(1945), action: 'RECORD_RESULT', actor_id: reviewerCoachId,
+        actor_type: 'USER', actor_roles: ['COACH'], actor_scope_ids: [communityId],
+        aggregate_type: 'Challenge', aggregate_id: challengeId, transition_id: 'CH-15',
+        request_id: testId(1943), correlation_id: testId(1942), causation_id: testId(1933),
+        reason_code: null, before_state: 'RESULT_PENDING', after_state: 'RESULT_RECORDED',
+        occurred_at: new Date('2026-09-13T15:01:00.000Z'),
+        metadata: expect.objectContaining({
+          commandId: testId(1941), commandType: 'RECORD_SESSION_RESULT', resultId,
+          statusTransitionType: 'CONTENDER_TRANSFERRED', source: 'api',
+        }),
+      }),
+      expect.objectContaining({
+        audit_id: testId(2026), action: 'DECIDE_APPEAL_REVERSE', actor_id: centralId,
+        actor_type: 'USER', actor_roles: ['CENTRAL_ADMIN'], actor_scope_ids: [],
+        aggregate_type: 'Appeal', aggregate_id: appealId, transition_id: 'A-07',
+        request_id: testId(2024), correlation_id: testId(2023), causation_id: testId(2015),
+        reason_code: 'REVERSE', before_state: 'UNDER_REVIEW', after_state: 'DECIDED_REVERSED',
+        occurred_at: new Date('2026-09-13T15:20:00.000Z'),
+        metadata: expect.objectContaining({
+          commandId: testId(2022), commandType: 'DECIDE_APPEAL', resultId,
+          decisionId: testId(2028), reason: 'Coach подтвердил ошибку победителя.', source: 'api',
+        }),
+      }),
+    ]);
+    const forbiddenAuditCount = await sql<{ readonly count: string }>`
+      select count(*)::text as count from platform.audit_events
+      where audit_id in (${testId(2394)}::uuid, ${testId(1964)}::uuid)
+    `.execute(database);
+    expect(forbiddenAuditCount.rows[0]?.count).toBe('0');
+
+    const centralPublicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where event_id in (
+        ${testId(2025)}::uuid, ${testId(2029)}::uuid,
+        ${testId(2030)}::uuid, ${testId(2032)}::uuid
+      )
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (${testId(2027)}::uuid, ${testId(2034)}::uuid)
+    `.execute(database);
+    expect(centralPublicDocuments.rows).toHaveLength(6);
+    expect(JSON.stringify(centralPublicDocuments.rows)).not.toContain(
+      'Coach подтвердил ошибку победителя.',
+    );
+
+    await expect(sql`
+      update platform.audit_events set action = 'MUTATED'
+      where audit_id = ${testId(2026)}::uuid
+    `.execute(database)).rejects.toThrow(/append-only table audit_events cannot be mutated/);
+    await expect(sql`
+      delete from platform.audit_events where audit_id = ${testId(2026)}::uuid
+    `.execute(database)).rejects.toThrow(/append-only table audit_events cannot be mutated/);
 
     const withdrawalChallengeId = testId(2200);
     const withdrawalResultId = testId(2201);

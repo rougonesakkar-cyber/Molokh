@@ -1008,7 +1008,6 @@ export async function decideAppeal(
             payload: {
               compensationId: statusIds.statusCompensationId,
               compensatesTransitionId: row.transition_id, decisionId: required.decisionId,
-              reason: normalized.reason,
               from: { championUserId: row.current_champion_user_id, contenderUserId: row.current_contender_user_id },
               to: { championUserId: toChampion, contenderUserId: toContender },
               correctedTransitionType: correctedType, statusVersion: competitionStatusVersion,
@@ -1051,7 +1050,7 @@ export async function decideAppeal(
             effectiveOutcomeCode: normalized.decision === 'ANNUL' || normalized.decision === 'REPEAT'
               ? null : normalized.effectiveOutcomeCode,
             effectiveWinnerUserId: normalized.effectiveWinnerUserId,
-            reason: normalized.reason, compensationMode: normalized.compensationMode,
+            compensationMode: normalized.compensationMode,
           },
           metadata: { policyVersion: RESULT_POLICY_VERSION },
         },
@@ -1088,7 +1087,7 @@ export async function decideAppeal(
           payload: {
             appealId: row.appeal_id, resultId: row.result_id, decisionId: required.decisionId,
             reviewerUserId: command.actor.id, decision: normalized.decision,
-            reason: normalized.reason, originalOutcomeCode: row.recorded_outcome_code,
+            originalOutcomeCode: row.recorded_outcome_code,
             effectiveOutcomeCode: normalized.decision === 'ANNUL' || normalized.decision === 'REPEAT'
               ? null : normalized.effectiveOutcomeCode,
             decidedAt: context.occurredAt.toISOString(),
@@ -1133,7 +1132,6 @@ export async function decideAppeal(
                 actionTarget: { type: 'RESULT', resultId: row.result_id },
                 payload: {
                   appealId: row.appeal_id, decision: normalized.decision,
-                  reason: normalized.reason,
                   schedulingDeadlineAt: schedulingDeadlineAt?.toISOString() ?? null,
                 },
                 deadlineAt: null,
