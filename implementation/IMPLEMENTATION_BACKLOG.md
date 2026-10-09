@@ -269,7 +269,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   atomically, and either terminal request leaves the active queue. AC-147 passes Core/API/client
   and real PostgreSQL gates.
 - M6 Appeal lifecycle increment: complete. Only the eligible Athlete can submit Appeal or irreversibly waive it. Waiver may finalize early; otherwise a state/version-guarded Worker timer commits `CH-17`, releases both obligations and clears the status lock.
-- M6 Central decision increment: complete. An independent active global Central reviewer takes a FIFO item and records one reasoned `UPHOLD`, `REVERSE`, `ANNUL` or `REPEAT` decision. Original Result facts remain immutable; status finalization/compensation, Cooldown invalidation, obligation release or the new 14-day repeat cycle commit atomically with event/audit/outbox history. Typed Central API and the universal Community screen expose only server-authorized actions.
+- M6 Central decision increment: complete. An independent active global Central reviewer takes a FIFO item and records one reasoned `UPHOLD`, `REVERSE`, `ANNUL` or `REPEAT` decision. Original Result facts remain immutable; status finalization/compensation, Cooldown invalidation, obligation release or the new 14-day repeat cycle commit atomically with event/audit/outbox history. AC-150 proves that `ANNUL` closes the provisional StatusTenure with compensation lineage, restores the exact pre-Result holder, preserves FIFO submission time and rebuilds the same holder/version/tenure/Cooldown hash from canonical events. Typed Central API and the universal Community screen expose only server-authorized actions.
 - M6 participation/SLA increment: complete. The opponent and assigned Coach may each append one response during 24 hours without blocking Central; the appellant may withdraw before a decision without reopening uniqueness; the assigned reviewer may transparently extend SLA once by 24 or 48 hours with a visible reason. Typed API/UI and PostgreSQL integration cover response, extension, decision and decisive-result withdrawal/finalization.
 - M6 MissingResultReview increment: complete. State/version timers remind Coach at 2 hours,
   escalate to the Venue at 12 hours and open exactly one review at 24 hours. Private Athlete
@@ -386,7 +386,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 169/214 (`163/196 P0`).
+  Acceptance traceability is 170/214 (`164/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **169/214** (`163/196 P0`);
+- executable acceptance traceability: **170/214** (`164/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0065` and **54/54** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0065` and **55/55** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -296,6 +296,13 @@ recalculates status from the same immutable Session snapshot, `ANNUL` restores t
 status and removes the old Cooldown, and `REPEAT` additionally returns the same Challenge to a
 new 14-day scheduling cycle. Original Result facts, decisions and compensations remain in the
 append-only history.
+
+AC-150 separately proves the `ANNUL` path against real PostgreSQL. The provisional tenure is
+closed by `StatusTransitionRolledBack`, the exact pre-Result holder is restored through a linked
+non-provisional tenure, the Cooldown remains in immutable history but becomes ineffective, and
+pending FIFO timestamps are unchanged. Deleting the derived Competition/Cooldown projection and
+rebuilding it from canonical events reproduces the same holders, status version, tenure lineage,
+Cooldown invalidation and projection hash.
 
 The opponent and assigned Coach can each add one response during the 24-hour response window;
 Central review never waits for either response. The appellant may withdraw before a decision and
