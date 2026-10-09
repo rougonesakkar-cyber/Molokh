@@ -219,7 +219,17 @@ async function integrityRows(
       decision.reason as decision_reason, decision.effective_outcome_code,
       decision.effective_winner_user_id, decision.replay_hash,
       result.state as result_state, result.version::text as result_version,
-      result.recorded_outcome_code, result.winner_user_id, result.loser_user_id,
+      coalesce(appeal_decision.effective_outcome_code,
+        technical_decision.effective_outcome_code,
+        result.recorded_outcome_code) as recorded_outcome_code,
+      coalesce(appeal_decision.effective_winner_user_id,
+        case when technical_decision.decision_id is not null
+          then technical_decision.effective_winner_user_id else result.winner_user_id end)
+        as winner_user_id,
+      coalesce(appeal_decision.effective_loser_user_id,
+        case when technical_decision.decision_id is not null
+          then technical_decision.effective_loser_user_id else result.loser_user_id end)
+        as loser_user_id,
       result.competitive_snapshot_id, result.coach_user_id,
       challenge.state as challenge_state, challenge.version::text as challenge_version,
       challenge.cycle_no, challenge.pair_low_id, pair_low.display_name as pair_low_name,
@@ -240,6 +250,10 @@ async function integrityRows(
     join identity.users as pair_low on pair_low.user_id = challenge.pair_low_id
     join identity.users as pair_high on pair_high.user_id = challenge.pair_high_id
     left join competition.integrity_decisions as decision on decision.case_id = integrity.case_id
+    left join competition.appeal_decisions as appeal_decision
+      on appeal_decision.result_id = result.result_id
+    left join competition.technical_correction_decisions as technical_decision
+      on technical_decision.result_id = result.result_id
     left join competition.status_transitions as transition on transition.source_result_id = result.result_id
     left join competition.pair_cooldowns as cooldown
       on cooldown.source_result_id = result.result_id and cooldown.invalidated_at is null
@@ -452,6 +466,10 @@ interface ReplayTransitionRow {
   readonly appeal_outcome_code: ResultOutcomeCode | null;
   readonly appeal_winner_user_id: string | null;
   readonly appeal_loser_user_id: string | null;
+  readonly technical_decision_id: string | null;
+  readonly technical_outcome_code: ResultOutcomeCode | null;
+  readonly technical_winner_user_id: string | null;
+  readonly technical_loser_user_id: string | null;
   readonly integrity_disposition: IntegrityDisposition | null;
   readonly integrity_outcome_code: ResultOutcomeCode | null;
   readonly integrity_winner_user_id: string | null;
@@ -479,6 +497,10 @@ async function replayStatus(input: {
       appeal_decision.effective_outcome_code as appeal_outcome_code,
       appeal_decision.effective_winner_user_id as appeal_winner_user_id,
       appeal_decision.effective_loser_user_id as appeal_loser_user_id,
+      technical_decision.decision_id as technical_decision_id,
+      technical_decision.effective_outcome_code as technical_outcome_code,
+      technical_decision.effective_winner_user_id as technical_winner_user_id,
+      technical_decision.effective_loser_user_id as technical_loser_user_id,
       integrity_decision.effective_disposition as integrity_disposition,
       integrity_decision.effective_outcome_code as integrity_outcome_code,
       integrity_decision.effective_winner_user_id as integrity_winner_user_id,
@@ -490,6 +512,8 @@ async function replayStatus(input: {
       on snapshot.snapshot_id = result.competitive_snapshot_id
     left join competition.appeal_decisions as appeal_decision
       on appeal_decision.result_id = result.result_id
+    left join competition.technical_correction_decisions as technical_decision
+      on technical_decision.result_id = result.result_id
     left join competition.integrity_decisions as integrity_decision
       on integrity_decision.result_id = result.result_id
     where transition.competition_id = ${input.row.competition_id}::uuid
@@ -502,12 +526,21 @@ async function replayStatus(input: {
     let winner: string | null;
     let loser: string | null;
     if (transition.result_id === input.row.result_id) {
+      const currentOutcome = transition.technical_decision_id
+        ? transition.technical_outcome_code
+        : transition.recorded_outcome_code;
+      const currentWinner = transition.technical_decision_id
+        ? transition.technical_winner_user_id
+        : transition.recorded_winner_user_id;
+      const currentLoser = transition.technical_decision_id
+        ? transition.technical_loser_user_id
+        : transition.recorded_loser_user_id;
       outcome = input.disposition === 'CORRECT' ? input.correctedOutcomeCode
-        : input.disposition === 'UPHOLD' ? transition.recorded_outcome_code : null;
+        : input.disposition === 'UPHOLD' ? currentOutcome : null;
       winner = input.disposition === 'CORRECT' ? input.correctedWinnerUserId
-        : input.disposition === 'UPHOLD' ? transition.recorded_winner_user_id : null;
+        : input.disposition === 'UPHOLD' ? currentWinner : null;
       loser = input.disposition === 'CORRECT' ? input.correctedLoserUserId
-        : input.disposition === 'UPHOLD' ? transition.recorded_loser_user_id : null;
+        : input.disposition === 'UPHOLD' ? currentLoser : null;
     } else if (transition.integrity_disposition) {
       const removed = transition.integrity_disposition === 'ANNUL'
         || transition.integrity_disposition === 'REPEAT';
@@ -520,6 +553,10 @@ async function replayStatus(input: {
       outcome = removed ? null : transition.appeal_outcome_code;
       winner = removed ? null : transition.appeal_winner_user_id;
       loser = removed ? null : transition.appeal_loser_user_id;
+    } else if (transition.technical_decision_id) {
+      outcome = transition.technical_outcome_code;
+      winner = transition.technical_winner_user_id;
+      loser = transition.technical_loser_user_id;
     } else {
       outcome = transition.recorded_outcome_code;
       winner = transition.recorded_winner_user_id;

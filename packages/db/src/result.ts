@@ -126,10 +126,14 @@ export interface ResultProjection {
   readonly sessionId: string | null;
   readonly state: ResultState;
   readonly outcomeCode: ResultOutcomeCode;
+  readonly recordedOutcomeCode: ResultOutcomeCode;
   readonly winnerUserId: string | null;
   readonly winnerDisplayName: string | null;
   readonly loserUserId: string | null;
   readonly loserDisplayName: string | null;
+  readonly recordedWinnerUserId: string | null;
+  readonly recordedLoserUserId: string | null;
+  readonly technicalCorrectionDecisionId: string | null;
   readonly reasonCode: string | null;
   readonly comment: string | null;
   readonly methodCode: string | null;
@@ -206,9 +210,12 @@ interface ResultRow {
   readonly session_id: string | null;
   readonly state: ResultState;
   readonly recorded_outcome_code: ResultOutcomeCode;
+  readonly source_outcome_code: ResultOutcomeCode;
   readonly winner_user_id: string | null;
+  readonly source_winner_user_id: string | null;
   readonly winner_display_name: string | null;
   readonly loser_user_id: string | null;
+  readonly source_loser_user_id: string | null;
   readonly loser_display_name: string | null;
   readonly reason_code: string | null;
   readonly comment: string | null;
@@ -239,6 +246,12 @@ interface ResultRow {
   readonly after_champion_user_id: string | null;
   readonly after_contender_user_id: string | null;
   readonly after_status_version: string | null;
+  readonly technical_correction_decision_id: string | null;
+  readonly technical_compensation_id: string | null;
+  readonly technical_corrected_transition_type: StatusTransitionType | null;
+  readonly technical_to_champion_user_id: string | null;
+  readonly technical_to_contender_user_id: string | null;
+  readonly technical_status_version: string | null;
   readonly viewer_waived: boolean;
   readonly viewer_appealed: boolean;
   readonly viewer_admin: boolean;
@@ -366,19 +379,27 @@ async function resultRow(
   const result = await sql<ResultRow>`
     select result.result_id, result.challenge_id, result.session_id,
       result.state, coalesce(integrity_decision.effective_outcome_code,
-        decision.effective_outcome_code, result.recorded_outcome_code)
+        decision.effective_outcome_code, correction_decision.effective_outcome_code,
+        result.recorded_outcome_code)
         as recorded_outcome_code,
+      result.recorded_outcome_code as source_outcome_code,
       case when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
           or decision.decision in ('ANNUL', 'REPEAT') then null
         else coalesce(integrity_decision.effective_winner_user_id,
-          decision.effective_winner_user_id, result.winner_user_id)
+          decision.effective_winner_user_id,
+          case when correction_decision.decision_id is not null
+            then correction_decision.effective_winner_user_id else result.winner_user_id end)
       end as winner_user_id,
+      result.winner_user_id as source_winner_user_id,
       winner.display_name as winner_display_name,
       case when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
           or decision.decision in ('ANNUL', 'REPEAT') then null
         else coalesce(integrity_decision.effective_loser_user_id,
-          decision.effective_loser_user_id, result.loser_user_id)
+          decision.effective_loser_user_id,
+          case when correction_decision.decision_id is not null
+            then correction_decision.effective_loser_user_id else result.loser_user_id end)
       end as loser_user_id,
+      result.loser_user_id as source_loser_user_id,
       loser.display_name as loser_display_name,
       result.reason_code, result.comment, result.method_code, result.method_text,
       result.score_payload, result.recorded_at, result.appeal_deadline_at,
@@ -396,6 +417,14 @@ async function resultRow(
       transition.before_status_version::text as before_status_version,
       transition.after_champion_user_id, transition.after_contender_user_id,
       transition.after_status_version::text as after_status_version,
+      correction_decision.decision_id as technical_correction_decision_id,
+      correction_compensation.compensation_id as technical_compensation_id,
+      correction_compensation.corrected_transition_type
+        as technical_corrected_transition_type,
+      correction_compensation.to_champion_user_id as technical_to_champion_user_id,
+      correction_compensation.to_contender_user_id as technical_to_contender_user_id,
+      correction_compensation.competition_status_version::text
+        as technical_status_version,
       exists (
         select 1 from competition.appeal_waivers as waiver
         where waiver.result_id = result.result_id and waiver.user_id = ${viewerUserId}::uuid
@@ -428,6 +457,10 @@ async function resultRow(
     join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
     join competition.competitions as competition on competition.competition_id = challenge.competition_id
     left join competition.appeal_decisions as decision on decision.result_id = result.result_id
+    left join competition.technical_correction_decisions as correction_decision
+      on correction_decision.result_id = result.result_id
+    left join competition.technical_correction_status_compensations as correction_compensation
+      on correction_compensation.decision_id = correction_decision.decision_id
     left join lateral (
       select integrity_case.case_id, integrity_case.state,
         integrity_case.public_reason_category
@@ -442,13 +475,17 @@ async function resultRow(
       when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
         or decision.decision in ('ANNUL', 'REPEAT') then null
       else coalesce(integrity_decision.effective_winner_user_id,
-        decision.effective_winner_user_id, result.winner_user_id)
+        decision.effective_winner_user_id,
+        case when correction_decision.decision_id is not null
+          then correction_decision.effective_winner_user_id else result.winner_user_id end)
     end
     left join identity.users as loser on loser.user_id = case
       when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
         or decision.decision in ('ANNUL', 'REPEAT') then null
       else coalesce(integrity_decision.effective_loser_user_id,
-        decision.effective_loser_user_id, result.loser_user_id)
+        decision.effective_loser_user_id,
+        case when correction_decision.decision_id is not null
+          then correction_decision.effective_loser_user_id else result.loser_user_id end)
     end
     left join competition.status_transitions as transition
       on transition.source_result_id = result.result_id
@@ -475,17 +512,24 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     && !row.viewer_appealed;
   const beforeVersion = Number(row.before_status_version ?? row.competition_status_version);
   const afterVersion = Number(row.after_status_version ?? row.competition_status_version);
+  const technicalProjectionApplies = row.technical_compensation_id !== null
+    && row.decision === null
+    && !row.integrity_review_state?.startsWith('DECIDED_');
   const beforeChampionUserId = row.transition_id
     ? row.before_champion_user_id
     : row.current_champion_user_id;
   const beforeContenderUserId = row.transition_id
     ? row.before_contender_user_id
     : row.current_contender_user_id;
-  const afterChampionUserId = row.transition_id
-    ? row.after_champion_user_id
+  const afterChampionUserId = technicalProjectionApplies
+    ? row.technical_to_champion_user_id
+    : row.transition_id
+      ? row.after_champion_user_id
     : row.current_champion_user_id;
-  const afterContenderUserId = row.transition_id
-    ? row.after_contender_user_id
+  const afterContenderUserId = technicalProjectionApplies
+    ? row.technical_to_contender_user_id
+    : row.transition_id
+      ? row.after_contender_user_id
     : row.current_contender_user_id;
   return {
     resultId: row.result_id,
@@ -493,10 +537,14 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     sessionId: row.session_id,
     state: row.state,
     outcomeCode: row.recorded_outcome_code,
+    recordedOutcomeCode: row.source_outcome_code,
     winnerUserId: row.winner_user_id,
     winnerDisplayName: row.winner_display_name,
     loserUserId: row.loser_user_id,
     loserDisplayName: row.loser_display_name,
+    recordedWinnerUserId: row.source_winner_user_id,
+    recordedLoserUserId: row.source_loser_user_id,
+    technicalCorrectionDecisionId: row.technical_correction_decision_id,
     reasonCode: row.reason_code,
     comment: row.comment,
     methodCode: row.method_code,
@@ -507,7 +555,9 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     finalizedAt: row.finalized_at?.toISOString() ?? null,
     decision: row.decision,
     decisionReason: row.decision_reason,
-    statusTransitionType: row.transition_type ?? 'NONE',
+    statusTransitionType: technicalProjectionApplies
+      ? row.technical_corrected_transition_type ?? 'NONE'
+      : row.transition_type ?? 'NONE',
     statusBefore: {
       championUserId: beforeChampionUserId,
       contenderUserId: beforeContenderUserId,
@@ -516,7 +566,9 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     statusAfter: {
       championUserId: afterChampionUserId,
       contenderUserId: afterContenderUserId,
-      statusVersion: afterVersion,
+      statusVersion: technicalProjectionApplies
+        ? Number(row.technical_status_version)
+        : afterVersion,
     },
     provisional: row.state === 'RECORDED' || row.state === 'UNDER_APPEAL',
     integrityReviewState: row.integrity_review_state,

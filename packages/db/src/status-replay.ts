@@ -35,6 +35,10 @@ interface ReplayTransitionRow {
   readonly appeal_outcome_code: ResultOutcomeCode | null;
   readonly appeal_winner_user_id: string | null;
   readonly appeal_loser_user_id: string | null;
+  readonly technical_decision_id: string | null;
+  readonly technical_outcome_code: ResultOutcomeCode | null;
+  readonly technical_winner_user_id: string | null;
+  readonly technical_loser_user_id: string | null;
   readonly integrity_disposition: string | null;
   readonly integrity_outcome_code: ResultOutcomeCode | null;
   readonly integrity_winner_user_id: string | null;
@@ -73,6 +77,10 @@ export async function replayCompetitionStatusExcludingResults(input: {
       appeal_decision.effective_outcome_code as appeal_outcome_code,
       appeal_decision.effective_winner_user_id as appeal_winner_user_id,
       appeal_decision.effective_loser_user_id as appeal_loser_user_id,
+      technical_decision.decision_id as technical_decision_id,
+      technical_decision.effective_outcome_code as technical_outcome_code,
+      technical_decision.effective_winner_user_id as technical_winner_user_id,
+      technical_decision.effective_loser_user_id as technical_loser_user_id,
       integrity_decision.effective_disposition as integrity_disposition,
       integrity_decision.effective_outcome_code as integrity_outcome_code,
       integrity_decision.effective_winner_user_id as integrity_winner_user_id,
@@ -84,6 +92,8 @@ export async function replayCompetitionStatusExcludingResults(input: {
       on snapshot.snapshot_id = result.competitive_snapshot_id
     left join competition.appeal_decisions as appeal_decision
       on appeal_decision.result_id = result.result_id
+    left join competition.technical_correction_decisions as technical_decision
+      on technical_decision.result_id = result.result_id
     left join competition.integrity_decisions as integrity_decision
       on integrity_decision.result_id = result.result_id
     where transition.competition_id = ${checkpoint.competition_id}::uuid
@@ -111,6 +121,10 @@ export async function replayCompetitionStatusExcludingResults(input: {
         outcome = removed ? null : transition.appeal_outcome_code;
         winnerUserId = removed ? null : transition.appeal_winner_user_id;
         loserUserId = removed ? null : transition.appeal_loser_user_id;
+      } else if (transition.technical_decision_id) {
+        outcome = transition.technical_outcome_code;
+        winnerUserId = transition.technical_winner_user_id;
+        loserUserId = transition.technical_loser_user_id;
       } else if (!['ANNULLED', 'REPEAT_ORDERED'].includes(transition.result_state)) {
         outcome = transition.recorded_outcome_code;
         winnerUserId = transition.recorded_winner_user_id;

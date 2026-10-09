@@ -256,15 +256,18 @@ This sprint produces a demonstrable Training slice while establishing the same f
   replay, stale version, private reason handling and Coach notification pass AC-064 end to end.
 - M5 Official Session lifecycle increment: complete in code. The scheduled boundary freezes one immutable competitive snapshot but no attendance; Coach Start or first Attendance atomically commits `CH-13` to `IN_SESSION`, and Coach End commits `CH-14` to `RESULT_PENDING`. The outbox carries 2h/12h/24h Result reminder deadlines while ordinary Training remains outside Competition.
 - M5 Result/status increment: complete in code. Authorized Coach Result commits `CH-15`, stores immutable source facts, derives status only from the Session snapshot, applies an immediate provisional transition and status lock, creates a configurable pair Cooldown after decisive loss, and schedules the 48-hour finalizer. AC-202 is explicit: `LATE` remains attendance metadata and cannot synthesize `NO_SHOW`, Forfeit, loss, administrative Result or Cooldown; the assigned Coach can record the ordinary Result against the frozen Session snapshot. AC-203 enforces configured grace, separates Attendance from Coach Result, binds one absence to the present winner plus normal Appeal, and normalizes two absences to `NO_CONTEST` without winner/status/loss/Cooldown. AC-167 closes the MVP media boundary: Result remains fully recordable through a closed media-free contract, while no upload capability, endpoint, persistence, object-storage write or media-bearing event is exposed. Duplicate Result and stale status snapshots fail atomically. AC-140 proves that competing status-bearing Results serialize on the Competition row lock: exactly one Result/status lock/transition/Cooldown/Appeal commits and the loser leaves no partial audit, event, outbox or notification state. AC-143 adds a Central-only, row-locked and version-rechecked rebuild of disposable Competition/Cooldown state plus deterministic StatusTenure derivation; pre-delete and post-replay hashes match without mutating canonical sporting facts. AC-144 verifies complete append-only audit facts for DB-authorized Coach, scoped Gym Admin and assigned Central actions; failed permission and exact replay add no success audit, while private Central explanation remains only in protected state/audit metadata.
-- M6 Technical Correction request/rejection increment: complete for TC-01/TC-02/TC-05. An actively authorized
+- M6 Technical Correction lifecycle increment: complete for TC-01/TC-02/TC-04/TC-05. An actively authorized
   recording/assigned Coach or internal Central actor may submit one immutable `SUBMITTED` request
   with original/proposed outcome and winner. Athlete access, stale versions and concurrent
   duplicates are rejected; private reason/evidence stays in protected state and audit metadata.
   Result, status, Cooldown and Appeal do not change, while Central receives a neutral FIFO item.
-  An independent DB-authorized Central reviewer alone may take the versioned request and reject it
-  with a mandatory protected reason; neutral notification and audit/outbox effects commit
-  atomically, and the terminal request leaves the active queue. TC-04 approval remains outside
-  this slice.
+  An independent DB-authorized Central reviewer alone may take the versioned request and approve
+  or reject it with a mandatory protected reason. TC-04 preserves the recorded Result and frozen
+  Session facts, appends a separate effective decision, and compensates/reapplies provisional
+  status and Cooldown through the existing deterministic replay rules. An open Athlete Appeal is
+  never closed implicitly. Neutral notifications plus decision/audit/event/outbox effects commit
+  atomically, and either terminal request leaves the active queue. AC-147 passes Core/API/client
+  and real PostgreSQL gates.
 - M6 Appeal lifecycle increment: complete. Only the eligible Athlete can submit Appeal or irreversibly waive it. Waiver may finalize early; otherwise a state/version-guarded Worker timer commits `CH-17`, releases both obligations and clears the status lock.
 - M6 Central decision increment: complete. An independent active global Central reviewer takes a FIFO item and records one reasoned `UPHOLD`, `REVERSE`, `ANNUL` or `REPEAT` decision. Original Result facts remain immutable; status finalization/compensation, Cooldown invalidation, obligation release or the new 14-day repeat cycle commit atomically with event/audit/outbox history. Typed Central API and the universal Community screen expose only server-authorized actions.
 - M6 participation/SLA increment: complete. The opponent and assigned Coach may each append one response during 24 hours without blocking Central; the appellant may withdraw before a decision without reopening uniqueness; the assigned reviewer may transparently extend SLA once by 24 or 48 hours with a visible reason. Typed API/UI and PostgreSQL integration cover response, extension, decision and decisive-result withdrawal/finalization.
@@ -383,7 +386,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 168/214 (`162/196 P0`).
+  Acceptance traceability is 169/214 (`163/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

@@ -233,6 +233,7 @@ import {
   listTechnicalCorrectionsForCentral,
   listTechnicalCorrectionsForViewer,
   requestTechnicalCorrection,
+  approveTechnicalCorrection,
   rejectTechnicalCorrection,
   startTechnicalCorrectionReview,
   submitResultAppeal,
@@ -324,6 +325,8 @@ import {
   type AssignMissingResultCoachPayload,
   type OpenIntegrityCasePayload,
   type RequestTechnicalCorrectionPayload,
+  type ApproveTechnicalCorrectionPayload,
+  type TechnicalCorrectionApprovalEffectIds,
   type RejectTechnicalCorrectionPayload,
   type StartTechnicalCorrectionReviewPayload,
   type StartIntegrityReviewPayload,
@@ -2034,6 +2037,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         competition.missing_result_venue_confirmations,
         competition.missing_result_statements,
         competition.missing_result_reviews,
+        competition.technical_correction_status_compensations,
+        competition.technical_correction_decisions,
         competition.technical_correction_requests,
         competition.status_transition_finalizations,
         competition.status_transitions,
@@ -2245,7 +2250,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       `.execute(transaction);
     });
     return {
-      athleteA, athleteB, booking, coach, community, competition, session, slot, venue,
+      athleteA, athleteB, booking, central, chat, coach, community, competition, match, session,
+      slot, venue,
       scheduledStartAt,
     };
   };
@@ -10085,6 +10091,333 @@ describePostgres('PostgreSQL critical command transaction', () => {
       timeout_event_count: '1', result_event_count: '1', audit_count: '1',
       result_outbox_count: '1', notification_outbox_count: '1', idempotency_count: '1',
     });
+  });
+
+  it('[AC-147] approves a Technical Correction without rewriting the recorded Result', async () => {
+    const base = 43000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const rulesetSnapshotId = testId(43030);
+    const challengeId = testId(43031);
+    const snapshotId = testId(43032);
+    const resultId = testId(43033);
+    const transitionId = testId(43034);
+    const cooldownId = testId(43035);
+    const correctionId = testId(43036);
+    const recordedAt = new Date('2026-10-03T12:00:00.000Z');
+
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        update competition.competitions
+        set phase = 'RUNNING', champion_user_id = null,
+          contender_user_id = ${fixture.athleteA}::uuid, status_version = 1,
+          status_lock_result_id = null, version = 2,
+          updated_at = '2026-10-03T10:00:00.000Z'
+        where competition_id = ${fixture.competition}::uuid
+      `.execute(transaction);
+      await sql`
+        insert into competition.ruleset_snapshots (
+          ruleset_snapshot_id, competition_id, community_configuration_id,
+          ruleset_ref, ruleset_ack_mode, policy_version, created_at
+        ) values (
+          ${rulesetSnapshotId}::uuid, ${fixture.competition}::uuid,
+          ${testId(base + 15)}::uuid, 'pilot-boxing-v1', 'IMPLICIT_ON_ACCEPT',
+          'challenge-mvp-v1', '2026-10-03T10:00:00.000Z'
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenges (
+          challenge_id, competition_id, source_match_id, source_chat_id, service_chat_id,
+          initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+          response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+          accepted_at, scheduling_deadline_at, version, created_at, updated_at
+        ) values (
+          ${challengeId}::uuid, ${fixture.competition}::uuid, ${fixture.match}::uuid,
+          ${fixture.chat}::uuid, ${fixture.chat}::uuid, ${fixture.athleteA}::uuid,
+          ${fixture.athleteB}::uuid, least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+          greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid), 'MANDATORY',
+          'CONTENDER', 'RESULT_PENDING', ${rulesetSnapshotId}::uuid,
+          '2026-10-01T10:00:00.000Z', '2026-09-29T10:00:00.000Z',
+          '2026-10-13T10:00:00.000Z', 4, '2026-09-29T10:00:00.000Z',
+          '2026-10-03T10:00:00.000Z'
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenge_participant_obligations (
+          obligation_id, challenge_id, user_id, accepted_at
+        ) values
+          (${testId(43037)}::uuid, ${challengeId}::uuid, ${fixture.athleteA}::uuid,
+            '2026-09-29T10:00:00.000Z'),
+          (${testId(43038)}::uuid, ${challengeId}::uuid, ${fixture.athleteB}::uuid,
+            '2026-09-29T10:00:00.000Z')
+      `.execute(transaction);
+      await sql`
+        update scheduling.bookings
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challengeId}::uuid
+        where booking_id = ${fixture.booking}::uuid
+      `.execute(transaction);
+      await sql`
+        update scheduling.sessions
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challengeId}::uuid,
+          state = 'ENDED', window_opened_at = '2026-10-03T10:00:00.000Z',
+          actual_start_at = '2026-10-03T10:01:00.000Z',
+          actual_end_at = '2026-10-03T10:55:00.000Z', version = 5,
+          updated_at = '2026-10-03T10:55:00.000Z'
+        where session_id = ${fixture.session}::uuid
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.session_competitive_snapshots (
+          snapshot_id, session_id, challenge_id, competition_id, ruleset_snapshot_id,
+          community_configuration_id, planned_stake, effective_stake, champion_user_id,
+          contender_user_id, competition_status_version, venue_id, coach_user_id,
+          pair_low_id, pair_high_id, scheduled_start_at, scheduled_end_at, created_at
+        ) values (
+          ${snapshotId}::uuid, ${fixture.session}::uuid, ${challengeId}::uuid,
+          ${fixture.competition}::uuid, ${rulesetSnapshotId}::uuid,
+          ${testId(base + 15)}::uuid, 'CONTENDER', 'CONTENDER', null,
+          ${fixture.athleteA}::uuid, 1, ${fixture.venue}::uuid, ${fixture.coach}::uuid,
+          least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+          greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+          ${fixture.scheduledStartAt}::timestamptz, '2026-10-01T11:00:00.000Z',
+          '2026-10-03T10:00:00.000Z'
+        )
+      `.execute(transaction);
+      await sql`
+        insert into platform.domain_events (
+          event_id, event_name, event_version, aggregate_type, aggregate_id,
+          aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+          occurred_at, payload, idempotency_key_hash
+        ) values (
+          ${testId(43039)}::uuid, 'ChallengeResultPending', 1, 'Challenge',
+          ${challengeId}::uuid, 4, 'CH-14', ${testId(43029)}::uuid, null,
+          ${fixture.coach}::uuid, '2026-10-03T10:55:00.000Z',
+          ${JSON.stringify({ challengeId, sessionId: fixture.session })}::jsonb,
+          'fixture:ac-147:result-pending'
+        )
+      `.execute(transaction);
+    });
+
+    const recorded = await recordSessionResult(database, {
+      commandId: testId(43040), commandType: 'RECORD_SESSION_RESULT',
+      idempotencyKey: 'ac-147-record-result',
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 4,
+      correlationId: testId(43041), causationId: testId(43039), requestId: testId(43042),
+      source: 'api', payloadVersion: 1,
+      payload: { challengeId, sessionId: fixture.session, outcomeCode: 'WIN_B',
+        winnerUserId: null, reasonCode: null, comment: 'private-score-comment',
+        methodCode: null, methodText: null, scorePayload: null, methodPayload: null },
+    } satisfies CommandEnvelope<RecordSessionResultPayload>, {
+      eventId: testId(43043), auditId: testId(43044), outboxMessageId: testId(43045),
+      resultId, resultEventId: testId(43046), statusTransitionId: transitionId,
+      statusEventId: testId(43047), cooldownId, cooldownEventId: testId(43048),
+      timerOutboxMessageId: testId(43049), notificationOutboxMessageId: testId(43050),
+      notificationIds: [testId(43051), testId(43052)],
+    }, () => recordedAt);
+    expect(recorded.response).toMatchObject({
+      outcomeCode: 'WIN_B', recordedOutcomeCode: 'WIN_B',
+      winnerUserId: fixture.athleteB, statusTransitionType: 'CONTENDER_TRANSFERRED',
+    });
+    const snapshotBefore = await sql<{ readonly document: unknown }>`
+      select to_jsonb(snapshot) as document
+      from scheduling.session_competitive_snapshots snapshot
+      where snapshot_id = ${snapshotId}::uuid
+    `.execute(database);
+
+    const requested = await requestTechnicalCorrection(database, {
+      commandId: testId(43060), commandType: 'REQUEST_TECHNICAL_CORRECTION',
+      idempotencyKey: 'ac-147-request',
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      aggregateType: 'TechnicalCorrection', aggregateId: correctionId, expectedVersion: 0,
+      correlationId: testId(43061), causationId: testId(43043), requestId: testId(43062),
+      source: 'api', payloadVersion: 1,
+      payload: { resultId, expectedResultVersion: 1,
+        category: 'OUTCOME_OR_WINNER_ERROR', proposedOutcomeCode: 'WIN_A',
+        proposedWinnerUserId: fixture.athleteA,
+        internalReason: 'private-correction-evidence-description',
+        evidenceReference: 'private-session-journal:ac-147' },
+    } satisfies CommandEnvelope<RequestTechnicalCorrectionPayload>, {
+      correctionId, eventId: testId(43063), auditId: testId(43064),
+      outboxMessageId: testId(43065), notificationOutboxMessageId: testId(43066),
+      notificationId: testId(43067),
+    }, () => new Date('2026-10-03T12:05:00.000Z'));
+    expect(requested.response).toMatchObject({ state: 'SUBMITTED', version: 1 });
+    const reviewed = await startTechnicalCorrectionReview(database, {
+      commandId: testId(43070), commandType: 'START_TECHNICAL_CORRECTION_REVIEW',
+      idempotencyKey: 'ac-147-start-review',
+      actor: { type: 'USER', id: fixture.central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'TechnicalCorrection', aggregateId: correctionId, expectedVersion: 1,
+      correlationId: testId(43071), causationId: testId(43063), requestId: testId(43072),
+      source: 'admin', payloadVersion: 1, payload: { correctionId },
+    } satisfies CommandEnvelope<StartTechnicalCorrectionReviewPayload>, {
+      eventId: testId(43073), auditId: testId(43074), outboxMessageId: testId(43075),
+    }, () => new Date('2026-10-03T12:10:00.000Z'));
+    expect(reviewed.response).toMatchObject({ state: 'UNDER_REVIEW', version: 2 });
+
+    const approvalCommand = {
+      commandId: testId(43080), commandType: 'APPROVE_TECHNICAL_CORRECTION',
+      idempotencyKey: 'ac-147-approve',
+      actor: { type: 'USER', id: fixture.central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'TechnicalCorrection', aggregateId: correctionId, expectedVersion: 2,
+      correlationId: testId(43081), causationId: testId(43073), requestId: testId(43082),
+      source: 'admin', payloadVersion: 1,
+      payload: { correctionId, reason: '  Session journal confirms the opposite winner.  ' },
+    } satisfies CommandEnvelope<ApproveTechnicalCorrectionPayload>;
+    const approvalIds: TechnicalCorrectionApprovalEffectIds = {
+      eventId: testId(43083), auditId: testId(43084), outboxMessageId: testId(43085),
+      decisionId: testId(43086), statusCompensationId: testId(43087),
+      statusTransitionId: testId(43088), statusEventId: testId(43089),
+      cooldownId: testId(43090), cooldownEventId: testId(43091),
+      notificationOutboxMessageId: testId(43092),
+      notificationIds: [testId(43093), testId(43094), testId(43095)],
+    };
+    await expect(approveTechnicalCorrection(database, {
+      ...approvalCommand, commandId: testId(43096), idempotencyKey: 'ac-147-approve-coach',
+      actor: { type: 'USER', id: fixture.coach, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+    }, { ...approvalIds, eventId: testId(43097), auditId: testId(43098),
+      outboxMessageId: testId(43099) })).rejects.toBeInstanceOf(ResultPermissionDeniedError);
+    await expect(approveTechnicalCorrection(database, {
+      ...approvalCommand, commandId: testId(43100), idempotencyKey: 'ac-147-approve-stale',
+      expectedVersion: 1,
+    }, { ...approvalIds, eventId: testId(43101), auditId: testId(43102),
+      outboxMessageId: testId(43103) })).rejects.toBeInstanceOf(VersionConflictError);
+
+    const approved = await approveTechnicalCorrection(
+      database, approvalCommand, approvalIds,
+      () => new Date('2026-10-03T12:15:00.000Z'),
+    );
+    expect(approved.response).toMatchObject({
+      state: 'APPROVED', version: 3,
+      decisionReason: 'Session journal confirms the opposite winner.',
+      originalOutcomeCode: 'WIN_B', proposedOutcomeCode: 'WIN_A',
+    });
+    await expect(approveTechnicalCorrection(database, approvalCommand, approvalIds))
+      .resolves.toMatchObject({ replayed: true, eventId: approvalIds.eventId,
+        response: approved.response });
+
+    await expect(readResult(database, resultId, fixture.athleteA)).resolves.toMatchObject({
+      state: 'RECORDED', outcomeCode: 'WIN_A', recordedOutcomeCode: 'WIN_B',
+      winnerUserId: fixture.athleteA, loserUserId: fixture.athleteB,
+      recordedWinnerUserId: fixture.athleteB, recordedLoserUserId: fixture.athleteA,
+      technicalCorrectionDecisionId: approvalIds.decisionId,
+      statusTransitionType: 'CONTENDER_DEFENDED',
+      statusBefore: { contenderUserId: fixture.athleteA, statusVersion: 1 },
+      statusAfter: { contenderUserId: fixture.athleteA, statusVersion: 3 },
+      viewerCanAppeal: false, viewerCanWaiveAppeal: false, version: 1,
+    });
+    await expect(readResult(
+      database, resultId, fixture.athleteB, new Date('2026-10-03T12:15:00.000Z'),
+    )).resolves.toMatchObject({
+      viewerCanAppeal: true, viewerCanWaiveAppeal: true,
+    });
+    await expect(readResultTimerSnapshot(database, resultId)).resolves.toEqual({
+      state: 'RECORDED', version: 1,
+    });
+    await expect(listTechnicalCorrectionsForCentral(database, fixture.central)).resolves.toEqual([]);
+    await expect(listTechnicalCorrectionsForViewer(database, fixture.coach)).resolves.toEqual([
+      expect.objectContaining({ state: 'APPROVED', decisionReason: null, version: 3 }),
+    ]);
+
+    const persisted = await sql<{
+      readonly recorded_outcome_code: string;
+      readonly recorded_winner_user_id: string;
+      readonly result_version: string;
+      readonly effective_outcome_code: string;
+      readonly effective_winner_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string;
+      readonly corrected_transition_type: string;
+      readonly to_contender_user_id: string;
+      readonly cooldown_count: string;
+      readonly invalidated_at: Date | null;
+      readonly appeal_count: string;
+    }>`
+      select result.recorded_outcome_code,
+        result.winner_user_id as recorded_winner_user_id,
+        result.version::text as result_version,
+        decision.effective_outcome_code, decision.effective_winner_user_id,
+        competition.contender_user_id, competition.status_version::text as status_version,
+        competition.status_lock_result_id, compensation.corrected_transition_type,
+        compensation.to_contender_user_id,
+        (select count(*)::text from competition.pair_cooldowns item
+          where item.source_result_id = result.result_id) as cooldown_count,
+        cooldown.invalidated_at,
+        (select count(*)::text from competition.appeals appeal
+          where appeal.result_id = result.result_id) as appeal_count
+      from competition.results result
+      join competition.technical_correction_decisions decision
+        on decision.result_id = result.result_id
+      join competition.technical_correction_status_compensations compensation
+        on compensation.decision_id = decision.decision_id
+      join competition.challenges challenge on challenge.challenge_id = result.challenge_id
+      join competition.competitions competition
+        on competition.competition_id = challenge.competition_id
+      join competition.pair_cooldowns cooldown on cooldown.cooldown_id = ${cooldownId}::uuid
+      where result.result_id = ${resultId}::uuid
+    `.execute(database);
+    expect(persisted.rows[0]).toEqual({
+      recorded_outcome_code: 'WIN_B', recorded_winner_user_id: fixture.athleteB,
+      result_version: '1', effective_outcome_code: 'WIN_A',
+      effective_winner_user_id: fixture.athleteA,
+      contender_user_id: fixture.athleteA, status_version: '3',
+      status_lock_result_id: resultId, corrected_transition_type: 'CONTENDER_DEFENDED',
+      to_contender_user_id: fixture.athleteA, cooldown_count: '1',
+      invalidated_at: null, appeal_count: '0',
+    });
+    const snapshotAfter = await sql<{ readonly document: unknown }>`
+      select to_jsonb(snapshot) as document
+      from scheduling.session_competitive_snapshots snapshot
+      where snapshot_id = ${snapshotId}::uuid
+    `.execute(database);
+    expect(snapshotAfter.rows).toEqual(snapshotBefore.rows);
+
+    const replay = await database.transaction().execute((transaction) =>
+      replayCompetitionStatusExcludingResults({ transaction,
+        sourceTransitionId: transitionId, excludedResultIds: [] }));
+    expect(replay).toMatchObject({
+      championUserId: null, contenderUserId: fixture.athleteA,
+      journal: [expect.objectContaining({ resultId, outcomeCode: 'WIN_A',
+        winnerUserId: fixture.athleteA })],
+    });
+
+    const effects = await sql<{
+      readonly audit_metadata: unknown;
+      readonly event_payload: unknown;
+      readonly outbox_payload: unknown;
+      readonly notification_payload: unknown;
+      readonly decision_count: string;
+      readonly compensation_count: string;
+    }>`
+      select audit.metadata as audit_metadata, event.payload as event_payload,
+        outbox.payload as outbox_payload, notification.payload as notification_payload,
+        (select count(*)::text from competition.technical_correction_decisions
+          where result_id = ${resultId}::uuid) as decision_count,
+        (select count(*)::text from competition.technical_correction_status_compensations
+          where source_result_id = ${resultId}::uuid) as compensation_count
+      from platform.audit_events audit, platform.domain_events event,
+        platform.outbox_messages outbox, platform.outbox_messages notification
+      where audit.audit_id = ${approvalIds.auditId}::uuid
+        and event.event_id = ${approvalIds.eventId}::uuid
+        and outbox.message_id = ${approvalIds.outboxMessageId}::uuid
+        and notification.message_id = ${approvalIds.notificationOutboxMessageId}::uuid
+    `.execute(database);
+    expect(effects.rows[0]).toMatchObject({
+      decision_count: '1', compensation_count: '1',
+      audit_metadata: { decisionReason: 'Session journal confirms the opposite winner.' },
+      notification_payload: { notifications: [
+        { recipientUserId: fixture.coach, renderKey: 'result.technical-correction-approved' },
+        { recipientUserId: fixture.athleteA, renderKey: 'result.technical-correction-approved' },
+        { recipientUserId: fixture.athleteB, renderKey: 'result.technical-correction-approved' },
+      ] },
+    });
+    expect(JSON.stringify({ event: effects.rows[0]?.event_payload,
+      outbox: effects.rows[0]?.outbox_payload,
+      notification: effects.rows[0]?.notification_payload }))
+      .not.toMatch(/Session journal confirms|private-correction|private-session-journal|private-score/);
+    await expect(sql`update competition.technical_correction_decisions
+      set reason = 'changed' where decision_id = ${approvalIds.decisionId}::uuid`
+      .execute(database)).rejects.toThrow(/append-only/);
   });
 
   it('[AC-140] serializes competing status Results on the Competition row lock', async () => {

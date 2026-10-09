@@ -348,6 +348,9 @@ source start restores/preserves Training without a Result, loss or Cooldown.
 | GET | `/me/technical-corrections` | recording Coach sees own protected requests; Athlete receives no correction capability |
 | GET | `/central/technical-corrections` | implemented permission-protected FIFO Central queue |
 | POST | `/central/results/{id}/technical-corrections` | implemented internal Central TC-01 request; source Result `If-Match` |
+| POST | `/central/technical-corrections/{id}/start-review` | assign independent Central reviewer; request `If-Match` |
+| POST | `/central/technical-corrections/{id}/approve` | append effective decision and compensate/reapply status/Cooldown |
+| POST | `/central/technical-corrections/{id}/reject` | terminal protected rejection without sporting mutation |
 | POST | `/reports` | scoped REPORT or Safety cancellation |
 | POST | `/cases/{id}/evidence-upload-intents` | obtain private upload target after limits |
 | POST | `/cases/{id}/evidence-attachments/{id}/complete` | submit for scan |
@@ -365,13 +368,18 @@ DB role grant, or an active global Central actor in the internal contour, propos
 outcome/winner with a normalized category, private reason and evidence reference. The request,
 event, audit, outbox and one neutral Central notification commit atomically as `SUBMITTED`.
 Result/status/Cooldown/Appeal rows are read-only in this transaction; public payloads contain no
-private text or evidence reference. Only one open request per Result is allowed. TC-02…TC-05
-are separate from TC-01. AC-148 implements `POST
+private text or evidence reference. Only one open request per Result is allowed. AC-148 implements `POST
 /central/technical-corrections/{id}/start-review` and `POST
 /central/technical-corrections/{id}/reject`: only an independent active Central reviewer may take
 the versioned item, and only the assigned reviewer may reject it with a protected mandatory reason.
 The rejection event, outbox and requester notification are neutral and contain no reason text;
-Result/status/Cooldown/Appeal state remains read-only. TC-04 approval is intentionally excluded.
+Result/status/Cooldown/Appeal state remains read-only. AC-147 implements `POST
+/central/technical-corrections/{id}/approve` for the same assigned reviewer. The command preserves
+the recorded Result and Session snapshot, appends the effective outcome/winner as a separate
+decision, and compensates/reapplies provisional status and Cooldown under the Competition row
+lock. It refuses a pending Athlete Appeal rather than closing it implicitly. Public responses and
+notifications expose the corrected sporting facts but never protected reason/evidence or Result
+score/comment data.
 
 The implemented Result command commits Result, `CH-15`, provisional status, status lock,
 Cooldown, domain events, audit and outbox atomically. `WIN_A/WIN_B` refer to the immutable ordered

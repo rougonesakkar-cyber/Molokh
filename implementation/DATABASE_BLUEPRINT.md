@@ -245,6 +245,13 @@ presence to `UNDER_REVIEW` and `REJECTED`; source proposal facts remain trigger-
 existing aggregate lock, versioned events and row lock serialize start/reject commands, while the
 partial FIFO index naturally removes terminal rejections from the active Central queue.
 
+`0065_technical_correction_approval.sql` adds append-only TC-04 decisions and status-compensation
+facts. The source Result, request proposal and Session snapshot remain immutable; recorded and
+effective outcome/winner are stored separately. Approval reuses the Competition row lock and
+existing deterministic transition rules, preserves or invalidates/creates the pair Cooldown from
+the effective decisive outcome, and keeps the original Result Appeal clock/version intact. Both
+new tables reject update/delete, and private decision text remains outside event/outbox payloads.
+
 AC-143 adds no storage table: the current MVP treats Competition holder columns and
 `pair_cooldowns` as replaceable materialized state, while StatusTenure is a deterministic view of
 the immutable Competition event stream. The Central-only rebuild takes the Competition row lock,
@@ -370,6 +377,8 @@ create index queue_fifo_idx
 - `appeal_responses`
 - `appeal_waivers`
 - `technical_correction_requests`
+- `technical_correction_decisions`
+- `technical_correction_status_compensations`
 - `missing_result_reviews`
 - `missing_result_statements`
 - `missing_result_venue_confirmations`

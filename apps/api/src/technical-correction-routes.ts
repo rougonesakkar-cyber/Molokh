@@ -1,11 +1,13 @@
 import {
   ApiErrorSchema,
+  ApproveTechnicalCorrectionBodySchema,
   RejectTechnicalCorrectionBodySchema,
   RequestTechnicalCorrectionBodySchema,
   StartTechnicalCorrectionReviewBodySchema,
   TechnicalCorrectionCommandResponseSchema,
   TechnicalCorrectionListResponseSchema,
   type RejectTechnicalCorrectionBody,
+  type ApproveTechnicalCorrectionBody,
   type RequestTechnicalCorrectionBody,
   type StartTechnicalCorrectionReviewBody,
   type TechnicalCorrectionCommandResponse,
@@ -14,10 +16,12 @@ import {
 import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core';
 import type {
   ExecutedCommand,
+  ApproveTechnicalCorrectionPayload,
   RejectTechnicalCorrectionPayload,
   RequestTechnicalCorrectionPayload,
   StartTechnicalCorrectionReviewPayload,
   TechnicalCorrectionEffectIds,
+  TechnicalCorrectionApprovalEffectIds,
   TechnicalCorrectionProjection,
   TechnicalCorrectionRejectionEffectIds,
   TechnicalCorrectionReviewEffectIds,
@@ -53,6 +57,10 @@ export interface TechnicalCorrectionRouteDependencies {
   readonly reject: (
     command: CommandEnvelope<RejectTechnicalCorrectionPayload>,
     ids: TechnicalCorrectionRejectionEffectIds,
+  ) => Promise<ExecutedCommand<TechnicalCorrectionProjection>>;
+  readonly approve: (
+    command: CommandEnvelope<ApproveTechnicalCorrectionPayload>,
+    ids: TechnicalCorrectionApprovalEffectIds,
   ) => Promise<ExecutedCommand<TechnicalCorrectionProjection>>;
 }
 
@@ -138,6 +146,20 @@ function transitionIds(): TechnicalCorrectionReviewEffectIds {
 function rejectionIds(): TechnicalCorrectionRejectionEffectIds {
   return { ...transitionIds(), notificationOutboxMessageId: newUuidV7(),
     notificationId: newUuidV7() };
+}
+
+function approvalIds(): TechnicalCorrectionApprovalEffectIds {
+  return {
+    ...transitionIds(),
+    decisionId: newUuidV7(),
+    statusCompensationId: newUuidV7(),
+    statusTransitionId: newUuidV7(),
+    statusEventId: newUuidV7(),
+    cooldownId: newUuidV7(),
+    cooldownEventId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+  };
 }
 
 export async function registerTechnicalCorrectionRoutes(
@@ -295,4 +317,15 @@ export async function registerTechnicalCorrectionRoutes(
       commandType: 'REJECT_TECHNICAL_CORRECTION',
       payload: { correctionId: request.params.correctionId, reason: request.body.reason },
       run: dependencies.reject, ids: rejectionIds() }));
+
+  app.post<{ Body: ApproveTechnicalCorrectionBody; Headers: Headers;
+    Params: CorrectionParams }>('/api/v1/central/technical-corrections/:correctionId/approve', {
+      schema: { operationId: 'approveTechnicalCorrection', params: correctionParams,
+        body: ApproveTechnicalCorrectionBodySchema, response: transitionResponses },
+    }, async (request, reply) => runTransition({ request: request as FastifyRequest, reply,
+      authorization: request.headers.authorization, keyHeader: request.headers['idempotency-key'],
+      ifMatch: request.headers['if-match'], correctionId: request.params.correctionId,
+      commandType: 'APPROVE_TECHNICAL_CORRECTION',
+      payload: { correctionId: request.params.correctionId, reason: request.body.reason },
+      run: dependencies.approve, ids: approvalIds() }));
 }

@@ -5841,6 +5841,15 @@ export default function IdentityScreen() {
                               <Text selectable style={styles.hint}>
                                 Result ID: {officialResult.resultId} · версия {officialResult.version}
                               </Text>
+                              {officialResult.technicalCorrectionDecisionId ? (
+                                <View style={styles.attendanceCard}>
+                                  <Text style={styles.label}>Исправление подтверждено Central</Text>
+                                  <Text style={styles.hint}>
+                                    Запись Coach сохранена: {officialResult.recordedOutcomeCode}.
+                                    {' '}Эффективный спортивный результат: {officialResult.outcomeCode}.
+                                  </Text>
+                                </View>
+                              ) : null}
                               {officialResult.decision && officialResult.decisionReason ? (
                                 <Text style={styles.hint}>
                                   Решение Central: {officialResult.decisionReason}

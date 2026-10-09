@@ -50,6 +50,12 @@ const rejected: TechnicalCorrectionProjection = {
   decidedAt: '2026-10-08T12:00:00.000Z', version: 3,
 };
 
+const approved: TechnicalCorrectionProjection = {
+  ...underReview, state: 'APPROVED',
+  decisionReason: 'Session journal confirms the opposite winner.',
+  decidedAt: '2026-10-08T12:00:00.000Z', version: 3,
+};
+
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
@@ -70,7 +76,7 @@ describe('Technical Correction routes', () => {
         listForViewer: vi.fn().mockResolvedValue([submitted]),
         listForCentral: vi.fn().mockResolvedValue([submitted]),
         request: requestCorrection,
-        startReview: vi.fn(), reject: vi.fn(),
+        startReview: vi.fn(), reject: vi.fn(), approve: vi.fn(),
       },
     });
     apps.push(app);
@@ -131,7 +137,7 @@ describe('Technical Correction routes', () => {
       auth: new StaticBearerAuthAdapter(coachToken, coachId),
       centralAuth: new StaticBearerAuthAdapter(centralToken, centralId),
       listForViewer: vi.fn(), listForCentral: vi.fn(), request: vi.fn(),
-      startReview, reject,
+      startReview, reject, approve: vi.fn(),
     } });
     apps.push(app);
     const started = await app.inject({ method: 'POST',
@@ -160,13 +166,40 @@ describe('Technical Correction routes', () => {
       '/api/v1/central/technical-corrections/{correctionId}/reject');
   });
 
+  it('[AC-147] approves a reviewed correction with an explicit protected reason', async () => {
+    const approve = vi.fn().mockResolvedValue({ responseStatus: 200,
+      response: approved, eventId: '0199a1b2-1234-7000-8000-000000005012',
+      aggregateVersion: 3, replayed: false });
+    const app = await buildApp({ technicalCorrection: {
+      auth: new StaticBearerAuthAdapter(coachToken, coachId),
+      centralAuth: new StaticBearerAuthAdapter(centralToken, centralId),
+      listForViewer: vi.fn(), listForCentral: vi.fn(), request: vi.fn(),
+      startReview: vi.fn(), reject: vi.fn(), approve,
+    } });
+    apps.push(app);
+    const decided = await app.inject({ method: 'POST',
+      url: `/api/v1/central/technical-corrections/${correctionId}/approve`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'approve-1',
+        'if-match': '2' },
+      payload: { reason: 'Session journal confirms the opposite winner.' } });
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json()).toMatchObject({ data: { state: 'APPROVED', version: 3 } });
+    expect(approve.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'APPROVE_TECHNICAL_CORRECTION', expectedVersion: 2,
+      payload: { correctionId, reason: 'Session journal confirms the opposite winner.' },
+    });
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/central/technical-corrections/{correctionId}/approve');
+  });
+
   it('requires authentication, an idempotency key and a source Result version', async () => {
     const app = await buildApp({
       technicalCorrection: {
         auth: new StaticBearerAuthAdapter(coachToken, coachId),
         centralAuth: new StaticBearerAuthAdapter(centralToken, centralId),
         listForViewer: vi.fn(), listForCentral: vi.fn(), request: vi.fn(),
-        startReview: vi.fn(), reject: vi.fn(),
+        startReview: vi.fn(), reject: vi.fn(), approve: vi.fn(),
       },
     });
     apps.push(app);

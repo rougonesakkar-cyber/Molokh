@@ -231,7 +231,14 @@ async function appealRows(
       appeal.version::text as appeal_version,
       result.state as result_state, result.version::text as result_version,
       result.appeal_deadline_at,
-      result.recorded_outcome_code, result.winner_user_id, result.loser_user_id,
+      coalesce(correction_decision.effective_outcome_code,
+        result.recorded_outcome_code) as recorded_outcome_code,
+      case when correction_decision.decision_id is not null
+        then correction_decision.effective_winner_user_id
+        else result.winner_user_id end as winner_user_id,
+      case when correction_decision.decision_id is not null
+        then correction_decision.effective_loser_user_id
+        else result.loser_user_id end as loser_user_id,
       decision.effective_outcome_code, decision.effective_winner_user_id,
       challenge.pair_low_id, challenge.pair_high_id, result.coach_user_id,
       challenge.state as challenge_state, challenge.version::text as challenge_version,
@@ -259,6 +266,8 @@ async function appealRows(
     left join competition.pair_cooldowns as cooldown
       on cooldown.source_result_id = result.result_id and cooldown.invalidated_at is null
     left join competition.appeal_decisions as decision on decision.appeal_id = appeal.appeal_id
+    left join competition.technical_correction_decisions as correction_decision
+      on correction_decision.result_id = result.result_id
     left join competition.appeal_sla_extensions as extension on extension.appeal_id = appeal.appeal_id
     left join competition.appeal_withdrawals as withdrawal on withdrawal.appeal_id = appeal.appeal_id
     where (${appealId ?? null}::uuid is null or appeal.appeal_id = ${appealId ?? null}::uuid)

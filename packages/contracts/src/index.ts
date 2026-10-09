@@ -1229,10 +1229,16 @@ export const ResultProjectionSchema = Type.Object(
     sessionId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     state: ResultStateSchema,
     outcomeCode: ResultOutcomeCodeSchema,
+    recordedOutcomeCode: ResultOutcomeCodeSchema,
     winnerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     winnerDisplayName: Type.Union([Type.String({ minLength: 1, maxLength: 80 }), Type.Null()]),
     loserUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     loserDisplayName: Type.Union([Type.String({ minLength: 1, maxLength: 80 }), Type.Null()]),
+    recordedWinnerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    recordedLoserUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    technicalCorrectionDecisionId: Type.Union([
+      Type.String({ format: 'uuid' }), Type.Null(),
+    ]),
     reasonCode: Type.Union([Type.String({ minLength: 1, maxLength: 80 }), Type.Null()]),
     comment: Type.Union([Type.String({ minLength: 1, maxLength: 500 }), Type.Null()]),
     methodCode: Type.Union([Type.String({ minLength: 1, maxLength: 80 }), Type.Null()]),
@@ -1685,6 +1691,11 @@ export const TechnicalCorrectionCommandResponseSchema = Type.Object({
   }, { additionalProperties: false }),
 }, { $id: 'TechnicalCorrectionCommandResponse', additionalProperties: false });
 export type TechnicalCorrectionCommandResponse = Static<typeof TechnicalCorrectionCommandResponseSchema>;
+
+export const ApproveTechnicalCorrectionBodySchema = Type.Object({
+  reason: Type.String({ minLength: 1, maxLength: 2000 }),
+}, { $id: 'ApproveTechnicalCorrectionBody', additionalProperties: false });
+export type ApproveTechnicalCorrectionBody = Static<typeof ApproveTechnicalCorrectionBodySchema>;
 
 export const PlatformIncidentStateSchema = Type.Union([
   Type.Literal('DETECTED'), Type.Literal('CONFIRMED_ACTIVE'), Type.Literal('RESOLVED'),

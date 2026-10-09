@@ -125,6 +125,7 @@ import {
   openIntegrityCase,
   requestTechnicalCorrection,
   rejectTechnicalCorrection,
+  approveTechnicalCorrection,
   pauseCommunity,
   reactivateCommunity,
   readCommunityClosure,
@@ -1265,6 +1266,7 @@ const app = await buildApp({
     request: (command, ids) => requestTechnicalCorrection(database, command, ids),
     startReview: (command, ids) => startTechnicalCorrectionReview(database, command, ids),
     reject: (command, ids) => rejectTechnicalCorrection(database, command, ids),
+    approve: (command, ids) => approveTechnicalCorrection(database, command, ids),
   },
   statusQueue: {
     auth: localAuth,

@@ -100,6 +100,7 @@ export type ResultConflictCode =
   | 'TECHNICAL_CORRECTION_REVIEWER_CONFLICT'
   | 'TECHNICAL_CORRECTION_NOT_UNDER_REVIEW'
   | 'TECHNICAL_CORRECTION_REVIEWER_MISMATCH'
+  | 'TECHNICAL_CORRECTION_ACTIVE_APPEAL'
   | 'COMPETITION_INTEGRITY_HOLD'
   | 'COMPETITION_STATUS_SNAPSHOT_STALE'
   | 'COMPETITION_STATUS_LOCKED';
@@ -299,6 +300,52 @@ export function normalizeTechnicalCorrectionRejection(input: {
     throw new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH');
   }
   return requiredText(input.reason, 'decisionReason', 2000);
+}
+
+export function normalizeTechnicalCorrectionApproval(input: {
+  readonly state: TechnicalCorrectionState;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly resultState: ResultState;
+  readonly proposedOutcomeCode: ResultOutcomeCode;
+  readonly proposedWinnerUserId: string | null;
+  readonly participantUserIds: readonly [string, string];
+  readonly category: TechnicalCorrectionCategory;
+  readonly reason: string;
+}): {
+  readonly outcomeCode: ResultOutcomeCode;
+  readonly winnerUserId: string | null;
+  readonly loserUserId: string | null;
+  readonly decisive: boolean;
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH');
+  }
+  if (input.resultState !== 'RECORDED') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_ACTIVE_APPEAL');
+  }
+  const participants = normalizeResultParticipants({
+    outcomeCode: input.proposedOutcomeCode,
+    winnerUserId: input.proposedWinnerUserId,
+    participantUserIds: input.participantUserIds,
+    reasonCode: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.category
+      : null,
+    comment: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.reason
+      : null,
+  });
+  return {
+    outcomeCode: input.proposedOutcomeCode,
+    winnerUserId: participants.winnerUserId,
+    loserUserId: participants.loserUserId,
+    decisive: participants.decisive,
+    reason: requiredText(input.reason, 'decisionReason', 2000),
+  };
 }
 
 export function assertResultMatchesAttendance(input: {

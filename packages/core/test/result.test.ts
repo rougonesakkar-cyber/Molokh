@@ -13,6 +13,7 @@ import {
   normalizeResultParticipants,
   normalizeTechnicalCorrectionRequest,
   normalizeTechnicalCorrectionRejection,
+  normalizeTechnicalCorrectionApproval,
   normalizeAppealDecision,
   normalizeAppealResponse,
   normalizeAppealSlaExtension,
@@ -97,6 +98,28 @@ describe('Result and provisional status policy', () => {
       state: 'REJECTED', assignedReviewerUserId: 'central', reviewerUserId: 'central',
       reason: 'Reason',
     })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_NOT_UNDER_REVIEW'));
+  });
+
+  it('[AC-147] approves only a reviewed provisional correction against the frozen pair', () => {
+    expect(normalizeTechnicalCorrectionApproval({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      resultState: 'RECORDED', proposedOutcomeCode: 'WIN_B', proposedWinnerUserId: null,
+      participantUserIds: participants, category: 'OUTCOME_OR_WINNER_ERROR',
+      reason: '  Session journal confirms the opposite winner.  ',
+    })).toEqual({
+      outcomeCode: 'WIN_B', winnerUserId: 'athlete-b', loserUserId: 'athlete-a',
+      decisive: true, reason: 'Session journal confirms the opposite winner.',
+    });
+    expect(() => normalizeTechnicalCorrectionApproval({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central-a', reviewerUserId: 'central-b',
+      resultState: 'RECORDED', proposedOutcomeCode: 'WIN_B', proposedWinnerUserId: null,
+      participantUserIds: participants, category: 'OUTCOME_OR_WINNER_ERROR', reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH'));
+    expect(() => normalizeTechnicalCorrectionApproval({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      resultState: 'UNDER_APPEAL', proposedOutcomeCode: 'WIN_B', proposedWinnerUserId: null,
+      participantUserIds: participants, category: 'OUTCOME_OR_WINNER_ERROR', reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_ACTIVE_APPEAL'));
   });
 
   it('[AC-080] transfers Contender provisionally only from the frozen snapshot', () => {
