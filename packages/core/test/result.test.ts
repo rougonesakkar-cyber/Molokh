@@ -49,7 +49,7 @@ describe('Result and provisional status policy', () => {
     })).toThrowError(new ResultValidationError('reasonCode'));
   });
 
-  it('[AC-113] normalizes a separate Coach correction request without mutating Result', () => {
+  it('[AC-079][AC-113] normalizes a separate Coach correction request without mutating Result', () => {
     const input = {
       resultState: 'RECORDED' as const,
       existingOpenRequest: false,

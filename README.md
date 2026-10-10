@@ -8,7 +8,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **172/214** (`166/196 P0`);
+- executable acceptance traceability: **173/214** (`167/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
 - database gate: PostgreSQL migrations `0001`–`0065` and **57/57** integration scenarios pass locally;
@@ -290,6 +290,14 @@ snapshot and effective Cooldown, releases both obligations and clears the provis
 Exact replay returns the same outcome; winner, Coach, outsider, expired, stale and post-waiver
 Appeal attempts leave no Appeal, audit, event, outbox or notification residue. After waiver the
 Result card exposes neither Appeal action.
+
+AC-079 closes the direct-correction boundary. An exact Coach Result replay returns the original
+record, while the same idempotency key with another outcome and any new second Result command are
+rejected before sporting effects. Recorded winner/outcome, frozen Session snapshot, Appeal
+deadline, provisional status lock and Cooldown remain unchanged, and failed attempts create no
+event, audit, outbox or notification. The API exposes no Result `PUT/PATCH`; the assigned Coach
+sees only «Сообщить об ошибке Result», which creates an independent Technical Correction request
+and explicitly does not promise an immediate change.
 
 The Competition status projection is recoverable rather than authoritative. A Central-only,
 versioned rebuild locks the Competition, derives Champion/Contender, status version, tenure

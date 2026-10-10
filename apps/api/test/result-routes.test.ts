@@ -109,7 +109,7 @@ describe('Result and Appeal routes', () => {
     }), expect.any(Object));
   });
 
-  it('[AC-076][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203] exposes media-free Coach Result facts', async () => {
+  it('[AC-076][AC-079][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203] exposes media-free Coach Result facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
@@ -247,6 +247,10 @@ describe('Result and Appeal routes', () => {
     expect(openApi.paths).toHaveProperty('/api/v1/challenges/{challengeId}/result');
     expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}/appeal');
     expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}/waive-appeal');
+    expect(openApi.paths['/api/v1/results/{resultId}']).not.toHaveProperty('put');
+    expect(openApi.paths['/api/v1/results/{resultId}']).not.toHaveProperty('patch');
+    expect(openApi.paths).not.toHaveProperty('/api/v1/results/{resultId}/replace');
+    expect(openApi.paths).not.toHaveProperty('/api/v1/results/{resultId}/update');
     expect(Object.keys(openApi.paths).filter((path) =>
       path.includes('/results/') && /media|photo|video|upload/i.test(path),
     )).toEqual([]);

@@ -7470,7 +7470,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ]);
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-080][AC-111][AC-113][AC-117][AC-118][AC-144][AC-148][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-079][AC-080][AC-111][AC-113][AC-117][AC-118][AC-144][AC-148][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -7967,29 +7967,29 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
 
     const resultId = testId(1940);
-    const recordedResult = await recordSessionResult(
-      database,
-      {
-        commandId: testId(1941), commandType: 'RECORD_SESSION_RESULT',
-        idempotencyKey: `record-result-${challengeId}`,
-        actor: { type: 'USER', id: reviewerCoachId, roles: ['COACH'], scopeIds: [communityId] },
-        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 11,
-        correlationId: testId(1942), causationId: testId(1933), requestId: testId(1943),
-        source: 'api', payloadVersion: 1,
-        payload: {
-          challengeId, sessionId, outcomeCode: 'WIN_B', winnerUserId: null,
-          reasonCode: null, comment: null, methodCode: null, methodText: null,
-          scorePayload: null, methodPayload: null,
-        },
-      } satisfies CommandEnvelope<RecordSessionResultPayload>,
-      {
-        eventId: testId(1944), auditId: testId(1945), outboxMessageId: testId(1946),
-        resultId, resultEventId: testId(1947), statusTransitionId: testId(1948),
-        statusEventId: testId(1949), cooldownId: testId(1950), cooldownEventId: testId(1951),
-        timerOutboxMessageId: testId(1952), notificationOutboxMessageId: testId(1953),
-        notificationIds: [testId(1954), testId(1955)],
-        missingResultReviewEventId: testId(1956),
+    const recordResultCommand = {
+      commandId: testId(1941), commandType: 'RECORD_SESSION_RESULT',
+      idempotencyKey: `record-result-${challengeId}`,
+      actor: { type: 'USER', id: reviewerCoachId, roles: ['COACH'], scopeIds: [communityId] },
+      aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 11,
+      correlationId: testId(1942), causationId: testId(1933), requestId: testId(1943),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId, sessionId, outcomeCode: 'WIN_B', winnerUserId: null,
+        reasonCode: null, comment: null, methodCode: null, methodText: null,
+        scorePayload: null, methodPayload: null,
       },
+    } satisfies CommandEnvelope<RecordSessionResultPayload>;
+    const recordResultIds = {
+      eventId: testId(1944), auditId: testId(1945), outboxMessageId: testId(1946),
+      resultId, resultEventId: testId(1947), statusTransitionId: testId(1948),
+      statusEventId: testId(1949), cooldownId: testId(1950), cooldownEventId: testId(1951),
+      timerOutboxMessageId: testId(1952), notificationOutboxMessageId: testId(1953),
+      notificationIds: [testId(1954), testId(1955)],
+      missingResultReviewEventId: testId(1956),
+    };
+    const recordedResult = await recordSessionResult(
+      database, recordResultCommand, recordResultIds,
       () => new Date('2026-09-13T15:01:00.000Z'),
     );
     expect(recordedResult.response).toMatchObject({
@@ -8001,6 +8001,21 @@ describePostgres('PostgreSQL critical command transaction', () => {
       statusAfter: { contenderUserId: athleteB, statusVersion: 2 },
       version: 1,
     });
+    await expect(recordSessionResult(database, recordResultCommand, recordResultIds))
+      .resolves.toMatchObject({
+        replayed: true, eventId: recordResultIds.eventId, response: recordedResult.response,
+      });
+    await expect(recordSessionResult(database, {
+      ...recordResultCommand,
+      commandId: testId(1970),
+      payload: { ...recordResultCommand.payload, outcomeCode: 'WIN_A' },
+    }, {
+      eventId: testId(1971), auditId: testId(1972), outboxMessageId: testId(1973),
+      resultId: testId(1974), resultEventId: testId(1975), statusTransitionId: testId(1976),
+      statusEventId: testId(1977), cooldownId: testId(1978), cooldownEventId: testId(1979),
+      timerOutboxMessageId: testId(1980), notificationOutboxMessageId: testId(1981),
+      notificationIds: [testId(1982), testId(1983)],
+    })).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
     expect(JSON.stringify(recordedResult.response)).not.toMatch(
       /media|photo|video|upload|objectKey|uploadToken/i,
     );
@@ -8372,7 +8387,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       {
         commandId: testId(1960), commandType: 'RECORD_SESSION_RESULT',
         idempotencyKey: `record-result-duplicate-${challengeId}`,
-        actor: { type: 'USER', id: coachId, roles: ['COACH'], scopeIds: [communityId] },
+        actor: { type: 'USER', id: reviewerCoachId, roles: ['COACH'], scopeIds: [communityId] },
         aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 12,
         correlationId: testId(1961), causationId: testId(1944), requestId: testId(1962),
         source: 'api', payloadVersion: 1,
@@ -8391,6 +8406,59 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-09-13T15:02:00.000Z'),
     )).rejects.toMatchObject<Partial<ResultConflictError>>({
       code: 'RESULT_ALREADY_RECORDED',
+    });
+    const immutableResult = await sql<{
+      readonly recorded_outcome_code: string;
+      readonly winner_user_id: string;
+      readonly loser_user_id: string;
+      readonly result_version: string;
+      readonly challenge_state: string;
+      readonly challenge_version: string;
+      readonly status_lock_result_id: string;
+      readonly status_version: string;
+      readonly appeal_deadline_at: Date;
+      readonly snapshot_contender_user_id: string;
+      readonly snapshot_status_version: string;
+      readonly transition_count: string;
+      readonly cooldown_count: string;
+      readonly failed_effect_count: string;
+    }>`
+      select result.recorded_outcome_code, result.winner_user_id, result.loser_user_id,
+        result.version::text as result_version, result.appeal_deadline_at,
+        snapshot.contender_user_id as snapshot_contender_user_id,
+        snapshot.competition_status_version::text as snapshot_status_version,
+        challenge.state as challenge_state, challenge.version::text as challenge_version,
+        competition.status_lock_result_id,
+        competition.status_version::text as status_version,
+        (select count(*)::text from competition.status_transitions transition
+          where transition.source_result_id = result.result_id) as transition_count,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.source_result_id = result.result_id) as cooldown_count,
+        (
+          (select count(*) from platform.domain_events event
+            where event.event_id in (${testId(1963)}::uuid, ${testId(1967)}::uuid,
+              ${testId(1971)}::uuid, ${testId(1975)}::uuid))
+          + (select count(*) from platform.audit_events audit
+            where audit.audit_id in (${testId(1964)}::uuid, ${testId(1972)}::uuid))
+          + (select count(*) from platform.outbox_messages outbox
+            where outbox.message_id in (${testId(1965)}::uuid, ${testId(1969)}::uuid,
+              ${testId(1973)}::uuid, ${testId(1981)}::uuid))
+        )::text as failed_effect_count
+      from competition.results result
+      join competition.challenges challenge on challenge.challenge_id = result.challenge_id
+      join competition.competitions competition
+        on competition.competition_id = challenge.competition_id
+      join scheduling.session_competitive_snapshots snapshot
+        on snapshot.snapshot_id = result.competitive_snapshot_id
+      where result.result_id = ${resultId}::uuid
+    `.execute(database);
+    expect(immutableResult.rows[0]).toEqual({
+      recorded_outcome_code: 'WIN_B', winner_user_id: athleteB, loser_user_id: athleteA,
+      result_version: '1', appeal_deadline_at: new Date('2026-09-15T15:01:00.000Z'),
+      snapshot_contender_user_id: athleteA, snapshot_status_version: '1',
+      challenge_state: 'RESULT_RECORDED', challenge_version: '12',
+      status_lock_result_id: resultId, status_version: '2', transition_count: '1',
+      cooldown_count: '1', failed_effect_count: '0',
     });
 
     const appealId = testId(2000);

@@ -8,6 +8,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { apiErrorMessage, apiUrl } from '../../lib/api';
+import { technicalCorrectionRequestPresentation } from './presentation';
 
 type Correction = TechnicalCorrectionListResponse['data'][number];
 type OfficialResult = ResultResponse['data'];
@@ -48,9 +49,13 @@ export function TechnicalCorrectionRequestCard(props: {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const keys = useRef(new Map<string, string>());
-  const allowed = props.currentRole === 'Coach'
-    && props.currentUserId === props.session.coachUserId
-    && (props.result.state === 'RECORDED' || props.result.state === 'UNDER_APPEAL');
+  const presentation = technicalCorrectionRequestPresentation({
+    currentRole: props.currentRole,
+    currentUserId: props.currentUserId,
+    assignedCoachUserId: props.session.coachUserId,
+    resultState: props.result.state,
+  });
+  const allowed = presentation !== null;
   const proposedWinnerUserId = outcome === 'WIN_A'
     ? props.session.athleteUserIds[0]
     : outcome === 'WIN_B'
@@ -134,13 +139,13 @@ export function TechnicalCorrectionRequestCard(props: {
           onPress={() => setExpanded(true)}
           style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
         >
-          <Text style={styles.secondaryButtonText}>Сообщить об ошибке Result</Text>
+          <Text style={styles.secondaryButtonText}>{presentation?.actionLabel}</Text>
         </Pressable>
       ) : (
         <View style={styles.form}>
           <Text style={styles.label}>Запрос на техническое исправление</Text>
           <Text style={styles.hint}>
-            Это не Athlete Appeal и не немедленное изменение. Central отдельно проверит запрос.
+            Это не Athlete Appeal. {presentation?.explanation}
           </Text>
           {(['OUTCOME_OR_WINNER_ERROR', 'LATE_RESULT_CORRECTION'] as const).map((item) => (
             <Pressable
