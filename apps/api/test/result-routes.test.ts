@@ -109,7 +109,7 @@ describe('Result and Appeal routes', () => {
     }), expect.any(Object));
   });
 
-  it('[AC-076][AC-088][AC-089][AC-167][AC-202][AC-203] exposes media-free Coach Result facts', async () => {
+  it('[AC-076][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203] exposes media-free Coach Result facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
@@ -229,8 +229,14 @@ describe('Result and Appeal routes', () => {
       payload: {},
     });
     expect(waived.statusCode).toBe(200);
+    expect(waived.json()).toMatchObject({
+      data: {
+        state: 'FINAL', viewerCanAppeal: false, viewerCanWaiveAppeal: false,
+      },
+    });
     expect(waiveResultAppeal.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'WAIVE_RESULT_APPEAL', aggregateId: resultId, expectedVersion: 1,
+      actor: { id: actorUserId, roles: ['ATHLETE'] }, payload: { resultId },
     });
 
     await app.ready();

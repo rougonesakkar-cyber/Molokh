@@ -6019,7 +6019,7 @@ export default function IdentityScreen() {
                                   )}
                                 </>
                               ) : null}
-                              {officialResult.viewerCanWaiveAppeal ? (
+                              {officialResultPresentation?.showWaiverAction ? (
                                 <Pressable
                                   accessibilityRole="button"
                                   accessibilityState={{ disabled: actingResultKey !== null }}

@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **171/214** (`165/196 P0`);
+- executable acceptance traceability: **172/214** (`166/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0065` and **56/56** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0065` and **57/57** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -282,6 +282,14 @@ submissions serialize on the Result aggregate so one `SUBMITTED` Appeal atomical
 and Challenge to `UNDER_APPEAL`, while the losing command leaves no audit, event, outbox or
 notification residue. The Result card says only «Ничья» and follows the server capability without
 calling either participant the loser.
+
+AC-122 proves the irreversible decisive waiver path end to end. Only the eligible losing Athlete
+can waive during the server-owned 48-hour window. The append-only waiver immediately finalizes a
+decisive Result through the existing R-04 lifecycle, preserves the recorded facts, frozen Session
+snapshot and effective Cooldown, releases both obligations and clears the provisional status lock.
+Exact replay returns the same outcome; winner, Coach, outsider, expired, stale and post-waiver
+Appeal attempts leave no Appeal, audit, event, outbox or notification residue. After waiver the
+Result card exposes neither Appeal action.
 
 The Competition status projection is recoverable rather than authoritative. A Central-only,
 versioned rebuild locks the Competition, derives Champion/Contender, status version, tenure

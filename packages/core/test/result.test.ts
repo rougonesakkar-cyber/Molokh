@@ -18,6 +18,7 @@ import {
   normalizeAppealDecision,
   normalizeAppealResponse,
   normalizeAppealSlaExtension,
+  resultCanFinalize,
   resultAppealDeadline,
 } from '../src/index.js';
 
@@ -265,6 +266,33 @@ describe('Result and provisional status policy', () => {
       eligibleUserIds: [...participants], appealDeadlineAt: deadline,
       occurredAt: deadline, alreadyWaived: false, alreadySubmitted: false,
     })).toThrowError(new ResultConflictError('RESULT_APPEAL_WINDOW_CLOSED'));
+  });
+
+  it('[AC-122] makes an eligible Appeal waiver irreversible without over-finalizing neutral Results', () => {
+    const decisiveEligible = eligibleAppealUserIds({
+      outcomeCode: 'WIN_A', loserUserId: participants[1], participantUserIds: participants,
+    });
+    expect(decisiveEligible).toEqual([participants[1]]);
+    expect(resultCanFinalize({
+      state: 'RECORDED', appealDeadlineAt: new Date('2026-09-11T10:00:00.000Z'),
+      occurredAt: new Date('2026-09-10T10:00:00.000Z'),
+      eligibleUserIds: decisiveEligible, waivedOrWithdrawnUserIds: [participants[1]],
+    })).toBe(true);
+    expect(() => assertAppealActionCanBeTaken({
+      state: 'FINAL', actorUserId: participants[1], eligibleUserIds: decisiveEligible,
+      appealDeadlineAt: new Date('2026-09-11T10:00:00.000Z'),
+      occurredAt: new Date('2026-09-10T10:00:00.000Z'),
+      alreadyWaived: true, alreadySubmitted: false,
+    })).toThrowError(new ResultConflictError('RESULT_APPEAL_ALREADY_WAIVED'));
+
+    const drawEligible = eligibleAppealUserIds({
+      outcomeCode: 'DRAW', loserUserId: null, participantUserIds: participants,
+    });
+    expect(resultCanFinalize({
+      state: 'RECORDED', appealDeadlineAt: new Date('2026-09-11T10:00:00.000Z'),
+      occurredAt: new Date('2026-09-10T10:00:00.000Z'),
+      eligibleUserIds: drawEligible, waivedOrWithdrawnUserIds: [participants[0]],
+    })).toBe(false);
   });
 
   it('[AC-114][AC-117] starts review without waiting for responses and upholds the immutable outcome', () => {
