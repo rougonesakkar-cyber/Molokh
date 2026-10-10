@@ -252,6 +252,12 @@ existing deterministic transition rules, preserves or invalidates/creates the pa
 the effective decisive outcome, and keeps the original Result Appeal clock/version intact. Both
 new tables reject update/delete, and private decision text remains outside event/outbox payloads.
 
+`0066_result_metadata_revisions.sql` adds the append-only AC-078 score/method correction journal.
+Each row stores source/result version lineage, protected before/after metadata, the DB-authorized
+Coach and server time. A Result aggregate version advances, but recorded winner/outcome, source
+metadata, Session snapshot, Challenge, status, Cooldown and Appeal clocks are never overwritten.
+The table rejects update/delete and orders revisions deterministically by Result version.
+
 AC-143 adds no storage table: the current MVP treats Competition holder columns and
 `pair_cooldowns` as replaceable materialized state, while StatusTenure is a deterministic view of
 the immutable Competition event stream. The Central-only rebuild takes the Competition row lock,

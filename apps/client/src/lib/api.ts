@@ -141,6 +141,8 @@ const localizedApiErrors: Readonly<Record<string, string>> = {
   TECHNICAL_CORRECTION_REVIEWER_CONFLICT: 'Reviewer не может быть участником, Coach или автором запроса.',
   TECHNICAL_CORRECTION_NOT_UNDER_REVIEW: 'Сначала возьмите запрос в рассмотрение.',
   TECHNICAL_CORRECTION_REVIEWER_MISMATCH: 'Отклонить запрос может только назначенный reviewer.',
+  RESULT_METADATA_REVISION_WINDOW_CLOSED: '24-часовой срок исправления описания Result уже закончился.',
+  RESULT_METADATA_REVISION_NO_CHANGE: 'Измените счёт или описание метода перед сохранением.',
   COMPETITION_INTEGRITY_HOLD: 'Статусные действия временно остановлены на время независимой проверки.',
   STATUS_RELEASE_SECURITY_HOLD: 'Отказ от статуса временно недоступен после смены номера.',
   PLATFORM_INCIDENT_CENTRAL_REQUIRED: 'Управлять Platform Incident может только Central.',

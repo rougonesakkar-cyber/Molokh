@@ -73,6 +73,7 @@ import {
   TechnicalCorrectionQueue,
   TechnicalCorrectionRequestCard,
 } from '../features/technical-correction/TechnicalCorrectionSection';
+import { ResultMetadataRevisionCard } from '../features/result-metadata/ResultMetadataRevisionCard';
 import { PlatformIncidentSection } from '../features/platform-incident/PlatformIncidentSection';
 import {
   AccountLifecycleSection,
@@ -6036,6 +6037,14 @@ export default function IdentityScreen() {
                                   </Text>
                                 </Pressable>
                               ) : null}
+                              <ResultMetadataRevisionCard
+                                currentRole={activeTestAccount.role}
+                                onUpdated={(updated) => setResultsById((current) => ({
+                                  ...current, [updated.resultId]: updated,
+                                }))}
+                                result={officialResult}
+                                token={activeTestToken}
+                              />
                               <TechnicalCorrectionRequestCard
                                 correction={technicalCorrections.find(
                                   (item) => item.resultId === officialResult.resultId,

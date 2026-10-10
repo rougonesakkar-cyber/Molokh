@@ -2,6 +2,7 @@ import type { ChallengeStake } from './challenge.js';
 
 export const RESULT_POLICY_VERSION = 'result-mvp-v1' as const;
 export const RESULT_APPEAL_HOURS = 48;
+export const RESULT_METADATA_REVISION_HOURS = 24;
 export const APPEAL_RESPONSE_HOURS = 24;
 export const APPEAL_REVIEW_SLA_HOURS = 72;
 
@@ -59,6 +60,8 @@ export type ResultConflictCode =
   | 'CHALLENGE_NOT_AWAITING_RESULT'
   | 'SESSION_NOT_ENDED'
   | 'RESULT_ALREADY_RECORDED'
+  | 'RESULT_METADATA_REVISION_WINDOW_CLOSED'
+  | 'RESULT_METADATA_REVISION_NO_CHANGE'
   | 'RESULT_NOT_RECORDED'
   | 'RESULT_APPEAL_WINDOW_CLOSED'
   | 'RESULT_APPEAL_NOT_DUE'
@@ -146,6 +149,10 @@ export function resultAppealDeadline(recordedAt: Date): Date {
   return plusHours(recordedAt, RESULT_APPEAL_HOURS);
 }
 
+export function resultMetadataRevisionDeadline(recordedAt: Date): Date {
+  return plusHours(recordedAt, RESULT_METADATA_REVISION_HOURS);
+}
+
 export function appealResponseDeadline(submittedAt: Date): Date {
   return plusHours(submittedAt, APPEAL_RESPONSE_HOURS);
 }
@@ -160,6 +167,74 @@ function requiredText(value: string | null, field: string, maximum: number): str
     throw new ResultValidationError(field);
   }
   return normalized;
+}
+
+function optionalText(value: string | null, field: string, maximum: number): string | null {
+  if (value === null) return null;
+  const normalized = value.trim();
+  if (normalized.length === 0 || normalized.length > maximum) {
+    throw new ResultValidationError(field);
+  }
+  return normalized;
+}
+
+export interface ResultMetadata {
+  readonly methodCode: string | null;
+  readonly methodText: string | null;
+  readonly scorePayload: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload: Readonly<Record<string, unknown>> | null;
+}
+
+function canonicalMetadataValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new ResultValidationError('metadataPayload');
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalMetadataValue(item)).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    const object = value as Readonly<Record<string, unknown>>;
+    return `{${Object.keys(object).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalMetadataValue(object[key])}`).join(',')}}`;
+  }
+  throw new ResultValidationError('metadataPayload');
+}
+
+export function normalizeResultMetadataRevision(input: {
+  readonly recordedAt: Date;
+  readonly occurredAt: Date;
+  readonly before: ResultMetadata;
+  readonly methodCode?: string | null;
+  readonly methodText?: string | null;
+  readonly scorePayload?: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload?: Readonly<Record<string, unknown>> | null;
+}): ResultMetadata {
+  validDate(input.recordedAt, 'recordedAt');
+  validDate(input.occurredAt, 'occurredAt');
+  if (input.occurredAt >= resultMetadataRevisionDeadline(input.recordedAt)) {
+    throw new ResultConflictError('RESULT_METADATA_REVISION_WINDOW_CLOSED');
+  }
+  const after: ResultMetadata = {
+    methodCode: input.methodCode === undefined
+      ? input.before.methodCode
+      : optionalText(input.methodCode, 'methodCode', 80),
+    methodText: input.methodText === undefined
+      ? input.before.methodText
+      : optionalText(input.methodText, 'methodText', 500),
+    scorePayload: input.scorePayload === undefined
+      ? input.before.scorePayload
+      : input.scorePayload,
+    methodPayload: input.methodPayload === undefined
+      ? input.before.methodPayload
+      : input.methodPayload,
+  };
+  if (canonicalMetadataValue(after) === canonicalMetadataValue(input.before)) {
+    throw new ResultConflictError('RESULT_METADATA_REVISION_NO_CHANGE');
+  }
+  return after;
 }
 
 export interface NormalizedResultParticipants {

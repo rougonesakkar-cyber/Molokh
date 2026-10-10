@@ -12,6 +12,7 @@ import {
   deriveProvisionalStatusTransition,
   eligibleAppealUserIds,
   normalizeResultParticipants,
+  normalizeResultMetadataRevision,
   normalizeTechnicalCorrectionRequest,
   normalizeTechnicalCorrectionRejection,
   normalizeTechnicalCorrectionApproval,
@@ -20,6 +21,7 @@ import {
   normalizeAppealSlaExtension,
   resultCanFinalize,
   resultAppealDeadline,
+  resultMetadataRevisionDeadline,
 } from '../src/index.js';
 
 const participants = ['athlete-a', 'athlete-b'] as const;
@@ -32,6 +34,31 @@ describe('Result and provisional status policy', () => {
     })).toMatchObject({ winnerUserId: 'athlete-a', loserUserId: 'athlete-b', decisive: true });
     expect(resultAppealDeadline(new Date('2026-09-09T10:00:00.000Z')).toISOString())
       .toBe('2026-09-11T10:00:00.000Z');
+  });
+
+  it('[AC-078] appends only changed descriptive metadata during the 24-hour window', () => {
+    const recordedAt = new Date('2026-09-09T10:00:00.000Z');
+    const before = {
+      methodCode: null, methodText: null,
+      scorePayload: null, methodPayload: null,
+    };
+    expect(resultMetadataRevisionDeadline(recordedAt).toISOString())
+      .toBe('2026-09-10T10:00:00.000Z');
+    expect(normalizeResultMetadataRevision({
+      recordedAt, occurredAt: new Date('2026-09-10T09:59:59.999Z'), before,
+      methodText: '  Победа решением судьи  ', scorePayload: { display: '3:0' },
+    })).toEqual({
+      methodCode: null, methodText: 'Победа решением судьи',
+      scorePayload: { display: '3:0' }, methodPayload: null,
+    });
+    expect(() => normalizeResultMetadataRevision({
+      recordedAt, occurredAt: new Date('2026-09-10T10:00:00.000Z'), before,
+      methodText: 'Позднее исправление',
+    })).toThrowError(new ResultConflictError('RESULT_METADATA_REVISION_WINDOW_CLOSED'));
+    expect(() => normalizeResultMetadataRevision({
+      recordedAt, occurredAt: new Date('2026-09-09T11:00:00.000Z'), before,
+      scorePayload: null,
+    })).toThrowError(new ResultConflictError('RESULT_METADATA_REVISION_NO_CHANGE'));
   });
 
   it('[AC-203] requires a winner and explanation for NO_SHOW or FORFEIT', () => {

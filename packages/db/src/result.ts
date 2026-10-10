@@ -7,6 +7,7 @@ import {
   appealResponseDeadline,
   appealReviewSlaDeadline,
   assertAppealActionCanBeTaken,
+  assertExpectedVersion,
   assertReviewedResultMatchesAssignment,
   assertResultCanFinalize,
   assertResultMatchesAttendance,
@@ -14,7 +15,9 @@ import {
   effectiveChallengeStakeAtSessionWindow,
   eligibleAppealUserIds,
   normalizeResultParticipants,
+  normalizeResultMetadataRevision,
   resultAppealDeadline,
+  resultMetadataRevisionDeadline,
   resultCanFinalize,
   type ChallengeStake,
   type AppealDecision,
@@ -52,6 +55,21 @@ export interface SubmitResultAppealPayload {
 
 export interface WaiveResultAppealPayload {
   readonly resultId: string;
+}
+
+export interface ReviseResultMetadataPayload {
+  readonly resultId: string;
+  readonly methodCode?: string | null;
+  readonly methodText?: string | null;
+  readonly scorePayload?: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload?: Readonly<Record<string, unknown>> | null;
+}
+
+export interface ResultMetadataRevisionEffectIds {
+  readonly revisionId: string;
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
 }
 
 export interface FinalizeResultPayload {
@@ -139,6 +157,15 @@ export interface ResultProjection {
   readonly methodCode: string | null;
   readonly methodText: string | null;
   readonly scorePayload: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload: Readonly<Record<string, unknown>> | null;
+  readonly recordedMethodCode: string | null;
+  readonly recordedMethodText: string | null;
+  readonly recordedScorePayload: Readonly<Record<string, unknown>> | null;
+  readonly recordedMethodPayload: Readonly<Record<string, unknown>> | null;
+  readonly latestMetadataRevisionId: string | null;
+  readonly metadataRevisionCount: number;
+  readonly metadataRevisionDeadlineAt: string;
+  readonly viewerCanReviseMetadata: boolean;
   readonly recordedAt: string;
   readonly appealDeadlineAt: string;
   readonly finalizedAt: string | null;
@@ -222,6 +249,13 @@ interface ResultRow {
   readonly method_code: string | null;
   readonly method_text: string | null;
   readonly score_payload: unknown;
+  readonly method_payload: unknown;
+  readonly source_method_code: string | null;
+  readonly source_method_text: string | null;
+  readonly source_score_payload: unknown;
+  readonly source_method_payload: unknown;
+  readonly latest_metadata_revision_id: string | null;
+  readonly metadata_revision_count: string | null;
   readonly recorded_at: Date;
   readonly appeal_deadline_at: Date;
   readonly finalized_at: Date | null;
@@ -230,6 +264,7 @@ interface ResultRow {
   readonly pair_low_id: string;
   readonly pair_high_id: string;
   readonly coach_user_id: string | null;
+  readonly session_coach_user_id: string | null;
   readonly challenge_state: string;
   readonly challenge_version: string;
   readonly competition_id: string;
@@ -256,6 +291,7 @@ interface ResultRow {
   readonly viewer_appealed: boolean;
   readonly viewer_admin: boolean;
   readonly viewer_session_coach: boolean;
+  readonly viewer_coach_authorized: boolean;
   readonly integrity_review_state: string | null;
   readonly integrity_review_category: string | null;
   readonly version: string;
@@ -401,11 +437,26 @@ async function resultRow(
       end as loser_user_id,
       result.loser_user_id as source_loser_user_id,
       loser.display_name as loser_display_name,
-      result.reason_code, result.comment, result.method_code, result.method_text,
-      result.score_payload, result.recorded_at, result.appeal_deadline_at,
+      result.reason_code, result.comment,
+      case when latest_revision.revision_id is null then result.method_code
+        else latest_revision.after_method_code end as method_code,
+      case when latest_revision.revision_id is null then result.method_text
+        else latest_revision.after_method_text end as method_text,
+      case when latest_revision.revision_id is null then result.score_payload
+        else latest_revision.after_score_payload end as score_payload,
+      case when latest_revision.revision_id is null then result.method_payload
+        else latest_revision.after_method_payload end as method_payload,
+      result.method_code as source_method_code,
+      result.method_text as source_method_text,
+      result.score_payload as source_score_payload,
+      result.method_payload as source_method_payload,
+      latest_revision.revision_id as latest_metadata_revision_id,
+      latest_revision.revision_count::text as metadata_revision_count,
+      result.recorded_at, result.appeal_deadline_at,
       result.finalized_at, decision.decision, decision.reason as decision_reason,
       challenge.pair_low_id, challenge.pair_high_id,
-      result.coach_user_id, challenge.state as challenge_state,
+      result.coach_user_id, source_session.coach_user_id as session_coach_user_id,
+      challenge.state as challenge_state,
       challenge.version::text as challenge_version,
       competition.competition_id, competition.version::text as competition_version,
       competition.status_version::text as competition_status_version,
@@ -450,17 +501,38 @@ async function resultRow(
           and source_session.purpose = 'OFFICIAL_CHALLENGE'
           and source_session.coach_user_id = ${viewerUserId}::uuid
       ) as viewer_session_coach,
+      exists (
+        select 1 from community.role_grants as coach_grant
+        where coach_grant.user_id = ${viewerUserId}::uuid
+          and coach_grant.role = 'COACH' and coach_grant.state = 'ACTIVE'
+          and (coach_grant.expires_at is null or coach_grant.expires_at > clock_timestamp())
+          and (
+            (coach_grant.scope_type = 'SESSION' and coach_grant.scope_id = result.session_id)
+            or (coach_grant.scope_type = 'COMMUNITY'
+              and coach_grant.scope_id = competition.community_id)
+          )
+      ) as viewer_coach_authorized,
       integrity.state as integrity_review_state,
       integrity.public_reason_category as integrity_review_category,
       result.version::text as version
     from competition.results as result
     join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
     join competition.competitions as competition on competition.competition_id = challenge.competition_id
+    left join scheduling.sessions as source_session on source_session.session_id = result.session_id
     left join competition.appeal_decisions as decision on decision.result_id = result.result_id
     left join competition.technical_correction_decisions as correction_decision
       on correction_decision.result_id = result.result_id
     left join competition.technical_correction_status_compensations as correction_compensation
       on correction_compensation.decision_id = correction_decision.decision_id
+    left join lateral (
+      select revision.revision_id, revision.after_method_code,
+        revision.after_method_text, revision.after_score_payload,
+        revision.after_method_payload, count(*) over () as revision_count
+      from competition.result_metadata_revisions as revision
+      where revision.result_id = result.result_id
+      order by revision.result_version desc
+      limit 1
+    ) as latest_revision on true
     left join lateral (
       select integrity_case.case_id, integrity_case.state,
         integrity_case.public_reason_category
@@ -550,6 +622,18 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     methodCode: row.method_code,
     methodText: row.method_text,
     scorePayload: record(row.score_payload),
+    methodPayload: record(row.method_payload),
+    recordedMethodCode: row.source_method_code,
+    recordedMethodText: row.source_method_text,
+    recordedScorePayload: record(row.source_score_payload),
+    recordedMethodPayload: record(row.source_method_payload),
+    latestMetadataRevisionId: row.latest_metadata_revision_id,
+    metadataRevisionCount: Number(row.metadata_revision_count ?? '0'),
+    metadataRevisionDeadlineAt: resultMetadataRevisionDeadline(row.recorded_at).toISOString(),
+    viewerCanReviseMetadata: row.viewer_coach_authorized
+      && (viewerUserId === row.coach_user_id || viewerUserId === row.session_coach_user_id)
+      && ![row.pair_low_id, row.pair_high_id].includes(viewerUserId)
+      && occurredAt < resultMetadataRevisionDeadline(row.recorded_at),
     recordedAt: row.recorded_at.toISOString(),
     appealDeadlineAt: row.appeal_deadline_at.toISOString(),
     finalizedAt: row.finalized_at?.toISOString() ?? null,
@@ -1254,6 +1338,119 @@ export async function recordSessionResult(
             },
           },
         ],
+      };
+    },
+  });
+}
+
+export async function reviseResultMetadata(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ReviseResultMetadataPayload>,
+  ids: ResultMetadataRevisionEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ResultProjection>> {
+  if (
+    !command.actor.id || command.actor.type !== 'USER'
+    || command.aggregateType !== 'Result'
+    || command.commandType !== 'REVISE_RESULT_METADATA'
+    || command.payload.resultId !== command.aggregateId
+  ) throw new ResultPermissionDeniedError();
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await resultRow(transaction, command.aggregateId, command.actor.id!, true);
+      if (!row) throw new ResultPermissionDeniedError();
+      const actorAssigned = command.actor.id === row.coach_user_id
+        || command.actor.id === row.session_coach_user_id;
+      if (
+        !actorAssigned || !row.viewer_coach_authorized
+        || [row.pair_low_id, row.pair_high_id].includes(command.actor.id!)
+      ) throw new ResultPermissionDeniedError();
+      assertExpectedVersion(Number(row.version), command.expectedVersion);
+      const before = {
+        methodCode: row.method_code,
+        methodText: row.method_text,
+        scorePayload: record(row.score_payload),
+        methodPayload: record(row.method_payload),
+      };
+      const after = normalizeResultMetadataRevision({
+        recordedAt: row.recorded_at,
+        occurredAt: context.occurredAt,
+        before,
+        ...(command.payload.methodCode !== undefined
+          ? { methodCode: command.payload.methodCode } : {}),
+        ...(command.payload.methodText !== undefined
+          ? { methodText: command.payload.methodText } : {}),
+        ...(command.payload.scorePayload !== undefined
+          ? { scorePayload: command.payload.scorePayload } : {}),
+        ...(command.payload.methodPayload !== undefined
+          ? { methodPayload: command.payload.methodPayload } : {}),
+      });
+      await sql`
+        insert into competition.result_metadata_revisions (
+          revision_id, result_id, source_result_version, result_version,
+          before_method_code, after_method_code, before_method_text, after_method_text,
+          before_score_payload, after_score_payload,
+          before_method_payload, after_method_payload, revised_by, revised_at
+        ) values (
+          ${ids.revisionId}::uuid, ${row.result_id}::uuid, ${row.version}, ${context.nextVersion},
+          ${before.methodCode}, ${after.methodCode}, ${before.methodText}, ${after.methodText},
+          ${before.scorePayload ? JSON.stringify(before.scorePayload) : null}::jsonb,
+          ${after.scorePayload ? JSON.stringify(after.scorePayload) : null}::jsonb,
+          ${before.methodPayload ? JSON.stringify(before.methodPayload) : null}::jsonb,
+          ${after.methodPayload ? JSON.stringify(after.methodPayload) : null}::jsonb,
+          ${command.actor.id}::uuid, ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        update competition.results
+        set version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where result_id = ${row.result_id}::uuid and version = ${row.version}
+      `.execute(transaction);
+      const projected = await resultRow(transaction, row.result_id, command.actor.id!);
+      if (!projected) throw new ResultConflictError('RESULT_NOT_RECORDED');
+      const response = resultProjection(projected, command.actor.id!, context.occurredAt);
+      return {
+        responseStatus: 201,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'ResultMetadataRevised',
+          schemaVersion: 1,
+          transitionId: 'R-02',
+          payload: {
+            resultId: row.result_id,
+            revisionId: ids.revisionId,
+            resultVersion: context.nextVersion,
+            revisedAt: context.occurredAt.toISOString(),
+          },
+          metadata: { policyVersion: RESULT_POLICY_VERSION },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'REVISE_RESULT_METADATA',
+          transitionId: 'R-02',
+          reasonCode: 'COACH_METADATA_CORRECTION',
+          beforeState: row.state,
+          afterState: row.state,
+          metadata: {
+            revisionId: ids.revisionId,
+            sessionId: row.session_id,
+            before,
+            after,
+          },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'competition.result-metadata.revised.v1',
+          payload: {
+            resultId: row.result_id,
+            revisionId: ids.revisionId,
+            resultVersion: context.nextVersion,
+          },
+        }],
       };
     },
   });

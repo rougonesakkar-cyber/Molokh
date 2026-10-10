@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **173/214** (`167/196 P0`);
+- executable acceptance traceability: **174/214** (`168/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0065` and **57/57** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0066` and **57/57** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -290,6 +290,14 @@ snapshot and effective Cooldown, releases both obligations and clears the provis
 Exact replay returns the same outcome; winner, Coach, outsider, expired, stale and post-waiver
 Appeal attempts leave no Appeal, audit, event, outbox or notification residue. After waiver the
 Result card exposes neither Appeal action.
+
+AC-078 adds the only direct Coach correction allowed for an Official Result. During the first
+24 server hours, the recording or assigned Coach can append a `ResultMetadataRevision` for
+descriptive score/method metadata. The source Result row, winner, outcome, Session snapshot,
+status lock, Cooldown, Challenge state and Appeal deadline remain unchanged. Version/idempotency,
+active DB Coach scope and an append-only database trigger protect the revision. Public
+event/outbox payloads contain only revision lineage; protected before/after metadata remains in
+the revision and audit. The client clearly routes winner/outcome errors to Technical Correction.
 
 AC-079 closes the direct-correction boundary. An exact Coach Result replay returns the original
 record, while the same idempotency key with another outcome and any new second Result command are

@@ -1244,6 +1244,15 @@ export const ResultProjectionSchema = Type.Object(
     methodCode: Type.Union([Type.String({ minLength: 1, maxLength: 80 }), Type.Null()]),
     methodText: Type.Union([Type.String({ minLength: 1, maxLength: 500 }), Type.Null()]),
     scorePayload: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+    methodPayload: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+    recordedMethodCode: Type.Union([Type.String({ minLength: 1, maxLength: 80 }), Type.Null()]),
+    recordedMethodText: Type.Union([Type.String({ minLength: 1, maxLength: 500 }), Type.Null()]),
+    recordedScorePayload: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+    recordedMethodPayload: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+    latestMetadataRevisionId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    metadataRevisionCount: Type.Integer({ minimum: 0 }),
+    metadataRevisionDeadlineAt: Type.String({ format: 'date-time' }),
+    viewerCanReviseMetadata: Type.Boolean(),
     recordedAt: Type.String({ format: 'date-time' }),
     appealDeadlineAt: Type.String({ format: 'date-time' }),
     finalizedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
@@ -1283,6 +1292,26 @@ export const RecordSessionResultBodySchema = Type.Object(
 );
 
 export type RecordSessionResultBody = Static<typeof RecordSessionResultBodySchema>;
+
+export const ReviseResultMetadataBodySchema = Type.Object(
+  {
+    methodCode: Type.Optional(Type.Union([
+      Type.String({ minLength: 1, maxLength: 80 }), Type.Null(),
+    ])),
+    methodText: Type.Optional(Type.Union([
+      Type.String({ minLength: 1, maxLength: 500 }), Type.Null(),
+    ])),
+    scorePayload: Type.Optional(Type.Union([
+      Type.Record(Type.String(), Type.Unknown()), Type.Null(),
+    ])),
+    methodPayload: Type.Optional(Type.Union([
+      Type.Record(Type.String(), Type.Unknown()), Type.Null(),
+    ])),
+  },
+  { $id: 'ReviseResultMetadataBody', additionalProperties: false, minProperties: 1 },
+);
+
+export type ReviseResultMetadataBody = Static<typeof ReviseResultMetadataBodySchema>;
 
 export const SubmitResultAppealBodySchema = Type.Object(
   {

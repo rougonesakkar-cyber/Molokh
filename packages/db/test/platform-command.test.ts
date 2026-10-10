@@ -186,6 +186,7 @@ import {
   openSessionWindow,
   recordSessionAttendance,
   recordSessionResult,
+  reviseResultMetadata,
   endSession,
   replaceSessionCoach,
   cancelSessionAfterCoachReplacement,
@@ -313,6 +314,7 @@ import {
   type RequestYouthConsentPayload,
   type YouthConsentEffectIds,
   type RecordSessionResultPayload,
+  type ReviseResultMetadataPayload,
   type RebuildCompetitionProjectionPayload,
   type SubmitResultAppealPayload,
   type WaiveResultAppealPayload,
@@ -2043,6 +2045,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         competition.technical_correction_status_compensations,
         competition.technical_correction_decisions,
         competition.technical_correction_requests,
+        competition.result_metadata_revisions,
         competition.status_transition_finalizations,
         competition.status_transitions,
         competition.pair_cooldowns,
@@ -7470,7 +7473,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ]);
   });
 
-  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-079][AC-080][AC-111][AC-113][AC-117][AC-118][AC-144][AC-148][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
+  it('[AC-029][AC-030][AC-031][AC-032][AC-041][AC-050][AC-051][AC-054][AC-056][AC-058][AC-070][AC-071][AC-075][AC-076][AC-077][AC-078][AC-079][AC-080][AC-111][AC-113][AC-117][AC-118][AC-144][AC-148][AC-167][AC-171][AC-175][AC-179][AC-205][AC-206] runs a media-free Official Result through Missing Result Review and Central Appeal atomically', async () => {
     const athleteA = testId(1101);
     const athleteB = testId(1102);
     const venueId = testId(1103);
@@ -8075,6 +8078,180 @@ describePostgres('PostgreSQL critical command transaction', () => {
       contender_user_id: athleteB, status_lock_result_id: resultId, status_version: '2',
     });
 
+    const reviseMetadataCommand = {
+      commandId: testId(47004), commandType: 'REVISE_RESULT_METADATA',
+      idempotencyKey: `revise-result-metadata-${resultId}`,
+      actor: { type: 'USER', id: coachId, roles: ['COACH'], scopeIds: [communityId] },
+      aggregateType: 'Result', aggregateId: resultId, expectedVersion: 1,
+      correlationId: testId(47005), causationId: testId(1947), requestId: testId(47006),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        resultId, methodCode: 'DECISION', methodText: '  Победа решением судьи  ',
+        scorePayload: { display: '3:0', rounds: [10, 9, 10] },
+        methodPayload: { ruleset: 'pilot-v1' },
+      },
+    } satisfies CommandEnvelope<ReviseResultMetadataPayload>;
+    const reviseMetadataIds = {
+      revisionId: testId(47000), eventId: testId(47001),
+      auditId: testId(47002), outboxMessageId: testId(47003),
+    };
+    await expect(reviseResultMetadata(database, {
+      ...reviseMetadataCommand, commandId: testId(47010),
+      idempotencyKey: `revise-result-metadata-athlete-${resultId}`,
+      actor: { type: 'USER', id: athleteA, roles: ['COACH'], scopeIds: [communityId] },
+    }, {
+      revisionId: testId(47011), eventId: testId(47012),
+      auditId: testId(47013), outboxMessageId: testId(47014),
+    }, () => new Date('2026-09-13T15:02:00.000Z')))
+      .rejects.toBeInstanceOf(ResultPermissionDeniedError);
+    await expect(reviseResultMetadata(database, {
+      ...reviseMetadataCommand, commandId: testId(47020),
+      idempotencyKey: `revise-result-metadata-expired-${resultId}`,
+    }, {
+      revisionId: testId(47021), eventId: testId(47022),
+      auditId: testId(47023), outboxMessageId: testId(47024),
+    }, () => new Date('2026-09-14T15:01:00.000Z')))
+      .rejects.toMatchObject({ code: 'RESULT_METADATA_REVISION_WINDOW_CLOSED' });
+    const revisedMetadata = await reviseResultMetadata(
+      database, reviseMetadataCommand, reviseMetadataIds,
+      () => new Date('2026-09-13T15:02:00.000Z'),
+    );
+    expect(revisedMetadata.response).toMatchObject({
+      resultId, state: 'RECORDED', outcomeCode: 'WIN_B', winnerUserId: athleteB,
+      loserUserId: athleteA, methodCode: 'DECISION',
+      methodText: 'Победа решением судьи',
+      scorePayload: { display: '3:0', rounds: [10, 9, 10] },
+      methodPayload: { ruleset: 'pilot-v1' },
+      recordedMethodCode: null, recordedMethodText: null,
+      recordedScorePayload: null, recordedMethodPayload: null,
+      latestMetadataRevisionId: reviseMetadataIds.revisionId,
+      metadataRevisionCount: 1,
+      metadataRevisionDeadlineAt: '2026-09-14T15:01:00.000Z',
+      viewerCanReviseMetadata: true,
+      appealDeadlineAt: '2026-09-15T15:01:00.000Z', version: 2,
+    });
+    await expect(reviseResultMetadata(database, reviseMetadataCommand, reviseMetadataIds))
+      .resolves.toMatchObject({ replayed: true, response: revisedMetadata.response });
+    await expect(reviseResultMetadata(database, {
+      ...reviseMetadataCommand, commandId: testId(47030),
+      payload: { ...reviseMetadataCommand.payload, methodText: 'Другой метод' },
+    }, {
+      revisionId: testId(47031), eventId: testId(47032),
+      auditId: testId(47033), outboxMessageId: testId(47034),
+    })).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+    await expect(reviseResultMetadata(database, {
+      ...reviseMetadataCommand, commandId: testId(47040),
+      idempotencyKey: `revise-result-metadata-stale-${resultId}`,
+    }, {
+      revisionId: testId(47041), eventId: testId(47042),
+      auditId: testId(47043), outboxMessageId: testId(47044),
+    })).rejects.toBeInstanceOf(VersionConflictError);
+    await expect(readResult(
+      database, resultId, athleteA, new Date('2026-09-13T15:03:00.000Z'),
+    )).resolves.toMatchObject({
+      methodText: 'Победа решением судьи', scorePayload: { display: '3:0' },
+      viewerCanReviseMetadata: false, version: 2,
+    });
+    const metadataRevisionProof = await sql<{
+      readonly recorded_outcome_code: string;
+      readonly winner_user_id: string;
+      readonly loser_user_id: string;
+      readonly source_method_code: string | null;
+      readonly source_method_text: string | null;
+      readonly source_score_payload: unknown;
+      readonly source_method_payload: unknown;
+      readonly result_state: string;
+      readonly result_version: string;
+      readonly challenge_state: string;
+      readonly challenge_version: string;
+      readonly status_lock_result_id: string;
+      readonly status_version: string;
+      readonly cooldown_ends_at: Date;
+      readonly appeal_deadline_at: Date;
+      readonly revision_count: string;
+      readonly event_transition_id: string;
+      readonly event_payload: unknown;
+      readonly outbox_payload: unknown;
+      readonly audit_metadata: unknown;
+      readonly failed_effect_count: string;
+    }>`
+      select result.recorded_outcome_code, result.winner_user_id, result.loser_user_id,
+        result.method_code as source_method_code,
+        result.method_text as source_method_text,
+        result.score_payload as source_score_payload,
+        result.method_payload as source_method_payload,
+        result.state as result_state, result.version::text as result_version,
+        result.appeal_deadline_at, challenge.state as challenge_state,
+        challenge.version::text as challenge_version,
+        competition.status_lock_result_id,
+        competition.status_version::text as status_version,
+        cooldown.ends_at as cooldown_ends_at,
+        (select count(*)::text from competition.result_metadata_revisions revision
+          where revision.result_id = result.result_id) as revision_count,
+        event.transition_id as event_transition_id,
+        event.payload as event_payload, outbox.payload as outbox_payload,
+        audit.metadata as audit_metadata,
+        (
+          (select count(*) from platform.domain_events failed_event
+            where failed_event.event_id in (${testId(47012)}::uuid, ${testId(47022)}::uuid,
+              ${testId(47032)}::uuid, ${testId(47042)}::uuid))
+          + (select count(*) from platform.audit_events failed_audit
+            where failed_audit.audit_id in (${testId(47013)}::uuid, ${testId(47023)}::uuid,
+              ${testId(47033)}::uuid, ${testId(47043)}::uuid))
+          + (select count(*) from platform.outbox_messages failed_outbox
+            where failed_outbox.message_id in (${testId(47014)}::uuid, ${testId(47024)}::uuid,
+              ${testId(47034)}::uuid, ${testId(47044)}::uuid))
+        )::text as failed_effect_count
+      from competition.results result
+      join competition.challenges challenge on challenge.challenge_id = result.challenge_id
+      join competition.competitions competition
+        on competition.competition_id = challenge.competition_id
+      join competition.pair_cooldowns cooldown on cooldown.source_result_id = result.result_id
+      join platform.domain_events event on event.event_id = ${reviseMetadataIds.eventId}::uuid
+      join platform.audit_events audit on audit.audit_id = ${reviseMetadataIds.auditId}::uuid
+      join platform.outbox_messages outbox
+        on outbox.message_id = ${reviseMetadataIds.outboxMessageId}::uuid
+      where result.result_id = ${resultId}::uuid
+    `.execute(database);
+    expect(metadataRevisionProof.rows[0]).toMatchObject({
+      recorded_outcome_code: 'WIN_B', winner_user_id: athleteB, loser_user_id: athleteA,
+      source_method_code: null, source_method_text: null,
+      source_score_payload: null, source_method_payload: null,
+      result_state: 'RECORDED', result_version: '2',
+      challenge_state: 'RESULT_RECORDED', challenge_version: '12',
+      status_lock_result_id: resultId, status_version: '2',
+      cooldown_ends_at: new Date('2026-09-28T15:01:00.000Z'),
+      appeal_deadline_at: new Date('2026-09-15T15:01:00.000Z'),
+      revision_count: '1', failed_effect_count: '0',
+      event_transition_id: 'R-02',
+      event_payload: {
+        resultId, revisionId: reviseMetadataIds.revisionId,
+        resultVersion: 2, revisedAt: '2026-09-13T15:02:00.000Z',
+      },
+      outbox_payload: {
+        resultId, revisionId: reviseMetadataIds.revisionId, resultVersion: 2,
+      },
+      audit_metadata: expect.objectContaining({
+        revisionId: reviseMetadataIds.revisionId,
+        before: { methodCode: null, methodText: null, scorePayload: null, methodPayload: null },
+        after: {
+          methodCode: 'DECISION', methodText: 'Победа решением судьи',
+          scorePayload: { display: '3:0', rounds: [10, 9, 10] },
+          methodPayload: { ruleset: 'pilot-v1' },
+        },
+      }),
+    });
+    expect(JSON.stringify({
+      event: metadataRevisionProof.rows[0]?.event_payload,
+      outbox: metadataRevisionProof.rows[0]?.outbox_payload,
+    })).not.toMatch(/Победа решением судьи|3:0|pilot-v1/);
+    await expect(sql`update competition.result_metadata_revisions
+      set after_method_text = 'changed' where revision_id = ${reviseMetadataIds.revisionId}::uuid`
+      .execute(database)).rejects.toThrow(/append-only/i);
+    await expect(sql`delete from competition.result_metadata_revisions
+      where revision_id = ${reviseMetadataIds.revisionId}::uuid`
+      .execute(database)).rejects.toThrow(/append-only/i);
+
     const beforeCorrection = await sql<{
       readonly result_state: string;
       readonly result_version: string;
@@ -8096,7 +8273,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       where result.result_id = ${resultId}::uuid`.execute(database);
     const correctionPayload: RequestTechnicalCorrectionPayload = {
       resultId,
-      expectedResultVersion: 1,
+      expectedResultVersion: 2,
       category: 'OUTCOME_OR_WINNER_ERROR',
       proposedOutcomeCode: 'WIN_A',
       proposedWinnerUserId: athleteA,
@@ -8147,7 +8324,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         commandId: testId(35100),
         idempotencyKey: `technical-correction-stale-${resultId}`,
         aggregateId: testId(35101),
-        payload: { ...correctionPayload, expectedResultVersion: 2 },
+        payload: { ...correctionPayload, expectedResultVersion: 3 },
       },
       { ...correctionIds(2), correctionId: testId(35101), eventId: testId(35102),
         auditId: testId(35103), outboxMessageId: testId(35104),
@@ -8454,7 +8631,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     `.execute(database);
     expect(immutableResult.rows[0]).toEqual({
       recorded_outcome_code: 'WIN_B', winner_user_id: athleteB, loser_user_id: athleteA,
-      result_version: '1', appeal_deadline_at: new Date('2026-09-15T15:01:00.000Z'),
+      result_version: '2', appeal_deadline_at: new Date('2026-09-15T15:01:00.000Z'),
       snapshot_contender_user_id: athleteA, snapshot_status_version: '1',
       challenge_state: 'RESULT_RECORDED', challenge_version: '12',
       status_lock_result_id: resultId, status_version: '2', transition_count: '1',
@@ -8468,7 +8645,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         commandId: testId(2001), commandType: 'SUBMIT_RESULT_APPEAL',
         idempotencyKey: `appeal-result-${resultId}`,
         actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
-        aggregateType: 'Result', aggregateId: resultId, expectedVersion: 1,
+        aggregateType: 'Result', aggregateId: resultId, expectedVersion: 2,
         correlationId: testId(2002), causationId: testId(1947), requestId: testId(2003),
         source: 'api', payloadVersion: 1,
         payload: { resultId, reasonCode: 'WRONG_WINNER', statement: 'Победитель указан неверно.' },
@@ -8482,7 +8659,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-09-13T15:05:00.000Z'),
     );
     expect(appealed.response).toMatchObject({
-      resultId, state: 'UNDER_APPEAL', provisional: true, version: 2,
+      resultId, state: 'UNDER_APPEAL', provisional: true, version: 3,
     });
     await expect(listAppealsForCentral(database, centralId)).resolves.toEqual([
       expect.objectContaining({
@@ -8607,7 +8784,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       decisionReason: 'Coach подтвердил ошибку победителя.', provisional: false,
     });
     await expect(readResultTimerSnapshot(database, resultId)).resolves.toEqual({
-      state: 'REVERSED', version: 3,
+      state: 'REVERSED', version: 4,
     });
     const finalStatus = await sql<{
       readonly contender_user_id: string;
