@@ -10,6 +10,7 @@ import {
   assertResultMatchesAttendance,
   assertResultCanFinalize,
   deriveProvisionalStatusTransition,
+  eligibleAppealUserIds,
   normalizeResultParticipants,
   normalizeTechnicalCorrectionRequest,
   normalizeTechnicalCorrectionRejection,
@@ -240,6 +241,30 @@ describe('Result and provisional status policy', () => {
     expect(() => assertAppealActionCanBeTaken({
       ...base, state: 'UNDER_APPEAL', alreadySubmitted: true,
     })).toThrowError(new ResultConflictError('RESULT_APPEAL_ALREADY_SUBMITTED'));
+  });
+
+  it('[AC-112] gives both DRAW Athletes the same server-window Appeal right', () => {
+    const deadline = new Date('2026-09-11T10:00:00.000Z');
+    for (const participantUserIds of [participants, [...participants].reverse()] as const) {
+      const eligibleUserIds = eligibleAppealUserIds({
+        outcomeCode: 'DRAW', loserUserId: null,
+        participantUserIds: participantUserIds as [string, string],
+      });
+      expect(eligibleUserIds).toEqual(participantUserIds);
+      for (const actorUserId of participants) {
+        expect(() => assertAppealActionCanBeTaken({
+          state: 'RECORDED', actorUserId, eligibleUserIds,
+          appealDeadlineAt: deadline,
+          occurredAt: new Date('2026-09-11T09:59:59.999Z'),
+          alreadyWaived: false, alreadySubmitted: false,
+        })).not.toThrow();
+      }
+    }
+    expect(() => assertAppealActionCanBeTaken({
+      state: 'RECORDED', actorUserId: participants[0],
+      eligibleUserIds: [...participants], appealDeadlineAt: deadline,
+      occurredAt: deadline, alreadyWaived: false, alreadySubmitted: false,
+    })).toThrowError(new ResultConflictError('RESULT_APPEAL_WINDOW_CLOSED'));
   });
 
   it('[AC-114][AC-117] starts review without waiting for responses and upholds the immutable outcome', () => {

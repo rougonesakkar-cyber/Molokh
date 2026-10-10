@@ -132,6 +132,9 @@ importers:
       '@types/react':
         specifier: 19.2.18
         version: 19.2.18
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0))
 
   apps/worker:
     dependencies:

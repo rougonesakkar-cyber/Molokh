@@ -8,6 +8,7 @@
     "build": "expo export --platform web --output-dir dist",
     "ios": "expo run:ios",
     "start": "expo start",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "web": "expo start --web"
   },
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@react-native/metro-config": "0.86.3",
-    "@types/react": "19.2.18"
+    "@types/react": "19.2.18",
+    "vitest": "5.0.0"
   }
 }

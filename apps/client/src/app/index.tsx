@@ -98,6 +98,7 @@ import {
   refreshManagedAuthSession,
 } from '../lib/auth-session';
 import { sportLabel, sportOptions } from '../lib/sports';
+import { resultCardPresentation } from '../lib/result-presentation';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -5124,6 +5125,9 @@ export default function IdentityScreen() {
                       const officialResult = session.resultId
                         ? resultsById[session.resultId] ?? null
                         : null;
+                      const officialResultPresentation = officialResult
+                        ? resultCardPresentation(officialResult)
+                        : null;
                       const appealDetail = session.resultId
                         ? appealsByResultId[session.resultId] ?? null
                         : null;
@@ -5831,13 +5835,7 @@ export default function IdentityScreen() {
                                   {resultStateLabels[officialResult.state]}
                                 </Text>
                               </View>
-                              <Text style={styles.value}>
-                                {officialResult.winnerDisplayName
-                                  ? `Победитель: ${officialResult.winnerDisplayName}`
-                                  : officialResult.outcomeCode === 'DRAW'
-                                    ? 'Ничья'
-                                    : 'Без засчитываемого результата'}
-                              </Text>
+                              <Text style={styles.value}>{officialResultPresentation?.summary}</Text>
                               <Text selectable style={styles.hint}>
                                 Result ID: {officialResult.resultId} · версия {officialResult.version}
                               </Text>
@@ -5977,7 +5975,7 @@ export default function IdentityScreen() {
                                   ) : null}
                                 </View>
                               ) : null}
-                              {officialResult.viewerCanAppeal ? (
+                              {officialResultPresentation?.showAppealAction ? (
                                 <>
                                   {appealDraftResultId === officialResult.resultId ? (
                                     <View style={styles.attendanceList}>

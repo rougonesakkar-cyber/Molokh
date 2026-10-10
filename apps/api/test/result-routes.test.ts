@@ -53,6 +53,62 @@ afterEach(async () => {
 });
 
 describe('Result and Appeal routes', () => {
+  it('[AC-112] exposes a neutral DRAW and forwards the Athlete Appeal command', async () => {
+    const draw: ResultProjection = {
+      ...recorded,
+      outcomeCode: 'DRAW', recordedOutcomeCode: 'DRAW',
+      winnerUserId: null, winnerDisplayName: null,
+      loserUserId: null, loserDisplayName: null,
+      recordedWinnerUserId: null, recordedLoserUserId: null,
+      statusTransitionType: 'NONE',
+      statusAfter: recorded.statusBefore,
+    };
+    const readResult = vi.fn().mockResolvedValue(draw);
+    const submitResultAppeal = vi.fn().mockResolvedValue({
+      responseStatus: 201,
+      response: { ...draw, state: 'UNDER_APPEAL', viewerCanAppeal: false, version: 2 },
+      eventId: '0199a1b2-1234-7000-8000-000000001510', aggregateVersion: 2,
+      replayed: false,
+    });
+    const app = await buildApp({
+      result: {
+        auth: new StaticBearerAuthAdapter(token, actorUserId),
+        readResult, submitResultAppeal,
+        recordSessionResult: vi.fn(), waiveResultAppeal: vi.fn(),
+      },
+    });
+    apps.push(app);
+
+    const read = await app.inject({
+      method: 'GET', url: `/api/v1/results/${resultId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({
+      data: {
+        outcomeCode: 'DRAW', winnerUserId: null, loserUserId: null,
+        statusTransitionType: 'NONE', viewerCanAppeal: true,
+      },
+    });
+
+    const appealed = await app.inject({
+      method: 'POST', url: `/api/v1/results/${resultId}/appeal`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'appeal-draw-route-1', 'if-match': '1',
+      },
+      payload: { reasonCode: 'DRAW_DISPUTED', statement: 'Прошу проверить ничью.' },
+    });
+    expect(appealed.statusCode).toBe(201);
+    expect(submitResultAppeal).toHaveBeenCalledWith(expect.objectContaining({
+      aggregateId: resultId, expectedVersion: 1,
+      actor: { type: 'USER', id: actorUserId, roles: ['ATHLETE'], scopeIds: [] },
+      payload: {
+        resultId, reasonCode: 'DRAW_DISPUTED', statement: 'Прошу проверить ничью.',
+      },
+    }), expect.any(Object));
+  });
+
   it('[AC-076][AC-088][AC-089][AC-167][AC-202][AC-203] exposes media-free Coach Result facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({

@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **170/214** (`164/196 P0`);
+- executable acceptance traceability: **171/214** (`165/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0065` and **55/55** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0065` and **56/56** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -274,6 +274,14 @@ configured pair Cooldown and schedules finalization exactly 48 hours later. The 
 may submit Appeal or explicitly waive it. A decisive Result finalizes early when its sole eligible
 loser waives; draw/no-contest requires both eligible Athletes. Otherwise the versioned Worker
 timer commits `CH-17`, releases obligations and removes the temporary status lock.
+
+AC-112 proves the symmetric DRAW path end to end. A DRAW stores no winner or loser and creates no
+status transition, status lock or Cooldown. Both Athletes receive the same server-authorized
+Appeal action until the immutable 48-hour deadline; Coach and outsiders cannot use it. Concurrent
+submissions serialize on the Result aggregate so one `SUBMITTED` Appeal atomically moves Result
+and Challenge to `UNDER_APPEAL`, while the losing command leaves no audit, event, outbox or
+notification residue. The Result card says only «Ничья» and follows the server capability without
+calling either participant the loser.
 
 The Competition status projection is recoverable rather than authoritative. A Central-only,
 versioned rebuild locks the Competition, derives Champion/Contender, status version, tenure

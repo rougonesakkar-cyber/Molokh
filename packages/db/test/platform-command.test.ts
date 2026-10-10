@@ -11245,6 +11245,377 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-score');
   });
 
+  it('[AC-112] lets either DRAW Athlete win one atomic Appeal race', async () => {
+    const base = 45000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const rulesetSnapshotId = testId(45030);
+    const challengeId = testId(45031);
+    const snapshotId = testId(45032);
+    const resultId = testId(45033);
+    const recordedAt = new Date('2026-10-03T12:00:00.000Z');
+
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        update competition.competitions
+        set phase = 'RUNNING', champion_user_id = null,
+          contender_user_id = ${fixture.athleteA}::uuid, status_version = 1,
+          status_lock_result_id = null, version = 2,
+          updated_at = '2026-10-03T10:00:00.000Z'
+        where competition_id = ${fixture.competition}::uuid
+      `.execute(transaction);
+      await sql`
+        insert into competition.ruleset_snapshots (
+          ruleset_snapshot_id, competition_id, community_configuration_id,
+          ruleset_ref, ruleset_ack_mode, policy_version, created_at
+        ) values (
+          ${rulesetSnapshotId}::uuid, ${fixture.competition}::uuid,
+          ${testId(base + 15)}::uuid, 'pilot-boxing-v1', 'IMPLICIT_ON_ACCEPT',
+          'challenge-mvp-v1', '2026-10-03T10:00:00.000Z'
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenges (
+          challenge_id, competition_id, source_match_id, source_chat_id, service_chat_id,
+          initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+          response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+          accepted_at, scheduling_deadline_at, version, created_at, updated_at
+        ) values (
+          ${challengeId}::uuid, ${fixture.competition}::uuid, ${fixture.match}::uuid,
+          ${fixture.chat}::uuid, ${fixture.chat}::uuid, ${fixture.athleteA}::uuid,
+          ${fixture.athleteB}::uuid, least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+          greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid), 'MANDATORY',
+          'CONTENDER', 'RESULT_PENDING', ${rulesetSnapshotId}::uuid,
+          '2026-10-01T10:00:00.000Z', '2026-09-29T10:00:00.000Z',
+          '2026-10-13T10:00:00.000Z', 4, '2026-09-29T10:00:00.000Z',
+          '2026-10-03T10:00:00.000Z'
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenge_participant_obligations (
+          obligation_id, challenge_id, user_id, accepted_at
+        ) values
+          (${testId(45034)}::uuid, ${challengeId}::uuid, ${fixture.athleteA}::uuid,
+            '2026-09-29T10:00:00.000Z'),
+          (${testId(45035)}::uuid, ${challengeId}::uuid, ${fixture.athleteB}::uuid,
+            '2026-09-29T10:00:00.000Z')
+      `.execute(transaction);
+      await sql`
+        update scheduling.bookings
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challengeId}::uuid
+        where booking_id = ${fixture.booking}::uuid
+      `.execute(transaction);
+      await sql`
+        update scheduling.sessions
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challengeId}::uuid,
+          state = 'ENDED', window_opened_at = '2026-10-03T10:00:00.000Z',
+          actual_start_at = '2026-10-03T10:01:00.000Z',
+          actual_end_at = '2026-10-03T10:55:00.000Z', version = 5,
+          updated_at = '2026-10-03T10:55:00.000Z'
+        where session_id = ${fixture.session}::uuid
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.session_competitive_snapshots (
+          snapshot_id, session_id, challenge_id, competition_id, ruleset_snapshot_id,
+          community_configuration_id, planned_stake, effective_stake, champion_user_id,
+          contender_user_id, competition_status_version, venue_id, coach_user_id,
+          pair_low_id, pair_high_id, scheduled_start_at, scheduled_end_at, created_at
+        ) values (
+          ${snapshotId}::uuid, ${fixture.session}::uuid, ${challengeId}::uuid,
+          ${fixture.competition}::uuid, ${rulesetSnapshotId}::uuid,
+          ${testId(base + 15)}::uuid, 'CONTENDER', 'CONTENDER', null,
+          ${fixture.athleteA}::uuid, 1, ${fixture.venue}::uuid, ${fixture.coach}::uuid,
+          least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+          greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+          ${fixture.scheduledStartAt}::timestamptz, '2026-10-01T11:00:00.000Z',
+          '2026-10-03T10:00:00.000Z'
+        )
+      `.execute(transaction);
+      await sql`
+        insert into platform.domain_events (
+          event_id, event_name, event_version, aggregate_type, aggregate_id,
+          aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+          occurred_at, payload, idempotency_key_hash
+        ) values (
+          ${testId(45036)}::uuid, 'ChallengeResultPending', 1, 'Challenge',
+          ${challengeId}::uuid, 4, 'CH-14', ${testId(45037)}::uuid, null,
+          ${fixture.coach}::uuid, '2026-10-03T10:55:00.000Z',
+          ${JSON.stringify({ challengeId, sessionId: fixture.session })}::jsonb,
+          'fixture:ac-112:result-pending'
+        )
+      `.execute(transaction);
+    });
+
+    const snapshotBefore = await sql<{ readonly document: unknown }>`
+      select to_jsonb(snapshot) as document
+      from scheduling.session_competitive_snapshots as snapshot
+      where snapshot_id = ${snapshotId}::uuid
+    `.execute(database);
+    const recorded = await recordSessionResult(database, {
+      commandId: testId(45040), commandType: 'RECORD_SESSION_RESULT',
+      idempotencyKey: 'ac-112-record-draw',
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 4,
+      correlationId: testId(45041), causationId: testId(45036), requestId: testId(45042),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId, sessionId: fixture.session, outcomeCode: 'DRAW', winnerUserId: null,
+        reasonCode: null, comment: null, methodCode: null, methodText: null,
+        scorePayload: null, methodPayload: null,
+      },
+    } satisfies CommandEnvelope<RecordSessionResultPayload>, {
+      eventId: testId(45043), auditId: testId(45044), outboxMessageId: testId(45045),
+      resultId, resultEventId: testId(45046), statusTransitionId: testId(45047),
+      statusEventId: testId(45048), cooldownId: testId(45049),
+      cooldownEventId: testId(45050), timerOutboxMessageId: testId(45051),
+      notificationOutboxMessageId: testId(45052),
+      notificationIds: [testId(45053), testId(45054)],
+    }, () => recordedAt);
+    expect(recorded.response).toMatchObject({
+      state: 'RECORDED', outcomeCode: 'DRAW', recordedOutcomeCode: 'DRAW',
+      winnerUserId: null, loserUserId: null, statusTransitionType: 'NONE',
+      statusBefore: { contenderUserId: fixture.athleteA, statusVersion: 1 },
+      statusAfter: { contenderUserId: fixture.athleteA, statusVersion: 1 },
+      appealDeadlineAt: '2026-10-05T12:00:00.000Z', viewerCanAppeal: false,
+    });
+    for (const athleteUserId of [fixture.athleteA, fixture.athleteB]) {
+      await expect(readResult(
+        database, resultId, athleteUserId, new Date('2026-10-03T12:01:00.000Z'),
+      )).resolves.toMatchObject({
+        state: 'RECORDED', outcomeCode: 'DRAW', winnerUserId: null, loserUserId: null,
+        statusTransitionType: 'NONE', viewerCanAppeal: true, viewerCanWaiveAppeal: true,
+      });
+    }
+    await expect(readResult(
+      database, resultId, fixture.coach, new Date('2026-10-03T12:01:00.000Z'),
+    )).resolves.toMatchObject({ viewerCanAppeal: false, viewerCanWaiveAppeal: false });
+
+    const appealAttempt = (input: {
+      readonly athleteUserId: string;
+      readonly baseId: number;
+      readonly idempotencyKey: string;
+      readonly statement: string;
+    }) => ({
+      command: {
+        commandId: testId(input.baseId), commandType: 'SUBMIT_RESULT_APPEAL',
+        idempotencyKey: input.idempotencyKey,
+        actor: { type: 'USER', id: input.athleteUserId, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Result', aggregateId: resultId, expectedVersion: 1,
+        correlationId: testId(input.baseId + 1), causationId: testId(45046),
+        requestId: testId(input.baseId + 2), source: 'api', payloadVersion: 1,
+        payload: { resultId, reasonCode: 'DRAW_DISPUTED', statement: input.statement },
+      } satisfies CommandEnvelope<SubmitResultAppealPayload>,
+      ids: {
+        eventId: testId(input.baseId + 3), auditId: testId(input.baseId + 4),
+        outboxMessageId: testId(input.baseId + 5), appealId: testId(input.baseId + 6),
+        appealEventId: testId(input.baseId + 7), challengeEventId: testId(input.baseId + 8),
+        notificationOutboxMessageId: testId(input.baseId + 9),
+        notificationIds: [testId(input.baseId + 10), testId(input.baseId + 11)] as const,
+      },
+    });
+    const deniedCoach = appealAttempt({
+      athleteUserId: fixture.coach, baseId: 45100,
+      idempotencyKey: 'ac-112-coach-denied', statement: 'coach-private-statement',
+    });
+    await expect(submitResultAppeal(
+      database, {
+        ...deniedCoach.command,
+        actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      }, deniedCoach.ids, () => new Date('2026-10-03T12:05:00.000Z'),
+    )).rejects.toBeInstanceOf(ResultPermissionDeniedError);
+    const deniedOutsider = appealAttempt({
+      athleteUserId: fixture.central, baseId: 45120,
+      idempotencyKey: 'ac-112-outsider-denied', statement: 'outsider-private-statement',
+    });
+    await expect(submitResultAppeal(
+      database, {
+        ...deniedOutsider.command,
+        actor: { type: 'USER', id: fixture.central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      }, deniedOutsider.ids, () => new Date('2026-10-03T12:05:00.000Z'),
+    )).rejects.toBeInstanceOf(ResultPermissionDeniedError);
+    const expired = appealAttempt({
+      athleteUserId: fixture.athleteA, baseId: 45140,
+      idempotencyKey: 'ac-112-expired', statement: 'expired-private-statement',
+    });
+    await expect(submitResultAppeal(
+      database, expired.command, expired.ids, () => new Date('2026-10-05T12:00:00.000Z'),
+    )).rejects.toMatchObject<Partial<ResultConflictError>>({
+      code: 'RESULT_APPEAL_WINDOW_CLOSED',
+    });
+
+    const attempts = [
+      appealAttempt({
+        athleteUserId: fixture.athleteA, baseId: 45160,
+        idempotencyKey: 'ac-112-athlete-a', statement: 'private-draw-statement-a',
+      }),
+      appealAttempt({
+        athleteUserId: fixture.athleteB, baseId: 45180,
+        idempotencyKey: 'ac-112-athlete-b', statement: 'private-draw-statement-b',
+      }),
+    ] as const;
+    const outcomes = await Promise.allSettled(attempts.map((attempt) => submitResultAppeal(
+      database, attempt.command, attempt.ids, () => new Date('2026-10-03T12:10:00.000Z'),
+    )));
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+    const winnerIndex = outcomes[0]?.status === 'fulfilled' ? 0 : 1;
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+    const winner = attempts[winnerIndex];
+    const fulfilled = outcomes[winnerIndex];
+    const rejected = outcomes[loserIndex];
+    if (fulfilled?.status !== 'fulfilled' || rejected?.status !== 'rejected') {
+      throw new Error('Expected one committed and one rejected DRAW Appeal command');
+    }
+    expect(fulfilled.value.response).toMatchObject({
+      state: 'UNDER_APPEAL', outcomeCode: 'DRAW', winnerUserId: null,
+      loserUserId: null, statusTransitionType: 'NONE', viewerCanAppeal: false, version: 2,
+    });
+    expect(rejected.reason).toBeInstanceOf(VersionConflictError);
+    await expect(submitResultAppeal(
+      database, winner.command, winner.ids, () => new Date('2026-10-03T12:10:00.000Z'),
+    )).resolves.toMatchObject({
+      replayed: true, eventId: winner.ids.eventId, response: fulfilled.value.response,
+    });
+
+    const notificationOutbox = await sql<{
+      readonly event_id: string;
+      readonly payload: {
+        readonly notifications: readonly {
+          readonly notificationId: string;
+          readonly recipientUserId: string;
+          readonly category: 'MANDATORY';
+          readonly renderKey: string;
+          readonly actionTarget: Readonly<Record<string, unknown>>;
+          readonly payload: Readonly<Record<string, unknown>>;
+          readonly deadlineAt: string;
+        }[];
+      };
+    }>`
+      select event_id, payload from platform.outbox_messages
+      where message_id = ${winner.ids.notificationOutboxMessageId}::uuid
+    `.execute(database);
+    const notificationRow = notificationOutbox.rows[0];
+    expect(notificationRow?.payload.notifications.map((item) => item.recipientUserId).sort())
+      .toEqual([
+        winnerIndex === 0 ? fixture.athleteB : fixture.athleteA,
+        fixture.coach,
+      ].sort());
+    if (!notificationRow) throw new Error('Expected committed Appeal notifications');
+    await expect(projectNotificationBatch(
+      database, notificationRow.event_id, notificationRow.payload.notifications,
+    )).resolves.toMatchObject({ createdCount: 2, replayed: false });
+    const peerNotification = notificationRow.payload.notifications.find(
+      (item) => item.recipientUserId !== fixture.coach,
+    );
+    if (!peerNotification) throw new Error('Expected peer Appeal notification');
+    await expect(markNotificationRead(
+      database, peerNotification.notificationId, peerNotification.recipientUserId,
+    )).resolves.toBe(true);
+    await expect(readResult(
+      database, resultId, fixture.athleteA, new Date('2026-10-03T12:11:00.000Z'),
+    )).resolves.toMatchObject({
+      state: 'UNDER_APPEAL', appealDeadlineAt: '2026-10-05T12:00:00.000Z',
+      viewerCanAppeal: false, version: 2,
+    });
+
+    const snapshotAfter = await sql<{ readonly document: unknown }>`
+      select to_jsonb(snapshot) as document
+      from scheduling.session_competitive_snapshots as snapshot
+      where snapshot_id = ${snapshotId}::uuid
+    `.execute(database);
+    expect(snapshotAfter.rows[0]?.document).toEqual(snapshotBefore.rows[0]?.document);
+    const facts = await sql<{
+      readonly result_state: string;
+      readonly recorded_outcome_code: string;
+      readonly winner_user_id: string | null;
+      readonly loser_user_id: string | null;
+      readonly appeal_deadline_at: Date;
+      readonly challenge_state: string;
+      readonly challenge_version: string;
+      readonly champion_user_id: string | null;
+      readonly contender_user_id: string | null;
+      readonly status_version: string;
+      readonly status_lock_result_id: string | null;
+      readonly appeal_count: string;
+      readonly appeal_state: string;
+      readonly appellant_user_id: string;
+      readonly statement: string;
+      readonly response_deadline_at: Date;
+      readonly sla_due_at: Date;
+      readonly transition_count: string;
+      readonly cooldown_count: string;
+      readonly active_obligation_count: string;
+      readonly result_appeal_event_count: string;
+      readonly challenge_appeal_event_count: string;
+      readonly audit_count: string;
+      readonly outbox_count: string;
+      readonly idempotency_count: string;
+    }>`
+      select result.state as result_state, result.recorded_outcome_code,
+        result.winner_user_id, result.loser_user_id, result.appeal_deadline_at,
+        challenge.state as challenge_state, challenge.version::text as challenge_version,
+        competition.champion_user_id, competition.contender_user_id,
+        competition.status_version::text as status_version, competition.status_lock_result_id,
+        (select count(*)::text from competition.appeals
+          where result_id = ${resultId}::uuid) as appeal_count,
+        appeal.state as appeal_state, appeal.appellant_user_id, appeal.statement,
+        appeal.response_deadline_at, appeal.sla_due_at,
+        (select count(*)::text from competition.status_transitions
+          where source_result_id = ${resultId}::uuid) as transition_count,
+        (select count(*)::text from competition.pair_cooldowns
+          where source_result_id = ${resultId}::uuid) as cooldown_count,
+        (select count(*)::text from competition.challenge_participant_obligations
+          where challenge_id = ${challengeId}::uuid and released_at is null)
+          as active_obligation_count,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Result' and aggregate_id = ${resultId}::uuid
+            and event_name = 'ResultPutUnderAppeal') as result_appeal_event_count,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Challenge' and aggregate_id = ${challengeId}::uuid
+            and event_name = 'AppealSubmitted') as challenge_appeal_event_count,
+        (select count(*)::text from platform.audit_events
+          where aggregate_type = 'Result' and aggregate_id = ${resultId}::uuid
+            and action = 'SUBMIT_APPEAL') as audit_count,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (${winner.ids.outboxMessageId}::uuid,
+            ${winner.ids.notificationOutboxMessageId}::uuid)) as outbox_count,
+        (select count(*)::text from platform.idempotency_records
+          where event_id = ${winner.ids.eventId}::uuid) as idempotency_count
+      from competition.results as result
+      join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
+      join competition.competitions as competition
+        on competition.competition_id = challenge.competition_id
+      join competition.appeals as appeal on appeal.result_id = result.result_id
+      where result.result_id = ${resultId}::uuid
+    `.execute(database);
+    expect(facts.rows[0]).toEqual({
+      result_state: 'UNDER_APPEAL', recorded_outcome_code: 'DRAW',
+      winner_user_id: null, loser_user_id: null,
+      appeal_deadline_at: new Date('2026-10-05T12:00:00.000Z'),
+      challenge_state: 'UNDER_APPEAL', challenge_version: '6',
+      champion_user_id: null, contender_user_id: fixture.athleteA,
+      status_version: '1', status_lock_result_id: null,
+      appeal_count: '1', appeal_state: 'SUBMITTED',
+      appellant_user_id: winner.command.actor.id,
+      statement: winner.command.payload.statement,
+      response_deadline_at: new Date('2026-10-04T12:10:00.000Z'),
+      sla_due_at: new Date('2026-10-06T12:10:00.000Z'),
+      transition_count: '0', cooldown_count: '0', active_obligation_count: '2',
+      result_appeal_event_count: '1', challenge_appeal_event_count: '1',
+      audit_count: '1', outbox_count: '2', idempotency_count: '1',
+    });
+    const publicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where metadata ->> 'commandId' = ${winner.command.commandId}
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (
+        ${winner.ids.outboxMessageId}::uuid, ${winner.ids.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-draw-statement');
+  });
+
   it('[AC-143] rebuilds the Competition projection from its canonical event journal', async () => {
     const base = 42000;
     const fixture = await seedConfirmedTrainingForConversion(base);
