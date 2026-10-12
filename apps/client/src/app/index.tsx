@@ -74,6 +74,7 @@ import {
   TechnicalCorrectionRequestCard,
 } from '../features/technical-correction/TechnicalCorrectionSection';
 import { ResultMetadataRevisionCard } from '../features/result-metadata/ResultMetadataRevisionCard';
+import { GuestCoachAuthorizationCard } from '../features/guest-coach/GuestCoachAuthorizationCard';
 import { PlatformIncidentSection } from '../features/platform-incident/PlatformIncidentSection';
 import {
   AccountLifecycleSection,
@@ -5150,6 +5151,12 @@ export default function IdentityScreen() {
                             {formatDateTime(session.scheduledStartAt)} · {session.venueDisplayName}
                           </Text>
                           <Text style={styles.hint}>Coach: {session.coachDisplayName}</Text>
+                          <GuestCoachAuthorizationCard
+                            currentRole={activeTestAccount.role}
+                            onAuthorized={loadIdentity}
+                            session={session}
+                            token={localToken}
+                          />
                           {session.purpose === 'OFFICIAL_CHALLENGE' ? (
                             <Text style={styles.sessionState}>Official Challenge</Text>
                           ) : null}

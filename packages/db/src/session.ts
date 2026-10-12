@@ -152,6 +152,9 @@ export interface SessionLifecycleProjection {
   readonly venueDisplayName: string;
   readonly coachUserId: string;
   readonly coachDisplayName: string;
+  readonly guestCoachGrantId: string | null;
+  readonly guestCoachGrantState: 'ACTIVE' | 'EXPIRED' | null;
+  readonly guestCoachGrantExpiresAt: string | null;
   readonly athleteUserIds: readonly [string, string];
   readonly athleteDisplayNames: readonly [string, string];
   readonly activeAthleteUserIds: readonly string[];
@@ -170,6 +173,7 @@ export interface SessionLifecycleProjection {
   readonly viewerCanManage: boolean;
   readonly viewerCanRecordResult: boolean;
   readonly viewerCanAdminister: boolean;
+  readonly viewerCanAuthorizeGuestCoach: boolean;
   readonly viewerCanRequestNoFaultReschedule: boolean;
   readonly viewerCanRequestOfficialConversion: boolean;
   readonly viewerCanCancelTraining: boolean;
@@ -199,6 +203,10 @@ interface SessionRow {
   readonly venue_display_name: string;
   readonly coach_user_id: string;
   readonly coach_display_name: string;
+  readonly guest_coach_grant_id: string | null;
+  readonly guest_coach_grant_state: 'ACTIVE' | 'EXPIRED' | null;
+  readonly guest_coach_grant_expires_at: Date | null;
+  readonly assigned_coach_has_community_grant: boolean;
   readonly pair_low_id: string;
   readonly pair_high_id: string;
   readonly athlete_low_name: string;
@@ -374,7 +382,16 @@ async function hasActiveCoachScope(
         and role_grant.state = 'ACTIVE'
         and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
         and (
-          (role_grant.scope_type = 'SESSION' and role_grant.scope_id = ${row.session_id}::uuid)
+          (
+            role_grant.scope_type = 'SESSION'
+            and role_grant.scope_id = ${row.session_id}::uuid
+            and ${row.state} <> 'CANCELLED'
+            and not exists (
+              select 1 from competition.results as terminal_result
+              where terminal_result.session_id = ${row.session_id}::uuid
+                and terminal_result.state in ('FINAL', 'REVERSED', 'ANNULLED', 'REPEAT_ORDERED')
+            )
+          )
           or (
             role_grant.scope_type = 'COMMUNITY'
             and role_grant.scope_id in (
@@ -590,6 +607,18 @@ async function readSessionRow(
       slot.slot_id, session.venue_id,
       venue.display_name as venue_display_name, session.coach_user_id,
       coach.display_name as coach_display_name,
+      guest_grant.grant_id as guest_coach_grant_id,
+      guest_grant.state as guest_coach_grant_state,
+      guest_grant.expires_at as guest_coach_grant_expires_at,
+      exists (
+        select 1 from community.role_grants as community_coach_grant
+        where community_coach_grant.user_id = session.coach_user_id
+          and community_coach_grant.role = 'COACH'
+          and community_coach_grant.scope_type = 'COMMUNITY'
+          and community_coach_grant.state = 'ACTIVE'
+          and (community_coach_grant.expires_at is null
+            or community_coach_grant.expires_at > clock_timestamp())
+      ) as assigned_coach_has_community_grant,
       session.pair_low_id, session.pair_high_id,
       athlete_low.display_name as athlete_low_name,
       athlete_high.display_name as athlete_high_name,
@@ -611,6 +640,15 @@ async function readSessionRow(
     left join competition.challenges as challenge on challenge.challenge_id = session.challenge_id
     left join competition.results as result
       on result.challenge_id = challenge.challenge_id and result.cycle_no = challenge.cycle_no
+    left join lateral (
+      select role_grant.grant_id, role_grant.state, role_grant.expires_at
+      from community.role_grants as role_grant
+      where role_grant.user_id = session.coach_user_id
+        and role_grant.role = 'COACH' and role_grant.scope_type = 'SESSION'
+        and role_grant.scope_id = session.session_id
+      order by role_grant.created_at desc, role_grant.grant_id desc
+      limit 1
+    ) as guest_grant on true
     left join lateral (
       select config.no_show_grace_minutes
       from community.communities as community
@@ -673,6 +711,9 @@ async function sessionProjection(
     venueDisplayName: row.venue_display_name,
     coachUserId: row.coach_user_id,
     coachDisplayName: row.coach_display_name,
+    guestCoachGrantId: row.guest_coach_grant_id,
+    guestCoachGrantState: row.guest_coach_grant_state,
+    guestCoachGrantExpiresAt: row.guest_coach_grant_expires_at?.toISOString() ?? null,
     athleteUserIds: [row.pair_low_id, row.pair_high_id],
     athleteDisplayNames: [row.athlete_low_name, row.athlete_high_name],
     activeAthleteUserIds,
@@ -691,6 +732,12 @@ async function sessionProjection(
     viewerCanManage,
     viewerCanRecordResult: viewerCanManage || viewerIsAssignedReviewer,
     viewerCanAdminister,
+    viewerCanAuthorizeGuestCoach:
+      viewerCanAdminister
+      && (row.state === 'SCHEDULED' || row.state === 'READY_FOR_COACH')
+      && ![row.pair_low_id, row.pair_high_id].includes(row.coach_user_id)
+      && !row.assigned_coach_has_community_grant
+      && row.guest_coach_grant_state !== 'ACTIVE',
     viewerCanRequestNoFaultReschedule:
       viewerIsAthlete
       && row.latest_coach_replacement_at !== null

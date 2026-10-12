@@ -196,6 +196,12 @@ This sprint produces a demonstrable Training slice while establishing the same f
   actual private object/scan provider and an opt-in OTP delivery provider.
 - Story 5 foundation: complete. One deterministic pilot Venue/Community and active Membership render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and at most one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
+- Story 5 Guest Coach increment: complete. AC-019/RG-06/RG-07 authorize only an active verified
+  non-participant Coach already assigned to one concrete Session. The SESSION RoleGrant never
+  crosses into another Session; cancellation or
+  terminal Result removes DB-authoritative capabilities immediately and the bounded Worker sweep
+  appends the EXPIRED grant/event/audit/outbox history idempotently. The Admin/Coach client explains
+  the exact scope and terminal expiry without inventing a new permission model or persistence table.
 - Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
 - Story 5 Community configuration increment: complete. AC-166/CO-06 lets a database-authorized scoped Gym Admin, Primary Admin or Central publish Pair Cooldown only inside 7–30 days. Each change appends an immutable public version and atomically advances the Community pointer/version with event, audit and outbox; existing Challenge/Session snapshots and already-created Cooldowns retain the preceding version while new Challenge snapshots use the current one.
 - Story 5 Membership onboarding increment: complete. Hashed QR/invite activation, self-request,
@@ -386,7 +392,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 174/214 (`168/196 P0`).
+  Acceptance traceability is 175/214 (`169/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

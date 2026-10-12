@@ -3,13 +3,19 @@ import {
   RoleGrantPermissionDeniedError,
   RoleGrantValidationError,
   acceptCoachInviteState,
+  assertExpectedVersion,
+  authorizeGuestCoachState,
   appointGymAdminState,
   changePrimaryAdminState,
+  expireGuestCoachState,
   inviteCoachState,
   normalizeRoleReasonCode,
   type CommandEnvelope,
   type RoleGrantProjection,
   type RoleGrantState,
+  type GuestCoachExpirationReason,
+  type ResultState,
+  type SessionState,
 } from '@molokh/core';
 import { type Kysely, type Transaction, sql } from 'kysely';
 
@@ -35,6 +41,25 @@ export interface InviteCoachPayload {
 
 export interface AcceptCoachInvitePayload {
   readonly userId: string;
+}
+
+export interface AuthorizeGuestCoachPayload {
+  readonly userId: string;
+  readonly sessionId: string;
+  readonly reasonCode: string;
+}
+
+export interface ExpireGuestCoachPayload {
+  readonly grantId: string;
+  readonly sessionId: string;
+  readonly reason: GuestCoachExpirationReason;
+}
+
+export interface ExpirableGuestCoachGrant {
+  readonly grantId: string;
+  readonly sessionId: string;
+  readonly version: number;
+  readonly reason: GuestCoachExpirationReason;
 }
 
 export interface AppointGymAdminPayload {
@@ -116,6 +141,25 @@ interface VenueTargetContextRow {
     | 'REVOKED';
 }
 
+interface GuestCoachContextRow {
+  readonly session_id: string;
+  readonly session_state: SessionState;
+  readonly scheduled_end_at: Date;
+  readonly venue_id: string;
+  readonly coach_user_id: string;
+  readonly pair_low_id: string;
+  readonly pair_high_id: string;
+  readonly target_account_state: 'ACTIVE' | 'RESTRICTED' | 'CLOSED';
+  readonly target_verification_state:
+    | 'NOT_STARTED'
+    | 'PENDING'
+    | 'VERIFIED'
+    | 'REJECTED'
+    | 'EXPIRED'
+    | 'REVOKED';
+  readonly result_state: ResultState | null;
+}
+
 function projectRoleGrant(row: RoleGrantRow): RoleGrantProjection {
   return {
     grantId: row.grant_id,
@@ -188,9 +232,12 @@ async function actorControlsVenue(
   transaction: Transaction<Database>,
   actorId: string,
   venueId: string,
-): Promise<boolean> {
-  const result = await sql<{ readonly grant_id: string }>`
-    select grant_id
+): Promise<{ readonly role: 'CENTRAL_ADMIN' | 'PRIMARY_ADMIN' | 'GYM_ADMIN'; readonly scopeIds: readonly string[] } | null> {
+  const result = await sql<{
+    readonly role: 'CENTRAL_ADMIN' | 'PRIMARY_ADMIN' | 'GYM_ADMIN';
+    readonly scope_id: string | null;
+  }>`
+    select role, scope_id
     from community.role_grants
     where user_id = ${actorId}::uuid
       and state = 'ACTIVE'
@@ -202,10 +249,14 @@ async function actorControlsVenue(
           and scope_id = ${venueId}::uuid
         )
       )
+    order by case role when 'CENTRAL_ADMIN' then 0 when 'PRIMARY_ADMIN' then 1 else 2 end
     limit 1
     for share
   `.execute(transaction);
-  return result.rows.length === 1;
+  const grant = result.rows[0];
+  return grant
+    ? { role: grant.role, scopeIds: grant.scope_id ? [grant.scope_id] : [] }
+    : null;
 }
 
 async function actorIsCentral(
@@ -277,6 +328,39 @@ async function venueTargetContext(
   };
 }
 
+async function guestCoachContext(
+  transaction: Transaction<Database>,
+  sessionId: string,
+  targetUserId: string,
+): Promise<GuestCoachContextRow | null> {
+  const resource = await sql<Omit<GuestCoachContextRow, 'target_verification_state'>>`
+    select session.session_id, session.state as session_state,
+      session.scheduled_end_at, session.venue_id, session.coach_user_id,
+      session.pair_low_id, session.pair_high_id,
+      target.account_state as target_account_state,
+      result.state as result_state
+    from scheduling.sessions as session
+    cross join identity.users as target
+    left join competition.results as result on result.session_id = session.session_id
+    where session.session_id = ${sessionId}::uuid
+      and target.user_id = ${targetUserId}::uuid
+    for update of session, target
+  `.execute(transaction);
+  const row = resource.rows[0];
+  if (!row) return null;
+  const verification = await sql<{
+    readonly state: GuestCoachContextRow['target_verification_state'];
+  }>`
+    select state from identity.account_verifications
+    where user_id = ${targetUserId}::uuid and is_current
+    for share
+  `.execute(transaction);
+  return {
+    ...row,
+    target_verification_state: verification.rows[0]?.state ?? 'NOT_STARTED',
+  };
+}
+
 export async function readRoleGrant(
   database: Kysely<Database>,
   grantId: string,
@@ -310,7 +394,7 @@ export async function inviteCoach(
         inviteContext.venue_id,
       );
       const next = inviteCoachState({
-        actorControlsScope: controlsScope,
+        actorControlsScope: controlsScope !== null,
         communityState: inviteContext.community_state,
         targetAccountState: inviteContext.target_account_state,
         targetVerificationState: inviteContext.target_verification_state,
@@ -509,6 +593,243 @@ export async function acceptCoachInvite(
             },
           },
         ],
+      };
+    },
+  });
+}
+
+export async function authorizeGuestCoach(
+  database: Kysely<Database>,
+  command: CommandEnvelope<AuthorizeGuestCoachPayload>,
+  ids: RoleGrantEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<RoleGrantProjection>> {
+  if (
+    !command.actor.id || command.actor.type !== 'USER'
+    || command.aggregateType !== 'RoleGrant'
+    || command.commandType !== 'AUTHORIZE_GUEST_COACH'
+    || command.payload.sessionId.length === 0
+  ) throw new RoleGrantPermissionDeniedError();
+  const reasonCode = normalizeRoleReasonCode(command.payload.reasonCode);
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      assertExpectedVersion(0, command.expectedVersion);
+      const target = await guestCoachContext(
+        transaction, command.payload.sessionId, command.payload.userId,
+      );
+      if (!target) throw new RoleGrantValidationError('sessionId');
+      const controlsScope = await actorControlsVenue(
+        transaction, command.actor.id!, target.venue_id,
+      );
+      const next = authorizeGuestCoachState({
+        actorControlsScope: controlsScope !== null,
+        sessionState: target.session_state,
+        targetAccountState: target.target_account_state,
+        targetVerificationState: target.target_verification_state,
+        targetIsAssignedCoach: target.coach_user_id === command.payload.userId,
+        targetIsAthlete: [target.pair_low_id, target.pair_high_id]
+          .includes(command.payload.userId),
+        scheduledEndAt: target.scheduled_end_at,
+      });
+      const relationshipLock = `guest-coach:${command.payload.sessionId}:${command.payload.userId}`;
+      await sql`select pg_advisory_xact_lock(hashtextextended(${relationshipLock}, 0))`
+        .execute(transaction);
+      const existing = await sql<{ readonly state: RoleGrantState }>`
+        select state from community.role_grants
+        where user_id = ${command.payload.userId}::uuid
+          and role = 'COACH' and scope_type = 'SESSION'
+          and scope_id = ${command.payload.sessionId}::uuid
+          and state in ('PENDING', 'ACTIVE')
+        limit 1
+      `.execute(transaction);
+      if (existing.rows[0]) throw new InvalidRoleGrantTransitionError(existing.rows[0].state);
+      await sql`
+        insert into community.role_grants (
+          grant_id, user_id, role, scope_type, scope_id, state,
+          authorized_by, authorized_at, expires_at, version
+        ) values (
+          ${command.aggregateId}::uuid, ${command.payload.userId}::uuid,
+          'COACH', 'SESSION', ${command.payload.sessionId}::uuid, ${next.state},
+          ${command.actor.id}::uuid, ${context.occurredAt.toISOString()}::timestamptz,
+          ${next.expiresAt}::timestamptz, ${context.nextVersion}
+        )
+      `.execute(transaction);
+      const response: RoleGrantProjection = {
+        grantId: command.aggregateId,
+        userId: command.payload.userId,
+        role: 'COACH',
+        scopeType: 'SESSION',
+        scopeId: command.payload.sessionId,
+        state: next.state,
+        authorizedBy: command.actor.id,
+        authorizedAt: context.occurredAt.toISOString(),
+        expiresAt: next.expiresAt,
+        version: context.nextVersion,
+      };
+      return {
+        responseStatus: 201,
+        response,
+        event: {
+          eventId: ids.eventId, eventName: 'GuestCoachAuthorized', schemaVersion: 1,
+          transitionId: 'RG-06',
+          payload: {
+            grantId: command.aggregateId,
+            sessionId: command.payload.sessionId,
+            coachUserId: command.payload.userId,
+            expiresAt: next.expiresAt,
+          },
+          metadata: { policyVersion: 'roles-mvp-v1' },
+        },
+        audit: {
+          auditId: ids.auditId, action: 'AUTHORIZE_GUEST_COACH', transitionId: 'RG-06',
+          reasonCode, beforeState: null, afterState: next.state,
+          metadata: {
+            sessionId: command.payload.sessionId,
+            venueId: target.venue_id,
+            targetUserId: command.payload.userId,
+            authorizedActorRole: controlsScope!.role,
+            authorizedScopeIds: controlsScope!.scopeIds,
+          },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'notification.in_app.v1',
+          payload: { notifications: [{
+            notificationId: ids.notificationId,
+            recipientUserId: command.payload.userId,
+            category: 'SERVICE',
+            renderKey: 'session.guest-coach-authorized',
+            actionTarget: { type: 'SESSION', sessionId: command.payload.sessionId },
+            payload: { grantId: command.aggregateId, sessionId: command.payload.sessionId },
+            deadlineAt: next.expiresAt,
+          }] },
+        }],
+      };
+    },
+  });
+}
+
+export async function listExpirableGuestCoachGrants(
+  database: Kysely<Database>,
+  limit = 100,
+  occurredAt = new Date(),
+): Promise<readonly ExpirableGuestCoachGrant[]> {
+  const result = await sql<{
+    readonly grant_id: string;
+    readonly session_id: string;
+    readonly version: string;
+    readonly reason: GuestCoachExpirationReason;
+  }>`
+    select role_grant.grant_id, session.session_id, role_grant.version::text as version,
+      case
+        when session.state = 'CANCELLED' then 'SESSION_CANCELLED'
+        when result.state in ('FINAL', 'REVERSED', 'ANNULLED', 'REPEAT_ORDERED')
+          then 'RESULT_FINAL'
+        else 'HARD_EXPIRY'
+      end as reason
+    from community.role_grants as role_grant
+    join scheduling.sessions as session on session.session_id = role_grant.scope_id
+    left join competition.results as result on result.session_id = session.session_id
+    where role_grant.role = 'COACH' and role_grant.scope_type = 'SESSION'
+      and role_grant.state = 'ACTIVE'
+      and (
+        session.state = 'CANCELLED'
+        or result.state in ('FINAL', 'REVERSED', 'ANNULLED', 'REPEAT_ORDERED')
+        or role_grant.expires_at <= ${occurredAt.toISOString()}::timestamptz
+      )
+    order by role_grant.authorized_at, role_grant.grant_id
+    limit ${limit}
+  `.execute(database);
+  return result.rows.map((row) => ({
+    grantId: row.grant_id,
+    sessionId: row.session_id,
+    version: Number(row.version),
+    reason: row.reason,
+  }));
+}
+
+export async function expireGuestCoachGrant(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ExpireGuestCoachPayload>,
+  ids: RoleGrantEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<RoleGrantProjection>> {
+  if (
+    command.actor.type !== 'SYSTEM' || command.actor.id !== null
+    || command.aggregateType !== 'RoleGrant'
+    || command.commandType !== 'EXPIRE_GUEST_COACH'
+    || command.payload.grantId !== command.aggregateId
+  ) throw new RoleGrantPermissionDeniedError();
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const current = await selectRoleGrant(transaction, command.aggregateId, true);
+      if (
+        !current || current.role !== 'COACH' || current.scope_type !== 'SESSION'
+        || current.scope_id !== command.payload.sessionId
+      ) throw new RoleGrantNotFoundError();
+      assertExpectedVersion(Number(current.version), command.expectedVersion);
+      const target = await guestCoachContext(
+        transaction, command.payload.sessionId, current.user_id,
+      );
+      if (!target) throw new RoleGrantNotFoundError();
+      const nextState = expireGuestCoachState({
+        currentState: current.state,
+        sessionState: target.session_state,
+        resultState: target.result_state,
+        expiresAt: current.expires_at?.toISOString() ?? null,
+        occurredAt: context.occurredAt,
+        reason: command.payload.reason,
+      });
+      await sql`
+        update community.role_grants
+        set state = ${nextState}, expires_at = ${context.occurredAt.toISOString()}::timestamptz,
+          version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where grant_id = ${current.grant_id}::uuid and state = 'ACTIVE'
+      `.execute(transaction);
+      const response: RoleGrantProjection = {
+        ...projectRoleGrant(current),
+        state: nextState,
+        expiresAt: context.occurredAt.toISOString(),
+        version: context.nextVersion,
+      };
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId, eventName: 'GuestCoachAuthorizationExpired',
+          schemaVersion: 1, transitionId: 'RG-07',
+          payload: {
+            grantId: current.grant_id,
+            sessionId: command.payload.sessionId,
+            reason: command.payload.reason,
+            expiredAt: context.occurredAt.toISOString(),
+          },
+          metadata: { policyVersion: 'roles-mvp-v1' },
+        },
+        audit: {
+          auditId: ids.auditId, action: 'EXPIRE_GUEST_COACH', transitionId: 'RG-07',
+          reasonCode: command.payload.reason, beforeState: current.state, afterState: nextState,
+          metadata: { sessionId: command.payload.sessionId, coachUserId: current.user_id },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'notification.in_app.v1',
+          payload: { notifications: [{
+            notificationId: ids.notificationId,
+            recipientUserId: current.user_id,
+            category: 'SERVICE',
+            renderKey: 'session.guest-coach-expired',
+            actionTarget: { type: 'SESSION', sessionId: command.payload.sessionId },
+            payload: { grantId: current.grant_id, sessionId: command.payload.sessionId,
+              reason: command.payload.reason },
+            deadlineAt: null,
+          }] },
+        }],
       };
     },
   });

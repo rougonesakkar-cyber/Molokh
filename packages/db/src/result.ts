@@ -507,7 +507,8 @@ async function resultRow(
           and coach_grant.role = 'COACH' and coach_grant.state = 'ACTIVE'
           and (coach_grant.expires_at is null or coach_grant.expires_at > clock_timestamp())
           and (
-            (coach_grant.scope_type = 'SESSION' and coach_grant.scope_id = result.session_id)
+            (coach_grant.scope_type = 'SESSION' and coach_grant.scope_id = result.session_id
+              and result.state not in ('FINAL', 'REVERSED', 'ANNULLED', 'REPEAT_ORDERED'))
             or (coach_grant.scope_type = 'COMMUNITY'
               and coach_grant.scope_id = competition.community_id)
           )

@@ -10,6 +10,7 @@ describe('worker task registry', () => {
       onOutboxEvent: vi.fn(),
       onTimer: vi.fn(),
       onChatRetentionCleanup: vi.fn(),
+      onGuestCoachExpirySweep: vi.fn(),
     });
 
     await tasks.runtime_probe?.({ message: 'ready' }, {} as never);
@@ -24,6 +25,7 @@ describe('worker task registry', () => {
       onOutboxEvent,
       onTimer: vi.fn(),
       onChatRetentionCleanup: vi.fn(),
+      onGuestCoachExpirySweep: vi.fn(),
     });
     const payload = {
       messageId: 'message-1',
@@ -47,10 +49,23 @@ describe('worker task registry', () => {
       onOutboxEvent: vi.fn(),
       onTimer: vi.fn(),
       onChatRetentionCleanup,
+      onGuestCoachExpirySweep: vi.fn(),
     });
 
     await tasks.cleanup_chat_payloads?.({ ignored: true }, {} as never);
 
     expect(onChatRetentionCleanup).toHaveBeenCalledOnce();
+  });
+
+  it('[AC-019] runs the Guest Coach terminal-scope expiry sweep', async () => {
+    const onGuestCoachExpirySweep = vi.fn();
+    const tasks = createTaskList({
+      onRuntimeProbe: vi.fn(), onOutboxEvent: vi.fn(), onTimer: vi.fn(),
+      onChatRetentionCleanup: vi.fn(), onGuestCoachExpirySweep,
+    });
+
+    await tasks.expire_guest_coach_grants?.({ ignored: true }, {} as never);
+
+    expect(onGuestCoachExpirySweep).toHaveBeenCalledOnce();
   });
 });

@@ -145,6 +145,9 @@ import {
   readResultTimerSnapshot,
   readChatMessages,
   readVenueRoleSummary,
+  authorizeGuestCoach,
+  expireGuestCoachGrant,
+  listExpirableGuestCoachGrants,
   inviteCoach,
   MigrationChecksumMismatchError,
   releaseOutboxFailure,
@@ -310,6 +313,8 @@ import {
   type CancelAfterCoachReplacementPayload,
   type FailSessionExternalPayload,
   type CancelOfficialSessionByAthletePayload,
+  type AuthorizeGuestCoachPayload,
+  type ExpireGuestCoachPayload,
   type DecideYouthConsentPayload,
   type RequestYouthConsentPayload,
   type YouthConsentEffectIds,
@@ -4000,6 +4005,185 @@ describePostgres('PostgreSQL critical command transaction', () => {
         expect.objectContaining({ userId: ids.roleUnverified, role: 'GYM_ADMIN' }),
         expect.objectContaining({ userId: ids.roleCoach, role: 'PRIMARY_ADMIN' }),
       ]),
+    });
+  });
+
+  it('[AC-019] scopes a verified Guest Coach to one Session and expires the grant after cancellation', async () => {
+    const fixture = await seedConfirmedTrainingForConversion(125000);
+    const other = await seedConfirmedTrainingForConversion(125100);
+    const grantId = testId(125200);
+    const authorizedAt = new Date('2026-09-28T10:00:00.000Z');
+
+    await sql`
+      delete from community.role_grants
+      where user_id = ${fixture.coach}::uuid and role = 'COACH'
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values (
+        ${testId(125201)}::uuid, ${fixture.coach}::uuid, 'VERIFIED',
+        'CENTRAL_MODERATION', 'identity-mvp-v1', true,
+        ${authorizedAt.toISOString()}::timestamptz, ${fixture.central}::uuid,
+        'GUEST_COACH_CHECKS_PASSED', 1
+      )
+    `.execute(database);
+    await sql`
+      update scheduling.sessions
+      set coach_user_id = ${fixture.coach}::uuid
+      where session_id = ${other.session}::uuid
+    `.execute(database);
+
+    const authorizationCommand = {
+      commandId: testId(125202), commandType: 'AUTHORIZE_GUEST_COACH',
+      idempotencyKey: `session:${fixture.session}:guest-coach:${fixture.coach}:v1`,
+      actor: {
+        type: 'USER' as const, id: fixture.central,
+        roles: ['CENTRAL_ADMIN'], scopeIds: [],
+      },
+      aggregateType: 'RoleGrant', aggregateId: grantId, expectedVersion: 0,
+      correlationId: testId(125203), causationId: null,
+      requestId: testId(125204), source: 'api', payloadVersion: 1,
+      payload: {
+        userId: fixture.coach, sessionId: fixture.session,
+        reasonCode: 'SESSION_GUEST_COVERAGE',
+      },
+    } satisfies CommandEnvelope<AuthorizeGuestCoachPayload>;
+    const authorizationEffects = {
+      eventId: testId(125205), auditId: testId(125206),
+      outboxMessageId: testId(125207), notificationId: testId(125208),
+    };
+    const authorized = await authorizeGuestCoach(
+      database, authorizationCommand, authorizationEffects, () => authorizedAt,
+    );
+    expect(authorized.response).toMatchObject({
+      grantId, userId: fixture.coach, role: 'COACH', scopeType: 'SESSION',
+      scopeId: fixture.session, state: 'ACTIVE', version: 1,
+      expiresAt: '2026-10-31T11:00:00.000Z',
+    });
+    await expect(authorizeGuestCoach(
+      database, authorizationCommand, authorizationEffects, () => authorizedAt,
+    )).resolves.toMatchObject({ replayed: true, response: { grantId, version: 1 } });
+    await expect(authorizeGuestCoach(database, {
+      ...authorizationCommand,
+      payload: { ...authorizationCommand.payload, reasonCode: 'DIFFERENT_REASON' },
+    }, authorizationEffects, () => authorizedAt)).rejects.toBeInstanceOf(
+      IdempotencyKeyReusedError,
+    );
+    await expect(authorizeGuestCoach(database, {
+      ...authorizationCommand,
+      commandId: testId(125209), idempotencyKey: 'guest-coach-stale-version',
+      expectedVersion: 1,
+    }, {
+      eventId: testId(125210), auditId: testId(125211),
+      outboxMessageId: testId(125212), notificationId: testId(125213),
+    }, () => authorizedAt)).rejects.toBeInstanceOf(VersionConflictError);
+    await expect(authorizeGuestCoach(database, {
+      ...authorizationCommand,
+      commandId: testId(125214), idempotencyKey: 'guest-coach-unauthorized',
+      aggregateId: testId(125215),
+      actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+    }, {
+      eventId: testId(125216), auditId: testId(125217),
+      outboxMessageId: testId(125218), notificationId: testId(125219),
+    }, () => authorizedAt)).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+
+    await expect(readSession(database, fixture.session, fixture.coach)).resolves.toMatchObject({
+      guestCoachGrantId: grantId,
+      guestCoachGrantState: 'ACTIVE',
+      viewerCanManage: true,
+    });
+    await expect(readSession(database, other.session, fixture.coach)).resolves.toMatchObject({
+      guestCoachGrantId: null,
+      viewerCanManage: false,
+    });
+
+    const cancellationAt = new Date('2026-09-28T10:30:00.000Z');
+    await failSessionExternal(database, {
+      commandId: testId(125220), commandType: 'FAIL_SESSION_EXTERNAL',
+      idempotencyKey: `session:${fixture.session}:external-failure:v1`,
+      actor: {
+        type: 'USER', id: fixture.central, roles: ['CENTRAL_ADMIN'], scopeIds: [],
+      },
+      aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 1,
+      correlationId: testId(125221), causationId: authorizationEffects.eventId,
+      requestId: testId(125222), source: 'api', payloadVersion: 1,
+      payload: { sessionId: fixture.session, reasonCode: 'VENUE_UNAVAILABLE' },
+    } satisfies CommandEnvelope<FailSessionExternalPayload>, {
+      eventId: testId(125223), auditId: testId(125224),
+      outboxMessageId: testId(125225), bookingEventId: testId(125226),
+      slotEventId: testId(125227), notificationOutboxMessageId: testId(125228),
+      notificationIds: [testId(125229), testId(125230)],
+    }, () => cancellationAt);
+    await expect(readSession(database, fixture.session, fixture.coach)).resolves.toMatchObject({
+      state: 'CANCELLED', guestCoachGrantState: 'ACTIVE', viewerCanManage: false,
+    });
+
+    const candidates = await listExpirableGuestCoachGrants(
+      database, 100, new Date('2026-09-28T10:31:00.000Z'),
+    );
+    expect(candidates).toContainEqual({
+      grantId, sessionId: fixture.session, version: 1, reason: 'SESSION_CANCELLED',
+    });
+    const expiryAt = new Date('2026-09-28T10:31:00.000Z');
+    const expiryCommand = {
+      commandId: testId(125231), commandType: 'EXPIRE_GUEST_COACH',
+      idempotencyKey: `role-grant:${grantId}:expire:v1`,
+      actor: { type: 'SYSTEM' as const, id: null, roles: [], scopeIds: [] },
+      aggregateType: 'RoleGrant', aggregateId: grantId, expectedVersion: 1,
+      correlationId: testId(125232), causationId: testId(125223),
+      requestId: testId(125233), source: 'scheduler', payloadVersion: 1,
+      payload: {
+        grantId, sessionId: fixture.session, reason: 'SESSION_CANCELLED' as const,
+      },
+    } satisfies CommandEnvelope<ExpireGuestCoachPayload>;
+    const expiryEffects = {
+      eventId: testId(125234), auditId: testId(125235),
+      outboxMessageId: testId(125236), notificationId: testId(125237),
+    };
+    const expired = await expireGuestCoachGrant(
+      database, expiryCommand, expiryEffects, () => expiryAt,
+    );
+    expect(expired.response).toMatchObject({
+      grantId, state: 'EXPIRED', expiresAt: expiryAt.toISOString(), version: 2,
+    });
+    await expect(expireGuestCoachGrant(
+      database, expiryCommand, expiryEffects, () => expiryAt,
+    )).resolves.toMatchObject({ replayed: true, response: { state: 'EXPIRED', version: 2 } });
+    await expect(readSession(database, fixture.session, fixture.coach)).resolves.toMatchObject({
+      state: 'CANCELLED', guestCoachGrantState: 'EXPIRED', viewerCanManage: false,
+    });
+
+    const lineage = await sql<{
+      readonly state: string;
+      readonly version: string;
+      readonly authorized_by: string;
+      readonly events: string;
+      readonly audits: string;
+      readonly outbox: string;
+      readonly denied_effects: string;
+      readonly authorized_actor_role: string;
+    }>`
+      select role_grant.state, role_grant.version::text as version,
+        role_grant.authorized_by,
+        (select count(*)::text from platform.domain_events
+          where event_id in (${authorizationEffects.eventId}::uuid, ${expiryEffects.eventId}::uuid)) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id in (${authorizationEffects.auditId}::uuid, ${expiryEffects.auditId}::uuid)) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (${authorizationEffects.outboxMessageId}::uuid, ${expiryEffects.outboxMessageId}::uuid)) as outbox,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${testId(125216)}::uuid) as denied_effects,
+        (select metadata ->> 'authorizedActorRole' from platform.audit_events
+          where audit_id = ${authorizationEffects.auditId}::uuid) as authorized_actor_role
+      from community.role_grants as role_grant
+      where role_grant.grant_id = ${grantId}::uuid
+    `.execute(database);
+    expect(lineage.rows[0]).toEqual({
+      state: 'EXPIRED', version: '2', authorized_by: fixture.central,
+      events: '2', audits: '2', outbox: '2', denied_effects: '0',
+      authorized_actor_role: 'CENTRAL_ADMIN',
     });
   });
 

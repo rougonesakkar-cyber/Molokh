@@ -5,8 +5,10 @@ import {
   RoleGrantPermissionDeniedError,
   RoleGrantValidationError,
   acceptCoachInviteState,
+  authorizeGuestCoachState,
   appointGymAdminState,
   changePrimaryAdminState,
+  expireGuestCoachState,
   inviteCoachState,
   normalizeRoleReasonCode,
 } from '../src/role-grant.js';
@@ -114,5 +116,48 @@ describe('Coach role grant policy', () => {
         targetUserId: 'admin-1',
       }),
     ).toThrow(RoleGrantValidationError);
+  });
+
+  it('[AC-019] authorizes an exact Session Guest Coach and expires only on a terminal cause', () => {
+    expect(authorizeGuestCoachState({
+      actorControlsScope: true,
+      sessionState: 'SCHEDULED',
+      targetAccountState: 'ACTIVE',
+      targetVerificationState: 'VERIFIED',
+      targetIsAssignedCoach: true,
+      targetIsAthlete: false,
+      scheduledEndAt: new Date('2026-10-20T11:00:00.000Z'),
+    })).toEqual({ state: 'ACTIVE', expiresAt: '2026-11-19T11:00:00.000Z' });
+    expect(expireGuestCoachState({
+      currentState: 'ACTIVE', sessionState: 'ENDED', resultState: 'FINAL',
+      expiresAt: '2026-11-19T11:00:00.000Z', occurredAt: now, reason: 'RESULT_FINAL',
+    })).toBe('EXPIRED');
+    expect(expireGuestCoachState({
+      currentState: 'ACTIVE', sessionState: 'CANCELLED', resultState: null,
+      expiresAt: '2026-11-19T11:00:00.000Z', occurredAt: now,
+      reason: 'SESSION_CANCELLED',
+    })).toBe('EXPIRED');
+    expect(() => expireGuestCoachState({
+      currentState: 'ACTIVE', sessionState: 'ENDED', resultState: 'RECORDED',
+      expiresAt: '2026-11-19T11:00:00.000Z', occurredAt: now, reason: 'RESULT_FINAL',
+    })).toThrow(InvalidRoleGrantTransitionError);
+  });
+
+  it('rejects a Guest Coach outside the exact verified non-participant assignment', () => {
+    const valid = {
+      actorControlsScope: true,
+      sessionState: 'SCHEDULED' as const,
+      targetAccountState: 'ACTIVE' as const,
+      targetVerificationState: 'VERIFIED' as const,
+      targetIsAssignedCoach: true,
+      targetIsAthlete: false,
+      scheduledEndAt: new Date('2026-10-20T11:00:00.000Z'),
+    };
+    expect(() => authorizeGuestCoachState({ ...valid, actorControlsScope: false }))
+      .toThrow(RoleGrantPermissionDeniedError);
+    expect(() => authorizeGuestCoachState({ ...valid, targetIsAssignedCoach: false }))
+      .toThrow(RoleGrantValidationError);
+    expect(() => authorizeGuestCoachState({ ...valid, targetIsAthlete: true }))
+      .toThrow(RoleGrantValidationError);
   });
 });

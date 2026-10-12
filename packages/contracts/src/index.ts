@@ -2192,6 +2192,13 @@ export const SessionLifecycleProjectionSchema = Type.Object(
     venueDisplayName: Type.String({ minLength: 1, maxLength: 120 }),
     coachUserId: Type.String({ format: 'uuid' }),
     coachDisplayName: Type.String({ minLength: 1, maxLength: 80 }),
+    guestCoachGrantId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    guestCoachGrantState: Type.Union([
+      Type.Literal('ACTIVE'), Type.Literal('EXPIRED'), Type.Null(),
+    ]),
+    guestCoachGrantExpiresAt: Type.Union([
+      Type.String({ format: 'date-time' }), Type.Null(),
+    ]),
     athleteUserIds: Type.Tuple([
       Type.String({ format: 'uuid' }),
       Type.String({ format: 'uuid' }),
@@ -2231,6 +2238,7 @@ export const SessionLifecycleProjectionSchema = Type.Object(
     viewerCanManage: Type.Boolean(),
     viewerCanRecordResult: Type.Boolean(),
     viewerCanAdminister: Type.Boolean(),
+    viewerCanAuthorizeGuestCoach: Type.Boolean(),
     viewerCanRequestNoFaultReschedule: Type.Boolean(),
     viewerCanRequestOfficialConversion: Type.Boolean(),
     viewerCanCancelTraining: Type.Boolean(),
@@ -2285,6 +2293,16 @@ export const SessionResponseSchema = Type.Object(
 );
 
 export type SessionResponse = Static<typeof SessionResponseSchema>;
+
+export const AuthorizeGuestCoachBodySchema = Type.Object(
+  {
+    coachUserId: Type.String({ format: 'uuid' }),
+    reasonCode: Type.String({ minLength: 3, maxLength: 80 }),
+  },
+  { $id: 'AuthorizeGuestCoachBody', additionalProperties: false },
+);
+
+export type AuthorizeGuestCoachBody = Static<typeof AuthorizeGuestCoachBodySchema>;
 
 export const RecordAttendanceBodySchema = Type.Object(
   {

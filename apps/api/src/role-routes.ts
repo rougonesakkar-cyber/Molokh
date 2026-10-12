@@ -6,6 +6,7 @@ import {
 import {
   ApiErrorSchema,
   AppointGymAdminBodySchema,
+  AuthorizeGuestCoachBodySchema,
   ChangePrimaryAdminBodySchema,
   CoachInviteBodySchema,
   PendingCoachInviteListResponseSchema,
@@ -13,6 +14,7 @@ import {
   PrimaryAdminCommandResponseSchema,
   VenueRoleSummaryResponseSchema,
   type AppointGymAdminBody,
+  type AuthorizeGuestCoachBody,
   type ChangePrimaryAdminBody,
   type CoachInviteBody,
   type PendingCoachInviteListResponse,
@@ -23,6 +25,7 @@ import {
 import type {
   AcceptCoachInvitePayload,
   AppointGymAdminPayload,
+  AuthorizeGuestCoachPayload,
   ChangePrimaryAdminPayload,
   ExecutedCommand,
   InviteCoachPayload,
@@ -54,6 +57,10 @@ interface GrantParams {
   readonly grantId: string;
 }
 
+interface SessionParams {
+  readonly sessionId: string;
+}
+
 export interface RoleRouteDependencies {
   readonly operatorAuth: AuthAdapter;
   readonly userAuth: AuthAdapter;
@@ -63,6 +70,10 @@ export interface RoleRouteDependencies {
   ) => Promise<ExecutedCommand<RoleGrantProjection>>;
   readonly acceptCoachInvite: (
     command: CommandEnvelope<AcceptCoachInvitePayload>,
+    ids: RoleGrantEffectIds,
+  ) => Promise<ExecutedCommand<RoleGrantProjection>>;
+  readonly authorizeGuestCoach: (
+    command: CommandEnvelope<AuthorizeGuestCoachPayload>,
     ids: RoleGrantEffectIds,
   ) => Promise<ExecutedCommand<RoleGrantProjection>>;
   readonly listPendingCoachInvites: (
@@ -150,6 +161,64 @@ export async function registerRoleRoutes(
   app: FastifyInstance,
   dependencies: RoleRouteDependencies,
 ): Promise<void> {
+  app.post<{
+    Body: AuthorizeGuestCoachBody;
+    Headers: RoleHeaders;
+    Params: SessionParams;
+  }>(
+    '/api/v1/sessions/:sessionId/guest-coach',
+    {
+      schema: {
+        operationId: 'authorizeSessionGuestCoach',
+        params: Type.Object({ sessionId: Type.String({ format: 'uuid' }) }),
+        body: AuthorizeGuestCoachBodySchema,
+        response: {
+          201: RoleGrantCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const idempotencyKey = requiredIdempotencyKey(
+        request.headers['idempotency-key'],
+      );
+      const grantId = idempotentResourceId(
+        'GuestCoachRoleGrant', request.params.sessionId,
+        `${authenticated.userId}:${idempotencyKey}`,
+      );
+      const command: CommandEnvelope<AuthorizeGuestCoachPayload> = {
+        commandId: newUuidV7(),
+        commandType: 'AUTHORIZE_GUEST_COACH',
+        idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+        aggregateType: 'RoleGrant', aggregateId: grantId,
+        expectedVersion: expectedVersion(request.headers['if-match'], 0),
+        correlationId: context.correlationId, causationId: context.causationId,
+        requestId: context.requestId, source: 'admin', payloadVersion: 1,
+        payload: {
+          userId: request.body.coachUserId,
+          sessionId: request.params.sessionId,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.authorizeGuestCoach(command, effectIds());
+      await reply.status(201).send(commandResponse(executed, context.requestId));
+    },
+  );
+
   app.post<{
     Body: CoachInviteBody;
     Headers: RoleHeaders;

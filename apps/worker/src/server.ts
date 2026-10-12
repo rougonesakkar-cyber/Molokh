@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import {
   SchedulingConflictError,
   StatusQueueConflictError,
+  InvalidRoleGrantTransitionError,
+  VersionConflictError,
   type CommandEnvelope,
   type TimerCommandPayload,
 } from '@molokh/core';
@@ -31,6 +33,7 @@ import {
   expireGenesisChallenge,
   expireLike,
   finalizeResult,
+  expireGuestCoachGrant,
   expireSlot,
   expireStatusQueueReconfirmation,
   applyChallengeResponseIncidentImpact,
@@ -61,6 +64,7 @@ import {
   readAccountAccessTimerSnapshot,
   readGroupOfferingTimerSnapshot,
   readGroupPlanTimerSnapshot,
+  listExpirableGuestCoachGrants,
   readLikeTimerSnapshot,
   readMatchTimerSnapshot,
   readMembershipTimerSnapshot,
@@ -96,6 +100,7 @@ import {
   type ExpireLikePayload,
   type ExpireInactiveMatchPayload,
   type FinalizeResultPayload,
+  type ExpireGuestCoachPayload,
   type ExpireSlotPayload,
   type OpenSessionWindowPayload,
   type ExpireOptionalChallengePayload,
@@ -161,6 +166,35 @@ const scheduleTimer = async (payload: TimerCommandPayload, runAt: Date) => {
     maxAttempts: 10,
     runAt,
   });
+};
+
+const expireTerminalGuestCoachGrants = async (): Promise<void> => {
+  const candidates = await listExpirableGuestCoachGrants(database, 100, new Date());
+  for (const candidate of candidates) {
+    const command: CommandEnvelope<ExpireGuestCoachPayload> = {
+      commandId: randomUUID(), commandType: 'EXPIRE_GUEST_COACH',
+      idempotencyKey: `guest-coach-expiry:${candidate.grantId}:v${candidate.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'RoleGrant', aggregateId: candidate.grantId,
+      expectedVersion: candidate.version, correlationId: randomUUID(), causationId: null,
+      requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+      payload: {
+        grantId: candidate.grantId, sessionId: candidate.sessionId, reason: candidate.reason,
+      },
+    };
+    try {
+      await expireGuestCoachGrant(database, command, {
+        eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+        notificationId: randomUUID(),
+      });
+    } catch (error) {
+      if (error instanceof InvalidRoleGrantTransitionError || error instanceof VersionConflictError) {
+        logger.info({ grantId: candidate.grantId }, 'stale Guest Coach expiry ignored');
+        continue;
+      }
+      throw error;
+    }
+  }
 };
 
 const statusQueueActivationTopics = new Set([
@@ -1105,6 +1139,7 @@ const taskList = createTaskList({
       logger.info(result, 'Chat retention cleanup completed');
     }
   },
+  onGuestCoachExpirySweep: expireTerminalGuestCoachGrants,
   onTimer: async (payload) => {
     await processTimer(payload, {
       handlers: {
@@ -1319,7 +1354,7 @@ const taskList = createTaskList({
 const runner = await run({
   connectionString,
   concurrency: 2,
-  crontab: '15 3 * * * cleanup_chat_payloads',
+  crontab: '15 3 * * * cleanup_chat_payloads\n* * * * * expire_guest_coach_grants',
   pollInterval: 1_000,
   taskList,
 });

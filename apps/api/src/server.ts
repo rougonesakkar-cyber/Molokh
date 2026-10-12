@@ -4,6 +4,7 @@ import {
   activateMembershipByInvite,
   addAppealResponse,
   acceptCoachInvite,
+  authorizeGuestCoach,
   decideAppeal,
   appointGymAdmin,
   approveAccountVerification,
@@ -1421,6 +1422,8 @@ const app = await buildApp({
     inviteCoach: (command, ids) => inviteCoach(database, command, ids),
     acceptCoachInvite: (command, ids) =>
       acceptCoachInvite(database, command, ids),
+    authorizeGuestCoach: (command, ids) =>
+      authorizeGuestCoach(database, command, ids),
     listPendingCoachInvites: (userId) =>
       listPendingCoachInvites(database, userId),
     appointGymAdmin: (command, ids) => appointGymAdmin(database, command, ids),

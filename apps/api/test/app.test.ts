@@ -22,6 +22,7 @@ import type {
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
   AppointGymAdminPayload,
+  AuthorizeGuestCoachPayload,
   BlockActionProjection,
   BlockEffectIds,
   BlockProjection,
@@ -1460,6 +1461,7 @@ describe('runtime contract', () => {
     const communityId = '0199a1b2-1234-7000-8000-000000000703';
     const grantId = '0199a1b2-1234-7000-8000-000000000704';
     const venueId = '0199a1b2-1234-7000-8000-000000000707';
+    const sessionId = '0199a1b2-1234-7000-8000-000000000712';
     const adminGrantId = '0199a1b2-1234-7000-8000-000000000708';
     const centralToken = 'molokh-role-central-test-token';
     const coachToken = 'molokh-role-coach-test-token';
@@ -1481,6 +1483,18 @@ describe('runtime contract', () => {
       authorizedAt: '2026-09-06T12:05:00.000Z',
       expiresAt: null,
       version: 2,
+    };
+    const guest: RoleGrantProjection = {
+      grantId: '0199a1b2-1234-7000-8000-000000000713',
+      userId: coachUserId,
+      role: 'COACH',
+      scopeType: 'SESSION',
+      scopeId: sessionId,
+      state: 'ACTIVE',
+      authorizedBy: centralUserId,
+      authorizedAt: '2026-09-06T12:01:00.000Z',
+      expiresAt: '2026-10-06T13:00:00.000Z',
+      version: 1,
     };
     const admin: RoleGrantProjection = {
       grantId: adminGrantId,
@@ -1522,6 +1536,16 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     }));
+    const authorizeGuestCoach = vi.fn(async (
+      _command: CommandEnvelope<AuthorizeGuestCoachPayload>,
+      _ids: RoleGrantEffectIds,
+    ) => ({
+      responseStatus: 201,
+      response: guest,
+      eventId: '0199a1b2-1234-7000-8000-000000000714',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
     const appointGymAdmin = vi.fn(async (
       _command: CommandEnvelope<AppointGymAdminPayload>,
       _ids: RoleGrantEffectIds,
@@ -1548,6 +1572,7 @@ describe('runtime contract', () => {
         userAuth: new StaticBearerAuthAdapter(coachToken, coachUserId),
         inviteCoach,
         acceptCoachInvite,
+        authorizeGuestCoach,
         listPendingCoachInvites: async () => [pending],
         appointGymAdmin,
         changePrimaryAdmin,
@@ -1559,6 +1584,30 @@ describe('runtime contract', () => {
       },
     });
     apps.push(app);
+
+    const guestAuthorized = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/guest-coach`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'guest-coach-test-1',
+        'if-match': '0',
+      },
+      payload: { coachUserId, reasonCode: 'SESSION_COVERAGE' },
+    });
+    expect(guestAuthorized.statusCode).toBe(201);
+    expect(guestAuthorized.json()).toMatchObject({
+      data: { scopeType: 'SESSION', scopeId: sessionId, state: 'ACTIVE' },
+    });
+    expect(authorizeGuestCoach.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'AUTHORIZE_GUEST_COACH', aggregateType: 'RoleGrant',
+      expectedVersion: 0,
+      payload: { userId: coachUserId, sessionId, reasonCode: 'SESSION_COVERAGE' },
+    });
+    expect(authorizeGuestCoach.mock.calls[0]?.[1]).toMatchObject({
+      eventId: expect.any(String), auditId: expect.any(String),
+      outboxMessageId: expect.any(String), notificationId: expect.any(String),
+    });
 
     const denied = await app.inject({
       method: 'POST',
@@ -2000,6 +2049,9 @@ describe('runtime contract', () => {
       venueDisplayName: slot.venueDisplayName,
       coachUserId,
       coachDisplayName: slot.coachDisplayName,
+      guestCoachGrantId: null,
+      guestCoachGrantState: null,
+      guestCoachGrantExpiresAt: null,
       athleteUserIds: [userId, '0199a1b2-1234-7000-8000-000000000716'],
       athleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'],
       activeAthleteUserIds: [userId, '0199a1b2-1234-7000-8000-000000000716'],
@@ -2018,6 +2070,7 @@ describe('runtime contract', () => {
       viewerCanManage: true,
       viewerCanRecordResult: true,
       viewerCanAdminister: false,
+      viewerCanAuthorizeGuestCoach: false,
       viewerCanRequestNoFaultReschedule: false,
       viewerCanRequestOfficialConversion: false,
       viewerCanCancelTraining: false,

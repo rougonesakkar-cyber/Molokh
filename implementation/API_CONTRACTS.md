@@ -142,6 +142,7 @@ the blocker revokes it. Neither endpoint cascades from Match to Challenge or Boo
 | POST | `/communities/{community_id}/coach-invites` | scoped Admin/Central invites verified Coach |
 | GET | `/me/coach-invites` | invitee reads own pending invitations |
 | POST | `/me/coach-invites/{grant_id}/accept` | invitee activates Coach grant |
+| POST | `/sessions/{session_id}/guest-coach` | scoped Venue Admin/Central authorizes the verified assigned Guest Coach for this Session only |
 | POST | `/memberships/{id}/approve` | Gym Admin |
 | POST | `/memberships/{id}/reject` | neutral + internal reason |
 | POST | `/memberships/{id}/withdraw` | requester closes a PENDING self-request without penalty |

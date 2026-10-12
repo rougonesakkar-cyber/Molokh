@@ -24,6 +24,7 @@
 | Community scope foundation | pilot Venue/Community/Membership, immutable config ownership, role scope guard and universal client projection | Pass |
 | Membership onboarding | QR/invite activation with hashed expiring tokens, self-request, 12h Admin reminder, 24h Central escalation, FIFO approve/reject, seven-day reapply guard, requester withdrawal and local two-role walkthrough | Pass in Core/API/client/worker and real PostgreSQL |
 | Coach authorization slice | scoped 72h invite, invitee-only acceptance, audit/in-app notification and role-adaptive client path | Pass |
+| Guest Coach exact Session scope | verified assigned non-participant, immediate terminal capability cutoff plus idempotent RG-07 history | Pass in Core/API/client/worker and real PostgreSQL |
 | Venue Admin role lifecycle | verified Gym Admin appointment plus serialized first/transfer Primary command and local operator path | Pass |
 | Discovery read slice | hard gates, radius-first deterministic order, typed API and universal-client candidate card | Pass |
 | Discovery mutation slice | idempotent Like/Skip, expiry timers, atomic Match/Chat and Block/Unmatch preservation | Pass in Core/API/client and real PostgreSQL |
@@ -33,7 +34,7 @@
 | Production auth bootstrap | database sessions only, no local fixtures/static tokens, live Central-role check, required secrets/pilot IDs/HTTPS origins | Pass in code and automated config/auth/DB tests; external OTP provider remains unconfigured |
 | Avatar media boundary | authenticated/idempotent private upload-ticket port, JPEG/PNG/WebP 10 MiB contract, disabled adapter and no pre-scan attachment path | Pass in API contract tests; external object/scan provider remains unconfigured |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 174/214 mapped (`168/196 P0`) as implementation grows |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 175/214 mapped (`169/196 P0`) as implementation grows |
 | Technical Correction lifecycle | independent DB-authorized reviewer, protected approve/reject reasons, immutable recorded versus effective Result, deterministic status/Cooldown compensation and neutral notifications | Pass in Core/API/client and real PostgreSQL |
 | Critical role audit completeness | DB-authorized Coach, scoped Gym Admin and assigned Central actor/scope/reason/state/lineage/server-time facts; append-only and privacy guards | Pass in real PostgreSQL |
 | Athlete Challenge reschedule | CH-22 bounded counter, immutable initiator/reason/fault/Booking fact, original deadline and Booking/host race serialization | Pass in Core/API/client and real PostgreSQL |
@@ -159,6 +160,13 @@ script demonstrates a safe repeatable operator/invitee walkthrough.
 The universal client renders an actionable pending invitation and shows the active Coach
 capability after acceptance.
 
+AC-019/RG-06/RG-07 reuse the same RoleGrant foundation without a new permission engine. The
+Admin/Central command authorizes only the verified Coach already assigned to the exact Session
+and rejects participant misuse. All Coach commands still require that exact
+assignment and active DB grant. Cancellation or terminal Result makes the grant ineffective at
+the permission query immediately; the versioned Worker command then records `EXPIRED` with the
+original authorization lineage intact.
+
 The RG-08/RG-09/RG-10 Admin workflow is executable as well. Central can appoint only an
 active verified account to the owning Venue. Primary assignment uses a dedicated Venue
 aggregate, optimistic version and advisory lock; transfer revokes only the former Primary
@@ -206,7 +214,7 @@ Verified on 2026-10-10:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 276 non-database automated tests pass across Core, DB, API, client, worker and testkit;
+- 280 non-database automated tests pass across Core, DB, API, client, worker and testkit;
 - the current PostgreSQL gate passes all 57 integration scenarios, including AC-053 mandatory TITLE reminder/expiry with provisional role swap and Appeal, AC-078 append-only 24-hour Result metadata revision, AC-079 immutable Result correction boundary through TC-01 only, AC-112 symmetric DRAW Appeal eligibility plus one-winner Athlete concurrency, AC-122 irreversible decisive Appeal waiver with atomic R-04 finalization, AC-138 accepted-Challenge stale expiry safety, AC-139 concurrent duplicate-job serialization, AC-140 competing status-Result serialization, AC-143 hash-verified Competition projection rebuild under the row lock, AC-144 complete append-only critical-role audit lineage, AC-147 immutable Technical Correction approval with deterministic effective-result/status replay, AC-150 annulled provisional-tenure compensation with FIFO preservation and hash-stable replay/rebuild, AC-166 immutable Pair Cooldown configuration versions with frozen Challenge/Session/Cooldown snapshots, Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-061/062/063/064/065/066 Athlete/mutual/external-reschedule/reschedule-limit/withdrawal/confirmed-cancellation/host-confirmation and AC-153 shared-Athlete confirmation races, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-164 mandatory push-intent/no-SMS delivery, AC-167 media-free Result boundary, AC-172 optional Challenge reminders/expiry, AC-202 LATE-to-ordinary-Result and AC-203 single/double-NO_SHOW semantics, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
@@ -258,6 +266,6 @@ Verified on 2026-10-10:
   passes live/ready, runtime identity, security headers, configured CORS and unauthenticated-boundary
   probes with the correct SHA and rejects a deliberate release mismatch;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 174 scenarios (`168/196 P0`) and distinguishes traceability from complete coverage;
+- the generated acceptance matrix maps 175 scenarios (`169/196 P0`) and distinguishes traceability from complete coverage;
 - Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published production-runtime transitive fixes, including `shell-quote@1.11.0`, are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes are locally backported with regression probes; the production audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both exceptions automatically on 2026-10-16. The whole-workspace raw audit separately reports advisory paths confined to the `eas-cli` development toolchain;
 - the Core specification validator reports 309 transitions, 310 registered events, 214 acceptance scenarios, zero open questions and zero errors.

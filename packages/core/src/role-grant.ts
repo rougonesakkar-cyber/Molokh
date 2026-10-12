@@ -7,6 +7,10 @@ import type {
   AccountState,
   AccountVerificationState,
 } from './identity.js';
+import type { ResultState } from './result.js';
+import type { SessionState } from './scheduling.js';
+
+export const GUEST_COACH_HARD_EXPIRY_DAYS = 30;
 
 export type RoleGrantState =
   | 'PENDING'
@@ -137,6 +141,85 @@ export function acceptCoachInviteState(
     throw new InvalidRoleGrantTransitionError('EXPIRED');
   }
   return 'ACTIVE';
+}
+
+export interface AuthorizeGuestCoachPolicyInput {
+  readonly actorControlsScope: boolean;
+  readonly sessionState: SessionState;
+  readonly targetAccountState: AccountState;
+  readonly targetVerificationState: AccountVerificationState;
+  readonly targetIsAssignedCoach: boolean;
+  readonly targetIsAthlete: boolean;
+  readonly scheduledEndAt: Date;
+}
+
+export interface ActiveGuestCoachGrantState {
+  readonly state: 'ACTIVE';
+  readonly expiresAt: string;
+}
+
+export function authorizeGuestCoachState(
+  input: AuthorizeGuestCoachPolicyInput,
+): ActiveGuestCoachGrantState {
+  if (!input.actorControlsScope) throw new RoleGrantPermissionDeniedError();
+  if (input.sessionState !== 'SCHEDULED' && input.sessionState !== 'READY_FOR_COACH') {
+    throw new InvalidRoleGrantTransitionError('NONE');
+  }
+  if (input.targetAccountState !== 'ACTIVE') {
+    throw new RoleGrantValidationError('targetAccountState');
+  }
+  if (input.targetVerificationState !== 'VERIFIED') {
+    throw new RoleGrantValidationError('targetVerificationState');
+  }
+  if (!input.targetIsAssignedCoach) {
+    throw new RoleGrantValidationError('assignedCoach');
+  }
+  if (input.targetIsAthlete) {
+    throw new RoleGrantValidationError('coachConflict');
+  }
+  const expiresAt = new Date(
+    input.scheduledEndAt.getTime() + GUEST_COACH_HARD_EXPIRY_DAYS * 24 * 60 * 60 * 1_000,
+  );
+  return { state: 'ACTIVE', expiresAt: expiresAt.toISOString() };
+}
+
+export type GuestCoachExpirationReason =
+  | 'SESSION_CANCELLED'
+  | 'RESULT_FINAL'
+  | 'HARD_EXPIRY';
+
+export interface ExpireGuestCoachPolicyInput {
+  readonly currentState: RoleGrantState;
+  readonly sessionState: SessionState;
+  readonly resultState: ResultState | null;
+  readonly expiresAt: string | null;
+  readonly occurredAt: Date;
+  readonly reason: GuestCoachExpirationReason;
+}
+
+export function expireGuestCoachState(
+  input: ExpireGuestCoachPolicyInput,
+): 'EXPIRED' {
+  if (input.currentState !== 'ACTIVE') {
+    throw new InvalidRoleGrantTransitionError(input.currentState);
+  }
+  const terminalResult = input.resultState !== null
+    && ['FINAL', 'REVERSED', 'ANNULLED', 'REPEAT_ORDERED'].includes(input.resultState);
+  const hardExpiry = input.expiresAt === null ? null : new Date(input.expiresAt);
+  if (input.reason === 'SESSION_CANCELLED' && input.sessionState !== 'CANCELLED') {
+    throw new InvalidRoleGrantTransitionError(input.currentState);
+  }
+  if (input.reason === 'RESULT_FINAL' && !terminalResult) {
+    throw new InvalidRoleGrantTransitionError(input.currentState);
+  }
+  if (
+    input.reason === 'HARD_EXPIRY'
+    && (!hardExpiry || Number.isNaN(hardExpiry.getTime())
+      || input.occurredAt.getTime() < hardExpiry.getTime())
+  ) {
+    throw new InvalidRoleGrantTransitionError(input.currentState);
+  }
+  return 'EXPIRED';
 }
 
 export type VenueState = 'PENDING_VERIFICATION' | 'ACTIVE' | 'PAUSED' | 'CLOSED';

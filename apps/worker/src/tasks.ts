@@ -13,6 +13,7 @@ export interface TaskDependencies {
   readonly onOutboxEvent: (message: OutboxJobPayload) => Promise<void> | void;
   readonly onTimer: (payload: TimerCommandPayload) => Promise<void> | void;
   readonly onChatRetentionCleanup: () => Promise<void> | void;
+  readonly onGuestCoachExpirySweep: () => Promise<void> | void;
 }
 
 function parseOutboxJobPayload(payload: unknown): OutboxJobPayload {
@@ -46,5 +47,6 @@ export function createTaskList(dependencies: TaskDependencies): TaskList {
       dependencies.onOutboxEvent(parseOutboxJobPayload(payload)),
     process_timer: async (payload) => dependencies.onTimer(parseTimerCommandPayload(payload)),
     cleanup_chat_payloads: async () => dependencies.onChatRetentionCleanup(),
+    expire_guest_coach_grants: async () => dependencies.onGuestCoachExpirySweep(),
   };
 }
