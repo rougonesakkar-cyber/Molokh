@@ -84,7 +84,7 @@ describe('Official Challenge policy', () => {
     )).not.toThrow();
   });
 
-  it('[AC-042][AC-043][AC-049] enforces the direct OPEN pair matrix without putting Champion status at stake', () => {
+  it('[AC-042][AC-043][AC-049][AC-073] enforces the direct OPEN pair matrix without putting Champion status at stake', () => {
     expect(() => assertDirectOpenChallengeCanBeCreated(eligible)).not.toThrow();
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, initiatorStatus: 'CHAMPION' })).not.toThrow();
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, activeMatch: false })).toThrowError(
@@ -332,7 +332,7 @@ describe('Official Challenge policy', () => {
     })).toThrowError(new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED'));
   });
 
-  it('freezes the effective stake from status holders at the Session window', () => {
+  it('[AC-073] freezes the effective stake from status holders at the Session window', () => {
     const base = {
       plannedStake: 'NONE' as const,
       participantUserIds: ['athlete-a', 'athlete-b'] as const,

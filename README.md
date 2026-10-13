@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **177/214** (`171/196 P0`);
+- executable acceptance traceability: **178/214** (`172/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0067` and **58/58** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0067` and **59/59** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -262,6 +262,9 @@ one active obligation for each Athlete and starts the 14-day scheduling deadline
 invitation sends stale-safe recipient-only reminders after 12 and 24 hours, then expires after
 exactly 48 hours through the Worker with no loss, Result, Cooldown, obligation or additional pair
 quiet. The terminal pair may invite again after the ordinary eligibility checks pass again.
+When the current Champion invites an Ordinary after a Match, the same optional flow freezes
+`stake=NONE` at the Session window. The Result and Appeal remain official, but neither Athlete can
+change Champion/Contender through that Challenge and no status transition or status lock is made.
 
 After acceptance, either Athlete selects a published personal Slot in the same simple Chat flow.
 The Booking is explicitly linked to the Challenge and moves it to `BOOKING_PENDING`; the peer

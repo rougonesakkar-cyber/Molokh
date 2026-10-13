@@ -29,6 +29,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
+import { challengeStakeLabel } from '../lib/challenge-presentation';
 
 type ChatMessage = ChatMessagesResponse['data'][number];
 type TrainingOptions = TrainingOptionsResponse['data'];
@@ -866,7 +867,7 @@ export default function ChatScreen() {
               {chatChallenge?.challenge ? (
                 <View style={styles.challengeCard}>
                   <Text style={styles.challengeBadge}>
-                    {chatChallenge.challenge.stake === 'NONE' ? 'Открытый поединок · без статуса' : 'Статусный поединок'}
+                    {challengeStakeLabel(chatChallenge.challenge.stake)}
                   </Text>
                   <Text style={styles.trainingTitle}>
                     {chatChallenge.challenge.initiatorDisplayName} → {chatChallenge.challenge.recipientDisplayName}

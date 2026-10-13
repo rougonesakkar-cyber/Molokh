@@ -3160,7 +3160,7 @@ describe('runtime contract', () => {
     );
   });
 
-  it('[AC-061][AC-062][AC-064][AC-172] exposes Challenge creation timers and reschedule flows', async () => {
+  it('[AC-061][AC-062][AC-064][AC-073][AC-172] exposes Challenge creation timers and reschedule flows', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000001101';
     const challengeId = '0199a1b2-1234-7000-8000-000000001102';
     const challenge: ChallengeProjection = {

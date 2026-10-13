@@ -15449,6 +15449,281 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(persisted.rows[0]?.snapshot).toEqual(snapshotBefore.rows[0]?.snapshot);
   });
 
+  it('[AC-073] keeps Champion status outside a matched OPEN Result through the frozen NONE stake', async () => {
+    const fixture = await seedConfirmedTrainingForConversion(123000);
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${fixture.athleteA}::uuid,
+        contender_user_id = null, status_version = 1, version = version + 1,
+        updated_at = '2026-09-27T10:01:00.000Z'
+      where competition_id = ${fixture.competition}::uuid
+    `.execute(database);
+
+    await expect(readChatChallenge(database, fixture.chat, fixture.athleteB)).resolves.toMatchObject({
+      challenge: null, canCreate: false, createDenialCode: 'PAIR_MATRIX_DENIED',
+    });
+    await expect(readChatChallenge(database, fixture.chat, fixture.athleteA)).resolves.toMatchObject({
+      challenge: null, canCreate: true, createDenialCode: null,
+    });
+
+    const challengeId = testId(123100);
+    const created = await createDirectOpenChallenge(
+      database,
+      {
+        commandId: testId(123101), commandType: 'CREATE_DIRECT_OPEN_CHALLENGE',
+        idempotencyKey: 'ac-073-create-open',
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 0,
+        correlationId: testId(123102), causationId: null, requestId: testId(123103),
+        source: 'api', payloadVersion: 1, payload: { sourceChatId: fixture.chat },
+      },
+      {
+        eventId: testId(123104), auditId: testId(123105), outboxMessageId: testId(123106),
+        notificationId: testId(123107), notificationOutboxMessageId: testId(123108),
+        serviceChatId: testId(123109), serviceChatEventId: testId(123110),
+        rulesetSnapshotId: testId(123111), acknowledgmentId: testId(123112),
+        reminderTimerOutboxMessageIds: [testId(123113), testId(123114)],
+      },
+      () => new Date('2026-09-27T10:05:00.000Z'),
+    );
+    expect(created.response).toMatchObject({
+      initiatorUserId: fixture.athleteA, recipientUserId: fixture.athleteB,
+      responsePolicy: 'OPTIONAL', stake: 'NONE', state: 'AWAITING_RESPONSE', version: 1,
+    });
+
+    const accepted = await acceptOptionalChallenge(
+      database,
+      {
+        commandId: testId(123120), commandType: 'ACCEPT_OPTIONAL_CHALLENGE',
+        idempotencyKey: 'ac-073-accept-open',
+        actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 1,
+        correlationId: testId(123121), causationId: testId(123104), requestId: testId(123122),
+        source: 'api', payloadVersion: 1,
+        payload: { challengeId, explicitRulesetAcknowledged: true },
+      },
+      {
+        eventId: testId(123123), auditId: testId(123124), outboxMessageId: testId(123125),
+        notificationId: testId(123126), notificationOutboxMessageId: testId(123127),
+        acknowledgmentId: testId(123128),
+        obligationIds: [testId(123129), testId(123130)],
+      },
+      () => new Date('2026-09-27T10:10:00.000Z'),
+    );
+    expect(accepted.response).toMatchObject({
+      state: 'ACCEPTED_UNSCHEDULED', stake: 'NONE', version: 2,
+    });
+
+    await database.transaction().execute(async (transaction) => {
+      await sql`
+        update scheduling.bookings
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challengeId}::uuid
+        where booking_id = ${fixture.booking}::uuid
+      `.execute(transaction);
+      await sql`
+        update scheduling.sessions
+        set purpose = 'OFFICIAL_CHALLENGE', challenge_id = ${challengeId}::uuid
+        where session_id = ${fixture.session}::uuid
+      `.execute(transaction);
+      await sql`
+        update competition.challenges set state = 'BOOKED'
+        where challenge_id = ${challengeId}::uuid and state = 'ACCEPTED_UNSCHEDULED'
+      `.execute(transaction);
+    });
+
+    const opened = await openSessionWindow(
+      database,
+      {
+        commandId: testId(123140), commandType: 'OPEN_SESSION_WINDOW',
+        idempotencyKey: `session:${fixture.session}:open-session-window:v1`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 1,
+        correlationId: testId(123141), causationId: testId(123123), requestId: testId(123142),
+        source: 'scheduler', payloadVersion: 1, payload: { sessionId: fixture.session },
+      } satisfies CommandEnvelope<OpenSessionWindowPayload>,
+      {
+        eventId: testId(123143), auditId: testId(123144), outboxMessageId: testId(123145),
+        competitiveSnapshotId: testId(123146),
+      },
+      () => new Date(fixture.scheduledStartAt),
+    );
+    expect(opened.response).toMatchObject({ state: 'READY_FOR_COACH', version: 2 });
+
+    const frozenBefore = await sql<{
+      readonly planned_stake: string;
+      readonly effective_stake: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string | null;
+      readonly competition_status_version: string;
+    }>`
+      select planned_stake, effective_stake, champion_user_id, contender_user_id,
+        competition_status_version::text
+      from scheduling.session_competitive_snapshots
+      where session_id = ${fixture.session}::uuid
+    `.execute(database);
+    expect(frozenBefore.rows[0]).toEqual({
+      planned_stake: 'NONE', effective_stake: 'NONE',
+      champion_user_id: fixture.athleteA, contender_user_id: null,
+      competition_status_version: '1',
+    });
+    const frozenBeforeJson = await sql<{ readonly value: unknown }>`
+      select to_jsonb(snapshot) as value
+      from scheduling.session_competitive_snapshots snapshot
+      where session_id = ${fixture.session}::uuid
+    `.execute(database);
+
+    await sql`
+      update competition.competitions
+      set contender_user_id = ${fixture.athleteB}::uuid, status_version = 2,
+        version = version + 1, updated_at = '2026-10-01T10:00:30.000Z'
+      where competition_id = ${fixture.competition}::uuid
+    `.execute(database);
+
+    const recordAttendance = (
+      athleteUserId: string,
+      expectedVersion: number,
+      base: number,
+      occurredAt: string,
+    ) => recordSessionAttendance(
+      database,
+      {
+        commandId: testId(base), commandType: 'RECORD_ATTENDANCE',
+        idempotencyKey: `ac-073-attendance:${athleteUserId}`,
+        actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion,
+        correlationId: testId(base + 1), causationId: testId(123143), requestId: testId(base + 2),
+        source: 'api', payloadVersion: 1,
+        payload: { sessionId: fixture.session, athleteUserId, status: 'PRESENT', comment: null },
+      } satisfies CommandEnvelope<RecordAttendancePayload>,
+      {
+        eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
+        attendanceId: testId(base + 6), attendanceEventId: testId(base + 7),
+        challengeEventId: testId(base + 8), challengeOutboxMessageId: testId(base + 9),
+      },
+      () => new Date(occurredAt),
+    );
+    await recordAttendance(fixture.athleteA, 2, 123150, '2026-10-01T10:01:00.000Z');
+    await recordAttendance(fixture.athleteB, 3, 123170, '2026-10-01T10:02:00.000Z');
+
+    await endSession(
+      database,
+      {
+        commandId: testId(123190), commandType: 'END_SESSION',
+        idempotencyKey: `ac-073-end:${fixture.session}`,
+        actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 4,
+        correlationId: testId(123191), causationId: testId(123153), requestId: testId(123192),
+        source: 'api', payloadVersion: 1, payload: { sessionId: fixture.session },
+      } satisfies CommandEnvelope<EndSessionPayload>,
+      {
+        eventId: testId(123193), auditId: testId(123194), outboxMessageId: testId(123195),
+        bookingEventId: testId(123196), slotEventId: testId(123197),
+        challengeEventId: testId(123198), challengeOutboxMessageId: testId(123199),
+      },
+      () => new Date('2026-10-01T10:55:00.000Z'),
+    );
+
+    const resultId = testId(123210);
+    const resultCommand = {
+      commandId: testId(123211), commandType: 'RECORD_SESSION_RESULT',
+      idempotencyKey: `ac-073-result:${challengeId}`,
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 4,
+      correlationId: testId(123212), causationId: testId(123193), requestId: testId(123213),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId, sessionId: fixture.session, outcomeCode: 'WIN_B', winnerUserId: null,
+        reasonCode: null, comment: null, methodCode: null, methodText: null,
+        scorePayload: null, methodPayload: null,
+      },
+    } satisfies CommandEnvelope<RecordSessionResultPayload>;
+    const resultEffects = {
+      eventId: testId(123214), auditId: testId(123215), outboxMessageId: testId(123216),
+      resultId, resultEventId: testId(123217),
+      cooldownId: testId(123218), cooldownEventId: testId(123219),
+      timerOutboxMessageId: testId(123220), notificationOutboxMessageId: testId(123221),
+      notificationIds: [testId(123222), testId(123223)] as const,
+    };
+    const recorded = await recordSessionResult(
+      database, resultCommand, resultEffects,
+      () => new Date('2026-10-01T10:56:00.000Z'),
+    );
+    const replay = await recordSessionResult(
+      database, resultCommand, resultEffects,
+      () => new Date('2026-10-01T10:57:00.000Z'),
+    );
+    expect(recorded).toMatchObject({
+      replayed: false,
+      response: {
+        resultId, state: 'RECORDED', outcomeCode: 'WIN_B',
+        winnerUserId: fixture.athleteB, loserUserId: fixture.athleteA,
+        statusTransitionType: 'NONE', provisional: true,
+        appealDeadlineAt: '2026-10-03T10:56:00.000Z', version: 1,
+      },
+    });
+    expect(replay).toMatchObject({
+      replayed: true, eventId: recorded.eventId, response: recorded.response,
+    });
+
+    const persisted = await sql<{
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string | null;
+      readonly effective_stake: string;
+      readonly snapshot_champion_user_id: string;
+      readonly snapshot_contender_user_id: string | null;
+      readonly snapshot_status_version: string;
+      readonly outcome_code: string;
+      readonly winner_user_id: string;
+      readonly loser_user_id: string;
+      readonly appeal_deadline_at: Date;
+      readonly status_transitions: string;
+      readonly cooldowns: string;
+    }>`
+      select competition.champion_user_id, competition.contender_user_id,
+        competition.status_version::text, competition.status_lock_result_id,
+        snapshot.effective_stake, snapshot.champion_user_id as snapshot_champion_user_id,
+        snapshot.contender_user_id as snapshot_contender_user_id,
+        snapshot.competition_status_version::text as snapshot_status_version,
+        result.recorded_outcome_code as outcome_code, result.winner_user_id,
+        result.loser_user_id, result.appeal_deadline_at,
+        (select count(*)::text from competition.status_transitions transition
+          where transition.source_result_id = result.result_id) as status_transitions,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.source_result_id = result.result_id) as cooldowns
+      from competition.results result
+      join scheduling.session_competitive_snapshots snapshot
+        on snapshot.snapshot_id = result.competitive_snapshot_id
+      join competition.competitions competition
+        on competition.competition_id = snapshot.competition_id
+      where result.result_id = ${resultId}::uuid
+    `.execute(database);
+    expect(persisted.rows[0]).toEqual({
+      champion_user_id: fixture.athleteA, contender_user_id: fixture.athleteB,
+      status_version: '2', status_lock_result_id: null,
+      effective_stake: 'NONE', snapshot_champion_user_id: fixture.athleteA,
+      snapshot_contender_user_id: null, snapshot_status_version: '1',
+      outcome_code: 'WIN_B', winner_user_id: fixture.athleteB,
+      loser_user_id: fixture.athleteA,
+      appeal_deadline_at: new Date('2026-10-03T10:56:00.000Z'),
+      status_transitions: '0', cooldowns: '1',
+    });
+    const frozenAfter = await sql<{ readonly value: unknown }>`
+      select to_jsonb(snapshot) as value
+      from scheduling.session_competitive_snapshots snapshot
+      where session_id = ${fixture.session}::uuid
+    `.execute(database);
+    expect(frozenAfter.rows[0]?.value).toEqual(frozenBeforeJson.rows[0]?.value);
+    await expect(readResult(
+      database, resultId, fixture.athleteA, new Date('2026-10-01T10:57:00.000Z'),
+    )).resolves.toMatchObject({
+      outcomeCode: 'WIN_B', winnerUserId: fixture.athleteB,
+      loserUserId: fixture.athleteA, viewerCanAppeal: true,
+      appealDeadlineAt: '2026-10-03T10:56:00.000Z',
+    });
+  });
+
   it('[AC-203] records one NO_SHOW with Appeal and normalizes two absences to NO_CONTEST', async () => {
     type Fixture = Awaited<ReturnType<typeof seedYouthOfficialAtAgeBoundary>>;
     const snapshotFor = async (fixture: Fixture) => {

@@ -173,7 +173,7 @@ describe('Result and provisional status policy', () => {
     });
   });
 
-  it('[AC-082][AC-083][AC-084] swaps TITLE roles, records a defense and isolates OPEN', () => {
+  it('[AC-073][AC-082][AC-083][AC-084] swaps TITLE roles, records a defense and isolates OPEN', () => {
     const snapshot = { championUserId: 'athlete-a', contenderUserId: 'athlete-b', statusVersion: 3 };
     expect(deriveProvisionalStatusTransition({
       stake: 'TITLE', outcomeCode: 'WIN_B', winnerUserId: 'athlete-b', loserUserId: 'athlete-a', snapshot,
