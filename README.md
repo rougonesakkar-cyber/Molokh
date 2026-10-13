@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **179/214** (`173/196 P0`);
+- executable acceptance traceability: **180/214** (`174/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0067` and **59/59** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0067` and **61/61** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -291,7 +291,10 @@ outcome. After actual start, an Athlete injury or voluntary stop uses the normal
 `INJURY_STOPPAGE` or `VOLUNTARY_WITHDRAWAL` method and remains a decisive Coach-confirmed Result
 under the frozen ruleset; no medical document, diagnosis or evidence upload is requested. A
 personal stop cannot be converted to `NO_CONTEST`: that route is reserved for an external Safety,
-Venue or equipment failure. The same transaction creates the immutable Result, moves
+Venue or equipment failure. AC-210 makes that external path explicit with normalized equipment,
+Safety and Venue reason codes. It creates an appealable no-winner `NO_CONTEST` against the same
+frozen snapshot without a loss, status transition, Cooldown or reschedule-count change. The same
+transaction creates the immutable Result, moves
 Challenge through `CH-15`, applies any provisional Champion/Contender transition, starts the
 configured pair Cooldown and schedules finalization exactly 48 hours later. The eligible Athlete
 may submit Appeal or explicitly waive it. A decisive Result finalizes early when its sole eligible

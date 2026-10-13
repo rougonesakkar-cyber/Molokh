@@ -21,6 +21,14 @@ export const ATHLETE_STOPPAGE_METHOD_CODES = [
 
 export type AthleteStoppageMethodCode = typeof ATHLETE_STOPPAGE_METHOD_CODES[number];
 
+export const EXTERNAL_NO_CONTEST_REASON_CODES = [
+  'EXTERNAL_EQUIPMENT_FAILURE',
+  'EXTERNAL_SAFETY_FAILURE',
+  'EXTERNAL_VENUE_FAILURE',
+] as const;
+
+export type ExternalNoContestReasonCode = typeof EXTERNAL_NO_CONTEST_REASON_CODES[number];
+
 export type ResultState =
   | 'RECORDED'
   | 'UNDER_APPEAL'
@@ -322,6 +330,23 @@ export function assertAthleteStoppageResult(input: {
   ) {
     throw new ResultValidationError('outcomeCode');
   }
+}
+
+export function assertExternalNoContestResult(input: {
+  readonly outcomeCode: ResultOutcomeCode;
+  readonly winnerUserId: string | null;
+  readonly reasonCode: string | null;
+  readonly methodCode: string | null;
+  readonly actualStartAt: Date | null;
+}): void {
+  if (!EXTERNAL_NO_CONTEST_REASON_CODES.some((code) => code === input.reasonCode)) return;
+  if (input.actualStartAt === null || !Number.isFinite(input.actualStartAt.getTime())) {
+    throw new ResultValidationError('actualStartAt');
+  }
+  if (input.outcomeCode !== 'NO_CONTEST' || input.winnerUserId !== null) {
+    throw new ResultValidationError('outcomeCode');
+  }
+  if (input.methodCode !== null) throw new ResultValidationError('methodCode');
 }
 
 export function normalizeTechnicalCorrectionRequest(input: {

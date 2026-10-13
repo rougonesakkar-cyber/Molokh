@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { athleteStoppageResult, resultCardPresentation } from './result-presentation';
+import {
+  athleteStoppageResult,
+  externalNoContestResult,
+  resultCardPresentation,
+} from './result-presentation';
 
 describe('Result card presentation', () => {
   it('[AC-112] presents DRAW neutrally and follows the server Appeal capability', () => {
@@ -31,6 +35,18 @@ describe('Result card presentation', () => {
     });
     expect(athleteStoppageResult(1, 'VOLUNTARY_WITHDRAWAL')).toEqual({
       outcomeCode: 'WIN_A', methodCode: 'VOLUNTARY_WITHDRAWAL',
+    });
+  });
+
+  it('[AC-210] maps external causes to explicit no-fault reason codes', () => {
+    expect(externalNoContestResult('EQUIPMENT')).toMatchObject({
+      reasonCode: 'EXTERNAL_EQUIPMENT_FAILURE', label: 'Проблема оборудования',
+    });
+    expect(externalNoContestResult('SAFETY')).toMatchObject({
+      reasonCode: 'EXTERNAL_SAFETY_FAILURE', label: 'Угроза безопасности',
+    });
+    expect(externalNoContestResult('VENUE')).toMatchObject({
+      reasonCode: 'EXTERNAL_VENUE_FAILURE', label: 'Проблема площадки',
     });
   });
 });

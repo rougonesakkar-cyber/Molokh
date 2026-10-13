@@ -4,6 +4,7 @@ import {
   ResultConflictError,
   ResultValidationError,
   assertAthleteStoppageResult,
+  assertExternalNoContestResult,
   assertAppealActionCanBeTaken,
   assertAppealCanBeWithdrawn,
   assertAppealReviewCanStart,
@@ -251,6 +252,33 @@ describe('Result and provisional status policy', () => {
     expect(() => assertAthleteStoppageResult({
       ...decisive, outcomeCode: 'NO_CONTEST', winnerUserId: null,
     })).toThrowError(new ResultValidationError('outcomeCode'));
+  });
+
+  it('[AC-210] accepts only a post-start external no-winner NO_CONTEST', () => {
+    const external = {
+      outcomeCode: 'NO_CONTEST' as const,
+      winnerUserId: null,
+      reasonCode: 'EXTERNAL_EQUIPMENT_FAILURE',
+      methodCode: null,
+      actualStartAt: new Date('2026-10-03T10:00:00.000Z'),
+    };
+    expect(() => assertExternalNoContestResult(external)).not.toThrow();
+    expect(() => assertExternalNoContestResult({
+      ...external, actualStartAt: null,
+    })).toThrowError(new ResultValidationError('actualStartAt'));
+    expect(() => assertExternalNoContestResult({
+      ...external, outcomeCode: 'WIN_A', winnerUserId: 'athlete-a',
+    })).toThrowError(new ResultValidationError('outcomeCode'));
+    expect(() => assertExternalNoContestResult({
+      ...external, methodCode: 'VOLUNTARY_WITHDRAWAL',
+    })).toThrowError(new ResultValidationError('methodCode'));
+    expect(deriveProvisionalStatusTransition({
+      stake: 'TITLE', outcomeCode: 'NO_CONTEST', winnerUserId: null, loserUserId: null,
+      snapshot: { championUserId: 'athlete-a', contenderUserId: 'athlete-b', statusVersion: 4 },
+    })).toMatchObject({
+      type: 'NONE', locksStatus: false,
+      after: { championUserId: 'athlete-a', contenderUserId: 'athlete-b', statusVersion: 4 },
+    });
   });
 
   it('[AC-088][AC-089] finalizes at 48h or when every eligible Athlete waived', () => {

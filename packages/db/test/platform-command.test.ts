@@ -15598,6 +15598,158 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(JSON.stringify(publicDocuments.rows)).not.toMatch(/diagnosis|medicalDocument|evidence/i);
   });
 
+  it('[AC-210] records a post-start external failure as no-fault NO_CONTEST', async () => {
+    const fixture = await seedYouthOfficialAtAgeBoundary(125000, true);
+    const snapshotBefore = await sql<{ readonly snapshot: unknown }>`
+      select to_jsonb(snapshot) as snapshot
+      from scheduling.session_competitive_snapshots as snapshot
+      where session_id = ${fixture.session}::uuid
+    `.execute(database);
+    const recordAttendance = (
+      athleteUserId: string,
+      expectedVersion: number,
+      base: number,
+    ) => recordSessionAttendance(
+      database,
+      {
+        commandId: testId(base), commandType: 'RECORD_ATTENDANCE',
+        idempotencyKey: `ac-210-attendance:${athleteUserId}`,
+        actor: {
+          type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+        },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion,
+        correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+        source: 'api', payloadVersion: 1,
+        payload: { sessionId: fixture.session, athleteUserId, status: 'PRESENT', comment: null },
+      } satisfies CommandEnvelope<RecordAttendancePayload>,
+      {
+        eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
+        attendanceId: testId(base + 6), attendanceEventId: testId(base + 7),
+      },
+      () => new Date(`2026-10-01T23:${expectedVersion === 1 ? '51' : '52'}:00.000Z`),
+    );
+    await recordAttendance(fixture.athleteA, 1, 125100);
+    await recordAttendance(fixture.athleteB, 2, 125120);
+    await endSession(
+      database,
+      {
+        commandId: testId(125140), commandType: 'END_SESSION',
+        idempotencyKey: `ac-210-end:${fixture.session}`,
+        actor: {
+          type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+        },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 3,
+        correlationId: testId(125141), causationId: testId(125123), requestId: testId(125142),
+        source: 'api', payloadVersion: 1, payload: { sessionId: fixture.session },
+      } satisfies CommandEnvelope<EndSessionPayload>,
+      {
+        eventId: testId(125143), auditId: testId(125144), outboxMessageId: testId(125145),
+        bookingEventId: testId(125146), slotEventId: testId(125147),
+        challengeEventId: testId(125148), challengeOutboxMessageId: testId(125149),
+      },
+      () => new Date('2026-10-01T23:58:00.000Z'),
+    );
+
+    const resultId = testId(125160);
+    const resultCommand = {
+      commandId: testId(125161), commandType: 'RECORD_SESSION_RESULT',
+      idempotencyKey: `ac-210-result:${fixture.challenge}`,
+      actor: {
+        type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+      },
+      aggregateType: 'Challenge', aggregateId: fixture.challenge, expectedVersion: 5,
+      correlationId: testId(125162), causationId: testId(125143), requestId: testId(125163),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId: fixture.challenge, sessionId: fixture.session,
+        outcomeCode: 'NO_CONTEST', winnerUserId: null,
+        reasonCode: 'EXTERNAL_EQUIPMENT_FAILURE',
+        comment: 'private-equipment-safety-detail',
+        methodCode: null, methodText: null, scorePayload: null, methodPayload: null,
+      },
+    } satisfies CommandEnvelope<RecordSessionResultPayload>;
+    const resultEffects = {
+      eventId: testId(125164), auditId: testId(125165), outboxMessageId: testId(125166),
+      resultId, resultEventId: testId(125167),
+      cooldownId: testId(125168), cooldownEventId: testId(125169),
+      timerOutboxMessageId: testId(125170), notificationOutboxMessageId: testId(125171),
+      notificationIds: [testId(125172), testId(125173)] as const,
+    };
+    const recorded = await recordSessionResult(
+      database, resultCommand, resultEffects,
+      () => new Date('2026-10-01T23:59:00.000Z'),
+    );
+    const replay = await recordSessionResult(database, resultCommand, resultEffects);
+    expect(recorded.response).toMatchObject({
+      resultId, state: 'RECORDED', outcomeCode: 'NO_CONTEST',
+      winnerUserId: null, loserUserId: null,
+      reasonCode: 'EXTERNAL_EQUIPMENT_FAILURE', methodCode: null,
+      appealDeadlineAt: '2026-10-03T23:59:00.000Z',
+      statusTransitionType: 'NONE', provisional: true,
+    });
+    expect(replay).toMatchObject({
+      replayed: true, eventId: recorded.eventId, response: recorded.response,
+    });
+    await expect(readResult(
+      database, resultId, fixture.athleteA, new Date('2026-10-01T23:59:00.000Z'),
+    )).resolves.toMatchObject({ viewerCanAppeal: true, viewerCanWaiveAppeal: true });
+    await expect(readResult(
+      database, resultId, fixture.athleteB, new Date('2026-10-01T23:59:00.000Z'),
+    )).resolves.toMatchObject({ viewerCanAppeal: true, viewerCanWaiveAppeal: true });
+
+    const persisted = await sql<{
+      readonly actual_start_at: Date;
+      readonly winner_user_id: string | null;
+      readonly loser_user_id: string | null;
+      readonly challenge_state: string;
+      readonly user_reschedule_count: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string | null;
+      readonly cooldown_count: string;
+      readonly transition_count: string;
+      readonly active_obligations: string;
+      readonly snapshot: unknown;
+    }>`
+      select session.actual_start_at, result.winner_user_id, result.loser_user_id,
+        challenge.state as challenge_state,
+        challenge.user_reschedule_count::text as user_reschedule_count,
+        competition.status_version::text as status_version,
+        competition.status_lock_result_id,
+        (select count(*)::text from competition.pair_cooldowns
+          where source_result_id = result.result_id) as cooldown_count,
+        (select count(*)::text from competition.status_transitions
+          where source_result_id = result.result_id) as transition_count,
+        (select count(*)::text from competition.challenge_participant_obligations
+          where challenge_id = challenge.challenge_id and released_at is null) as active_obligations,
+        to_jsonb(snapshot) as snapshot
+      from competition.results as result
+      join scheduling.sessions as session on session.session_id = result.session_id
+      join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
+      join competition.competitions as competition
+        on competition.competition_id = challenge.competition_id
+      join scheduling.session_competitive_snapshots as snapshot
+        on snapshot.snapshot_id = result.competitive_snapshot_id
+      where result.result_id = ${resultId}::uuid
+    `.execute(database);
+    expect(persisted.rows[0]).toMatchObject({
+      actual_start_at: new Date('2026-10-01T23:50:00.000Z'),
+      winner_user_id: null, loser_user_id: null, challenge_state: 'RESULT_RECORDED',
+      user_reschedule_count: '0', status_version: '0', status_lock_result_id: null,
+      cooldown_count: '0', transition_count: '0', active_obligations: '2',
+    });
+    expect(persisted.rows[0]?.snapshot).toEqual(snapshotBefore.rows[0]?.snapshot);
+
+    const publicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where event_id in (${resultEffects.eventId}::uuid, ${resultEffects.resultEventId}::uuid)
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (${resultEffects.outboxMessageId}::uuid,
+        ${resultEffects.notificationOutboxMessageId}::uuid)
+    `.execute(database);
+    expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-equipment-safety-detail');
+  });
+
   it('[AC-073] keeps Champion status outside a matched OPEN Result through the frozen NONE stake', async () => {
     const fixture = await seedConfirmedTrainingForConversion(123000);
     await sql`

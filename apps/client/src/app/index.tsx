@@ -102,7 +102,11 @@ import {
   refreshManagedAuthSession,
 } from '../lib/auth-session';
 import { sportLabel, sportOptions } from '../lib/sports';
-import { athleteStoppageResult, resultCardPresentation } from '../lib/result-presentation';
+import {
+  athleteStoppageResult,
+  externalNoContestResult,
+  resultCardPresentation,
+} from '../lib/result-presentation';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -6003,22 +6007,36 @@ export default function IdentityScreen() {
                                             </Pressable>
                                           );
                                         }))}
-                                      <Pressable
-                                        accessibilityRole="button"
-                                        accessibilityState={{ disabled: actingResultKey !== null }}
-                                        disabled={actingResultKey !== null}
-                                        onPress={() => void recordOfficialResult(session, 'NO_CONTEST', {
-                                          reasonCode: 'EXTERNAL_SESSION_FAILURE',
-                                          comment: 'Внешняя причина безопасности, площадки или оборудования.',
-                                        })}
-                                        style={({ pressed }) => [
-                                          styles.attendanceButton,
-                                          actingResultKey !== null && styles.buttonDisabled,
-                                          pressed && actingResultKey === null && styles.buttonPressed,
-                                        ]}
-                                      >
-                                        <Text style={styles.attendanceButtonText}>Внешняя причина · без результата</Text>
-                                      </Pressable>
+                                      <Text style={styles.hint}>
+                                        Внешняя невозможность продолжить: ни один спортсмен не получает
+                                        поражение, статусный переход или Cooldown.
+                                      </Text>
+                                      {(['EQUIPMENT', 'SAFETY', 'VENUE'] as const).map((cause) => {
+                                        const external = externalNoContestResult(cause);
+                                        return (
+                                          <Pressable
+                                            key={cause}
+                                            accessibilityRole="button"
+                                            accessibilityState={{ disabled: actingResultKey !== null }}
+                                            disabled={actingResultKey !== null}
+                                            onPress={() => void recordOfficialResult(
+                                              session,
+                                              'NO_CONTEST',
+                                              {
+                                                reasonCode: external.reasonCode,
+                                                comment: external.comment,
+                                              },
+                                            )}
+                                            style={({ pressed }) => [
+                                              styles.attendanceButton,
+                                              actingResultKey !== null && styles.buttonDisabled,
+                                              pressed && actingResultKey === null && styles.buttonPressed,
+                                            ]}
+                                          >
+                                            <Text style={styles.attendanceButtonText}>{external.label}</Text>
+                                          </Pressable>
+                                        );
+                                      })}
                                     </>
                                   )}
                                 </View>

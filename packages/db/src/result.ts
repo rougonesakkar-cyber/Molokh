@@ -8,6 +8,7 @@ import {
   appealReviewSlaDeadline,
   assertAppealActionCanBeTaken,
   assertAthleteStoppageResult,
+  assertExternalNoContestResult,
   assertExpectedVersion,
   assertReviewedResultMatchesAssignment,
   assertResultCanFinalize,
@@ -1100,6 +1101,13 @@ export async function recordSessionResult(
       assertAthleteStoppageResult({
         outcomeCode: command.payload.outcomeCode,
         winnerUserId: normalized.winnerUserId,
+        methodCode,
+        actualStartAt: row.actual_start_at,
+      });
+      assertExternalNoContestResult({
+        outcomeCode: command.payload.outcomeCode,
+        winnerUserId: normalized.winnerUserId,
+        reasonCode: normalized.reasonCode,
         methodCode,
         actualStartAt: row.actual_start_at,
       });

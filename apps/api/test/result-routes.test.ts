@@ -119,7 +119,7 @@ describe('Result and Appeal routes', () => {
     }), expect.any(Object));
   });
 
-  it('[AC-076][AC-078][AC-079][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203][AC-209] exposes media-free Coach Result facts', async () => {
+  it('[AC-076][AC-078][AC-079][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203][AC-209][AC-210] exposes media-free Coach Result facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
@@ -252,6 +252,30 @@ describe('Result and Appeal routes', () => {
       payload: {
         challengeId, sessionId, outcomeCode: 'NO_SHOW', winnerUserId,
         reasonCode: 'ATTENDANCE_NO_SHOW', comment: 'Неявка подтверждена Coach.',
+      },
+    });
+
+    const externalNoContest = await app.inject({
+      method: 'POST', url: `/api/v1/challenges/${challengeId}/result`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'record-external-no-contest-route-1',
+        'if-match': '7',
+      },
+      payload: {
+        sessionId, outcomeCode: 'NO_CONTEST',
+        reasonCode: 'EXTERNAL_SAFETY_FAILURE',
+        comment: 'Внешняя причина безопасности не позволила завершить Session.',
+      },
+    });
+    expect(externalNoContest.statusCode).toBe(201);
+    expect(recordSessionResult.mock.calls[2]?.[0]).toMatchObject({
+      actor: { id: actorUserId, roles: ['COACH'] },
+      payload: {
+        challengeId, sessionId, outcomeCode: 'NO_CONTEST', winnerUserId: null,
+        reasonCode: 'EXTERNAL_SAFETY_FAILURE',
+        comment: 'Внешняя причина безопасности не позволила завершить Session.',
+        methodCode: null,
       },
     });
 
