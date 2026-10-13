@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ResultConflictError,
   ResultValidationError,
+  assertAthleteStoppageResult,
   assertAppealActionCanBeTaken,
   assertAppealCanBeWithdrawn,
   assertAppealReviewCanStart,
@@ -234,6 +235,22 @@ describe('Result and provisional status policy', () => {
     })).toMatchObject({
       winnerUserId: 'athlete-b', loserUserId: 'athlete-a', decisive: true,
     });
+  });
+
+  it('[AC-209] accepts Athlete stoppage only after actual start and as a decisive Result', () => {
+    const decisive = {
+      outcomeCode: 'WIN_B' as const,
+      winnerUserId: 'athlete-b',
+      methodCode: 'INJURY_STOPPAGE',
+      actualStartAt: new Date('2026-10-01T23:50:00.000Z'),
+    };
+    expect(() => assertAthleteStoppageResult(decisive)).not.toThrow();
+    expect(() => assertAthleteStoppageResult({
+      ...decisive, methodCode: 'VOLUNTARY_WITHDRAWAL', actualStartAt: null,
+    })).toThrowError(new ResultValidationError('actualStartAt'));
+    expect(() => assertAthleteStoppageResult({
+      ...decisive, outcomeCode: 'NO_CONTEST', winnerUserId: null,
+    })).toThrowError(new ResultValidationError('outcomeCode'));
   });
 
   it('[AC-088][AC-089] finalizes at 48h or when every eligible Athlete waived', () => {

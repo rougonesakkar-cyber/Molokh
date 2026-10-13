@@ -102,7 +102,7 @@ import {
   refreshManagedAuthSession,
 } from '../lib/auth-session';
 import { sportLabel, sportOptions } from '../lib/sports';
-import { resultCardPresentation } from '../lib/result-presentation';
+import { athleteStoppageResult, resultCardPresentation } from '../lib/result-presentation';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -1912,10 +1912,16 @@ export default function IdentityScreen() {
   const recordOfficialResult = async (
     session: Session,
     outcomeCode: ResultOutcomeCode,
-    winnerUserId: string | null = null,
+    options: {
+      readonly winnerUserId?: string | null;
+      readonly methodCode?: string | null;
+      readonly reasonCode?: string | null;
+      readonly comment?: string | null;
+    } = {},
   ) => {
     if (!session.challengeId || !session.challengeVersion || actingResultKey !== null) return;
-    const operation = `record:${session.challengeId}:${outcomeCode}:${winnerUserId ?? 'NONE'}:v${session.challengeVersion}`;
+    const winnerUserId = options.winnerUserId ?? null;
+    const operation = `record:${session.challengeId}:${outcomeCode}:${winnerUserId ?? 'NONE'}:${options.methodCode ?? 'NO_METHOD'}:v${session.challengeVersion}`;
     const idempotencyKey = resultActionKeys.current.get(operation) ?? `result:${operation}`;
     resultActionKeys.current.set(operation, idempotencyKey);
     setActingResultKey(operation);
@@ -1933,12 +1939,15 @@ export default function IdentityScreen() {
         },
         body: JSON.stringify({
           sessionId: session.sessionId, outcomeCode, winnerUserId,
+          methodCode: options.methodCode ?? null,
           ...(explanationRequired
             ? {
-                reasonCode: outcomeCode === 'NO_SHOW' ? 'ATTENDANCE_NO_SHOW' : 'COACH_NO_CONTEST',
-                comment: outcomeCode === 'NO_SHOW'
-                  ? 'Неявка зафиксирована Coach в Session.'
-                  : 'Coach завершил Session без засчитываемого результата.',
+                reasonCode: options.reasonCode
+                  ?? (outcomeCode === 'NO_SHOW' ? 'ATTENDANCE_NO_SHOW' : 'COACH_NO_CONTEST'),
+                comment: options.comment
+                  ?? (outcomeCode === 'NO_SHOW'
+                    ? 'Неявка зафиксирована Coach в Session.'
+                    : 'Coach завершил Session без засчитываемого результата.'),
               }
             : {}),
         }),
@@ -5877,7 +5886,7 @@ export default function IdentityScreen() {
                                       onPress={() => void recordOfficialResult(
                                         session,
                                         missingResultReview.allowedOutcomeCode!,
-                                        missingResultReview.allowedWinnerUserId,
+                                        { winnerUserId: missingResultReview.allowedWinnerUserId },
                                       )}
                                       style={({ pressed }) => [
                                         styles.attendanceButton,
@@ -5917,7 +5926,9 @@ export default function IdentityScreen() {
                                       onPress={() => void recordOfficialResult(
                                         session,
                                         'NO_SHOW',
-                                        session.athleteUserIds.find((id) => id !== noShowUserIds[0]) ?? null,
+                                        { winnerUserId: session.athleteUserIds.find(
+                                          (id) => id !== noShowUserIds[0],
+                                        ) ?? null },
                                       )}
                                       style={({ pressed }) => [
                                         styles.attendanceButton,
@@ -5961,18 +5972,52 @@ export default function IdentityScreen() {
                                       >
                                         <Text style={styles.attendanceButtonText}>Ничья</Text>
                                       </Pressable>
+                                      <Text style={styles.hint}>
+                                        Остановка после старта: выберите спортсмена и причину. Победит второй
+                                        спортсмен. Медицинские документы не запрашиваются.
+                                      </Text>
+                                      {(['INJURY', 'VOLUNTARY_WITHDRAWAL'] as const).flatMap((cause) =>
+                                        session.athleteDisplayNames.map((name, index) => {
+                                          const stoppage = athleteStoppageResult(index as 0 | 1, cause);
+                                          return (
+                                            <Pressable
+                                              key={`${cause}:${session.athleteUserIds[index]}`}
+                                              accessibilityRole="button"
+                                              accessibilityLabel={`${cause === 'INJURY' ? 'Травма' : 'Добровольная остановка'}: остановился ${name}`}
+                                              accessibilityState={{ disabled: actingResultKey !== null }}
+                                              disabled={actingResultKey !== null}
+                                              onPress={() => void recordOfficialResult(
+                                                session,
+                                                stoppage.outcomeCode,
+                                                { methodCode: stoppage.methodCode },
+                                              )}
+                                              style={({ pressed }) => [
+                                                styles.attendanceButton,
+                                                actingResultKey !== null && styles.buttonDisabled,
+                                                pressed && actingResultKey === null && styles.buttonPressed,
+                                              ]}
+                                            >
+                                              <Text style={styles.attendanceButtonText}>
+                                                {cause === 'INJURY' ? 'Травма' : 'Остановился'}: {name}
+                                              </Text>
+                                            </Pressable>
+                                          );
+                                        }))}
                                       <Pressable
                                         accessibilityRole="button"
                                         accessibilityState={{ disabled: actingResultKey !== null }}
                                         disabled={actingResultKey !== null}
-                                        onPress={() => void recordOfficialResult(session, 'NO_CONTEST')}
+                                        onPress={() => void recordOfficialResult(session, 'NO_CONTEST', {
+                                          reasonCode: 'EXTERNAL_SESSION_FAILURE',
+                                          comment: 'Внешняя причина безопасности, площадки или оборудования.',
+                                        })}
                                         style={({ pressed }) => [
                                           styles.attendanceButton,
                                           actingResultKey !== null && styles.buttonDisabled,
                                           pressed && actingResultKey === null && styles.buttonPressed,
                                         ]}
                                       >
-                                        <Text style={styles.attendanceButtonText}>Без результата</Text>
+                                        <Text style={styles.attendanceButtonText}>Внешняя причина · без результата</Text>
                                       </Pressable>
                                     </>
                                   )}

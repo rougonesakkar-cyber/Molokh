@@ -14,6 +14,13 @@ export type ResultOutcomeCode =
   | 'FORFEIT'
   | 'NO_SHOW';
 
+export const ATHLETE_STOPPAGE_METHOD_CODES = [
+  'INJURY_STOPPAGE',
+  'VOLUNTARY_WITHDRAWAL',
+] as const;
+
+export type AthleteStoppageMethodCode = typeof ATHLETE_STOPPAGE_METHOD_CODES[number];
+
 export type ResultState =
   | 'RECORDED'
   | 'UNDER_APPEAL'
@@ -297,6 +304,24 @@ export function normalizeResultParticipants(input: {
     reasonCode,
     comment,
   };
+}
+
+export function assertAthleteStoppageResult(input: {
+  readonly outcomeCode: ResultOutcomeCode;
+  readonly winnerUserId: string | null;
+  readonly methodCode: string | null;
+  readonly actualStartAt: Date | null;
+}): void {
+  if (!ATHLETE_STOPPAGE_METHOD_CODES.some((code) => code === input.methodCode)) return;
+  if (input.actualStartAt === null || !Number.isFinite(input.actualStartAt.getTime())) {
+    throw new ResultValidationError('actualStartAt');
+  }
+  if (
+    (input.outcomeCode !== 'WIN_A' && input.outcomeCode !== 'WIN_B')
+    || input.winnerUserId === null
+  ) {
+    throw new ResultValidationError('outcomeCode');
+  }
 }
 
 export function normalizeTechnicalCorrectionRequest(input: {

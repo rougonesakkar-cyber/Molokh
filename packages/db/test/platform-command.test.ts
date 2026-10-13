@@ -15,6 +15,7 @@ import {
   RoleGrantValidationError,
   ResultConflictError,
   ResultPermissionDeniedError,
+  ResultValidationError,
   SchedulingConflictError,
   SchedulingPermissionDeniedError,
   VersionConflictError,
@@ -15447,6 +15448,154 @@ describePostgres('PostgreSQL critical command transaction', () => {
       reason_code: null, cooldown_source_result_id: resultId,
     });
     expect(persisted.rows[0]?.snapshot).toEqual(snapshotBefore.rows[0]?.snapshot);
+  });
+
+  it('[AC-209] records a post-start Athlete stoppage as a decisive Result without medical evidence', async () => {
+    const fixture = await seedYouthOfficialAtAgeBoundary(124000, true);
+    const snapshotBefore = await sql<{ readonly snapshot: unknown }>`
+      select to_jsonb(snapshot) as snapshot
+      from scheduling.session_competitive_snapshots as snapshot
+      where session_id = ${fixture.session}::uuid
+    `.execute(database);
+    const attendanceCommand = (
+      athleteUserId: string,
+      expectedVersion: number,
+      base: number,
+    ): CommandEnvelope<RecordAttendancePayload> => ({
+      commandId: testId(base), commandType: 'RECORD_ATTENDANCE',
+      idempotencyKey: `ac-209-attendance:${athleteUserId}`,
+      actor: {
+        type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+      },
+      aggregateType: 'Session', aggregateId: fixture.session, expectedVersion,
+      correlationId: testId(base + 1), causationId: null, requestId: testId(base + 2),
+      source: 'api', payloadVersion: 1,
+      payload: { sessionId: fixture.session, athleteUserId, status: 'PRESENT', comment: null },
+    });
+    const attendanceEffects = (base: number) => ({
+      eventId: testId(base + 3), auditId: testId(base + 4), outboxMessageId: testId(base + 5),
+      attendanceId: testId(base + 6), attendanceEventId: testId(base + 7),
+    });
+    await recordSessionAttendance(
+      database, attendanceCommand(fixture.athleteA, 1, 124100), attendanceEffects(124100),
+      () => new Date('2026-10-01T23:51:00.000Z'),
+    );
+    await recordSessionAttendance(
+      database, attendanceCommand(fixture.athleteB, 2, 124120), attendanceEffects(124120),
+      () => new Date('2026-10-01T23:52:00.000Z'),
+    );
+    await endSession(
+      database,
+      {
+        commandId: testId(124140), commandType: 'END_SESSION',
+        idempotencyKey: `ac-209-end:${fixture.session}`,
+        actor: {
+          type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+        },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 3,
+        correlationId: testId(124141), causationId: testId(124123), requestId: testId(124142),
+        source: 'api', payloadVersion: 1, payload: { sessionId: fixture.session },
+      } satisfies CommandEnvelope<EndSessionPayload>,
+      {
+        eventId: testId(124143), auditId: testId(124144), outboxMessageId: testId(124145),
+        bookingEventId: testId(124146), slotEventId: testId(124147),
+        challengeEventId: testId(124148), challengeOutboxMessageId: testId(124149),
+      },
+      () => new Date('2026-10-01T23:58:00.000Z'),
+    );
+
+    const invalidCommand = {
+      commandId: testId(124150), commandType: 'RECORD_SESSION_RESULT',
+      idempotencyKey: `ac-209-invalid-no-contest:${fixture.challenge}`,
+      actor: {
+        type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community],
+      },
+      aggregateType: 'Challenge', aggregateId: fixture.challenge, expectedVersion: 5,
+      correlationId: testId(124151), causationId: testId(124143), requestId: testId(124152),
+      source: 'api', payloadVersion: 1,
+      payload: {
+        challengeId: fixture.challenge, sessionId: fixture.session,
+        outcomeCode: 'NO_CONTEST', winnerUserId: null,
+        reasonCode: 'ATHLETE_STOPPED', comment: 'Athlete requested a voluntary stop.',
+        methodCode: 'VOLUNTARY_WITHDRAWAL', methodText: null,
+        scorePayload: null, methodPayload: null,
+      },
+    } satisfies CommandEnvelope<RecordSessionResultPayload>;
+    await expect(recordSessionResult(database, invalidCommand, {
+      eventId: testId(124153), auditId: testId(124154), outboxMessageId: testId(124155),
+      resultId: testId(124156), resultEventId: testId(124157),
+      timerOutboxMessageId: testId(124158), notificationOutboxMessageId: testId(124159),
+      notificationIds: [testId(124160), testId(124161)],
+    }, () => new Date('2026-10-01T23:59:00.000Z')))
+      .rejects.toEqual(new ResultValidationError('outcomeCode'));
+
+    const resultId = testId(124170);
+    const resultCommand = {
+      ...invalidCommand,
+      commandId: testId(124171), idempotencyKey: `ac-209-result:${fixture.challenge}`,
+      correlationId: testId(124172), requestId: testId(124173),
+      payload: {
+        challengeId: fixture.challenge, sessionId: fixture.session,
+        outcomeCode: 'WIN_B', winnerUserId: null, reasonCode: null,
+        comment: 'private-stoppage-note', methodCode: 'INJURY_STOPPAGE', methodText: null,
+        scorePayload: null, methodPayload: null,
+      },
+    } satisfies CommandEnvelope<RecordSessionResultPayload>;
+    const resultEffects = {
+      eventId: testId(124174), auditId: testId(124175), outboxMessageId: testId(124176),
+      resultId, resultEventId: testId(124177),
+      cooldownId: testId(124178), cooldownEventId: testId(124179),
+      timerOutboxMessageId: testId(124180), notificationOutboxMessageId: testId(124181),
+      notificationIds: [testId(124182), testId(124183)] as const,
+    };
+    const recorded = await recordSessionResult(
+      database, resultCommand, resultEffects,
+      () => new Date('2026-10-01T23:59:00.000Z'),
+    );
+    await expect(recordSessionResult(database, resultCommand, resultEffects))
+      .resolves.toMatchObject({ replayed: true, response: recorded.response });
+    expect(recorded.response).toMatchObject({
+      resultId, state: 'RECORDED', outcomeCode: 'WIN_B',
+      winnerUserId: fixture.athleteB, loserUserId: fixture.athleteA,
+      methodCode: 'INJURY_STOPPAGE', appealDeadlineAt: '2026-10-03T23:59:00.000Z',
+      statusTransitionType: 'NONE', provisional: true,
+    });
+
+    const persisted = await sql<{
+      readonly actual_start_at: Date;
+      readonly method_code: string;
+      readonly comment: string;
+      readonly cooldown_source_result_id: string;
+      readonly snapshot: unknown;
+    }>`
+      select session.actual_start_at, result.method_code, result.comment,
+        cooldown.source_result_id as cooldown_source_result_id,
+        to_jsonb(snapshot) as snapshot
+      from competition.results as result
+      join scheduling.sessions as session on session.session_id = result.session_id
+      join competition.pair_cooldowns as cooldown on cooldown.source_result_id = result.result_id
+      join scheduling.session_competitive_snapshots as snapshot
+        on snapshot.snapshot_id = result.competitive_snapshot_id
+      where result.result_id = ${resultId}::uuid
+    `.execute(database);
+    expect(persisted.rows[0]).toMatchObject({
+      actual_start_at: new Date('2026-10-01T23:50:00.000Z'),
+      method_code: 'INJURY_STOPPAGE', comment: 'private-stoppage-note',
+      cooldown_source_result_id: resultId,
+    });
+    expect(persisted.rows[0]?.snapshot).toEqual(snapshotBefore.rows[0]?.snapshot);
+
+    const publicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where event_id in (${resultEffects.eventId}::uuid, ${resultEffects.resultEventId}::uuid,
+        ${resultEffects.cooldownEventId}::uuid)
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (${resultEffects.outboxMessageId}::uuid,
+        ${resultEffects.notificationOutboxMessageId}::uuid)
+    `.execute(database);
+    expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-stoppage-note');
+    expect(JSON.stringify(publicDocuments.rows)).not.toMatch(/diagnosis|medicalDocument|evidence/i);
   });
 
   it('[AC-073] keeps Champion status outside a matched OPEN Result through the frozen NONE stake', async () => {

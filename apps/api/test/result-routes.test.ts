@@ -119,7 +119,7 @@ describe('Result and Appeal routes', () => {
     }), expect.any(Object));
   });
 
-  it('[AC-076][AC-078][AC-079][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203] exposes media-free Coach Result facts', async () => {
+  it('[AC-076][AC-078][AC-079][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203][AC-209] exposes media-free Coach Result facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
@@ -180,7 +180,7 @@ describe('Result and Appeal routes', () => {
         'idempotency-key': 'record-result-route-1',
         'if-match': '7',
       },
-      payload: { sessionId, outcomeCode: 'WIN_A' },
+      payload: { sessionId, outcomeCode: 'WIN_A', methodCode: 'INJURY_STOPPAGE' },
     });
     expect(created.statusCode).toBe(201);
     expect(recordSessionResult.mock.calls[0]?.[0]).toMatchObject({
@@ -189,7 +189,7 @@ describe('Result and Appeal routes', () => {
       actor: { id: actorUserId, roles: ['COACH'] },
       payload: {
         challengeId, sessionId, outcomeCode: 'WIN_A', winnerUserId: null,
-        reasonCode: null, comment: null, methodCode: null, methodText: null,
+        reasonCode: null, comment: null, methodCode: 'INJURY_STOPPAGE', methodText: null,
         scorePayload: null, methodPayload: null,
       },
     });

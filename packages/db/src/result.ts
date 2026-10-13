@@ -7,6 +7,7 @@ import {
   appealResponseDeadline,
   appealReviewSlaDeadline,
   assertAppealActionCanBeTaken,
+  assertAthleteStoppageResult,
   assertExpectedVersion,
   assertReviewedResultMatchesAssignment,
   assertResultCanFinalize,
@@ -207,6 +208,7 @@ interface RecordContextRow {
   readonly session_state: string;
   readonly venue_id: string;
   readonly coach_user_id: string;
+  readonly actual_start_at: Date | null;
   readonly actual_end_at: Date;
   readonly pair_low_id: string;
   readonly pair_high_id: string;
@@ -355,7 +357,7 @@ async function recordContext(
           and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
       ) as status_review_hold_active,
       session.session_id, session.state as session_state, session.venue_id,
-      session.coach_user_id, session.actual_end_at,
+      session.coach_user_id, session.actual_start_at, session.actual_end_at,
       session.pair_low_id, session.pair_high_id,
       snapshot.snapshot_id, snapshot.effective_stake,
       snapshot.champion_user_id as snapshot_champion_user_id,
@@ -1095,6 +1097,12 @@ export async function recordSessionResult(
       const appealDeadlineAt = resultAppealDeadline(context.occurredAt);
       const methodCode = optionalText(command.payload.methodCode, 'methodCode', 80);
       const methodText = optionalText(command.payload.methodText, 'methodText', 500);
+      assertAthleteStoppageResult({
+        outcomeCode: command.payload.outcomeCode,
+        winnerUserId: normalized.winnerUserId,
+        methodCode,
+        actualStartAt: row.actual_start_at,
+      });
       const preStatus = {
         championUserId: transition.before.championUserId,
         contenderUserId: transition.before.contenderUserId,

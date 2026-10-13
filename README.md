@@ -8,7 +8,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **178/214** (`172/196 P0`);
+- executable acceptance traceability: **179/214** (`173/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
 - database gate: PostgreSQL migrations `0001`–`0067` and **59/59** integration scenarios pass locally;
@@ -287,7 +287,11 @@ and requires a separate Coach-confirmed `NO_SHOW` Result with the present Athlet
 the standard 48-hour Appeal. Two absences normalize only to `NO_CONTEST`, with no winner, status
 change, loss or Cooldown. `LATE` remains attendance metadata only: it never creates a
 loss, Forfeit, administrative Result or Cooldown, and the Coach may record the ordinary sporting
-outcome. The same transaction creates the immutable Result, moves
+outcome. After actual start, an Athlete injury or voluntary stop uses the normalized
+`INJURY_STOPPAGE` or `VOLUNTARY_WITHDRAWAL` method and remains a decisive Coach-confirmed Result
+under the frozen ruleset; no medical document, diagnosis or evidence upload is requested. A
+personal stop cannot be converted to `NO_CONTEST`: that route is reserved for an external Safety,
+Venue or equipment failure. The same transaction creates the immutable Result, moves
 Challenge through `CH-15`, applies any provisional Champion/Contender transition, starts the
 configured pair Cooldown and schedules finalization exactly 48 hours later. The eligible Athlete
 may submit Appeal or explicitly waive it. A decisive Result finalizes early when its sole eligible
