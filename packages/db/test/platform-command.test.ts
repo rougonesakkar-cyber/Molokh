@@ -9928,7 +9928,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(bookingLineage.rows[0]?.match_id).toBeNull();
   });
 
-  it('[AC-044][AC-052][AC-095][AC-096][AC-097][AC-121][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
+  it('[AC-044][AC-052][AC-092][AC-095][AC-096][AC-097][AC-121][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
     const setup = async (base: number, phonePrefix: string) => {
       const challenger = testId(base);
       const contender = testId(base + 1);
@@ -9936,6 +9936,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       const central = testId(base + 3);
       const follower = testId(base + 15);
       const lateFollower = testId(base + 60);
+      const thirdFollower = testId(base + 63);
       const venue = testId(base + 4);
       const community = testId(base + 5);
       const competition = testId(base + 6);
@@ -9951,7 +9952,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
           (${champion}::uuid, ${`${phonePrefix}2`}, ${occurredAt}::timestamptz, '1993-01-01', 'ADULT', ${`Champion ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
           (${central}::uuid, ${`${phonePrefix}3`}, ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', ${`Central ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
           (${follower}::uuid, ${`${phonePrefix}4`}, ${occurredAt}::timestamptz, '1996-01-01', 'ADULT', ${`Follower ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
-          (${lateFollower}::uuid, ${`${phonePrefix}5`}, ${occurredAt}::timestamptz, '1997-01-01', 'ADULT', ${`Late follower ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
+          (${lateFollower}::uuid, ${`${phonePrefix}5`}, ${occurredAt}::timestamptz, '1997-01-01', 'ADULT', ${`Late follower ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+          (${thirdFollower}::uuid, ${`${phonePrefix}6`}, ${occurredAt}::timestamptz, '1998-01-01', 'ADULT', ${`Third follower ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
       `.execute(database);
       await sql`
         insert into identity.account_verifications (
@@ -9961,7 +9963,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
           (${testId(base + 7)}::uuid, ${challenger}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
           (${testId(base + 8)}::uuid, ${contender}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
           (${testId(base + 16)}::uuid, ${follower}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
-          (${testId(base + 61)}::uuid, ${lateFollower}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1)
+          (${testId(base + 61)}::uuid, ${lateFollower}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
+          (${testId(base + 64)}::uuid, ${thirdFollower}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1)
       `.execute(database);
       await ensureLocalPilotCommunity(database, {
         venueId: venue,
@@ -9992,6 +9995,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
           { membershipId: testId(base + 14), userId: champion },
           { membershipId: testId(base + 17), userId: follower },
           { membershipId: testId(base + 62), userId: lateFollower },
+          { membershipId: testId(base + 65), userId: thirdFollower },
         ],
       });
       await sql`
@@ -10078,6 +10082,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         champion,
         follower,
         lateFollower,
+        thirdFollower,
         competition,
         challengeId,
         serviceChatId,
@@ -10089,6 +10094,170 @@ describePostgres('PostgreSQL critical command transaction', () => {
     };
 
     const acceptedFixture = await setup(15000, '+7999150000');
+    const busyArtifactCounts = async () => {
+      const result = await sql<{
+        readonly challenges: string;
+        readonly service_chats: string;
+        readonly rulesets: string;
+        readonly obligations: string;
+        readonly timers: string;
+      }>`
+        select
+          (select count(*)::text from competition.challenges
+            where competition_id = ${acceptedFixture.competition}::uuid) as challenges,
+          (select count(*)::text from social.chats as chat
+            join competition.challenges as challenge
+              on challenge.service_chat_id = chat.chat_id
+            where challenge.competition_id = ${acceptedFixture.competition}::uuid) as service_chats,
+          (select count(*)::text from competition.ruleset_snapshots
+            where competition_id = ${acceptedFixture.competition}::uuid) as rulesets,
+          (select count(*)::text from competition.challenge_participant_obligations as obligation
+            join competition.challenges as challenge
+              on challenge.challenge_id = obligation.challenge_id
+            where challenge.competition_id = ${acceptedFixture.competition}::uuid) as obligations,
+          (select count(*)::text from platform.outbox_messages
+            where topic like '%timer.v1') as timers
+      `.execute(database);
+      const counts = result.rows[0];
+      if (!counts) throw new Error('AC-092 artifact counts are missing');
+      return counts;
+    };
+    const beforeBusySubmissions = await busyArtifactCounts();
+    const buildBusyEntry = (userId: string, queueEntryId: string, base: number) => ({
+      command: {
+        commandId: testId(base + 1), commandType: 'SUBMIT_STATUS_QUEUE_ENTRY',
+        idempotencyKey: `ac-092-busy-submit-${queueEntryId}`,
+        actor: { type: 'USER' as const, id: userId, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntryId,
+        expectedVersion: 0, correlationId: testId(base + 2),
+        causationId: acceptedFixture.activationEventId, requestId: testId(base + 3),
+        source: 'api', payloadVersion: 1,
+        payload: { competitionId: acceptedFixture.competition },
+      } satisfies CommandEnvelope<SubmitStatusQueueEntryPayload>,
+      ids: {
+        eventId: testId(base + 4), auditId: testId(base + 5),
+        outboxMessageId: testId(base + 6), challengeId: testId(base + 7),
+        challengeEventId: testId(base + 8), serviceChatId: testId(base + 9),
+        serviceChatEventId: testId(base + 10), rulesetSnapshotId: testId(base + 11),
+        acknowledgmentId: testId(base + 12), pairedQueueEventId: testId(base + 13),
+        timerOutboxMessageId: testId(base + 14), staleQueueEventId: testId(base + 15),
+        staleQueueOutboxMessageId: testId(base + 16),
+        notificationOutboxMessageId: testId(base + 17),
+        notificationIds: [testId(base + 18), testId(base + 19)] as const,
+      },
+    });
+    const firstBusyPlan = buildBusyEntry(
+      acceptedFixture.follower, testId(15200), 15200,
+    );
+    const secondBusyPlan = buildBusyEntry(
+      acceptedFixture.lateFollower, testId(15220), 15220,
+    );
+    const thirdBusyPlan = buildBusyEntry(
+      acceptedFixture.thirdFollower, testId(15240), 15240,
+    );
+    const firstBusy = await submitStatusQueueEntry(
+      database, firstBusyPlan.command, firstBusyPlan.ids,
+    );
+    const secondBusy = await submitStatusQueueEntry(
+      database, secondBusyPlan.command, secondBusyPlan.ids,
+    );
+    const thirdBusy = await submitStatusQueueEntry(
+      database, thirdBusyPlan.command, thirdBusyPlan.ids,
+    );
+    expect([firstBusy.response, secondBusy.response, thirdBusy.response]).toMatchObject([
+      { queueEntryId: testId(15200), state: 'WAITING', position: 1, version: 1 },
+      { queueEntryId: testId(15220), state: 'WAITING', position: 2, version: 1 },
+      { queueEntryId: testId(15240), state: 'WAITING', position: 3, version: 1 },
+    ]);
+    await expect(submitStatusQueueEntry(
+      database, firstBusyPlan.command, firstBusyPlan.ids,
+    )).resolves.toMatchObject({
+      replayed: true,
+      eventId: firstBusy.eventId,
+      response: firstBusy.response,
+    });
+    const duplicateBusyPlan = buildBusyEntry(
+      acceptedFixture.follower, testId(15260), 15260,
+    );
+    await expect(submitStatusQueueEntry(
+      database, duplicateBusyPlan.command, duplicateBusyPlan.ids,
+    )).rejects.toThrow('LIVE_QUEUE_ENTRY_EXISTS');
+
+    const busyProjection = await readCompetitionStatus(
+      database,
+      acceptedFixture.competition,
+      acceptedFixture.follower,
+    );
+    expect(busyProjection).toMatchObject({
+      queueSize: 3,
+      activeChallenge: { challengeId: acceptedFixture.challengeId },
+      queue: [
+        { queueEntryId: testId(15200), state: 'WAITING', position: 1, version: 1 },
+        { queueEntryId: testId(15220), state: 'WAITING', position: 2, version: 1 },
+        { queueEntryId: testId(15240), state: 'WAITING', position: 3, version: 1 },
+      ],
+    });
+    for (const entry of busyProjection?.queue ?? []) {
+      expect(entry).not.toHaveProperty('responseDeadlineAt');
+      expect(entry.submittedAt).toBeTruthy();
+    }
+    await expect(readStatusQueueActivationCandidate(
+      database,
+      acceptedFixture.competition,
+    )).resolves.toBeNull();
+
+    const failedActivationIds = {
+      eventId: testId(15304), auditId: testId(15305), outboxMessageId: testId(15306),
+      challengeId: testId(15307), challengeEventId: testId(15308),
+      serviceChatId: testId(15309), serviceChatEventId: testId(15310),
+      rulesetSnapshotId: testId(15311), acknowledgmentId: testId(15312),
+      pairedQueueEventId: testId(15313), timerOutboxMessageId: testId(15314),
+      staleQueueEventId: testId(15315),
+      mandatoryReminderTimerOutboxMessageId: testId(15316),
+      staleQueueOutboxMessageId: testId(15317),
+      notificationOutboxMessageId: testId(15318),
+      notificationIds: [testId(15319), testId(15320)] as const,
+    };
+    await expect(activateStatusQueueHead(
+      database,
+      {
+        commandId: testId(15301), commandType: 'ACTIVATE_STATUS_QUEUE_HEAD',
+        idempotencyKey: `ac-092-busy-activate-${testId(15200)}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'ChallengeQueueEntry', aggregateId: testId(15200),
+        expectedVersion: 1, correlationId: testId(15302),
+        causationId: firstBusy.eventId, requestId: testId(15303),
+        source: 'scheduler', payloadVersion: 1,
+        payload: {
+          competitionId: acceptedFixture.competition,
+          queueEntryId: testId(15200),
+        },
+      } satisfies CommandEnvelope<ActivateStatusQueueHeadPayload>,
+      failedActivationIds,
+    )).rejects.toThrow('STATUS_SLOT_OCCUPIED');
+
+    expect(await busyArtifactCounts()).toEqual(beforeBusySubmissions);
+    const failedActivationFacts = await sql<{
+      readonly event_count: string;
+      readonly audit_count: string;
+      readonly outbox_count: string;
+      readonly queue_count: string;
+    }>`
+      select
+        (select count(*)::text from platform.domain_events
+          where event_id = ${failedActivationIds.eventId}::uuid) as event_count,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${failedActivationIds.auditId}::uuid) as audit_count,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${failedActivationIds.outboxMessageId}::uuid) as outbox_count,
+        (select count(*)::text from competition.challenge_queue_entries
+          where competition_id = ${acceptedFixture.competition}::uuid
+            and state = 'WAITING') as queue_count
+    `.execute(database);
+    expect(failedActivationFacts.rows[0]).toEqual({
+      event_count: '0', audit_count: '0', outbox_count: '0', queue_count: '3',
+    });
+
     const mandatoryReminderOutbox = await sql<{
       readonly topic: string;
       readonly payload: { readonly timer: {

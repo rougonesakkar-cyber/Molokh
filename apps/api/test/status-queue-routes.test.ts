@@ -56,7 +56,7 @@ describe('status queue routes', () => {
     await Promise.all(apps.splice(0).map((app) => app.close()));
   });
 
-  it('AC-178 exposes the ordered member projection and idempotent queue commands', async () => {
+  it('[AC-092][AC-178] exposes the ordered member projection and idempotent queue commands', async () => {
     const readCompetitionStatus = vi.fn().mockResolvedValue(competition);
     const submitEntry = vi.fn().mockResolvedValue({
       responseStatus: 201,
@@ -147,6 +147,7 @@ describe('status queue routes', () => {
     expect(submit.statusCode).toBe(201);
     expect(submitEntry).toHaveBeenCalledOnce();
     expect(submit.json()).toMatchObject({ data: { state: 'WAITING', position: 1 } });
+    expect(submit.json().data).not.toHaveProperty('responseDeadlineAt');
 
     const withdraw = await app.inject({
       method: 'POST',

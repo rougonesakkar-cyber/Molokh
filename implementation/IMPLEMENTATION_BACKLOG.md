@@ -310,7 +310,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   records an appealable administrative Forfeit, moves Contender provisionally, starts the normal
   48-hour Result/Appeal window and never fabricates a Session, Venue or Coach. The queue entry is
   consumed only with Challenge creation; stale holder entries are invalidated without loss and a
-  busy status slot is deferred. Core, typed API/client, Worker and PostgreSQL integration pass.
+  busy status slot is deferred. AC-092 proves that three valid submissions remain independently
+  versioned `WAITING` entries in strict server FIFO while that slot is occupied: no Challenge,
+  response clock, Chat, ruleset snapshot, obligation or failed-command side effect is created.
+  Core, typed API/client, Worker and PostgreSQL integration pass.
 - M5 holder-change reconfirmation increment: complete. After a final Result/Appeal/Integrity
   decision, the Worker compares every waiting direct-status entry with the current Contender under
   versioned commands. Migratable entries keep their immutable FIFO key, bind the new holder and
@@ -393,7 +396,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 181/214 (`175/196 P0`).
+  Acceptance traceability is 182/214 (`176/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

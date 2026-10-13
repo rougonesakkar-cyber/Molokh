@@ -100,7 +100,7 @@ describe('status queue policy', () => {
     })).toThrowError('LIVE_QUEUE_ENTRY_EXISTS');
   });
 
-  it('[AC-048] activates only the strict FIFO head against the still-current Contender', () => {
+  it('[AC-048][AC-092] activates only the strict FIFO head against the still-current Contender', () => {
     const activation = {
       state: 'WAITING' as const,
       kind: 'DIRECT_STATUS' as const,
