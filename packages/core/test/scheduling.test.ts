@@ -27,6 +27,7 @@ import {
   assertTrainingRetentionDecisionCanBeRecorded,
   assertTrainingParticipantCanCancel,
   officialCancellationWinner,
+  assertGroupPlanOfficialConversionCanBeRequested,
   assertTrainingOfficialConversionCanBeRequested,
   attendanceCountsAsCompletedTraining,
   bookingSelectionExpiresAt,
@@ -387,6 +388,17 @@ describe('Scheduling publication policy', () => {
       actorIsAthlete: true,
       hasLiveConversion: false,
       occurredAt,
+    })).toThrowError(expect.objectContaining({ reason: 'OFFICIAL_CONVERSION_NOT_ALLOWED' }));
+  });
+
+  it('[AC-025][AC-026] opens GroupPlan confirmation only for a mutual plan with Coach', () => {
+    expect(assertGroupPlanOfficialConversionCanBeRequested({
+      groupPlanState: 'NOTIFIED', actorIsAthlete: true, coachAssigned: true,
+      hasLiveConversion: false, scheduledStartAt: '2026-09-11T16:00:00.000Z', occurredAt,
+    }).toISOString()).toBe('2026-09-10T09:00:00.000Z');
+    expect(() => assertGroupPlanOfficialConversionCanBeRequested({
+      groupPlanState: 'PROPOSED', actorIsAthlete: true, coachAssigned: true,
+      hasLiveConversion: false, scheduledStartAt: '2026-09-11T16:00:00.000Z', occurredAt,
     })).toThrowError(expect.objectContaining({ reason: 'OFFICIAL_CONVERSION_NOT_ALLOWED' }));
   });
 

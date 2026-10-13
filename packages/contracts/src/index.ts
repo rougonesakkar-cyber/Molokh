@@ -920,7 +920,6 @@ export type MutualChallengeRescheduleRequestContract = Static<
 export const ChallengeProjectionSchema = Type.Object(
   {
     challengeId: Type.String({ format: 'uuid' }),
-    competitionId: Type.String({ format: 'uuid' }),
     sourceChatId: Type.String({ format: 'uuid' }),
     serviceChatId: Type.String({ format: 'uuid' }),
     initiatorUserId: Type.String({ format: 'uuid' }),
@@ -1907,6 +1906,7 @@ export const GroupOfferingProjectionSchema = Type.Object(
     classLabel: Type.String({ minLength: 1, maxLength: 120 }),
     startAt: Type.String({ format: 'date-time' }),
     endAt: Type.String({ format: 'date-time' }),
+    coachUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     coachDisplayName: Type.Union([
       Type.String({ minLength: 1, maxLength: 120 }),
       Type.Null(),
@@ -2569,6 +2569,7 @@ export const GroupOfferingSnapshotSchema = Type.Object(
     classLabel: Type.String({ minLength: 1, maxLength: 120 }),
     startAt: Type.String({ format: 'date-time' }),
     endAt: Type.String({ format: 'date-time' }),
+    coachUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     coachDisplayName: Type.Union([
       Type.String({ minLength: 1, maxLength: 120 }),
       Type.Null(),
@@ -2594,7 +2595,11 @@ export const GroupPlanProjectionSchema = Type.Object(
     state: Type.Union([
       Type.Literal('PROPOSED'),
       Type.Literal('NOTIFIED'),
+      Type.Literal('CONVERSION_PENDING'),
+      Type.Literal('CONVERTED'),
+      Type.Literal('DECLINED'),
       Type.Literal('EXPIRED'),
+      Type.Literal('CANCELLED'),
     ]),
     offeringSnapshot: GroupOfferingSnapshotSchema,
     version: Type.Integer({ minimum: 1 }),
@@ -2603,6 +2608,56 @@ export const GroupPlanProjectionSchema = Type.Object(
 );
 
 export type GroupPlanContract = Static<typeof GroupPlanProjectionSchema>;
+
+export const GroupPlanOfficialConversionProjectionSchema = Type.Object(
+  {
+    conversionId: Type.String({ format: 'uuid' }),
+    groupPlanId: Type.String({ format: 'uuid' }),
+    chatId: Type.String({ format: 'uuid' }),
+    requestedByUserId: Type.String({ format: 'uuid' }),
+    coachUserId: Type.String({ format: 'uuid' }),
+    coachDisplayName: Type.String({ minLength: 1, maxLength: 120 }),
+    state: Type.Union([
+      Type.Literal('PENDING_CONFIRMATION'),
+      Type.Literal('CONVERTED'),
+      Type.Literal('DECLINED'),
+      Type.Literal('EXPIRED'),
+      Type.Literal('INVALIDATED'),
+    ]),
+    confirmationDeadlineAt: Type.String({ format: 'date-time' }),
+    challengeId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    bookingId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    sessionId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    confirmations: Type.Array(BookingOfficialConversionConfirmationSchema, { maxItems: 3 }),
+    viewerRequiredRole: Type.Union([
+      Type.Literal('ATHLETE_LOW'), Type.Literal('ATHLETE_HIGH'), Type.Literal('COACH'), Type.Null(),
+    ]),
+    viewerHasDecided: Type.Boolean(),
+    viewerCanConfirm: Type.Boolean(),
+    viewerCanDecline: Type.Boolean(),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'GroupPlanOfficialConversionProjection', additionalProperties: false },
+);
+
+export type GroupPlanOfficialConversionContract = Static<
+  typeof GroupPlanOfficialConversionProjectionSchema
+>;
+
+export const MyGroupPlanOfficialConversionsResponseSchema = Type.Object(
+  {
+    data: Type.Array(GroupPlanOfficialConversionProjectionSchema),
+    meta: Type.Object(
+      { requestId: Type.String({ format: 'uuid' }) },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'MyGroupPlanOfficialConversionsResponse', additionalProperties: false },
+);
+
+export type MyGroupPlanOfficialConversionsResponse = Static<
+  typeof MyGroupPlanOfficialConversionsResponseSchema
+>;
 
 export const TrainingOptionsResponseSchema = Type.Object(
   {
@@ -2657,6 +2712,7 @@ export const PublishGroupOfferingBodySchema = Type.Object(
     classLabel: Type.String({ minLength: 1, maxLength: 120 }),
     startAt: Type.String({ format: 'date-time' }),
     endAt: Type.String({ format: 'date-time' }),
+    coachUserId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
     coachDisplayName: Type.Optional(
       Type.Union([Type.String({ maxLength: 120 }), Type.Null()]),
     ),
@@ -2693,6 +2749,7 @@ export const UpdateGroupOfferingBodySchema = Type.Object(
     classLabel: Type.String({ minLength: 1, maxLength: 120 }),
     startAt: Type.String({ format: 'date-time' }),
     endAt: Type.String({ format: 'date-time' }),
+    coachUserId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
     coachDisplayName: Type.Optional(
       Type.Union([Type.String({ maxLength: 120 }), Type.Null()]),
     ),
@@ -2791,6 +2848,27 @@ export const ConfirmGroupPlanBodySchema = Type.Object(
 );
 
 export type ConfirmGroupPlanBody = Static<typeof ConfirmGroupPlanBodySchema>;
+
+export const RequestGroupPlanOfficialConversionBodySchema = Type.Object(
+  { explicitRulesetAcknowledged: Type.Optional(Type.Boolean()) },
+  { $id: 'RequestGroupPlanOfficialConversionBody', additionalProperties: false },
+);
+
+export type RequestGroupPlanOfficialConversionBody = Static<
+  typeof RequestGroupPlanOfficialConversionBodySchema
+>;
+
+export const DecideGroupPlanOfficialConversionBodySchema = Type.Object(
+  {
+    decision: Type.Union([Type.Literal('ACCEPT'), Type.Literal('DECLINE')]),
+    explicitRulesetAcknowledged: Type.Optional(Type.Boolean()),
+  },
+  { $id: 'DecideGroupPlanOfficialConversionBody', additionalProperties: false },
+);
+
+export type DecideGroupPlanOfficialConversionBody = Static<
+  typeof DecideGroupPlanOfficialConversionBodySchema
+>;
 
 export const SlotCommandResponseSchema = Type.Object(
   {
@@ -2912,6 +2990,25 @@ export const GroupPlanCommandResponseSchema = Type.Object(
 );
 
 export type GroupPlanCommandResponse = Static<typeof GroupPlanCommandResponseSchema>;
+
+export const GroupPlanOfficialConversionCommandResponseSchema = Type.Object(
+  {
+    data: GroupPlanOfficialConversionProjectionSchema,
+    meta: Type.Object(
+      {
+        requestId: Type.String({ format: 'uuid' }),
+        eventId: Type.String({ format: 'uuid' }),
+        replayed: Type.Boolean(),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'GroupPlanOfficialConversionCommandResponse', additionalProperties: false },
+);
+
+export type GroupPlanOfficialConversionCommandResponse = Static<
+  typeof GroupPlanOfficialConversionCommandResponseSchema
+>;
 
 export const ChangeDisplayNameBodySchema = Type.Object(
   {

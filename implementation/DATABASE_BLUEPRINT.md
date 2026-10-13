@@ -100,6 +100,8 @@ Critical constraints:
 - `slots`
 - `group_offerings`
 - `group_plans`
+- `group_plan_official_conversions`
+- `group_plan_conversion_confirmations`
 - `bookings`
 - `booking_commercial_snapshots`
 - `booking_official_conversions`
@@ -118,6 +120,7 @@ Critical constraints:
 - optional Venue resource exclusion;
 - commercial snapshot immutable after mutual selection;
 - one live Official conversion per Booking and one immutable decision per required role;
+- one live Official conversion per GroupPlan and one immutable Athlete-low/Athlete-high/Coach decision;
 - one retention process per booked Official lineage and one immutable decision per Athlete/Coach-host role;
 - Booking/Session Coach assignment updated in one transaction.
 
@@ -256,6 +259,11 @@ the effective decisive outcome, and keeps the original Result Appeal clock/versi
 new tables reject update/delete, and private decision text remains outside event/outbox payloads.
 
 `0066_result_metadata_revisions.sql` adds the append-only AC-078 score/method correction journal.
+
+`0067_group_plan_official_conversion.sql` assigns an optional authorized Coach to a
+GroupOffering and adds the versioned GP-05…GP-08 conversion aggregate plus immutable per-role
+confirmation facts. A partial unique index permits one live conversion per GroupPlan; Challenge,
+Booking and Session references are required only for terminal `CONVERTED` state.
 Each row stores source/result version lineage, protected before/after metadata, the DB-authorized
 Coach and server time. A Result aggregate version advances, but recorded winner/outcome, source
 metadata, Session snapshot, Challenge, status, Cooldown and Appeal clocks are never overwritten.

@@ -28,6 +28,7 @@ import {
   expirePhoneChangeSecurityHold,
   expireGroupOffering,
   expireGroupPlan,
+  expireGroupPlanOfficialConversion,
   expireOptionalChallenge,
   expireChallengeScheduling,
   expireGenesisChallenge,
@@ -64,6 +65,7 @@ import {
   readAccountAccessTimerSnapshot,
   readGroupOfferingTimerSnapshot,
   readGroupPlanTimerSnapshot,
+  readGroupPlanOfficialConversionTimerSnapshot,
   listExpirableGuestCoachGrants,
   readLikeTimerSnapshot,
   readMatchTimerSnapshot,
@@ -97,6 +99,7 @@ import {
   type ExpirePhoneChangeHoldPayload,
   type ExpireGroupOfferingPayload,
   type ExpireGroupPlanPayload,
+  type ExpireGroupPlanOfficialConversionPayload,
   type ExpireLikePayload,
   type ExpireInactiveMatchPayload,
   type FinalizeResultPayload,
@@ -884,6 +887,24 @@ const executeBookingOfficialConversionExpiry = async (payload: TimerCommandPaylo
   });
 };
 
+const executeGroupPlanOfficialConversionExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireGroupPlanOfficialConversionPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_GROUP_PLAN_OFFICIAL_CONVERSION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'GroupPlanOfficialConversion', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { conversionId: payload.aggregateId },
+  };
+  await expireGroupPlanOfficialConversion(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+    groupPlanEventId: randomUUID(), groupPlanTimerOutboxMessageId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+  });
+};
+
 const executeBookingSoloContinuationExpiry = async (payload: TimerCommandPayload) => {
   const command: CommandEnvelope<ExpireBookingSoloContinuationPayload> = {
     commandId: randomUUID(),
@@ -1254,6 +1275,11 @@ const taskList = createTaskList({
           loadSnapshot: (timer) =>
             readBookingOfficialConversionTimerSnapshot(database, timer.aggregateId),
           execute: executeBookingOfficialConversionExpiry,
+        },
+        EXPIRE_GROUP_PLAN_OFFICIAL_CONVERSION: {
+          loadSnapshot: (timer) =>
+            readGroupPlanOfficialConversionTimerSnapshot(database, timer.aggregateId),
+          execute: executeGroupPlanOfficialConversionExpiry,
         },
         EXPIRE_BOOKING_SOLO_CONTINUATION: {
           loadSnapshot: (timer) =>

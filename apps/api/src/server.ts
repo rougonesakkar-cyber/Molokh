@@ -113,6 +113,9 @@ import {
   startSession,
   skipDiscoveryCandidate,
   confirmGroupPlan,
+  decideGroupPlanOfficialConversion,
+  listGroupPlanOfficialConversionsForViewer,
+  requestGroupPlanOfficialConversion,
   unblockUser,
   unmatchPair,
   acceptOptionalChallenge,
@@ -1492,6 +1495,12 @@ const app = await buildApp({
       decideBookingTrainingRetention(database, command, ids),
     proposeGroupPlan: (command, ids) => proposeGroupPlan(database, command, ids),
     confirmGroupPlan: (command, ids) => confirmGroupPlan(database, command, ids),
+    listGroupPlanOfficialConversionsForViewer: (actorUserId) =>
+      listGroupPlanOfficialConversionsForViewer(database, actorUserId),
+    requestGroupPlanOfficialConversion: (command, ids) =>
+      requestGroupPlanOfficialConversion(database, command, ids),
+    decideGroupPlanOfficialConversion: (command, ids) =>
+      decideGroupPlanOfficialConversion(database, command, ids),
   },
   verification: {
     athleteAuth: localAuth,

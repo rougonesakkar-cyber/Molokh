@@ -25,6 +25,7 @@ export * from './auth-session.js';
 export * from './appeal.js';
 export * from './age-transition.js';
 export * from './booking-conversion.js';
+export * from './group-plan-conversion.js';
 export * from './solo-continuation.js';
 export * from './training-retention.js';
 export * from './chat.js';

@@ -172,6 +172,9 @@ import {
   withdrawBookingRequest,
   proposeGroupPlan,
   confirmGroupPlan,
+  requestGroupPlanOfficialConversion,
+  decideGroupPlanOfficialConversion,
+  listGroupPlanOfficialConversionsForViewer,
   confirmBookingHost,
   rejectBookingHost,
   readHostConfirmationQueue,
@@ -291,6 +294,9 @@ import {
   type ConfirmMutualChallengeRescheduleEffectIds,
   type RescheduleChallengeByAthletePayload,
   type ConfirmGroupPlanPayload,
+  type RequestGroupPlanOfficialConversionPayload,
+  type DecideGroupPlanOfficialConversionPayload,
+  type GroupPlanOfficialConversionEffectIds,
   type ConfirmBookingHostPayload,
   type DecideBookingOfficialConversionPayload,
   type DecideBookingSoloContinuationPayload,
@@ -557,6 +563,29 @@ async function verifySchedulingPublication(
       occurredAt: occurredAt.toISOString(),
     });
     await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values
+        (${testId(30001)}::uuid, ${athleteA}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+          'identity-mvp-v1', true, ${occurredAt.toISOString()}::timestamptz,
+          ${central}::uuid, 'TEST_APPROVED', 1),
+        (${testId(30002)}::uuid, ${athleteB}::uuid, 'VERIFIED', 'CENTRAL_MODERATION',
+          'identity-mvp-v1', true, ${occurredAt.toISOString()}::timestamptz,
+          ${central}::uuid, 'TEST_APPROVED', 1)
+    `.execute(database);
+    const competition = testId(30000);
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition,
+      communityId: community,
+      centralActorId: central,
+      occurredAt: occurredAt.toISOString(),
+      memberships: [
+        { membershipId: testId(1116), userId: athleteA },
+        { membershipId: testId(30003), userId: athleteB },
+      ],
+    });
+    await sql`
       insert into community.role_grants (
         grant_id, user_id, role, scope_type, scope_id, state,
         authorized_by, authorized_at, version
@@ -673,6 +702,7 @@ async function verifySchedulingPublication(
 
     const offeringPayload: PublishGroupOfferingPayload = {
       venueId: venue,
+      coachUserId: coach,
       sportCode: 'boxing',
       classLabel: '  Открытая группа по боксу  ',
       startAt: '2026-09-11T16:00:00.000Z',
@@ -1968,6 +1998,218 @@ async function verifySchedulingPublication(
     expect(finalOptions.groupOfferings).toEqual([]);
     expect(finalOptions.activeIntent.groupPlan).toBeNull();
     expect(finalOptions.reservationPolicy).toBe('NO_RESERVATION_BEFORE_HOST_CONFIRMATION');
+
+    const conversionOfferingId = testId(30010);
+    await publishGroupOffering(
+      database,
+      {
+        commandId: testId(30011), commandType: 'PUBLISH_GROUP_OFFERING',
+        idempotencyKey: 'group-official-offering',
+        actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+        aggregateType: 'GroupOffering', aggregateId: conversionOfferingId,
+        expectedVersion: 0, correlationId: testId(30012), causationId: null,
+        requestId: testId(30013), source: 'api', payloadVersion: 1,
+        payload: {
+          venueId: venue, coachUserId: coach, sportCode: 'BOXING',
+          classLabel: 'Группа для Official', startAt: '2026-09-12T16:00:00.000Z',
+          endAt: '2026-09-12T17:00:00.000Z', coachDisplayName: 'Тренер',
+          priceText: 'Оплата залу', externalInfoUrl: null,
+        },
+      } satisfies CommandEnvelope<PublishGroupOfferingPayload>,
+      { eventId: testId(30014), auditId: testId(30015), outboxMessageId: testId(30016) },
+      () => occurredAt,
+    );
+    const conversionPlanId = testId(30017);
+    await proposeGroupPlan(
+      database,
+      {
+        commandId: testId(30018), commandType: 'PROPOSE_GROUP_PLAN',
+        idempotencyKey: 'group-official-plan',
+        actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'GroupPlan', aggregateId: conversionPlanId, expectedVersion: 0,
+        correlationId: testId(30019), causationId: null, requestId: testId(30020),
+        source: 'api', payloadVersion: 1,
+        payload: { chatId: chat, groupOfferingId: conversionOfferingId, offeringVersion: 1 },
+      } satisfies CommandEnvelope<ProposeGroupPlanPayload>,
+      { eventId: testId(30021), auditId: testId(30022), outboxMessageId: testId(30023),
+        notificationId: testId(30024), notificationOutboxMessageId: testId(30025) },
+      () => occurredAt,
+    );
+    await confirmGroupPlan(
+      database,
+      {
+        commandId: testId(30026), commandType: 'CONFIRM_GROUP_PLAN',
+        idempotencyKey: 'group-official-plan-confirm',
+        actor: { type: 'USER', id: athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'GroupPlan', aggregateId: conversionPlanId, expectedVersion: 1,
+        correlationId: testId(30027), causationId: testId(30021), requestId: testId(30028),
+        source: 'api', payloadVersion: 1, payload: { groupPlanId: conversionPlanId },
+      } satisfies CommandEnvelope<ConfirmGroupPlanPayload>,
+      { eventId: testId(30029), auditId: testId(30030), outboxMessageId: testId(30031),
+        notificationId: testId(30032), notificationOutboxMessageId: testId(30033) },
+      () => new Date('2026-09-07T09:10:00.000Z'),
+    );
+
+    const conversionIds = (
+      base: number,
+      conversionId: string,
+    ): GroupPlanOfficialConversionEffectIds => ({
+      eventId: testId(base), auditId: testId(base + 1), outboxMessageId: testId(base + 2),
+      conversionId, conversionEventId: testId(base + 3), confirmationId: testId(base + 4),
+      timerOutboxMessageId: testId(base + 5), groupPlanEventId: testId(base + 6),
+      challengeId: testId(base + 7), challengeEventId: testId(base + 8),
+      serviceChatId: testId(base + 9), serviceChatEventId: testId(base + 10),
+      rulesetSnapshotId: testId(base + 11),
+      acknowledgmentIds: [testId(base + 12), testId(base + 13)],
+      obligationIds: [testId(base + 14), testId(base + 15)],
+      slotId: testId(base + 16), slotEventId: testId(base + 17),
+      bookingId: testId(base + 18), bookingEventId: testId(base + 19),
+      sessionId: testId(base + 20), sessionEventId: testId(base + 21),
+      sessionTimerOutboxMessageId: testId(base + 22),
+      groupPlanTimerOutboxMessageId: testId(base + 23),
+      notificationOutboxMessageId: testId(base + 24),
+      notificationIds: [testId(base + 25), testId(base + 26), testId(base + 27)],
+    });
+    const declinedConversionId = testId(30100);
+    const declinedRequest = await requestGroupPlanOfficialConversion(
+      database,
+      {
+        commandId: testId(30101), commandType: 'REQUEST_GROUP_PLAN_OFFICIAL_CONVERSION',
+        idempotencyKey: 'group-official-request-declined',
+        actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'GroupPlan', aggregateId: conversionPlanId, expectedVersion: 2,
+        correlationId: testId(30102), causationId: testId(30029), requestId: testId(30103),
+        source: 'api', payloadVersion: 1,
+        payload: { groupPlanId: conversionPlanId, explicitRulesetAcknowledged: true },
+      } satisfies CommandEnvelope<RequestGroupPlanOfficialConversionPayload>,
+      conversionIds(30110, declinedConversionId),
+      () => new Date('2026-09-07T09:20:00.000Z'),
+    );
+    expect(declinedRequest.response).toMatchObject({
+      state: 'PENDING_CONFIRMATION', confirmationDeadlineAt: '2026-09-10T09:20:00.000Z',
+      challengeId: null, bookingId: null, sessionId: null,
+      confirmations: [expect.objectContaining({ actorUserId: athleteA, decision: 'ACCEPT' })],
+    });
+    const declined = await decideGroupPlanOfficialConversion(
+      database,
+      {
+        commandId: testId(30140), commandType: 'DECIDE_GROUP_PLAN_OFFICIAL_CONVERSION',
+        idempotencyKey: 'group-official-coach-declines',
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'GroupPlanOfficialConversion', aggregateId: declinedConversionId,
+        expectedVersion: 1, correlationId: testId(30141), causationId: testId(30110),
+        requestId: testId(30142), source: 'api', payloadVersion: 1,
+        payload: { conversionId: declinedConversionId, decision: 'DECLINE' },
+      } satisfies CommandEnvelope<DecideGroupPlanOfficialConversionPayload>,
+      conversionIds(30150, declinedConversionId),
+      () => new Date('2026-09-07T09:25:00.000Z'),
+    );
+    expect(declined.response).toMatchObject({
+      state: 'DECLINED', challengeId: null, bookingId: null, sessionId: null,
+    });
+    const preservedPlan = await readTrainingOptions(
+      database, chat, athleteA, new Date('2026-09-07T09:26:00.000Z'),
+    );
+    expect(preservedPlan.activeIntent.groupPlan).toMatchObject({
+      groupPlanId: conversionPlanId, state: 'NOTIFIED', version: 4,
+    });
+
+    const convertedId = testId(30200);
+    const secondRequest = await requestGroupPlanOfficialConversion(
+      database,
+      {
+        commandId: testId(30201), commandType: 'REQUEST_GROUP_PLAN_OFFICIAL_CONVERSION',
+        idempotencyKey: 'group-official-request-converted',
+        actor: { type: 'USER', id: athleteB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'GroupPlan', aggregateId: conversionPlanId, expectedVersion: 4,
+        correlationId: testId(30202), causationId: testId(30150), requestId: testId(30203),
+        source: 'api', payloadVersion: 1,
+        payload: { groupPlanId: conversionPlanId, explicitRulesetAcknowledged: true },
+      } satisfies CommandEnvelope<RequestGroupPlanOfficialConversionPayload>,
+      conversionIds(30210, convertedId),
+      () => new Date('2026-09-07T09:30:00.000Z'),
+    );
+    expect(secondRequest.response.confirmations).toEqual([
+      expect.objectContaining({ actorUserId: athleteB, decision: 'ACCEPT' }),
+    ]);
+    const peerAccepted = await decideGroupPlanOfficialConversion(
+      database,
+      {
+        commandId: testId(30240), commandType: 'DECIDE_GROUP_PLAN_OFFICIAL_CONVERSION',
+        idempotencyKey: 'group-official-peer-accepts',
+        actor: { type: 'USER', id: athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'GroupPlanOfficialConversion', aggregateId: convertedId,
+        expectedVersion: 1, correlationId: testId(30241), causationId: testId(30210),
+        requestId: testId(30242), source: 'api', payloadVersion: 1,
+        payload: { conversionId: convertedId, decision: 'ACCEPT',
+          explicitRulesetAcknowledged: true },
+      } satisfies CommandEnvelope<DecideGroupPlanOfficialConversionPayload>,
+      conversionIds(30250, convertedId),
+      () => new Date('2026-09-07T09:35:00.000Z'),
+    );
+    expect(peerAccepted.response).toMatchObject({
+      state: 'PENDING_CONFIRMATION', challengeId: null, bookingId: null, sessionId: null,
+      version: 2,
+    });
+    const pendingResources = await sql<{
+      readonly challenges: string; readonly sessions: string; readonly obligations: string;
+    }>`select
+      (select count(*)::text from competition.challenges where challenge_id = ${testId(30307)}::uuid) as challenges,
+      (select count(*)::text from scheduling.sessions where session_id = ${testId(30320)}::uuid) as sessions,
+      (select count(*)::text from competition.challenge_participant_obligations obligation
+        where obligation.challenge_id = ${testId(30307)}::uuid) as obligations
+    `.execute(database);
+    expect(pendingResources.rows[0]).toEqual({ challenges: '0', sessions: '0', obligations: '0' });
+    await expect(listGroupPlanOfficialConversionsForViewer(database, coach)).resolves.toEqual([
+      expect.objectContaining({ conversionId: convertedId, viewerRequiredRole: 'COACH',
+        viewerCanConfirm: true }),
+    ]);
+    const coachAccepted = await decideGroupPlanOfficialConversion(
+      database,
+      {
+        commandId: testId(30280), commandType: 'DECIDE_GROUP_PLAN_OFFICIAL_CONVERSION',
+        idempotencyKey: 'group-official-coach-accepts',
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'GroupPlanOfficialConversion', aggregateId: convertedId,
+        expectedVersion: 2, correlationId: testId(30281), causationId: testId(30250),
+        requestId: testId(30282), source: 'api', payloadVersion: 1,
+        payload: { conversionId: convertedId, decision: 'ACCEPT' },
+      } satisfies CommandEnvelope<DecideGroupPlanOfficialConversionPayload>,
+      conversionIds(30300, convertedId),
+      () => new Date('2026-09-07T09:40:00.000Z'),
+    );
+    expect(coachAccepted.response).toMatchObject({
+      state: 'CONVERTED', challengeId: testId(30307), bookingId: testId(30318),
+      sessionId: testId(30320), version: 3,
+    });
+    const convertedResources = await sql<{
+      readonly plan_state: string; readonly challenge_state: string;
+      readonly booking_state: string; readonly session_state: string;
+      readonly slot_state: string; readonly capacity_reserved: boolean;
+      readonly obligations: string;
+    }>`
+      select plan.state as plan_state, challenge.state as challenge_state,
+        booking.state as booking_state, session.state as session_state,
+        slot.state as slot_state,
+        (booking.commercial_terms_snapshot->>'capacityReserved')::boolean as capacity_reserved,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id and obligation.released_at is null
+        ) as obligations
+      from scheduling.group_plans plan
+      join scheduling.group_offerings offering on offering.group_offering_id = plan.group_offering_id
+      join scheduling.group_plan_official_conversions conversion
+        on conversion.group_plan_id = plan.group_plan_id and conversion.state = 'CONVERTED'
+      join competition.challenges challenge on challenge.challenge_id = conversion.challenge_id
+      join scheduling.bookings booking on booking.booking_id = conversion.booking_id
+      join scheduling.sessions session on session.session_id = conversion.session_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where plan.group_plan_id = ${conversionPlanId}::uuid
+    `.execute(database);
+    expect(convertedResources.rows[0]).toEqual({
+      plan_state: 'CONVERTED', challenge_state: 'BOOKED', booking_state: 'CONFIRMED_PAIR',
+      session_state: 'SCHEDULED', slot_state: 'BOOKED', capacity_reserved: false,
+      obligations: '2',
+    });
 }
 
 const testConnectionString = process.env.DATABASE_TEST_URL;
@@ -2028,6 +2270,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         scheduling.booking_solo_continuations,
         scheduling.booking_conversion_confirmations,
         scheduling.booking_official_conversions,
+        scheduling.group_plan_conversion_confirmations,
+        scheduling.group_plan_official_conversions,
         competition.voluntary_status_releases,
         competition.challenge_ruleset_acknowledgments,
         competition.challenge_participant_obligations,
@@ -5198,7 +5442,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(audits.rows[0]?.count).toBe('2');
   });
 
-  it('[AC-023][AC-024][AC-027][AC-028][AC-033][AC-034][AC-038][AC-039][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan, NO_SHOW, Coach replacement and external no-fault cancellation', async () => {
+  it('[AC-023][AC-024][AC-025][AC-026][AC-027][AC-028][AC-033][AC-034][AC-038][AC-039][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan conversion, NO_SHOW, Coach replacement and external no-fault cancellation', async () => {
     await verifySchedulingPublication(database);
   });
 

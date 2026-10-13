@@ -33,8 +33,10 @@ import type {
   MembershipCommandResponse,
   MembershipRemovalCommandResponse,
   MembershipRemovalListResponse,
+  MyGroupPlanOfficialConversionsResponse,
   PendingMembershipListResponse,
   MySessionsResponse,
+  GroupPlanOfficialConversionCommandResponse,
   PendingCoachInviteListResponse,
   RecordSessionResultBody,
   ResultCommandResponse,
@@ -144,6 +146,7 @@ type CommunityDenialCode = CommunityContext['access']['denials'][number]['code']
 type CoachInvite = PendingCoachInviteListResponse['data'][number];
 type HostConfirmation = HostConfirmationQueueResponse['data'][number];
 type Session = MySessionsResponse['data']['sessions'][number];
+type GroupPlanOfficialConversion = MyGroupPlanOfficialConversionsResponse['data'][number];
 type AttendanceStatus = Session['attendance'][number]['status'];
 type OfficialResult = ResultResponse['data'];
 type CentralAppeal = AppealQueueResponse['data'][number];
@@ -502,6 +505,8 @@ export default function IdentityScreen() {
   const [venueAdminDashboard, setVenueAdminDashboard] =
     useState<VenueAdminDashboard | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [groupPlanConversions, setGroupPlanConversions] =
+    useState<GroupPlanOfficialConversion[]>([]);
   const [resultsById, setResultsById] = useState<Record<string, OfficialResult>>({});
   const [appealsByResultId, setAppealsByResultId] = useState<Record<string, AppealDetail>>({});
   const [completedTrainingCount, setCompletedTrainingCount] = useState(0);
@@ -517,6 +522,7 @@ export default function IdentityScreen() {
   const hostConfirmationKeys = useRef(new Map<string, string>());
   const adminPublicationKeys = useRef(new Map<string, string>());
   const sessionActionKeys = useRef(new Map<string, string>());
+  const groupPlanConversionKeys = useRef(new Map<string, string>());
   const resultActionKeys = useRef(new Map<string, string>());
   const statusQueueActionKeys = useRef(new Map<string, string>());
   const membershipRemovalActionKeys = useRef(new Map<string, string>());
@@ -749,6 +755,16 @@ export default function IdentityScreen() {
       const sessionsResult = (await sessionsResponse.json()) as MySessionsResponse;
       setSessions(sessionsResult.data.sessions);
       setCompletedTrainingCount(sessionsResult.data.completedTrainingCount);
+      const groupConversionResponse = await fetch(
+        `${apiUrl}/api/v1/me/group-plan-official-conversions`,
+        { headers: { Authorization: `Bearer ${localToken}` } },
+      );
+      if (!groupConversionResponse.ok) {
+        throw new Error(await apiErrorMessage(groupConversionResponse));
+      }
+      const groupConversionResult =
+        (await groupConversionResponse.json()) as MyGroupPlanOfficialConversionsResponse;
+      setGroupPlanConversions(groupConversionResult.data);
       const missingResultResponse = await fetch(
         currentAccount?.role === 'Central'
           ? `${apiUrl}/api/v1/central/missing-result-reviews`
@@ -1115,6 +1131,7 @@ export default function IdentityScreen() {
     setHostConfirmations([]);
     setVenueAdminDashboard(null);
     setSessions([]);
+    setGroupPlanConversions([]);
     setResultsById({});
     setCompletedTrainingCount(0);
     setDiscoveryCards([]);
@@ -1259,7 +1276,11 @@ export default function IdentityScreen() {
                 classLabel,
                 startAt,
                 endAt,
-                coachDisplayName: adminGroupCoachName.trim() || null,
+                coachUserId: adminCoachId || null,
+                coachDisplayName: (
+                  venueAdminDashboard.coaches.find((coach) => coach.userId === adminCoachId)
+                    ?.displayName ?? adminGroupCoachName.trim()
+                ) || null,
                 priceText: adminGroupPriceText.trim() || null,
                 externalInfoUrl: null,
               }),
@@ -1339,6 +1360,7 @@ export default function IdentityScreen() {
     setAdminDurationMinutes(duration === 90 ? 90 : 60);
     setAdminGroupClassLabel(offering.classLabel);
     setAdminGroupSportCode(offering.sportCode);
+    setAdminCoachId(offering.coachUserId ?? '');
     setAdminGroupCoachName(offering.coachDisplayName ?? '');
     setAdminGroupPriceText(offering.priceText ?? '');
     setEditingAdminSchedule({
@@ -1529,6 +1551,60 @@ export default function IdentityScreen() {
       setError(caught instanceof Error ? caught.message : 'Не удалось отклонить заявку');
     } finally {
       setConfirmingBookingId(null);
+    }
+  };
+
+  const decideGroupPlanOfficialConversion = async (
+    conversion: GroupPlanOfficialConversion,
+    decision: 'ACCEPT' | 'DECLINE',
+  ) => {
+    if (actingSessionKey !== null) return;
+    const operation = `group-official:${conversion.conversionId}:${decision}:v${conversion.version}`;
+    const idempotencyKey = groupPlanConversionKeys.current.get(operation)
+      ?? `scheduling:${operation}`;
+    groupPlanConversionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/group-plan-official-conversions/${conversion.conversionId}/decision`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(conversion.version),
+          },
+          body: JSON.stringify({
+            decision,
+            explicitRulesetAcknowledged: decision === 'ACCEPT',
+          }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as GroupPlanOfficialConversionCommandResponse;
+      groupPlanConversionKeys.current.delete(operation);
+      if (result.data.state === 'PENDING_CONFIRMATION') {
+        setGroupPlanConversions((current) => current.map((item) =>
+          item.conversionId === result.data.conversionId ? result.data : item));
+        setSessionNotice('Ваш ответ зафиксирован. Official появится только после трёх подтверждений.');
+      } else {
+        setGroupPlanConversions((current) => current.filter((item) =>
+          item.conversionId !== result.data.conversionId));
+        setSessionNotice(result.data.state === 'CONVERTED'
+          ? 'Все подтвердили. Созданы Official Challenge и Session.'
+          : 'Official отклонён. Социальный групповой план сохранён без санкций.');
+        await loadIdentity();
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось обновить Official-предложение');
+    } finally {
+      setActingSessionKey(null);
     }
   };
 
@@ -4695,15 +4771,32 @@ export default function IdentityScreen() {
                               );
                             })}
                           </View>
-                          <Text style={styles.label}>Coach · необязательно</Text>
-                          <TextInput
-                            accessibilityLabel="Coach групповой тренировки"
-                            maxLength={120}
-                            onChangeText={setAdminGroupCoachName}
-                            placeholder="Имя Coach"
-                            style={styles.input}
-                            value={adminGroupCoachName}
-                          />
+                          <Text style={styles.label}>Coach · нужен только для Official</Text>
+                          <View style={styles.chips}>
+                            {venueAdminDashboard.coaches.map((coach) => {
+                              const selected = adminCoachId === coach.userId;
+                              return (
+                                <Pressable
+                                  key={coach.userId}
+                                  accessibilityRole="button"
+                                  accessibilityState={{ selected }}
+                                  onPress={() => setAdminCoachId(coach.userId)}
+                                  style={({ pressed }) => [
+                                    styles.choiceChip,
+                                    selected && styles.choiceChipSelected,
+                                    pressed && styles.buttonPressed,
+                                  ]}
+                                >
+                                  <Text style={[
+                                    styles.choiceChipText,
+                                    selected && styles.choiceChipTextSelected,
+                                  ]}>
+                                    {coach.displayName}
+                                  </Text>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
                           <Text style={styles.label}>Стоимость или условия · необязательно</Text>
                           <TextInput
                             accessibilityLabel="Условия групповой тренировки"
@@ -5103,6 +5196,57 @@ export default function IdentityScreen() {
                 {sessionNotice ? (
                   <View accessibilityLiveRegion="polite" style={styles.successCard}>
                     <Text style={styles.successText}>{sessionNotice}</Text>
+                  </View>
+                ) : null}
+
+                {groupPlanConversions.length > 0 ? (
+                  <View style={styles.card}>
+                    <Text accessibilityRole="header" aria-level={2} style={styles.cardTitle}>
+                      Групповые планы · Official
+                    </Text>
+                    <Text style={styles.hint}>
+                      Challenge и Session создаются только после отдельных подтверждений двух Athlete и назначенного Coach.
+                    </Text>
+                    {groupPlanConversions.map((conversion) => (
+                      <View key={conversion.conversionId} style={styles.hostConfirmationCard}>
+                        <Text style={styles.label}>Coach: {conversion.coachDisplayName}</Text>
+                        <Text style={styles.hint}>
+                          Подтверждено {conversion.confirmations.filter((item) => item.decision === 'ACCEPT').length} из 3 · срок {formatDateTime(conversion.confirmationDeadlineAt)}
+                        </Text>
+                        {conversion.viewerHasDecided ? (
+                          <Text style={styles.hint}>Ваш ответ уже зафиксирован.</Text>
+                        ) : null}
+                        {conversion.viewerCanConfirm ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: actingSessionKey !== null }}
+                            disabled={actingSessionKey !== null}
+                            onPress={() => void decideGroupPlanOfficialConversion(conversion, 'ACCEPT')}
+                            style={({ pressed }) => [styles.button,
+                              actingSessionKey !== null && styles.buttonDisabled,
+                              pressed && actingSessionKey === null && styles.buttonPressed]}
+                          >
+                            <Text style={styles.buttonText}>Подтвердить Official</Text>
+                          </Pressable>
+                        ) : null}
+                        {conversion.viewerCanDecline ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: actingSessionKey !== null }}
+                            disabled={actingSessionKey !== null}
+                            onPress={() => void decideGroupPlanOfficialConversion(conversion, 'DECLINE')}
+                            style={({ pressed }) => [styles.dangerButton,
+                              actingSessionKey !== null && styles.buttonDisabled,
+                              pressed && actingSessionKey === null && styles.buttonPressed]}
+                          >
+                            <Text style={styles.dangerButtonText}>Оставить только групповой план</Text>
+                          </Pressable>
+                        ) : null}
+                        <Text style={styles.hint}>
+                          Отказ сохраняет социальный план и не создаёт поражение, Cooldown или Result.
+                        </Text>
+                      </View>
+                    ))}
                   </View>
                 ) : null}
 

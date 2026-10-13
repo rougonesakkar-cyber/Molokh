@@ -6,6 +6,8 @@ import type {
   ChatMessageCommandResponse,
   ChatMessagesResponse,
   GroupPlanCommandResponse,
+  GroupPlanOfficialConversionCommandResponse,
+  MyGroupPlanOfficialConversionsResponse,
   MutualChallengeRescheduleRequestResponse,
   TrainingOptionsResponse,
   YouthConsentCommandResponse,
@@ -30,6 +32,7 @@ import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
 
 type ChatMessage = ChatMessagesResponse['data'][number];
 type TrainingOptions = TrainingOptionsResponse['data'];
+type GroupPlanOfficialConversion = MyGroupPlanOfficialConversionsResponse['data'][number];
 type ChatChallenge = ChatChallengeResponse['data'];
 type ChatState = ChatMessagesResponse['meta']['chatState'];
 type YouthConsentSummary = YouthConsentSummaryResponse['data'];
@@ -70,6 +73,7 @@ export default function ChatScreen() {
   const [chatState, setChatState] = useState<ChatState | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [trainingOptions, setTrainingOptions] = useState<TrainingOptions | null>(null);
+  const [groupPlanConversions, setGroupPlanConversions] = useState<GroupPlanOfficialConversion[]>([]);
   const [chatChallenge, setChatChallenge] = useState<ChatChallenge | null>(null);
   const [challengeLoading, setChallengeLoading] = useState(false);
   const [actingChallenge, setActingChallenge] = useState(false);
@@ -179,15 +183,23 @@ export default function ChatScreen() {
     setOptionsLoading(true);
     setOptionsError(null);
     try {
-      const response = await fetch(`${apiUrl}/api/v1/chats/${chatId}/training-options`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
+      const headers = { Authorization: `Bearer ${localToken}` };
+      const [response, conversionResponse] = await Promise.all([
+        fetch(`${apiUrl}/api/v1/chats/${chatId}/training-options`, { headers }),
+        fetch(`${apiUrl}/api/v1/me/group-plan-official-conversions`, { headers }),
+      ]);
       if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as TrainingOptionsResponse;
+      if (!conversionResponse.ok) throw new Error(await apiErrorMessage(conversionResponse));
+      const [result, conversionResult] = await Promise.all([
+        response.json() as Promise<TrainingOptionsResponse>,
+        conversionResponse.json() as Promise<MyGroupPlanOfficialConversionsResponse>,
+      ]);
       setTrainingOptions(result.data);
+      setGroupPlanConversions(conversionResult.data.filter((item) => item.chatId === chatId));
       setViewerUserId(result.meta.viewerUserId);
     } catch (caught) {
       setTrainingOptions(null);
+      setGroupPlanConversions([]);
       setOptionsError(
         caught instanceof Error ? caught.message : 'Не удалось загрузить расписание',
       );
@@ -257,7 +269,8 @@ export default function ChatScreen() {
         }
         throw new Error(await apiErrorMessage(response));
       }
-      await response.json() as BookingIntentCommandResponse | GroupPlanCommandResponse;
+      await response.json() as BookingIntentCommandResponse | GroupPlanCommandResponse
+        | GroupPlanOfficialConversionCommandResponse;
       actionKeys.current.delete(input.operation);
       await Promise.all([loadTrainingOptions(), loadChallenge()]);
     } catch (caught) {
@@ -622,6 +635,31 @@ export default function ChatScreen() {
         body: {},
       });
     }
+  };
+
+  const requestGroupOfficialConversion = async (
+    plan: NonNullable<TrainingOptions['activeIntent']['groupPlan']>,
+  ) => {
+    await runTrainingAction({
+      operation: `request-group-official:${plan.groupPlanId}:v${plan.version}`,
+      resourceId: plan.groupPlanId,
+      path: `/api/v1/group-plans/${plan.groupPlanId}/request-official-conversion`,
+      version: plan.version,
+      body: { explicitRulesetAcknowledged: true },
+    });
+  };
+
+  const decideGroupOfficialConversion = async (
+    conversion: GroupPlanOfficialConversion,
+    decision: 'ACCEPT' | 'DECLINE',
+  ) => {
+    await runTrainingAction({
+      operation: `decide-group-official:${conversion.conversionId}:${decision}:v${conversion.version}`,
+      resourceId: conversion.conversionId,
+      path: `/api/v1/group-plan-official-conversions/${conversion.conversionId}/decision`,
+      version: conversion.version,
+      body: { decision, explicitRulesetAcknowledged: decision === 'ACCEPT' },
+    });
   };
 
   const sendOrEdit = async () => {
@@ -1316,9 +1354,14 @@ export default function ChatScreen() {
               const ownProposal = selected && plan.proposedByUserId === viewerUserId;
               const canConfirm = selected && plan.state === 'PROPOSED' && !ownProposal;
               const notified = selected && plan.state === 'NOTIFIED';
+              const conversion = selected
+                ? groupPlanConversions.find((item) => item.groupPlanId === plan?.groupPlanId) ?? null
+                : null;
+              const conversionPending = selected && plan.state === 'CONVERSION_PENDING';
               const disabled =
                 actingTrainingId !== null ||
                 notified ||
+                conversionPending ||
                 ownProposal ||
                 (plan !== null && !selected);
               const buttonLabel = notified
@@ -1384,6 +1427,77 @@ export default function ChatScreen() {
                       <Text style={styles.trainingButtonText}>{buttonLabel}</Text>
                     )}
                   </Pressable>
+                  {notified && plan ? (
+                    <View style={styles.statusSchedulingNotice}>
+                      {plan.offeringSnapshot.coachUserId ? (
+                        <>
+                          <Text style={styles.trainingTerms}>
+                            Хотите сделать эту тренировку Official? Нужны отдельные подтверждения обоих Athlete и Coach. До третьего подтверждения Challenge и Session не создаются.
+                          </Text>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: actingTrainingId !== null }}
+                            disabled={actingTrainingId !== null}
+                            onPress={() => void requestGroupOfficialConversion(plan)}
+                            style={({ pressed }) => [
+                              styles.groupButton,
+                              actingTrainingId !== null && styles.disabled,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.trainingButtonText}>Предложить сделать Official</Text>
+                          </Pressable>
+                        </>
+                      ) : (
+                        <Text style={styles.trainingTerms}>
+                          Это социальный план. Для Official зал должен заранее назначить авторизованного Coach.
+                        </Text>
+                      )}
+                    </View>
+                  ) : null}
+                  {conversionPending && conversion ? (
+                    <View style={styles.statusSchedulingNotice}>
+                      <Text style={styles.trainingTerms}>
+                        Official подтверждают 3 стороны: инициатор, второй Athlete и Coach {conversion.coachDisplayName}. Сейчас подтверждено {conversion.confirmations.filter((item) => item.decision === 'ACCEPT').length} из 3. Срок: {formatDateTime(conversion.confirmationDeadlineAt)}.
+                      </Text>
+                      {conversion.viewerHasDecided ? (
+                        <Text style={styles.trainingMeta}>Ваш ответ уже зафиксирован.</Text>
+                      ) : null}
+                      {conversion.viewerCanConfirm ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: actingTrainingId !== null }}
+                          disabled={actingTrainingId !== null}
+                          onPress={() => void decideGroupOfficialConversion(conversion, 'ACCEPT')}
+                          style={({ pressed }) => [styles.groupButton,
+                            actingTrainingId !== null && styles.disabled, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.trainingButtonText}>Подтвердить Official</Text>
+                        </Pressable>
+                      ) : null}
+                      {conversion.viewerCanDecline ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: actingTrainingId !== null }}
+                          disabled={actingTrainingId !== null}
+                          onPress={() => Alert.alert(
+                            'Отказаться от Official?',
+                            'Групповой план сохранится. Challenge, поражение и Cooldown не появятся.',
+                            [
+                              { text: 'Назад', style: 'cancel' },
+                              { text: 'Отказаться', style: 'destructive', onPress: () => {
+                                void decideGroupOfficialConversion(conversion, 'DECLINE');
+                              } },
+                            ],
+                          )}
+                          style={({ pressed }) => [styles.phoneAction,
+                            actingTrainingId !== null && styles.disabled, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.phoneActionText}>Оставить только групповой план</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
                 </View>
               );
             }) : null}

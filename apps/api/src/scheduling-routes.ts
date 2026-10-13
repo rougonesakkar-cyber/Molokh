@@ -6,15 +6,18 @@ import {
   DecideBookingTrainingRetentionBodySchema,
   DecideBookingSoloContinuationBodySchema,
   DecideBookingOfficialConversionBodySchema,
+  DecideGroupPlanOfficialConversionBodySchema,
   BookingIntentCommandResponseSchema,
   ConfirmBookingHostBodySchema,
   ConfirmGroupPlanBodySchema,
   GroupOfferingCommandResponseSchema,
   GroupPlanCommandResponseSchema,
+  GroupPlanOfficialConversionCommandResponseSchema,
   HostConfirmationCommandResponseSchema,
   HostRejectionCommandResponseSchema,
   HostConfirmationQueueResponseSchema,
   MySessionsResponseSchema,
+  MyGroupPlanOfficialConversionsResponseSchema,
   ProposeGroupPlanBodySchema,
   PublishGroupOfferingBodySchema,
   PublishSlotBodySchema,
@@ -22,6 +25,7 @@ import {
   ScheduleMutationReasonBodySchema,
   RecordAttendanceBodySchema,
   RequestBookingOfficialConversionBodySchema,
+  RequestGroupPlanOfficialConversionBodySchema,
   RequestTrainingParticipantCancellationBodySchema,
   ReplaceSessionCoachBodySchema,
   FailSessionExternalBodySchema,
@@ -42,6 +46,7 @@ import {
   type DecideBookingTrainingRetentionBody,
   type DecideBookingSoloContinuationBody,
   type DecideBookingOfficialConversionBody,
+  type DecideGroupPlanOfficialConversionBody,
   type BookingIntentContract,
   type ConfirmBookingHostBody,
   type ConfirmGroupPlanBody,
@@ -49,11 +54,13 @@ import {
   type GroupOfferingContract,
   type GroupPlanCommandResponse,
   type GroupPlanContract,
+  type GroupPlanOfficialConversionCommandResponse,
   type HostConfirmationCommandResponse,
   type HostConfirmationContract,
   type HostRejectionCommandResponse,
   type HostConfirmationQueueResponse,
   type MySessionsResponse,
+  type MyGroupPlanOfficialConversionsResponse,
   type ProposeGroupPlanBody,
   type PublishGroupOfferingBody,
   type PublishSlotBody,
@@ -61,6 +68,7 @@ import {
   type ScheduleMutationReasonBody,
   type RecordAttendanceBody,
   type RequestBookingOfficialConversionBody,
+  type RequestGroupPlanOfficialConversionBody,
   type RequestTrainingParticipantCancellationBody,
   type ReplaceSessionCoachBody,
   type FailSessionExternalBody,
@@ -82,6 +90,8 @@ import type {
   ExecutedCommand,
   BookingOfficialConversionEffectIds,
   BookingOfficialConversionProjection,
+  GroupPlanOfficialConversionEffectIds,
+  GroupPlanOfficialConversionProjection,
   BookingSoloContinuationEffectIds,
   BookingSoloContinuationProjection,
   BookingTrainingRetentionEffectIds,
@@ -89,6 +99,7 @@ import type {
   BookingIntentProjection,
   BookingWithdrawalEffectIds,
   DecideBookingOfficialConversionPayload,
+  DecideGroupPlanOfficialConversionPayload,
   DecideBookingSoloContinuationPayload,
   DecideBookingTrainingRetentionPayload,
   ConfirmBookingHostPayload,
@@ -103,6 +114,7 @@ import type {
   MySessionsProjection,
   PublishGroupOfferingPayload,
   RequestBookingOfficialConversionPayload,
+  RequestGroupPlanOfficialConversionPayload,
   RequestTrainingParticipantCancellationPayload,
   PublishSlotPayload,
   RejectBookingHostPayload,
@@ -300,6 +312,17 @@ export interface SchedulingRouteDependencies {
     command: CommandEnvelope<ConfirmGroupPlanPayload>,
     ids: PairIntentNotificationEffectIds,
   ) => Promise<ExecutedCommand<GroupPlanProjection>>;
+  readonly listGroupPlanOfficialConversionsForViewer: (
+    actorUserId: string,
+  ) => Promise<readonly GroupPlanOfficialConversionProjection[]>;
+  readonly requestGroupPlanOfficialConversion: (
+    command: CommandEnvelope<RequestGroupPlanOfficialConversionPayload>,
+    ids: GroupPlanOfficialConversionEffectIds,
+  ) => Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>>;
+  readonly decideGroupPlanOfficialConversion: (
+    command: CommandEnvelope<DecideGroupPlanOfficialConversionPayload>,
+    ids: GroupPlanOfficialConversionEffectIds,
+  ) => Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>>;
 }
 
 function unauthorized(request: FastifyRequest) {
@@ -476,6 +499,45 @@ function bookingOfficialConversionEffectIds(input: {
     bookingEventId: newUuidV7(), sessionEventId: newUuidV7(),
     sessionTimerOutboxMessageId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+  };
+}
+
+function groupPlanOfficialConversionEffectIds(input: {
+  readonly aggregateId: string;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly conversionId?: string;
+}): GroupPlanOfficialConversionEffectIds {
+  const seed = `${input.actorId}:${input.idempotencyKey}`;
+  const conversionId = input.conversionId
+    ?? idempotentResourceId('group-plan-official-conversion', input.aggregateId, seed);
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    conversionId,
+    conversionEventId: newUuidV7(),
+    confirmationId: idempotentResourceId('group-conversion-confirmation', conversionId, input.actorId),
+    timerOutboxMessageId: newUuidV7(), groupPlanEventId: newUuidV7(),
+    challengeId: idempotentResourceId('group-conversion-challenge', conversionId, seed),
+    challengeEventId: newUuidV7(),
+    serviceChatId: idempotentResourceId('group-conversion-chat', conversionId, seed),
+    serviceChatEventId: newUuidV7(),
+    rulesetSnapshotId: idempotentResourceId('group-conversion-ruleset', conversionId, seed),
+    acknowledgmentIds: [
+      idempotentResourceId('group-conversion-ack-low', conversionId, seed),
+      idempotentResourceId('group-conversion-ack-high', conversionId, seed),
+    ],
+    obligationIds: [
+      idempotentResourceId('group-conversion-obligation-low', conversionId, seed),
+      idempotentResourceId('group-conversion-obligation-high', conversionId, seed),
+    ],
+    slotId: idempotentResourceId('group-conversion-slot', conversionId, seed),
+    slotEventId: newUuidV7(),
+    bookingId: idempotentResourceId('group-conversion-booking', conversionId, seed),
+    bookingEventId: newUuidV7(),
+    sessionId: idempotentResourceId('group-conversion-session', conversionId, seed),
+    sessionEventId: newUuidV7(), sessionTimerOutboxMessageId: newUuidV7(),
+    groupPlanTimerOutboxMessageId: newUuidV7(), notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
   };
 }
@@ -704,6 +766,19 @@ function groupPlanCommandResponse(
 ): GroupPlanCommandResponse {
   return {
     data: groupPlanContract(executed.response),
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  };
+}
+
+function groupPlanOfficialConversionCommandResponse(
+  executed: ExecutedCommand<GroupPlanOfficialConversionProjection>,
+  requestId: string,
+): GroupPlanOfficialConversionCommandResponse {
+  return {
+    data: {
+      ...executed.response,
+      confirmations: executed.response.confirmations.map((item) => ({ ...item })),
+    },
     meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
   };
 }
@@ -2008,6 +2083,143 @@ export async function registerSchedulingRoutes(
     },
   );
 
+  app.get<{ Headers: SchedulingHeaders }>(
+    '/api/v1/me/group-plan-official-conversions',
+    {
+      schema: {
+        operationId: 'listMyGroupPlanOfficialConversions',
+        response: { 200: MyGroupPlanOfficialConversionsResponseSchema, 401: ApiErrorSchema },
+      },
+    },
+    async (request, reply): Promise<MyGroupPlanOfficialConversionsResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      return {
+        data: (await dependencies.listGroupPlanOfficialConversionsForViewer(authenticated.userId))
+          .map((conversion) => ({
+            ...conversion,
+            confirmations: conversion.confirmations.map((item) => ({ ...item })),
+          })),
+        meta: { requestId: requestContext(request).requestId },
+      };
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: GroupPlanParams;
+    Body: RequestGroupPlanOfficialConversionBody;
+  }>(
+    '/api/v1/group-plans/:groupPlanId/request-official-conversion',
+    {
+      schema: {
+        operationId: 'requestGroupPlanOfficialConversion',
+        params: Type.Object(
+          { groupPlanId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: RequestGroupPlanOfficialConversionBodySchema,
+        response: {
+          201: GroupPlanOfficialConversionCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema,
+          409: ApiErrorSchema, 422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<GroupPlanOfficialConversionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const ids = groupPlanOfficialConversionEffectIds({
+        aggregateId: request.params.groupPlanId,
+        actorId: authenticated.userId,
+        idempotencyKey,
+      });
+      const executed = await dependencies.requestGroupPlanOfficialConversion(
+        {
+          commandId: newUuidV7(), commandType: 'REQUEST_GROUP_PLAN_OFFICIAL_CONVERSION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'GroupPlan', aggregateId: request.params.groupPlanId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: {
+            groupPlanId: request.params.groupPlanId,
+            explicitRulesetAcknowledged: request.body.explicitRulesetAcknowledged ?? false,
+          },
+        },
+        ids,
+      );
+      reply.status(executed.responseStatus);
+      return groupPlanOfficialConversionCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: ConversionParams;
+    Body: DecideGroupPlanOfficialConversionBody;
+  }>(
+    '/api/v1/group-plan-official-conversions/:conversionId/decision',
+    {
+      schema: {
+        operationId: 'decideGroupPlanOfficialConversion',
+        params: Type.Object(
+          { conversionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: DecideGroupPlanOfficialConversionBodySchema,
+        response: {
+          200: GroupPlanOfficialConversionCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema,
+          409: ApiErrorSchema, 422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<GroupPlanOfficialConversionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.decideGroupPlanOfficialConversion(
+        {
+          commandId: newUuidV7(), commandType: 'DECIDE_GROUP_PLAN_OFFICIAL_CONVERSION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'GroupPlanOfficialConversion',
+          aggregateId: request.params.conversionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: {
+            conversionId: request.params.conversionId,
+            decision: request.body.decision,
+            explicitRulesetAcknowledged: request.body.explicitRulesetAcknowledged ?? false,
+          },
+        },
+        groupPlanOfficialConversionEffectIds({
+          aggregateId: request.params.conversionId,
+          conversionId: request.params.conversionId,
+          actorId: authenticated.userId,
+          idempotencyKey,
+        }),
+      );
+      reply.status(executed.responseStatus);
+      return groupPlanOfficialConversionCommandResponse(executed, context.requestId);
+    },
+  );
+
   app.post<{
     Headers: SchedulingHeaders;
     Params: VenueParams;
@@ -2134,6 +2346,7 @@ export async function registerSchedulingRoutes(
             classLabel: request.body.classLabel,
             startAt: request.body.startAt,
             endAt: request.body.endAt,
+            coachUserId: request.body.coachUserId ?? null,
             coachDisplayName: request.body.coachDisplayName ?? null,
             priceText: request.body.priceText ?? null,
             externalInfoUrl: request.body.externalInfoUrl ?? null,
@@ -2327,6 +2540,7 @@ export async function registerSchedulingRoutes(
             classLabel: request.body.classLabel,
             startAt: request.body.startAt,
             endAt: request.body.endAt,
+            coachUserId: request.body.coachUserId ?? null,
             coachDisplayName: request.body.coachDisplayName ?? null,
             priceText: request.body.priceText ?? null,
             externalInfoUrl: request.body.externalInfoUrl ?? null,

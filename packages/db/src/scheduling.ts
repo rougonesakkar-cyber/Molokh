@@ -41,6 +41,7 @@ export interface PublishGroupOfferingPayload {
   readonly classLabel: string;
   readonly startAt: string;
   readonly endAt: string;
+  readonly coachUserId?: string | null;
   readonly coachDisplayName: string | null;
   readonly priceText: string | null;
   readonly externalInfoUrl: string | null;
@@ -63,6 +64,7 @@ export interface UpdateGroupOfferingPayload {
   readonly classLabel: string;
   readonly startAt: string;
   readonly endAt: string;
+  readonly coachUserId?: string | null;
   readonly coachDisplayName: string | null;
   readonly priceText: string | null;
   readonly externalInfoUrl: string | null;
@@ -119,6 +121,7 @@ export interface GroupOfferingProjection {
   readonly classLabel: string;
   readonly startAt: string;
   readonly endAt: string;
+  readonly coachUserId: string | null;
   readonly coachDisplayName: string | null;
   readonly priceText: string | null;
   readonly externalInfoUrl: string | null;
@@ -199,6 +202,7 @@ interface GroupOfferingRow {
   readonly class_label: string;
   readonly start_at: Date;
   readonly end_at: Date;
+  readonly coach_user_id: string | null;
   readonly coach_display_name: string | null;
   readonly price_text: string | null;
   readonly external_info_url: string | null;
@@ -270,6 +274,7 @@ function groupOfferingProjection(row: GroupOfferingRow): GroupOfferingProjection
     classLabel: row.class_label,
     startAt: row.start_at.toISOString(),
     endAt: row.end_at.toISOString(),
+    coachUserId: row.coach_user_id,
     coachDisplayName: row.coach_display_name,
     priceText: row.price_text,
     externalInfoUrl: row.external_info_url,
@@ -505,6 +510,7 @@ export async function publishGroupOffering(
   }
   const payload: PublishGroupOfferingPayload = {
     ...command.payload,
+    coachUserId: command.payload.coachUserId ?? null,
     sportCode: normalizeScheduleLabel(command.payload.sportCode.toUpperCase(), 'sportCode', 40),
     classLabel: normalizeScheduleLabel(command.payload.classLabel, 'classLabel'),
     coachDisplayName: normalizeOptionalScheduleText(command.payload.coachDisplayName, 'coachDisplayName', 120),
@@ -535,15 +541,39 @@ export async function publishGroupOffering(
       ) {
         throw new SchedulingValidationError('venueContact');
       }
+      let coachDisplayName = payload.coachDisplayName;
+      if (payload.coachUserId) {
+        const coachResult = await sql<{ readonly display_name: string }>`
+          select coach.display_name
+          from identity.users as coach
+          join community.role_grants as role_grant
+            on role_grant.user_id = coach.user_id
+            and role_grant.role = 'COACH'
+            and role_grant.scope_type = 'COMMUNITY'
+            and role_grant.state = 'ACTIVE'
+            and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+          join community.communities as community
+            on community.community_id = role_grant.scope_id
+            and community.venue_id = ${payload.venueId}::uuid
+            and community.state = 'ACTIVE'
+          where coach.user_id = ${payload.coachUserId}::uuid
+            and coach.account_state = 'ACTIVE'
+          limit 1
+          for share of coach, role_grant, community
+        `.execute(transaction);
+        coachDisplayName = coachResult.rows[0]?.display_name ?? null;
+        if (!coachDisplayName) throw new SchedulingPermissionDeniedError();
+      }
       await sql`
         insert into scheduling.group_offerings (
           group_offering_id, venue_id, sport_code, class_label, start_at, end_at,
-          coach_display_name, price_text, external_info_url, contact_snapshot,
+          coach_user_id, coach_display_name, price_text, external_info_url, contact_snapshot,
           state, published_by, version, created_at, updated_at
         ) values (
           ${command.aggregateId}::uuid, ${payload.venueId}::uuid, ${payload.sportCode},
           ${payload.classLabel}, ${payload.startAt}::timestamptz,
-          ${payload.endAt}::timestamptz, ${payload.coachDisplayName}, ${payload.priceText},
+          ${payload.endAt}::timestamptz, ${payload.coachUserId}::uuid,
+          ${coachDisplayName}, ${payload.priceText},
           ${payload.externalInfoUrl}, ${JSON.stringify(venue.contact_payload)}::jsonb,
           'PUBLISHED', ${command.actor.id}::uuid, 1,
           ${context.occurredAt.toISOString()}::timestamptz,
@@ -558,7 +588,8 @@ export async function publishGroupOffering(
         classLabel: payload.classLabel,
         startAt: new Date(payload.startAt).toISOString(),
         endAt: new Date(payload.endAt).toISOString(),
-        coachDisplayName: payload.coachDisplayName,
+        coachUserId: payload.coachUserId ?? null,
+        coachDisplayName,
         priceText: payload.priceText,
         externalInfoUrl: payload.externalInfoUrl,
         contact: venue.contact_payload,
@@ -772,6 +803,7 @@ export async function updateGroupOffering(
   }
   const payload: UpdateGroupOfferingPayload = {
     ...command.payload,
+    coachUserId: command.payload.coachUserId ?? null,
     sportCode: normalizeScheduleLabel(command.payload.sportCode.toUpperCase(), 'sportCode', 40),
     classLabel: normalizeScheduleLabel(command.payload.classLabel, 'classLabel'),
     coachDisplayName: normalizeOptionalScheduleText(
@@ -797,7 +829,8 @@ export async function updateGroupOffering(
         select offering.group_offering_id, offering.venue_id,
           venue.display_name as venue_display_name, offering.sport_code,
           offering.class_label, offering.start_at, offering.end_at,
-          offering.coach_display_name, offering.price_text, offering.external_info_url,
+          offering.coach_user_id, offering.coach_display_name,
+          offering.price_text, offering.external_info_url,
           offering.contact_snapshot, offering.updated_at, offering.state,
           offering.version::text as version, venue.slot_publish_horizon_days,
           (
@@ -827,12 +860,36 @@ export async function updateGroupOffering(
         occurredAt: context.occurredAt,
         horizonDays: offering.slot_publish_horizon_days,
       });
+      let coachDisplayName = payload.coachDisplayName;
+      if (payload.coachUserId) {
+        const coachResult = await sql<{ readonly display_name: string }>`
+          select coach.display_name
+          from identity.users as coach
+          join community.role_grants as role_grant
+            on role_grant.user_id = coach.user_id
+            and role_grant.role = 'COACH'
+            and role_grant.scope_type = 'COMMUNITY'
+            and role_grant.state = 'ACTIVE'
+            and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+          join community.communities as community
+            on community.community_id = role_grant.scope_id
+            and community.venue_id = ${offering.venue_id}::uuid
+            and community.state = 'ACTIVE'
+          where coach.user_id = ${payload.coachUserId}::uuid
+            and coach.account_state = 'ACTIVE'
+          limit 1
+          for share of coach, role_grant, community
+        `.execute(transaction);
+        coachDisplayName = coachResult.rows[0]?.display_name ?? null;
+        if (!coachDisplayName) throw new SchedulingPermissionDeniedError();
+      }
       await sql`
         update scheduling.group_offerings
         set sport_code = ${payload.sportCode}, class_label = ${payload.classLabel},
           start_at = ${payload.startAt}::timestamptz,
           end_at = ${payload.endAt}::timestamptz,
-          coach_display_name = ${payload.coachDisplayName},
+          coach_user_id = ${payload.coachUserId}::uuid,
+          coach_display_name = ${coachDisplayName},
           price_text = ${payload.priceText}, external_info_url = ${payload.externalInfoUrl},
           version = ${context.nextVersion},
           updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -846,7 +903,8 @@ export async function updateGroupOffering(
         classLabel: payload.classLabel,
         startAt: new Date(payload.startAt).toISOString(),
         endAt: new Date(payload.endAt).toISOString(),
-        coachDisplayName: payload.coachDisplayName,
+        coachUserId: payload.coachUserId ?? null,
+        coachDisplayName,
         priceText: payload.priceText,
         externalInfoUrl: payload.externalInfoUrl,
         contact: offering.contact_snapshot,
@@ -999,7 +1057,8 @@ export async function withdrawGroupOffering(
         select offering.group_offering_id, offering.venue_id,
           venue.display_name as venue_display_name, offering.sport_code,
           offering.class_label, offering.start_at, offering.end_at,
-          offering.coach_display_name, offering.price_text, offering.external_info_url,
+          offering.coach_user_id, offering.coach_display_name,
+          offering.price_text, offering.external_info_url,
           offering.contact_snapshot, offering.updated_at, offering.state,
           offering.version::text as version, venue.slot_publish_horizon_days,
           (
@@ -1114,7 +1173,8 @@ export async function readTrainingOptions(
         offering.group_offering_id, offering.venue_id,
         venue.display_name as venue_display_name, offering.sport_code,
         offering.class_label, offering.start_at, offering.end_at,
-        offering.coach_display_name, offering.price_text, offering.external_info_url,
+        offering.coach_user_id, offering.coach_display_name,
+        offering.price_text, offering.external_info_url,
         offering.contact_snapshot, offering.updated_at, offering.state,
         offering.version::text as version
       from scheduling.group_offerings as offering
@@ -1207,7 +1267,8 @@ export async function readVenueAdminDashboard(
           offering.group_offering_id, offering.venue_id,
           venue.display_name as venue_display_name, offering.sport_code,
           offering.class_label, offering.start_at, offering.end_at,
-          offering.coach_display_name, offering.price_text, offering.external_info_url,
+          offering.coach_user_id, offering.coach_display_name,
+          offering.price_text, offering.external_info_url,
           offering.contact_snapshot, offering.updated_at, offering.state,
           offering.version::text as version
         from scheduling.group_offerings as offering
@@ -1359,7 +1420,8 @@ export async function expireGroupOffering(
         select offering.group_offering_id, offering.venue_id,
           venue.display_name as venue_display_name, offering.sport_code,
           offering.class_label, offering.start_at, offering.end_at,
-          offering.coach_display_name, offering.price_text, offering.external_info_url,
+          offering.coach_user_id, offering.coach_display_name,
+          offering.price_text, offering.external_info_url,
           offering.contact_snapshot, offering.updated_at, offering.state,
           offering.version::text as version
         from scheduling.group_offerings as offering

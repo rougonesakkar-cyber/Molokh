@@ -324,6 +324,30 @@ export function assertTrainingOfficialConversionCanBeRequested(input: {
   });
 }
 
+export function assertGroupPlanOfficialConversionCanBeRequested(input: {
+  readonly groupPlanState: string;
+  readonly actorIsAthlete: boolean;
+  readonly coachAssigned: boolean;
+  readonly hasLiveConversion: boolean;
+  readonly scheduledStartAt: string;
+  readonly occurredAt: Date;
+}): Date {
+  if (
+    input.groupPlanState !== 'NOTIFIED'
+    || !input.actorIsAthlete
+    || !input.coachAssigned
+  ) {
+    throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_ALLOWED');
+  }
+  if (input.hasLiveConversion) {
+    throw new SchedulingConflictError('OFFICIAL_CONVERSION_ALREADY_EXISTS');
+  }
+  return officialConversionDeadline({
+    occurredAt: input.occurredAt,
+    scheduledStartAt: input.scheduledStartAt,
+  });
+}
+
 export function assertOfficialConversionDecisionCanBeRecorded(input: {
   readonly state: OfficialConversionState;
   readonly actorRequired: boolean;

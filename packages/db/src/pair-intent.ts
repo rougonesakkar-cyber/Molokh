@@ -32,7 +32,14 @@ export type BookingIntentState =
   | 'REJECTED'
   | 'EXPIRED';
 
-export type GroupPlanState = 'PROPOSED' | 'NOTIFIED' | 'EXPIRED';
+export type GroupPlanState =
+  | 'PROPOSED'
+  | 'NOTIFIED'
+  | 'CONVERSION_PENDING'
+  | 'CONVERTED'
+  | 'DECLINED'
+  | 'CANCELLED'
+  | 'EXPIRED';
 
 export interface SelectSlotPayload {
   readonly chatId: string;
@@ -133,6 +140,7 @@ export interface GroupOfferingSnapshot {
   readonly classLabel: string;
   readonly startAt: string;
   readonly endAt: string;
+  readonly coachUserId: string | null;
   readonly coachDisplayName: string | null;
   readonly priceText: string | null;
   readonly externalInfoUrl: string | null;
@@ -280,6 +288,7 @@ interface GroupOfferingChoiceRow {
   readonly class_label: string;
   readonly start_at: Date;
   readonly end_at: Date;
+  readonly coach_user_id: string | null;
   readonly coach_display_name: string | null;
   readonly price_text: string | null;
   readonly external_info_url: string | null;
@@ -335,6 +344,7 @@ function offeringSnapshot(row: GroupOfferingChoiceRow): GroupOfferingSnapshot {
     classLabel: row.class_label,
     startAt: row.start_at.toISOString(),
     endAt: row.end_at.toISOString(),
+    coachUserId: row.coach_user_id,
     coachDisplayName: row.coach_display_name,
     priceText: row.price_text,
     externalInfoUrl: row.external_info_url,
@@ -1800,7 +1810,8 @@ export async function proposeGroupPlan(
         select offering.group_offering_id, offering.venue_id,
           venue.display_name as venue_display_name, offering.sport_code,
           offering.class_label, offering.start_at, offering.end_at,
-          offering.coach_display_name, offering.price_text, offering.external_info_url,
+          offering.coach_user_id, offering.coach_display_name,
+          offering.price_text, offering.external_info_url,
           offering.contact_snapshot, offering.state, offering.version::text as version
         from scheduling.group_offerings as offering
         join community.venues as venue on venue.venue_id = offering.venue_id

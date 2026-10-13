@@ -73,6 +73,10 @@ import type {
   ConfirmGroupPlanPayload,
   GroupOfferingProjection,
   GroupPlanProjection,
+  GroupPlanOfficialConversionEffectIds,
+  GroupPlanOfficialConversionProjection,
+  RequestGroupPlanOfficialConversionPayload,
+  DecideGroupPlanOfficialConversionPayload,
   HostConfirmationEffectIds,
   HostConfirmationProjection,
   HostRejectionEffectIds,
@@ -1762,6 +1766,7 @@ describe('runtime contract', () => {
       classLabel: 'Открытая группа по боксу',
       startAt: '2026-09-11T16:00:00.000Z',
       endAt: '2026-09-11T17:00:00.000Z',
+      coachUserId: '0199a1b2-1234-7000-8000-000000000710',
       coachDisplayName: 'Пилотный тренер',
       priceText: 'Уточните стоимость у зала',
       externalInfoUrl: null,
@@ -1882,12 +1887,34 @@ describe('runtime contract', () => {
         classLabel: offering.classLabel,
         startAt: offering.startAt,
         endAt: offering.endAt,
+        coachUserId: offering.coachUserId,
         coachDisplayName: offering.coachDisplayName,
         priceText: offering.priceText,
         externalInfoUrl: offering.externalInfoUrl,
         contact: offering.contact as Record<string, unknown>,
         offeringVersion: offering.version,
       },
+      version: 1,
+    };
+    const groupPlanConversionId = '0199a1b2-1234-7000-8000-000000000714';
+    const groupPlanConversion: GroupPlanOfficialConversionProjection = {
+      conversionId: groupPlanConversionId,
+      groupPlanId: groupPlan.groupPlanId,
+      chatId,
+      requestedByUserId: userId,
+      coachUserId: '0199a1b2-1234-7000-8000-000000000710',
+      coachDisplayName: 'Пилотный тренер',
+      state: 'PENDING_CONFIRMATION',
+      confirmationDeadlineAt: '2026-09-10T10:00:00.000Z',
+      challengeId: null,
+      bookingId: null,
+      sessionId: null,
+      confirmations: [{ actorUserId: userId, requiredRole: 'ATHLETE_LOW',
+        decision: 'ACCEPT', decidedAt: '2026-09-07T10:00:00.000Z' }],
+      viewerRequiredRole: 'ATHLETE_LOW',
+      viewerHasDecided: true,
+      viewerCanConfirm: false,
+      viewerCanDecline: false,
       version: 1,
     };
     const selectedSlot = vi.fn(
@@ -2036,6 +2063,36 @@ describe('runtime contract', () => {
       async (_command: CommandEnvelope<ConfirmGroupPlanPayload>, _ids: PairIntentNotificationEffectIds): Promise<ExecutedCommand<GroupPlanProjection>> => ({
         responseStatus: 200, response: { ...groupPlan, confirmedByPeer: true, state: 'NOTIFIED', version: 2 },
         eventId: '0199a1b2-1234-7000-8000-000000000713', aggregateVersion: 2, replayed: false,
+      }),
+    );
+    const listGroupPlanOfficialConversionsForViewer = vi.fn(
+      async (): Promise<readonly GroupPlanOfficialConversionProjection[]> => [groupPlanConversion],
+    );
+    const requestGroupPlanOfficialConversion = vi.fn(
+      async (
+        _command: CommandEnvelope<RequestGroupPlanOfficialConversionPayload>,
+        _ids: GroupPlanOfficialConversionEffectIds,
+      ): Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>> => ({
+        responseStatus: 201, response: groupPlanConversion,
+        eventId: '0199a1b2-1234-7000-8000-000000000715', aggregateVersion: 1, replayed: false,
+      }),
+    );
+    const decideGroupPlanOfficialConversion = vi.fn(
+      async (
+        _command: CommandEnvelope<DecideGroupPlanOfficialConversionPayload>,
+        _ids: GroupPlanOfficialConversionEffectIds,
+      ): Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>> => ({
+        responseStatus: 200,
+        response: {
+          ...groupPlanConversion,
+          confirmations: [...groupPlanConversion.confirmations, {
+            actorUserId: '0199a1b2-1234-7000-8000-000000000711',
+            requiredRole: 'ATHLETE_HIGH', decision: 'ACCEPT',
+            decidedAt: '2026-09-07T10:01:00.000Z',
+          }],
+          version: 2,
+        },
+        eventId: '0199a1b2-1234-7000-8000-000000000716', aggregateVersion: 2, replayed: false,
       }),
     );
     const lifecycleSession: SessionLifecycleProjection = {
@@ -2373,6 +2430,9 @@ describe('runtime contract', () => {
         decideBookingTrainingRetention,
         proposeGroupPlan: proposedGroupPlan,
         confirmGroupPlan: confirmedGroupPlan,
+        listGroupPlanOfficialConversionsForViewer,
+        requestGroupPlanOfficialConversion,
+        decideGroupPlanOfficialConversion,
       },
     });
     apps.push(app);
@@ -3006,6 +3066,46 @@ describe('runtime contract', () => {
       payload: { groupPlanId: groupPlan.groupPlanId },
     });
 
+    const groupConversions = await app.inject({
+      method: 'GET', url: '/api/v1/me/group-plan-official-conversions',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(groupConversions.statusCode).toBe(200);
+    expect(groupConversions.json()).toMatchObject({
+      data: [{ conversionId: groupPlanConversionId, state: 'PENDING_CONFIRMATION' }],
+    });
+    expect(listGroupPlanOfficialConversionsForViewer).toHaveBeenCalledWith(userId);
+
+    const groupConversionRequested = await app.inject({
+      method: 'POST',
+      url: `/api/v1/group-plans/${groupPlan.groupPlanId}/request-official-conversion`,
+      headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'request-group-official-api-1', 'if-match': '2' },
+      payload: { explicitRulesetAcknowledged: true },
+    });
+    expect(groupConversionRequested.statusCode).toBe(201);
+    expect(requestGroupPlanOfficialConversion.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REQUEST_GROUP_PLAN_OFFICIAL_CONVERSION',
+      aggregateType: 'GroupPlan', aggregateId: groupPlan.groupPlanId, expectedVersion: 2,
+      payload: { groupPlanId: groupPlan.groupPlanId, explicitRulesetAcknowledged: true },
+    });
+
+    const groupConversionConfirmed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/group-plan-official-conversions/${groupPlanConversionId}/decision`,
+      headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'confirm-group-official-api-1', 'if-match': '1' },
+      payload: { decision: 'ACCEPT', explicitRulesetAcknowledged: true },
+    });
+    expect(groupConversionConfirmed.statusCode).toBe(200);
+    expect(groupConversionConfirmed.json()).toMatchObject({ data: { version: 2 } });
+    expect(decideGroupPlanOfficialConversion.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'DECIDE_GROUP_PLAN_OFFICIAL_CONVERSION',
+      aggregateType: 'GroupPlanOfficialConversion', aggregateId: groupPlanConversionId,
+      expectedVersion: 1,
+      payload: { conversionId: groupPlanConversionId, decision: 'ACCEPT' },
+    });
+
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/training-options');
     expect(app.swagger().paths).toHaveProperty(
@@ -3052,6 +3152,12 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/fail-external');
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans');
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/group-plans/{groupPlanId}/request-official-conversion',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/group-plan-official-conversions/{conversionId}/decision',
+    );
   });
 
   it('[AC-061][AC-062][AC-064][AC-172] exposes Challenge creation timers and reschedule flows', async () => {

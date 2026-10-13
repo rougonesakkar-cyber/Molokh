@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **175/214** (`169/196 P0`);
+- executable acceptance traceability: **177/214** (`171/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0066` and **58/58** integration scenarios pass locally;
+- database gate: PostgreSQL migrations `0001`–`0067` and **58/58** integration scenarios pass locally;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -207,6 +207,14 @@ Booking becomes `CANCELLED`, the peer and any waiting Coach are notified, and an
 Challenge returns to `ACCEPTED_UNSCHEDULED` with the same obligations and scheduling deadline.
 No Result, loss, Forfeit, Cooldown or reschedule is created. The GroupPlan becomes `NOTIFIED`, sends an in-app notice to the Venue Admin and
 still makes no capacity or statistics claim.
+
+For a mutually confirmed group plan with an assigned Coach, either Athlete can press
+**«Предложить сделать Official»**. The requester, peer and Coach confirm independently in Chat or
+their role workspace. Until all three accept, Molokh creates no Challenge, Session or obligations.
+The third acceptance rechecks current eligibility and atomically creates a `NONE`-stake Challenge
+with a frozen `OFFICIAL_CHALLENGE` Session that references the group schedule without reserving
+group capacity. If any party declines, the original social plan remains `NOTIFIED` and no sporting
+sanction appears.
 
 «Перенести Challenge» — отдельное явное действие. Первый односторонний перенос отменяет
 незавершённый Booking, оставляет Slot опубликованным и возвращает Challenge к выбору времени,

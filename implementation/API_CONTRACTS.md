@@ -180,6 +180,9 @@ the blocker revokes it. Neither endpoint cascades from Match to Challenge or Boo
 | POST | `/bookings/{id}/host-reject` | reason required |
 | POST | `/group-plans` | propose from Match |
 | POST | `/group-plans/{id}/confirm` | mutual confirmation/notification |
+| GET | `/me/group-plan-official-conversions` | Athlete or assigned Coach reads pending three-party confirmations |
+| POST | `/group-plans/{id}/request-official-conversion` | Athlete opens GP-05; requester confirmation is recorded, no sporting resource is created |
+| POST | `/group-plan-official-conversions/{id}/decision` | peer/Coach accepts or any required party declines; the third accept atomically creates Official context |
 
 The Chat options query returns
 `reservation_policy=NO_RESERVATION_BEFORE_HOST_CONFIRMATION`, the active pair intent and the
@@ -187,6 +190,14 @@ published alternatives. `POST /bookings` records the first Athlete selection; on
 call `select-same`, which freezes the immutable commercial snapshot and asks the host without
 claiming the Slot. Group cards always include freshness, Venue contact and a capacity disclaimer;
 mutual GroupPlan confirmation notifies the Venue but creates no Booking, Session or statistics.
+If the frozen group snapshot contains an authorized Coach, either Athlete can request a separate
+Official conversion. The response deadline is the earlier of 72 server hours and group start.
+Until requester, peer and assigned Coach have all accepted, the plan alone moves to
+`CONVERSION_PENDING`; Challenge, obligations, Booking and Session remain absent. The final command
+rechecks verification, competitive Membership, Block, Cooldown, status and active obligations,
+then creates one `NONE`-stake Challenge and one frozen `OFFICIAL_CHALLENGE` Session through an
+internal `GROUP_REFERENCE` Slot. Group capacity remains explicitly unreserved. A decline returns
+the plan to `NOTIFIED` without a Result, loss or Cooldown.
 Either Athlete may call `POST /bookings/{id}/withdraw` while the request is still `SELECTING` or
 `HOST_CONFIRMATION_PENDING`. The versioned command closes only the Booking, leaves the Slot
 published, notifies the peer and an already-waiting host, and returns a linked Official Challenge

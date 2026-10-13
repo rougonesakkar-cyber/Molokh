@@ -25,6 +25,11 @@ export function schedulingTimerFromOutbox(
                         aggregateType: 'BookingOfficialConversion',
                         commandType: 'EXPIRE_BOOKING_OFFICIAL_CONVERSION',
                       }
+                    : topic === 'scheduling.group-plan.official-conversion-timer.v1'
+                      ? {
+                          aggregateType: 'GroupPlanOfficialConversion',
+                          commandType: 'EXPIRE_GROUP_PLAN_OFFICIAL_CONVERSION',
+                        }
                     : topic === 'scheduling.booking.solo-continuation-timer.v1'
                       ? {
                           aggregateType: 'BookingSoloContinuation',
