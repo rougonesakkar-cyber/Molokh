@@ -9928,13 +9928,14 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(bookingLineage.rows[0]?.match_id).toBeNull();
   });
 
-  it('[AC-044][AC-052][AC-095][AC-096][AC-097][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
+  it('[AC-044][AC-052][AC-095][AC-096][AC-097][AC-121][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
     const setup = async (base: number, phonePrefix: string) => {
       const challenger = testId(base);
       const contender = testId(base + 1);
       const champion = testId(base + 2);
       const central = testId(base + 3);
       const follower = testId(base + 15);
+      const lateFollower = testId(base + 60);
       const venue = testId(base + 4);
       const community = testId(base + 5);
       const competition = testId(base + 6);
@@ -9949,7 +9950,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
           (${contender}::uuid, ${`${phonePrefix}1`}, ${occurredAt}::timestamptz, '1994-01-01', 'ADULT', ${`Contender ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
           (${champion}::uuid, ${`${phonePrefix}2`}, ${occurredAt}::timestamptz, '1993-01-01', 'ADULT', ${`Champion ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
           (${central}::uuid, ${`${phonePrefix}3`}, ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', ${`Central ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
-          (${follower}::uuid, ${`${phonePrefix}4`}, ${occurredAt}::timestamptz, '1996-01-01', 'ADULT', ${`Follower ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
+          (${follower}::uuid, ${`${phonePrefix}4`}, ${occurredAt}::timestamptz, '1996-01-01', 'ADULT', ${`Follower ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+          (${lateFollower}::uuid, ${`${phonePrefix}5`}, ${occurredAt}::timestamptz, '1997-01-01', 'ADULT', ${`Late follower ${base}`}, 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
       `.execute(database);
       await sql`
         insert into identity.account_verifications (
@@ -9958,7 +9960,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         ) values
           (${testId(base + 7)}::uuid, ${challenger}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
           (${testId(base + 8)}::uuid, ${contender}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
-          (${testId(base + 16)}::uuid, ${follower}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1)
+          (${testId(base + 16)}::uuid, ${follower}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1),
+          (${testId(base + 61)}::uuid, ${lateFollower}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1)
       `.execute(database);
       await ensureLocalPilotCommunity(database, {
         venueId: venue,
@@ -9988,6 +9991,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
           { membershipId: testId(base + 13), userId: contender },
           { membershipId: testId(base + 14), userId: champion },
           { membershipId: testId(base + 17), userId: follower },
+          { membershipId: testId(base + 62), userId: lateFollower },
         ],
       });
       await sql`
@@ -10073,6 +10077,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         contender,
         champion,
         follower,
+        lateFollower,
         competition,
         challengeId,
         serviceChatId,
@@ -10360,25 +10365,84 @@ describePostgres('PostgreSQL critical command transaction', () => {
       status_lock_result_id: resultId,
     });
 
-    await finalizeResult(
+    const lateQueueEntryId = testId(15800);
+    const lateQueued = await submitStatusQueueEntry(
       database,
       {
-        commandId: testId(15620), commandType: 'FINALIZE_RESULT',
-        idempotencyKey: `finalize-admin-forfeit-${resultId}`,
-        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
-        aggregateType: 'Result', aggregateId: resultId,
-        expectedVersion: 1, correlationId: testId(15621), causationId: testId(15503),
-        requestId: testId(15622), source: 'scheduler', payloadVersion: 1,
-        payload: { resultId },
-      } satisfies CommandEnvelope<FinalizeResultPayload>,
+        commandId: testId(15801), commandType: 'SUBMIT_STATUS_QUEUE_ENTRY',
+        idempotencyKey: `ac-121-submit-during-provisional-${lateQueueEntryId}`,
+        actor: { type: 'USER', id: refusedFixture.lateFollower, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'ChallengeQueueEntry', aggregateId: lateQueueEntryId,
+        expectedVersion: 0, correlationId: testId(15802), causationId: testId(15509),
+        requestId: testId(15803), source: 'api', payloadVersion: 1,
+        payload: { competitionId: refusedFixture.competition },
+      } satisfies CommandEnvelope<SubmitStatusQueueEntryPayload>,
       {
-        eventId: testId(15623), auditId: testId(15624), outboxMessageId: testId(15625),
-        challengeEventId: testId(15626), statusFinalizationId: testId(15627),
-        statusEventId: testId(15628), notificationOutboxMessageId: testId(15629),
-        notificationIds: [testId(15630), testId(15631)],
+        eventId: testId(15804), auditId: testId(15805), outboxMessageId: testId(15806),
+        challengeId: testId(15807), challengeEventId: testId(15808),
+        serviceChatId: testId(15809), serviceChatEventId: testId(15810),
+        rulesetSnapshotId: testId(15811), acknowledgmentId: testId(15812),
+        pairedQueueEventId: testId(15813), timerOutboxMessageId: testId(15814),
+        staleQueueEventId: testId(15815), staleQueueOutboxMessageId: testId(15816),
+        notificationOutboxMessageId: testId(15817),
+        notificationIds: [testId(15818), testId(15819)],
       },
+    );
+    expect(lateQueued.response).toMatchObject({
+      queueEntryId: lateQueueEntryId,
+      state: 'WAITING',
+      boundHolderUserId: refusedFixture.challenger,
+      position: 2,
+      version: 1,
+    });
+    const lateSubmittedAt = lateQueued.response.submittedAt;
+    await expect(readStatusQueueActivationCandidate(
+      database,
+      refusedFixture.competition,
+    )).resolves.toBeNull();
+
+    const finalizeCommand = {
+      commandId: testId(15620), commandType: 'FINALIZE_RESULT',
+      idempotencyKey: `finalize-admin-forfeit-${resultId}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Result', aggregateId: resultId,
+      expectedVersion: 1, correlationId: testId(15621), causationId: testId(15503),
+      requestId: testId(15622), source: 'scheduler', payloadVersion: 1,
+      payload: { resultId },
+    } satisfies CommandEnvelope<FinalizeResultPayload>;
+    const finalizeIds = {
+      eventId: testId(15623), auditId: testId(15624), outboxMessageId: testId(15625),
+      challengeEventId: testId(15626), statusFinalizationId: testId(15627),
+      statusEventId: testId(15628), notificationOutboxMessageId: testId(15629),
+      notificationIds: [testId(15630), testId(15631)],
+    };
+    const finalized = await finalizeResult(
+      database,
+      finalizeCommand,
+      finalizeIds,
       () => new Date('2026-09-30T12:00:00.000Z'),
     );
+    await expect(finalizeResult(database, finalizeCommand, finalizeIds)).resolves.toMatchObject({
+      replayed: true,
+      eventId: finalized.eventId,
+      response: finalized.response,
+    });
+    const lateAfterFinalization = await sql<{
+      readonly state: string;
+      readonly bound_holder_user_id: string;
+      readonly submitted_at: Date;
+      readonly version: string;
+    }>`
+      select state, bound_holder_user_id, submitted_at, version::text
+      from competition.challenge_queue_entries
+      where queue_entry_id = ${lateQueueEntryId}::uuid
+    `.execute(database);
+    expect(lateAfterFinalization.rows[0]).toEqual({
+      state: 'WAITING',
+      bound_holder_user_id: refusedFixture.challenger,
+      submitted_at: new Date(lateSubmittedAt),
+      version: '1',
+    });
     const reconciliationCandidates = await readStatusQueueReconciliationCandidates(
       database,
       refusedFixture.competition,
@@ -10507,6 +10571,27 @@ describePostgres('PostgreSQL critical command transaction', () => {
       reconfirmationDeadlineAt: null,
       position: null,
       version: 5,
+    });
+    await expect(readStatusQueueReconciliationCandidates(
+      database,
+      refusedFixture.competition,
+    )).resolves.toEqual([{
+      competitionId: refusedFixture.competition,
+      queueEntryId: lateQueueEntryId,
+      version: 1,
+    }]);
+    await expect(readCompetitionStatus(
+      database,
+      refusedFixture.competition,
+      refusedFixture.lateFollower,
+    )).resolves.toMatchObject({
+      queue: [{
+        queueEntryId: lateQueueEntryId,
+        state: 'WAITING',
+        submittedAt: lateSubmittedAt,
+        position: 1,
+        version: 1,
+      }],
     });
   });
 
@@ -11097,7 +11182,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       .execute(database)).rejects.toThrow(/append-only/);
   });
 
-  it('[AC-150] annuls a provisional status Result with replayable tenure lineage', async () => {
+  it('[AC-121][AC-150] annuls a provisional status Result with replayable tenure lineage', async () => {
     const base = 44000;
     const fixture = await seedConfirmedTrainingForConversion(base);
     const rulesetSnapshotId = testId(44030);
