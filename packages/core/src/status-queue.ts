@@ -209,11 +209,22 @@ export function statusQueueReconfirmationDeadline(requestedAt: Date): Date {
 export function assertStatusQueueReconfirmationCanBeRequested(input: {
   readonly state: QueueEntryState;
   readonly kind: QueueEntryKind;
+  readonly targetStatus: QueueTargetStatus;
+  readonly initiatorUserId: string;
   readonly boundHolderUserId: string | null;
   readonly currentContenderUserId: string | null;
-}): void {
+}): 'INVALIDATE_FORMER_CONTENDER_TITLE_INTENT' | 'REQUEST_RECONFIRMATION' {
   if (input.state !== 'WAITING' || input.kind !== 'DIRECT_STATUS') {
     throw new StatusQueueConflictError('QUEUE_RECONFIRMATION_NOT_REQUIRED');
+  }
+  if (input.targetStatus === 'CHAMPION') {
+    if (
+      input.currentContenderUserId === null
+      || input.initiatorUserId === input.currentContenderUserId
+    ) {
+      throw new StatusQueueConflictError('QUEUE_RECONFIRMATION_NOT_REQUIRED');
+    }
+    return 'INVALIDATE_FORMER_CONTENDER_TITLE_INTENT';
   }
   if (
     input.currentContenderUserId === null
@@ -221,6 +232,7 @@ export function assertStatusQueueReconfirmationCanBeRequested(input: {
   ) {
     throw new StatusQueueConflictError('QUEUE_RECONFIRMATION_NOT_REQUIRED');
   }
+  return 'REQUEST_RECONFIRMATION';
 }
 
 export function assertStatusQueueEntryCanBeReconfirmed(input: {

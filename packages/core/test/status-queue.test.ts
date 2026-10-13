@@ -125,16 +125,34 @@ describe('status queue policy', () => {
     })).toThrowError('BOUND_HOLDER_CHANGED');
   });
 
-  it('[AC-095][AC-096][AC-097] preserves FIFO while a new Contender is reconfirmed for 24 hours', () => {
+  it('[AC-095][AC-096][AC-097][AC-098] preserves FIFO and invalidates a former Contender TITLE intent', () => {
     const requestedAt = new Date('2026-09-28T12:00:00.000Z');
     const deadline = statusQueueReconfirmationDeadline(requestedAt);
     expect(deadline.toISOString()).toBe('2026-09-29T12:00:00.000Z');
+    expect(assertStatusQueueReconfirmationCanBeRequested({
+      state: 'WAITING',
+      kind: 'DIRECT_STATUS',
+      targetStatus: 'CONTENDER',
+      initiatorUserId: 'challenger',
+      boundHolderUserId: 'contender-a',
+      currentContenderUserId: 'contender-b',
+    })).toBe('REQUEST_RECONFIRMATION');
+    expect(assertStatusQueueReconfirmationCanBeRequested({
+      state: 'WAITING',
+      kind: 'DIRECT_STATUS',
+      targetStatus: 'CHAMPION',
+      initiatorUserId: 'contender-a',
+      boundHolderUserId: 'champion',
+      currentContenderUserId: 'contender-b',
+    })).toBe('INVALIDATE_FORMER_CONTENDER_TITLE_INTENT');
     expect(() => assertStatusQueueReconfirmationCanBeRequested({
       state: 'WAITING',
       kind: 'DIRECT_STATUS',
-      boundHolderUserId: 'contender-a',
+      targetStatus: 'CHAMPION',
+      initiatorUserId: 'contender-b',
+      boundHolderUserId: 'champion',
       currentContenderUserId: 'contender-b',
-    })).not.toThrow();
+    })).toThrowError('QUEUE_RECONFIRMATION_NOT_REQUIRED');
     const reconfirmation = {
       state: 'RECONFIRMATION_REQUIRED' as const,
       actorUserId: 'challenger',

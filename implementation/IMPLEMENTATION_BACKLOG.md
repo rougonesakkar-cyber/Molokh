@@ -318,7 +318,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   decision, the Worker compares every waiting direct-status entry with the current Contender under
   versioned commands. Migratable entries keep their immutable FIFO key, bind the new holder and
   receive a 24-hour `RECONFIRMATION_REQUIRED` window. The Athlete can reconfirm or leave without
-  loss; a stale-safe timer expires silence. A reconfirming head blocks later entries until it closes,
+  loss; a stale-safe timer expires silence. AC-098 keeps reconciliation frozen behind the
+  provisional status lock and invalidates the former Contender's own `CHAMPION` intent through
+  Q-08 after finalization, preserving its history while creating no reconfirmation, loss, Challenge
+  or Cooldown. A reconfirming head blocks later entries until it closes,
   and successful reconfirmation resumes normal activation. The universal Community screen shows
   the new Contender, exact deadline and two plain actions. Core/API/client/Worker and PostgreSQL
   scenarios AC-095–AC-097 pass.
@@ -396,7 +399,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 182/214 (`176/196 P0`).
+  Acceptance traceability is 183/214 (`177/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

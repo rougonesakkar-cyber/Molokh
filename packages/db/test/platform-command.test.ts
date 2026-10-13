@@ -9928,7 +9928,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(bookingLineage.rows[0]?.match_id).toBeNull();
   });
 
-  it('[AC-044][AC-052][AC-092][AC-095][AC-096][AC-097][AC-121][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
+  it('[AC-044][AC-052][AC-092][AC-095][AC-096][AC-097][AC-098][AC-121][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
     const setup = async (base: number, phonePrefix: string) => {
       const challenger = testId(base);
       const contender = testId(base + 1);
@@ -10474,6 +10474,38 @@ describePostgres('PostgreSQL critical command transaction', () => {
       position: 1,
     }]);
     const originalSubmittedAt = followerBefore?.queue[0]?.submittedAt;
+    const formerTitleQueueEntryId = testId(15700);
+    const formerTitleCreatedEventId = testId(15730);
+    const formerTitleSubmittedAt = '2026-09-27T12:00:00.000Z';
+    await sql`
+      insert into competition.challenge_queue_entries (
+        queue_entry_id, competition_id, initiator_user_id, target_status, kind, state,
+        bound_holder_user_id, source_type, submitted_at, version, created_at, updated_at
+      ) values (
+        ${formerTitleQueueEntryId}::uuid, ${refusedFixture.competition}::uuid,
+        ${refusedFixture.contender}::uuid, 'CHAMPION', 'DIRECT_STATUS', 'WAITING',
+        ${refusedFixture.champion}::uuid, 'DIRECT', ${formerTitleSubmittedAt}::timestamptz,
+        1, ${formerTitleSubmittedAt}::timestamptz, ${formerTitleSubmittedAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+        occurred_at, payload, idempotency_key_hash
+      ) values (
+        ${formerTitleCreatedEventId}::uuid, 'ChallengeQueued', 1,
+        'ChallengeQueueEntry', ${formerTitleQueueEntryId}::uuid, 1, 'Q-01',
+        ${testId(15731)}::uuid, null, ${refusedFixture.contender}::uuid,
+        ${formerTitleSubmittedAt}::timestamptz,
+        ${JSON.stringify({
+          queueEntryId: formerTitleQueueEntryId,
+          competitionId: refusedFixture.competition,
+          targetStatus: 'CHAMPION',
+        })}::jsonb,
+        'fixture:ac-098:former-contender-title-intent'
+      )
+    `.execute(database);
     const resultId = testId(15520);
     const refused = await declineOptionalChallenge(
       database,
@@ -10533,6 +10565,50 @@ describePostgres('PostgreSQL critical command transaction', () => {
       contender_user_id: refusedFixture.challenger,
       status_lock_result_id: resultId,
     });
+    await expect(readStatusQueueReconciliationCandidates(
+      database,
+      refusedFixture.competition,
+    )).resolves.toEqual([]);
+    const provisionalTitleCommand = {
+      commandId: testId(15701), commandType: 'REQUEST_STATUS_QUEUE_RECONFIRMATION',
+      idempotencyKey: `ac-098-provisional-title-${formerTitleQueueEntryId}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: formerTitleQueueEntryId,
+      expectedVersion: 1, correlationId: testId(15702), causationId: testId(15509),
+      requestId: testId(15703), source: 'scheduler', payloadVersion: 1,
+      payload: {
+        competitionId: refusedFixture.competition,
+        queueEntryId: formerTitleQueueEntryId,
+      },
+    } satisfies CommandEnvelope<RequestStatusQueueReconfirmationPayload>;
+    const provisionalTitleIds = {
+      eventId: testId(15704), auditId: testId(15705), outboxMessageId: testId(15706),
+      timerOutboxMessageId: testId(15707), notificationOutboxMessageId: testId(15708),
+      notificationId: testId(15709),
+    };
+    await expect(requestStatusQueueReconfirmation(
+      database,
+      provisionalTitleCommand,
+      provisionalTitleIds,
+    )).rejects.toThrow('COMPETITION_PHASE_UNAVAILABLE');
+    const provisionalTitleEffects = await sql<{
+      readonly events: string;
+      readonly audits: string;
+      readonly outbox: string;
+    }>`
+      select
+        (select count(*)::text from platform.domain_events
+          where event_id = ${provisionalTitleIds.eventId}::uuid) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${provisionalTitleIds.auditId}::uuid) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (
+            ${provisionalTitleIds.outboxMessageId}::uuid,
+            ${provisionalTitleIds.notificationOutboxMessageId}::uuid,
+            ${provisionalTitleIds.timerOutboxMessageId}::uuid
+          )) as outbox
+    `.execute(database);
+    expect(provisionalTitleEffects.rows[0]).toEqual({ events: '0', audits: '0', outbox: '0' });
 
     const lateQueueEntryId = testId(15800);
     const lateQueued = await submitStatusQueueEntry(
@@ -10561,7 +10637,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       queueEntryId: lateQueueEntryId,
       state: 'WAITING',
       boundHolderUserId: refusedFixture.challenger,
-      position: 2,
+      position: 3,
       version: 1,
     });
     const lateSubmittedAt = lateQueued.response.submittedAt;
@@ -10616,11 +10692,164 @@ describePostgres('PostgreSQL critical command transaction', () => {
       database,
       refusedFixture.competition,
     );
-    expect(reconciliationCandidates).toEqual([{
-      competitionId: refusedFixture.competition,
-      queueEntryId: followerQueueEntryId,
-      version: 1,
-    }]);
+    expect(reconciliationCandidates).toEqual([
+      {
+        competitionId: refusedFixture.competition,
+        queueEntryId: formerTitleQueueEntryId,
+        version: 1,
+      },
+      {
+        competitionId: refusedFixture.competition,
+        queueEntryId: followerQueueEntryId,
+        version: 1,
+      },
+    ]);
+    const titleSportFacts = async () => {
+      const facts = await sql<{
+        readonly challenges: string;
+        readonly results: string;
+        readonly transitions: string;
+        readonly cooldowns: string;
+        readonly obligations: string;
+      }>`
+        select
+          (select count(*)::text from competition.challenges
+            where competition_id = ${refusedFixture.competition}::uuid) as challenges,
+          (select count(*)::text from competition.results as result
+            join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
+            where challenge.competition_id = ${refusedFixture.competition}::uuid) as results,
+          (select count(*)::text from competition.status_transitions as transition
+            join competition.results as result on result.result_id = transition.source_result_id
+            join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
+            where challenge.competition_id = ${refusedFixture.competition}::uuid) as transitions,
+          (select count(*)::text from competition.pair_cooldowns as cooldown
+            where cooldown.competition_id = ${refusedFixture.competition}::uuid) as cooldowns,
+          (select count(*)::text from competition.challenge_participant_obligations as obligation
+            join competition.challenges as challenge on challenge.challenge_id = obligation.challenge_id
+            where challenge.competition_id = ${refusedFixture.competition}::uuid
+              and obligation.released_at is null) as obligations
+      `.execute(database);
+      const row = facts.rows[0];
+      if (!row) throw new Error('AC-098 sport facts are missing');
+      return row;
+    };
+    const titleSportFactsBefore = await titleSportFacts();
+    const invalidateFormerTitleCommand = {
+      commandId: testId(15710), commandType: 'REQUEST_STATUS_QUEUE_RECONFIRMATION',
+      idempotencyKey: `ac-098-invalidate-former-title-${formerTitleQueueEntryId}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: formerTitleQueueEntryId,
+      expectedVersion: 1, correlationId: testId(15711), causationId: finalizeIds.eventId,
+      requestId: testId(15712), source: 'scheduler', payloadVersion: 1,
+      payload: {
+        competitionId: refusedFixture.competition,
+        queueEntryId: formerTitleQueueEntryId,
+      },
+    } satisfies CommandEnvelope<RequestStatusQueueReconfirmationPayload>;
+    const invalidateFormerTitleIds = {
+      eventId: testId(15713), auditId: testId(15714), outboxMessageId: testId(15715),
+      timerOutboxMessageId: testId(15716), notificationOutboxMessageId: testId(15717),
+      notificationId: testId(15718),
+    };
+    const invalidatedFormerTitle = await requestStatusQueueReconfirmation(
+      database,
+      invalidateFormerTitleCommand,
+      invalidateFormerTitleIds,
+      () => new Date('2026-09-30T11:59:59.000Z'),
+    );
+    expect(invalidatedFormerTitle.response).toMatchObject({
+      queueEntryId: formerTitleQueueEntryId,
+      targetStatus: 'CHAMPION',
+      state: 'INVALIDATED',
+      boundHolderUserId: refusedFixture.champion,
+      submittedAt: formerTitleSubmittedAt,
+      reconfirmationDeadlineAt: null,
+      position: null,
+      version: 2,
+    });
+    await expect(requestStatusQueueReconfirmation(
+      database,
+      invalidateFormerTitleCommand,
+      invalidateFormerTitleIds,
+    )).resolves.toMatchObject({
+      replayed: true,
+      eventId: invalidateFormerTitleIds.eventId,
+      response: invalidatedFormerTitle.response,
+    });
+    await expect(requestStatusQueueReconfirmation(
+      database,
+      {
+        ...invalidateFormerTitleCommand,
+        commandId: testId(15720),
+        idempotencyKey: `ac-098-stale-former-title-${formerTitleQueueEntryId}`,
+        correlationId: testId(15721),
+        requestId: testId(15722),
+      },
+      {
+        eventId: testId(15723), auditId: testId(15724), outboxMessageId: testId(15725),
+        timerOutboxMessageId: testId(15726), notificationOutboxMessageId: testId(15727),
+        notificationId: testId(15728),
+      },
+    )).rejects.toBeInstanceOf(VersionConflictError);
+    expect(await titleSportFacts()).toEqual(titleSportFactsBefore);
+    const invalidatedTitleFacts = await sql<{
+      readonly state: string;
+      readonly target_status: string;
+      readonly bound_holder_user_id: string;
+      readonly submitted_at: Date;
+      readonly terminal_reason: string;
+      readonly version: string;
+      readonly event_count: string;
+      readonly audit_count: string;
+      readonly outbox_count: string;
+      readonly timer_count: string;
+      readonly notification_payload: unknown;
+    }>`
+      select entry.state, entry.target_status, entry.bound_holder_user_id,
+        entry.submitted_at, entry.terminal_reason, entry.version::text,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${invalidateFormerTitleIds.eventId}::uuid
+            and event_name = 'QueueEntryInvalidated'
+            and transition_id = 'Q-08') as event_count,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${invalidateFormerTitleIds.auditId}::uuid
+            and action = 'INVALIDATE_STATUS_QUEUE_ENTRY_AFTER_HOLDER_CHANGE') as audit_count,
+        (select count(*)::text from platform.outbox_messages
+          where event_id = ${invalidateFormerTitleIds.eventId}::uuid) as outbox_count,
+        (select count(*)::text from platform.outbox_messages
+          where event_id = ${invalidateFormerTitleIds.eventId}::uuid
+            and topic like '%timer%') as timer_count,
+        (select payload from platform.outbox_messages
+          where message_id = ${invalidateFormerTitleIds.notificationOutboxMessageId}::uuid
+        ) as notification_payload
+      from competition.challenge_queue_entries as entry
+      where entry.queue_entry_id = ${formerTitleQueueEntryId}::uuid
+    `.execute(database);
+    expect(invalidatedTitleFacts.rows[0]).toMatchObject({
+      state: 'INVALIDATED', target_status: 'CHAMPION',
+      bound_holder_user_id: refusedFixture.champion,
+      submitted_at: new Date(formerTitleSubmittedAt),
+      terminal_reason: 'FORMER_CONTENDER_TITLE_INTENT', version: '2',
+      event_count: '1', audit_count: '1', outbox_count: '2', timer_count: '0',
+      notification_payload: { notifications: [{
+        recipientUserId: refusedFixture.contender,
+        renderKey: 'status.queue-entry-invalidated',
+        payload: {
+          queueEntryId: formerTitleQueueEntryId,
+          reasonCode: 'FORMER_CONTENDER_TITLE_INTENT',
+          noLoss: true,
+        },
+        deadlineAt: null,
+      }] },
+    });
+    const formerContenderProjection = await readCompetitionStatus(
+      database,
+      refusedFixture.competition,
+      refusedFixture.contender,
+    );
+    expect(formerContenderProjection?.queue.map((entry) => entry.queueEntryId))
+      .not.toContain(formerTitleQueueEntryId);
+    expect(formerContenderProjection?.queue.find((entry) => entry.isViewerEntry)).toBeUndefined();
     const reconfirmation = await requestStatusQueueReconfirmation(
       database,
       {

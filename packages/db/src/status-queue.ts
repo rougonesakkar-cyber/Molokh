@@ -1015,10 +1015,15 @@ export async function readStatusQueueReconciliationCandidates(
     where competitive.competition_id = ${competitionId}::uuid
       and competitive.phase = 'RUNNING'
       and competitive.contender_user_id is not null
-      and entry.target_status = 'CONTENDER'
+      and competitive.status_lock_result_id is null
       and entry.kind = 'DIRECT_STATUS'
       and entry.state = 'WAITING'
-      and entry.bound_holder_user_id is distinct from competitive.contender_user_id
+      and (
+        (entry.target_status = 'CONTENDER'
+          and entry.bound_holder_user_id is distinct from competitive.contender_user_id)
+        or (entry.target_status = 'CHAMPION'
+          and entry.initiator_user_id is distinct from competitive.contender_user_id)
+      )
     order by entry.submitted_at, entry.queue_entry_id
   `.execute(database);
   return result.rows.map((row) => ({
@@ -1075,32 +1080,42 @@ export async function requestStatusQueueReconfirmation(
         readonly competition_id: string;
         readonly phase: CompetitionPhase;
         readonly contender_user_id: string | null;
+        readonly status_lock_result_id: string | null;
       }>`
-        select competition_id, phase, contender_user_id
+        select competition_id, phase, contender_user_id, status_lock_result_id
         from competition.competitions
         where competition_id = ${command.payload.competitionId}::uuid
         for update
       `.execute(transaction);
       const competition = competitionResult.rows[0];
-      if (!competition || competition.phase !== 'RUNNING' || competition.contender_user_id === null) {
+      if (
+        !competition
+        || competition.phase !== 'RUNNING'
+        || competition.contender_user_id === null
+        || competition.status_lock_result_id !== null
+      ) {
         throw new StatusQueueConflictError('COMPETITION_PHASE_UNAVAILABLE');
       }
       const existing = await queueEntry(transaction, command.payload.queueEntryId, true);
       if (!existing || existing.competition_id !== competition.competition_id) {
         throw new StatusQueueConflictError('QUEUE_ENTRY_NOT_FOUND');
       }
-      assertStatusQueueReconfirmationCanBeRequested({
+      const reconciliationAction = assertStatusQueueReconfirmationCanBeRequested({
         state: existing.state,
         kind: existing.kind,
+        targetStatus: existing.target_status,
+        initiatorUserId: existing.initiator_user_id,
         boundHolderUserId: existing.bound_holder_user_id,
         currentContenderUserId: competition.contender_user_id,
       });
-      const invalidationReason = await directCandidateInvalidationReason(
-        transaction,
-        competition.competition_id,
-        existing.initiator_user_id,
-        competition.contender_user_id,
-      );
+      const invalidationReason = reconciliationAction === 'INVALIDATE_FORMER_CONTENDER_TITLE_INTENT'
+        ? 'FORMER_CONTENDER_TITLE_INTENT' as const
+        : await directCandidateInvalidationReason(
+            transaction,
+            competition.competition_id,
+            existing.initiator_user_id,
+            competition.contender_user_id,
+          );
       if (invalidationReason !== null) {
         const reason = invalidationReason;
         await sql`

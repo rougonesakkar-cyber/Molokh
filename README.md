@@ -8,7 +8,7 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **182/214** (`176/196 P0`);
+- executable acceptance traceability: **183/214** (`177/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
 - database gate: PostgreSQL migrations `0001`–`0067` and **61/61** integration scenarios pass locally;
@@ -421,6 +421,12 @@ AC-092 proves the occupied direct-status contour. While an active status-bearing
 the slot, three independently verified Athletes can enter FIFO, but all remain `WAITING` in strict
 server order. Submission creates no Challenge, response clock, service Chat, ruleset snapshot or
 obligation; even a forced activation attempt fails atomically until the slot is released.
+
+AC-098 closes the former-Contender TITLE contour. Holder reconciliation is disabled while the
+source Result remains provisional; after finalization, the former Contender's own `CHAMPION`
+intent is atomically `INVALIDATED` under Q-08 instead of being migrated to the new Contender.
+The immutable FIFO/history fields remain, the Athlete receives a neutral no-loss notification and
+no Challenge, timer, Result, Cooldown or reconfirmation window is created.
 
 Mandatory notifications now also materialize a provider-independent `CRITICAL/PUSH` delivery
 intent. The intent contains only notification/event/User references, never phone or e-mail, and
