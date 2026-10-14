@@ -1018,6 +1018,7 @@ const executeResultFinalization = async (payload: TimerCommandPayload) => {
     challengeEventId: randomUUID(),
     statusFinalizationId: randomUUID(),
     statusEventId: randomUUID(),
+    genesisEventId: randomUUID(),
     notificationOutboxMessageId: randomUUID(),
     notificationIds: [randomUUID(), randomUUID()],
   });

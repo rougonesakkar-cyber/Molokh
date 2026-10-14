@@ -301,6 +301,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
   timeout are no-fault, while an already-accepting survivor returns with the original FIFO key.
   The accepted GENESIS service Chat can use the existing personal Slot → mutual selection →
   Venue/Coach confirmation → `OFFICIAL_CHALLENGE` Session path without inventing a social Match.
+- M5 founding GENESIS Result increment: complete. AC-100 carries that accepted pair through the
+  assigned Coach Session and a normal decisive Result. The immutable empty-holder snapshot drives
+  one provisional ST-01 assignment, status lock, two replayable provisional tenures, ordinary
+  Cooldown and the 48-hour Appeal window. R-04 finalization releases both obligations, makes the
+  tenures final, appends C-04, moves the Competition from `FOUNDING_CHALLENGE` to `RUNNING` and
+  preserves the original FIFO timestamps, Result and Session snapshot. Current and deterministic
+  replay projections match after exact-idempotent finalization.
 - M5 direct-status FIFO activation increment: complete. The Worker reacts to queue/head-release,
   Result finalization and review-decision events, revalidates the strict oldest eligible entry
   under the Competition lock and atomically creates one `MANDATORY` Contender Challenge plus its
@@ -399,7 +406,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 183/214 (`177/196 P0`).
+  Acceptance traceability is 184/214 (`178/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

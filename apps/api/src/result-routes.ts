@@ -118,12 +118,13 @@ function envelope<T>(input: {
 
 function finalizationIds(): Pick<
   ResultEffectIds,
-  'challengeEventId' | 'statusFinalizationId' | 'statusEventId'
+  'challengeEventId' | 'statusFinalizationId' | 'statusEventId' | 'genesisEventId'
   | 'notificationOutboxMessageId' | 'notificationIds'
 > {
   return {
     challengeEventId: newUuidV7(), statusFinalizationId: newUuidV7(),
-    statusEventId: newUuidV7(), notificationOutboxMessageId: newUuidV7(),
+    statusEventId: newUuidV7(), genesisEventId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7()],
   };
 }

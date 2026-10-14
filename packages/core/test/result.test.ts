@@ -175,6 +175,19 @@ describe('Result and provisional status policy', () => {
     });
   });
 
+  it('[AC-100] assigns the first Champion and Contender from a normal GENESIS win', () => {
+    expect(deriveProvisionalStatusTransition({
+      stake: 'GENESIS_CHAMPION', outcomeCode: 'WIN_B', winnerUserId: 'athlete-b',
+      loserUserId: 'athlete-a',
+      snapshot: { championUserId: null, contenderUserId: null, statusVersion: 0 },
+    })).toMatchObject({
+      type: 'GENESIS_APPLIED', eventName: 'GenesisStatusApplied',
+      transitionId: 'ST-01', locksStatus: true,
+      before: { championUserId: null, contenderUserId: null, statusVersion: 0 },
+      after: { championUserId: 'athlete-b', contenderUserId: 'athlete-a', statusVersion: 1 },
+    });
+  });
+
   it('[AC-073][AC-082][AC-083][AC-084] swaps TITLE roles, records a defense and isolates OPEN', () => {
     const snapshot = { championUserId: 'athlete-a', contenderUserId: 'athlete-b', statusVersion: 3 };
     expect(deriveProvisionalStatusTransition({

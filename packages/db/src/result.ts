@@ -95,6 +95,7 @@ export interface ResultEffectIds {
   readonly waiverId?: string;
   readonly waiverEventId?: string;
   readonly statusFinalizationId?: string;
+  readonly genesisEventId?: string;
   readonly notificationOutboxMessageId?: string;
   readonly notificationIds?: readonly string[];
   readonly missingResultReviewEventId?: string;
@@ -198,6 +199,7 @@ interface RecordContextRow {
   readonly challenge_version: string;
   readonly cycle_no: number;
   readonly competition_id: string;
+  readonly competition_phase: string;
   readonly competition_version: string;
   readonly current_champion_user_id: string | null;
   readonly current_contender_user_id: string | null;
@@ -271,6 +273,7 @@ interface ResultRow {
   readonly challenge_state: string;
   readonly challenge_version: string;
   readonly competition_id: string;
+  readonly competition_phase: string;
   readonly competition_version: string;
   readonly competition_status_version: string;
   readonly current_champion_user_id: string | null;
@@ -345,7 +348,8 @@ async function recordContext(
   const result = await sql<RecordContextRow>`
     select challenge.challenge_id, challenge.state as challenge_state,
       challenge.version::text as challenge_version, challenge.cycle_no,
-      competition.competition_id, competition.version::text as competition_version,
+      competition.competition_id, competition.phase as competition_phase,
+      competition.version::text as competition_version,
       competition.champion_user_id as current_champion_user_id,
       competition.contender_user_id as current_contender_user_id,
       competition.status_version::text as current_status_version,
@@ -461,7 +465,8 @@ async function resultRow(
       result.coach_user_id, source_session.coach_user_id as session_coach_user_id,
       challenge.state as challenge_state,
       challenge.version::text as challenge_version,
-      competition.competition_id, competition.version::text as competition_version,
+      competition.competition_id, competition.phase as competition_phase,
+      competition.version::text as competition_version,
       competition.status_version::text as competition_status_version,
       competition.champion_user_id as current_champion_user_id,
       competition.contender_user_id as current_contender_user_id,
@@ -1520,11 +1525,17 @@ async function finalizeRecordedResult(
     if (row.status_lock_result_id !== row.result_id) {
       throw new ResultConflictError('COMPETITION_STATUS_LOCKED');
     }
-    const competitionAggregateVersion = Number(row.competition_version) + 1;
+    const foundingGenesis = row.transition_type === 'GENESIS_APPLIED';
+    if (foundingGenesis && row.competition_phase !== 'FOUNDING_CHALLENGE') {
+      throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+    }
+    const statusAggregateVersion = Number(row.competition_version) + 1;
+    const competitionAggregateVersion = statusAggregateVersion + Number(foundingGenesis);
     const competitionStatusVersion = Number(row.competition_status_version) + 1;
     await sql`
       update competition.competitions
       set status_lock_result_id = null, status_version = ${competitionStatusVersion},
+        phase = ${foundingGenesis ? 'RUNNING' : row.competition_phase},
         version = ${competitionAggregateVersion},
         updated_at = ${occurredAt.toISOString()}::timestamptz
       where competition_id = ${row.competition_id}::uuid
@@ -1544,7 +1555,7 @@ async function finalizeRecordedResult(
       eventId: statusIds.statusEventId,
       eventName: 'StatusTransitionFinalized', schemaVersion: 1,
       aggregateType: 'Competition', aggregateId: row.competition_id,
-      aggregateVersion: competitionAggregateVersion, transitionId: 'ST-13',
+      aggregateVersion: statusAggregateVersion, transitionId: 'ST-13',
       payload: {
         resultId: row.result_id, transitionId: row.transition_id,
         championUserId: row.after_champion_user_id,
@@ -1553,6 +1564,25 @@ async function finalizeRecordedResult(
       },
       metadata: { policyVersion: RESULT_POLICY_VERSION },
     });
+    if (foundingGenesis) {
+      const genesisEventId = requiredIds(ids, ['genesisEventId'] as const).genesisEventId;
+      relatedEvents.push({
+        eventId: genesisEventId,
+        eventName: 'FoundingGenesisFinalized', schemaVersion: 1,
+        aggregateType: 'Competition', aggregateId: row.competition_id,
+        aggregateVersion: competitionAggregateVersion, transitionId: 'C-04',
+        payload: {
+          competitionId: row.competition_id,
+          resultId: row.result_id,
+          fromPhase: 'FOUNDING_CHALLENGE',
+          toPhase: 'RUNNING',
+          championUserId: row.after_champion_user_id,
+          contenderUserId: row.after_contender_user_id,
+          finalizedAt: occurredAt.toISOString(),
+        },
+        metadata: { policyVersion: RESULT_POLICY_VERSION },
+      });
+    }
   }
   const projected = await resultRow(transaction, row.result_id, viewerUserId);
   if (!projected) throw new ResultConflictError('RESULT_NOT_RECORDED');

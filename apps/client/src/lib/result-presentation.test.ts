@@ -29,6 +29,17 @@ describe('Result card presentation', () => {
     });
   });
 
+  it('[AC-100] shows a decisive provisional Result with its server Appeal actions', () => {
+    expect(resultCardPresentation({
+      outcomeCode: 'WIN_B', winnerDisplayName: 'Марина Ринг',
+      viewerCanAppeal: true, viewerCanWaiveAppeal: true,
+    })).toEqual({
+      summary: 'Победитель: Марина Ринг',
+      showAppealAction: true,
+      showWaiverAction: true,
+    });
+  });
+
   it('[AC-209] maps the stopped Athlete to the peer winner and a normalized method', () => {
     expect(athleteStoppageResult(0, 'INJURY')).toEqual({
       outcomeCode: 'WIN_B', methodCode: 'INJURY_STOPPAGE',
