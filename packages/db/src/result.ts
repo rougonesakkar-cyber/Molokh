@@ -4,6 +4,7 @@ import {
   ResultConflictError,
   ResultPermissionDeniedError,
   ResultValidationError,
+  acceptedChallengeSchedulingDeadline,
   appealResponseDeadline,
   appealReviewSlaDeadline,
   assertAppealActionCanBeTaken,
@@ -272,6 +273,7 @@ interface ResultRow {
   readonly session_coach_user_id: string | null;
   readonly challenge_state: string;
   readonly challenge_version: string;
+  readonly cycle_no: number;
   readonly effective_stake: ChallengeStake;
   readonly competition_id: string;
   readonly competition_phase: string;
@@ -466,6 +468,7 @@ async function resultRow(
       result.coach_user_id, source_session.coach_user_id as session_coach_user_id,
       challenge.state as challenge_state,
       challenge.version::text as challenge_version,
+      challenge.cycle_no,
       coalesce(snapshot.effective_stake, challenge.stake) as effective_stake,
       competition.competition_id, competition.phase as competition_phase,
       competition.version::text as competition_version,
@@ -1497,33 +1500,88 @@ async function finalizeRecordedResult(
 ): Promise<FinalizationArtifacts> {
   const challengeId = requiredIds(ids, ['challengeEventId'] as const).challengeEventId;
   const challengeNextVersion = Number(row.challenge_version) + 1;
+  const genesisRepeat = ['GENESIS_CHAMPION', 'GENESIS_CONTENDER'].includes(row.effective_stake)
+    && ['DRAW', 'NO_CONTEST'].includes(row.recorded_outcome_code);
+  const repeatSchedulingDeadlineAt = genesisRepeat
+    ? acceptedChallengeSchedulingDeadline(occurredAt)
+    : null;
   await sql`
     update competition.results
     set state = 'FINAL', finalized_at = ${occurredAt.toISOString()}::timestamptz,
       version = ${resultNextVersion}, updated_at = ${occurredAt.toISOString()}::timestamptz
     where result_id = ${row.result_id}::uuid and state = 'RECORDED'
   `.execute(transaction);
-  await sql`
-    update competition.challenges
-    set state = 'COMPLETED', decided_at = ${occurredAt.toISOString()}::timestamptz,
-      version = ${challengeNextVersion},
-      updated_at = ${occurredAt.toISOString()}::timestamptz
-    where challenge_id = ${row.challenge_id}::uuid and state = 'RESULT_RECORDED'
-  `.execute(transaction);
-  await sql`
-    update competition.challenge_participant_obligations
-    set released_at = ${occurredAt.toISOString()}::timestamptz,
-      release_reason = 'RESULT_FINAL'
-    where challenge_id = ${row.challenge_id}::uuid and released_at is null
-  `.execute(transaction);
+  if (genesisRepeat) {
+    await sql`
+      update competition.challenges
+      set state = 'ACCEPTED_UNSCHEDULED', cycle_no = cycle_no + 1,
+        scheduling_deadline_at = ${repeatSchedulingDeadlineAt!.toISOString()}::timestamptz,
+        decided_at = null, version = ${challengeNextVersion},
+        updated_at = ${occurredAt.toISOString()}::timestamptz
+      where challenge_id = ${row.challenge_id}::uuid and state = 'RESULT_RECORDED'
+    `.execute(transaction);
+  } else {
+    await sql`
+      update competition.challenges
+      set state = 'COMPLETED', decided_at = ${occurredAt.toISOString()}::timestamptz,
+        version = ${challengeNextVersion},
+        updated_at = ${occurredAt.toISOString()}::timestamptz
+      where challenge_id = ${row.challenge_id}::uuid and state = 'RESULT_RECORDED'
+    `.execute(transaction);
+    await sql`
+      update competition.challenge_participant_obligations
+      set released_at = ${occurredAt.toISOString()}::timestamptz,
+        release_reason = 'RESULT_FINAL'
+      where challenge_id = ${row.challenge_id}::uuid and released_at is null
+    `.execute(transaction);
+  }
   const relatedEvents: RelatedDomainEventDraft[] = [{
     eventId: challengeId,
-    eventName: 'ChallengeCompleted', schemaVersion: 1,
+    eventName: genesisRepeat ? 'RepeatSessionOrdered' : 'ChallengeCompleted', schemaVersion: 1,
     aggregateType: 'Challenge', aggregateId: row.challenge_id,
-    aggregateVersion: challengeNextVersion, transitionId: 'CH-17',
-    payload: { challengeId: row.challenge_id, resultId: row.result_id, finalizedAt: occurredAt.toISOString() },
+    aggregateVersion: challengeNextVersion, transitionId: genesisRepeat ? 'CH-20' : 'CH-17',
+    payload: genesisRepeat ? {
+      challengeId: row.challenge_id, resultId: row.result_id,
+      cycleNo: row.cycle_no + 1,
+      schedulingDeadlineAt: repeatSchedulingDeadlineAt!.toISOString(),
+    } : {
+      challengeId: row.challenge_id, resultId: row.result_id,
+      finalizedAt: occurredAt.toISOString(),
+    },
     metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
   }];
+  if (genesisRepeat) {
+    const expectedPhase = row.effective_stake === 'GENESIS_CHAMPION'
+      ? 'FOUNDING_CHALLENGE'
+      : 'CONTENDER_GENESIS';
+    if (row.competition_phase !== expectedPhase || row.transition_id !== null) {
+      throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+    }
+    const genesisEventId = requiredIds(ids, ['genesisEventId'] as const).genesisEventId;
+    const competitionAggregateVersion = Number(row.competition_version) + 1;
+    await sql`
+      update competition.competitions
+      set version = ${competitionAggregateVersion},
+        updated_at = ${occurredAt.toISOString()}::timestamptz
+      where competition_id = ${row.competition_id}::uuid
+        and version = ${Number(row.competition_version)}
+    `.execute(transaction);
+    relatedEvents.push({
+      eventId: genesisEventId,
+      eventName: 'GenesisRepeatRequired', schemaVersion: 1,
+      aggregateType: 'Competition', aggregateId: row.competition_id,
+      aggregateVersion: competitionAggregateVersion,
+      transitionId: row.effective_stake === 'GENESIS_CHAMPION' ? 'C-05' : 'C-10',
+      payload: {
+        competitionId: row.competition_id, challengeId: row.challenge_id,
+        resultId: row.result_id, stake: row.effective_stake,
+        fromPhase: expectedPhase, toPhase: expectedPhase,
+        cycleNo: row.cycle_no + 1,
+        schedulingDeadlineAt: repeatSchedulingDeadlineAt!.toISOString(),
+      },
+      metadata: { policyVersion: RESULT_POLICY_VERSION },
+    });
+  }
   if (row.transition_id) {
     const statusIds = requiredIds(ids, ['statusFinalizationId', 'statusEventId'] as const);
     if (row.status_lock_result_id !== row.result_id) {

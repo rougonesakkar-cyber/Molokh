@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **188/214** (`182/196 P0`);
+- executable acceptance traceability: **189/214** (`183/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0067` and **63/63** integration scenarios pass locally; AC-100/101 carry the first mutually accepted founding GENESIS pair through Slot, Official Session, normal or FORFEIT Result, provisional status, 48-hour Appeal window and atomic C-04 finalization into either `RUNNING` or the public `CONTENDER_VACANT_OPEN` phase with deterministic status/Cooldown replay; AC-102 proves the separate C-03/ST-03 path that promotes the sole eligible founder only after the full three-day server window, without Result, loss or Cooldown; AC-103 proves strict-FIFO contender GENESIS through mutual acceptance, Scheduling, frozen Session snapshot and C-09 finalization while preserving the Champion; AC-104 proves the equivalent C-08/ST-04 single-candidate succession into the vacant Contender slot;
+- database gate: PostgreSQL migrations `0001`–`0067` and **64/64** integration scenarios pass locally; AC-100/101 carry the first mutually accepted founding GENESIS pair through Slot, Official Session, normal or FORFEIT Result, provisional status, 48-hour Appeal window and atomic C-04 finalization into either `RUNNING` or the public `CONTENDER_VACANT_OPEN` phase with deterministic status/Cooldown replay; AC-102 proves the separate C-03/ST-03 path that promotes the sole eligible founder only after the full three-day server window, without Result, loss or Cooldown; AC-103 proves strict-FIFO contender GENESIS through mutual acceptance, Scheduling, frozen Session snapshot and C-09 finalization while preserving the Champion; AC-104 proves the equivalent C-08/ST-04 single-candidate succession into the vacant Contender slot; AC-105 keeps either GENESIS phase and the same immutable pair/FIFO facts after DRAW, NO_CONTEST or an independent repeat decision, while creating no status change or Cooldown;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -423,6 +423,12 @@ exist. The existing Booking and Official Session flow freezes the current Champi
 Contender slot. A decisive Coach Result assigns only a provisional Contender; C-09 makes it final
 after the ordinary 48-hour Appeal window, returns Competition to `RUNNING` and never changes the
 Champion. The immutable queue timestamps, Result, Cooldown and deterministic status replay agree.
+
+AC-105 closes the GENESIS repeat path. A final DRAW/NO_CONTEST or an independent Central repeat
+decision returns the same frozen pair to `ACCEPTED_UNSCHEDULED`, advances only `cycle_no` and gives
+the pair a new server scheduling deadline. C-05/C-10 keeps the current GENESIS phase and status
+holders unchanged; the original QueueEntries remain consumed with their initial FIFO identity and
+time, while no new submission, loss, status transition or Cooldown is created.
 
 AC-092 proves the occupied direct-status contour. While an active status-bearing Challenge owns
 the slot, three independently verified Athletes can enter FIFO, but all remain `WAITING` in strict

@@ -29,7 +29,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
-import { challengeStakeLabel } from '../lib/challenge-presentation';
+import {
+  challengeStakeLabel,
+  genesisSchedulingExplanation,
+} from '../lib/challenge-presentation';
 
 type ChatMessage = ChatMessagesResponse['data'][number];
 type TrainingOptions = TrainingOptionsResponse['data'];
@@ -1013,6 +1016,11 @@ export default function ChatScreen() {
                       <Text style={styles.trainingTerms}>
                         Договоритесь о времени до {chatChallenge.challenge.schedulingDeadlineAt ? formatDateTime(chatChallenge.challenge.schedulingDeadlineAt) : 'назначенного срока'}. Официальная Session будет связана с этим Challenge.
                       </Text>
+                      {genesisSchedulingExplanation(chatChallenge.challenge.responsePolicy) ? (
+                        <Text style={styles.trainingTerms}>
+                          {genesisSchedulingExplanation(chatChallenge.challenge.responsePolicy)}
+                        </Text>
+                      ) : null}
                       <Text style={styles.trainingTerms}>
                         Пользовательские переносы: {chatChallenge.challenge.userRescheduleCount} из 2.
                       </Text>

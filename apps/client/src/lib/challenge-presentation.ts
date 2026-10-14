@@ -7,3 +7,11 @@ export function challengeStakeLabel(stake: ChallengeContract['stake']): string {
   }
   return 'Статусный поединок';
 }
+
+export function genesisSchedulingExplanation(
+  responsePolicy: ChallengeContract['responsePolicy'],
+): string | null {
+  return responsePolicy === 'MUTUAL_GENESIS'
+    ? 'GENESIS-пара закреплена. Для первой или повторной Session выберите слот здесь — новая заявка в FIFO не нужна.'
+    : null;
+}
