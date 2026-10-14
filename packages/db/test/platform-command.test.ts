@@ -10462,6 +10462,278 @@ describePostgres('PostgreSQL critical command transaction', () => {
     );
   });
 
+  it('[AC-102] promotes one founding candidate after the full server three-day window', async () => {
+    const athlete = testId(54000);
+    const central = testId(54001);
+    const venue = testId(54002);
+    const community = testId(54003);
+    const competition = testId(54004);
+    const membership = testId(54005);
+    const queueEntry = testId(54006);
+    const occurredAt = '2026-10-14T07:00:00.000Z';
+    const windowStartedAt = '2026-10-14T10:00:00.000Z';
+    const deadlineAt = '2026-10-17T10:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${athlete}::uuid, '+79995400000', ${occurredAt}::timestamptz,
+          '1995-01-01', 'ADULT', 'Единственный кандидат', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt}::timestamptz),
+        (${central}::uuid, '+79995400001', ${occurredAt}::timestamptz,
+          '1985-01-01', 'ADULT', 'Central', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values (
+        ${testId(54007)}::uuid, ${athlete}::uuid, 'VERIFIED',
+        'CENTRAL_MODERATION', 'identity-mvp-v1', true,
+        ${occurredAt}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1
+      )
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue,
+      venueConfigurationId: testId(54008),
+      communityId: community,
+      communityConfigurationId: testId(54009),
+      membershipId: membership,
+      centralGrantId: testId(54010),
+      athleteUserId: athlete,
+      centralActorId: central,
+      legalName: 'Single Founder Pilot LLC',
+      venueDisplayName: 'Single Founder Pilot',
+      communityName: 'Single Founder Community',
+      address: 'Москва',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: { phone: '+79990000540' },
+      occurredAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition,
+      communityId: community,
+      centralActorId: central,
+      occurredAt,
+      memberships: [{ membershipId: membership, userId: athlete }],
+    });
+
+    const submitted = await submitStatusQueueEntry(database, {
+      commandId: testId(54020), commandType: 'SUBMIT_STATUS_QUEUE_ENTRY',
+      idempotencyKey: `ac-102-submit-${queueEntry}`,
+      actor: { type: 'USER', id: athlete, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry, expectedVersion: 0,
+      correlationId: testId(54021), causationId: null, requestId: testId(54022),
+      source: 'api', payloadVersion: 1, payload: { competitionId: competition },
+    } satisfies CommandEnvelope<SubmitStatusQueueEntryPayload>, {
+      eventId: testId(54023), auditId: testId(54024), outboxMessageId: testId(54025),
+      challengeId: testId(54026), challengeEventId: testId(54027),
+      serviceChatId: testId(54028), serviceChatEventId: testId(54029),
+      rulesetSnapshotId: testId(54030), acknowledgmentId: testId(54031),
+      pairedQueueEventId: testId(54032), timerOutboxMessageId: testId(54033),
+      staleQueueEventId: testId(54034), staleQueueOutboxMessageId: testId(54035),
+      notificationOutboxMessageId: testId(54036),
+      notificationIds: [testId(54037), testId(54038)],
+    });
+    expect(submitted.response).toMatchObject({
+      queueEntryId: queueEntry, targetStatus: 'CHAMPION', kind: 'GENESIS_CANDIDATE',
+      state: 'WAITING', position: 1, version: 1,
+    });
+    const originalSubmittedAt = submitted.response.submittedAt;
+    await expect(readVacancyQueueReconciliationCandidate(database, competition))
+      .resolves.toEqual({
+        competitionId: competition, queueEntryId: queueEntry,
+        version: 1, action: 'START_SINGLE_WINDOW',
+      });
+
+    const windowIds = {
+      eventId: testId(54043), auditId: testId(54044), outboxMessageId: testId(54045),
+      challengeId: testId(54046), challengeEventId: testId(54047),
+      serviceChatId: testId(54048), serviceChatEventId: testId(54049),
+      rulesetSnapshotId: testId(54050), acknowledgmentId: testId(54051),
+      pairedQueueEventId: testId(54052), timerOutboxMessageId: testId(54053),
+      staleQueueEventId: testId(54054), staleQueueOutboxMessageId: testId(54055),
+      notificationOutboxMessageId: testId(54056),
+      notificationIds: [testId(54057), testId(54058)] as const,
+    };
+    const window = await reconcileVacancyQueue(database, {
+      commandId: testId(54040), commandType: 'RECONCILE_VACANCY_QUEUE',
+      idempotencyKey: `ac-102-window-${queueEntry}-v1`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry, expectedVersion: 1,
+      correlationId: testId(54041), causationId: testId(54023), requestId: testId(54042),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { competitionId: competition, queueEntryId: queueEntry,
+        action: 'START_SINGLE_WINDOW' },
+    } satisfies CommandEnvelope<ReconcileVacancyQueuePayload>, windowIds,
+    () => new Date(windowStartedAt));
+    expect(window.response).toMatchObject({
+      queueEntryId: queueEntry, state: 'WAITING', submittedAt: originalSubmittedAt,
+      singleCandidateDeadlineAt: deadlineAt, version: 2,
+    });
+    const timer = await sql<{ readonly payload: unknown }>`
+      select payload from platform.outbox_messages
+      where message_id = ${windowIds.timerOutboxMessageId}::uuid
+    `.execute(database);
+    expect(timer.rows[0]?.payload).toMatchObject({
+      competitionId: competition, queueEntryId: queueEntry, deadlineAt,
+      timer: {
+        commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+        aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry,
+        expectedState: 'WAITING', expectedVersion: 2, deadlineAt,
+        idempotencyKey: `genesis:${queueEntry}:single-promote:v2`,
+      },
+    });
+
+    const earlyIds = {
+      eventId: testId(54063), auditId: testId(54064), outboxMessageId: testId(54065),
+      statusEventId: testId(54066), notificationOutboxMessageId: testId(54067),
+      notificationId: testId(54068),
+    };
+    await expect(promoteSingleGenesisCandidate(database, {
+      commandId: testId(54060), commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+      idempotencyKey: `ac-102-early-${queueEntry}-v2`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry, expectedVersion: 2,
+      correlationId: testId(54061), causationId: windowIds.eventId,
+      requestId: testId(54062), source: 'scheduler', payloadVersion: 1,
+      payload: { queueEntryId: queueEntry },
+    } satisfies CommandEnvelope<PromoteSingleGenesisCandidatePayload>, earlyIds,
+    () => new Date('2026-10-17T09:59:59.999Z')))
+      .rejects.toMatchObject({ code: 'GENESIS_SINGLE_PROMOTION_NOT_DUE' });
+
+    const promotionCommand = {
+      commandId: testId(54070), commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+      idempotencyKey: `ac-102-promote-${queueEntry}-v2`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry, expectedVersion: 2,
+      correlationId: testId(54071), causationId: windowIds.eventId,
+      requestId: testId(54072), source: 'scheduler', payloadVersion: 1,
+      payload: { queueEntryId: queueEntry },
+    } satisfies CommandEnvelope<PromoteSingleGenesisCandidatePayload>;
+    const promotionIds = {
+      eventId: testId(54073), auditId: testId(54074), outboxMessageId: testId(54075),
+      statusEventId: testId(54076), notificationOutboxMessageId: testId(54077),
+      notificationId: testId(54078),
+    };
+    const promoted = await promoteSingleGenesisCandidate(
+      database, promotionCommand, promotionIds, () => new Date(deadlineAt),
+    );
+    expect(promoted.response).toMatchObject({
+      queueEntryId: queueEntry, state: 'CONSUMED', submittedAt: originalSubmittedAt,
+      singleCandidateDeadlineAt: null, version: 3,
+    });
+    await expect(promoteSingleGenesisCandidate(database, promotionCommand, promotionIds))
+      .resolves.toMatchObject({ replayed: true, eventId: promotionIds.eventId });
+
+    const staleIds = {
+      eventId: testId(54083), auditId: testId(54084), outboxMessageId: testId(54085),
+      statusEventId: testId(54086), notificationOutboxMessageId: testId(54087),
+      notificationId: testId(54088),
+    };
+    await expect(promoteSingleGenesisCandidate(database, {
+      ...promotionCommand,
+      commandId: testId(54080), idempotencyKey: `ac-102-stale-${queueEntry}-v2`,
+      requestId: testId(54082),
+    }, staleIds, () => new Date('2026-10-17T10:00:01.000Z')))
+      .rejects.toBeInstanceOf(VersionConflictError);
+
+    const finalStatus = await readCompetitionStatus(database, competition, athlete);
+    expect(finalStatus).toMatchObject({
+      phase: 'CONTENDER_VACANT_OPEN', viewerStatus: 'CHAMPION',
+      champion: { userId: athlete, displayName: 'Единственный кандидат' }, contender: null,
+    });
+    const currentProjection = await readCompetitionProjection(database, competition);
+    const replayedProjection = await replayCompetitionProjection(database, competition);
+    expect(currentProjection).toEqual(replayedProjection);
+    expect(currentProjection).toMatchObject({
+      championUserId: athlete, contenderUserId: null, statusVersion: 1,
+      statusLockResultId: null, cooldowns: [],
+      tenures: [expect.objectContaining({
+        status: 'CHAMPION', userId: athlete, provisional: false,
+      })],
+    });
+
+    const facts = await sql<{
+      readonly phase: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string | null;
+      readonly status_version: string;
+      readonly queue_entry_id: string;
+      readonly submitted_at: Date;
+      readonly queue_state: string;
+      readonly terminal_reason: string;
+      readonly challenge_count: string;
+      readonly session_count: string;
+      readonly result_count: string;
+      readonly appeal_count: string;
+      readonly cooldown_count: string;
+      readonly status_event_count: string;
+      readonly success_event_count: string;
+      readonly success_audit_count: string;
+      readonly success_outbox_count: string;
+      readonly failed_artifact_count: string;
+    }>`
+      select competitive.phase, competitive.champion_user_id,
+        competitive.contender_user_id, competitive.status_version::text as status_version,
+        entry.queue_entry_id, entry.submitted_at, entry.state as queue_state,
+        entry.terminal_reason,
+        (select count(*)::text from competition.challenges) as challenge_count,
+        (select count(*)::text from scheduling.sessions) as session_count,
+        (select count(*)::text from competition.results) as result_count,
+        (select count(*)::text from competition.appeals) as appeal_count,
+        (select count(*)::text from competition.pair_cooldowns) as cooldown_count,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${promotionIds.statusEventId}::uuid
+            and event_name = 'GenesisWithoutOpponent' and transition_id = 'C-03'
+        ) as status_event_count,
+        (select count(*)::text from platform.domain_events
+          where event_id in (${promotionIds.eventId}::uuid,
+            ${promotionIds.statusEventId}::uuid)) as success_event_count,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${promotionIds.auditId}::uuid) as success_audit_count,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (${promotionIds.outboxMessageId}::uuid,
+            ${promotionIds.notificationOutboxMessageId}::uuid)) as success_outbox_count,
+        ((select count(*) from platform.domain_events
+          where event_id in (${earlyIds.eventId}::uuid, ${earlyIds.statusEventId}::uuid,
+            ${staleIds.eventId}::uuid, ${staleIds.statusEventId}::uuid))
+          + (select count(*) from platform.audit_events
+            where audit_id in (${earlyIds.auditId}::uuid, ${staleIds.auditId}::uuid))
+          + (select count(*) from platform.outbox_messages
+            where message_id in (${earlyIds.outboxMessageId}::uuid,
+              ${earlyIds.notificationOutboxMessageId}::uuid,
+              ${staleIds.outboxMessageId}::uuid,
+              ${staleIds.notificationOutboxMessageId}::uuid)))::text as failed_artifact_count
+      from competition.competitions competitive
+      join competition.challenge_queue_entries entry
+        on entry.competition_id = competitive.competition_id
+      where competitive.competition_id = ${competition}::uuid
+    `.execute(database);
+    expect(facts.rows[0]).toEqual({
+      phase: 'CONTENDER_VACANT_OPEN', champion_user_id: athlete,
+      contender_user_id: null, status_version: '1', queue_entry_id: queueEntry,
+      submitted_at: new Date(originalSubmittedAt), queue_state: 'CONSUMED',
+      terminal_reason: 'SINGLE_CANDIDATE_PROMOTED', challenge_count: '0',
+      session_count: '0', result_count: '0', appeal_count: '0', cooldown_count: '0',
+      status_event_count: '1', success_event_count: '2', success_audit_count: '1',
+      success_outbox_count: '2', failed_artifact_count: '0',
+    });
+    const publicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where event_id in (${promotionIds.eventId}::uuid, ${promotionIds.statusEventId}::uuid)
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (${promotionIds.outboxMessageId}::uuid,
+        ${promotionIds.notificationOutboxMessageId}::uuid)
+    `.execute(database);
+    expect(JSON.stringify(publicDocuments.rows)).not.toMatch(/\+79995400000|TEST_APPROVED/i);
+  });
+
   it('[AC-044][AC-052][AC-092][AC-095][AC-096][AC-097][AC-098][AC-121][AC-138][AC-164] runs direct FIFO, mandatory delivery, Forfeit and holder reconfirmation', async () => {
     const setup = async (base: number, phonePrefix: string) => {
       const challenger = testId(base);

@@ -347,7 +347,9 @@ This sprint produces a demonstrable Training slice while establishing the same f
   a state/version-guarded promotion timer. A later second candidate makes that timer stale, while
   decline/timeout restarts a fresh solo window for the surviving original FIFO entry. Single
   promotion applies C-03/C-08 without Result, loss or Cooldown. Core/client/Worker and PostgreSQL
-  scenarios AC-093/AC-094 pass.
+  scenarios AC-093/AC-094 pass; AC-102 additionally proves exact-deadline SYSTEM promotion of the
+  sole eligible founder into final Champion with a vacant Contender, immutable FIFO identity and
+  deterministic replay.
 - M5 confirmed-Training conversion increment: complete. Either Athlete may propose an
   Official conversion before the Session window; both Athletes and the assigned Coach are required,
   the deadline is capped at 72 hours and the existing Training remains the fallback on decline,
@@ -409,7 +411,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 185/214 (`179/196 P0`).
+  Acceptance traceability is 186/214 (`180/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
