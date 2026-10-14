@@ -1525,7 +1525,11 @@ async function finalizeRecordedResult(
     if (row.status_lock_result_id !== row.result_id) {
       throw new ResultConflictError('COMPETITION_STATUS_LOCKED');
     }
-    const foundingGenesis = row.transition_type === 'GENESIS_APPLIED';
+    const foundingGenesis = row.transition_type === 'GENESIS_APPLIED'
+      || row.transition_type === 'GENESIS_APPLIED_WITH_VACANCY';
+    const foundingGenesisPhase = row.transition_type === 'GENESIS_APPLIED_WITH_VACANCY'
+      ? 'CONTENDER_VACANT_OPEN'
+      : 'RUNNING';
     if (foundingGenesis && row.competition_phase !== 'FOUNDING_CHALLENGE') {
       throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
     }
@@ -1535,7 +1539,7 @@ async function finalizeRecordedResult(
     await sql`
       update competition.competitions
       set status_lock_result_id = null, status_version = ${competitionStatusVersion},
-        phase = ${foundingGenesis ? 'RUNNING' : row.competition_phase},
+        phase = ${foundingGenesis ? foundingGenesisPhase : row.competition_phase},
         version = ${competitionAggregateVersion},
         updated_at = ${occurredAt.toISOString()}::timestamptz
       where competition_id = ${row.competition_id}::uuid
@@ -1575,7 +1579,7 @@ async function finalizeRecordedResult(
           competitionId: row.competition_id,
           resultId: row.result_id,
           fromPhase: 'FOUNDING_CHALLENGE',
-          toPhase: 'RUNNING',
+          toPhase: foundingGenesisPhase,
           championUserId: row.after_champion_user_id,
           contenderUserId: row.after_contender_user_id,
           finalizedAt: occurredAt.toISOString(),

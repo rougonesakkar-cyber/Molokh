@@ -307,7 +307,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Cooldown and the 48-hour Appeal window. R-04 finalization releases both obligations, makes the
   tenures final, appends C-04, moves the Competition from `FOUNDING_CHALLENGE` to `RUNNING` and
   preserves the original FIFO timestamps, Result and Session snapshot. Current and deterministic
-  replay projections match after exact-idempotent finalization.
+  replay projections match after exact-idempotent finalization. AC-101 reuses the same lifecycle
+  for founding `FORFEIT`/`NO_SHOW`: ST-02 assigns only the Champion, C-04 finalizes into
+  `CONTENDER_VACANT_OPEN`, the Contender stays null and the public vacancy opens without assigning
+  a candidate or rewriting FIFO history.
 - M5 direct-status FIFO activation increment: complete. The Worker reacts to queue/head-release,
   Result finalization and review-decision events, revalidates the strict oldest eligible entry
   under the Competition lock and atomically creates one `MANDATORY` Contender Challenge plus its
@@ -406,7 +409,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 184/214 (`178/196 P0`).
+  Acceptance traceability is 185/214 (`179/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
