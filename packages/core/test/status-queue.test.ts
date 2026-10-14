@@ -221,7 +221,7 @@ describe('status queue policy', () => {
     })).not.toThrow();
   });
 
-  it('[AC-093][AC-094][AC-102] promotes one unchanged GENESIS candidate only after three days', () => {
+  it('[AC-093][AC-094][AC-102][AC-104] promotes one unchanged GENESIS candidate only after three days', () => {
     const singleSinceAt = new Date('2026-09-28T12:00:00.000Z');
     const deadline = genesisSingleCandidateDeadline(singleSinceAt);
     expect(deadline.toISOString()).toBe('2026-10-01T12:00:00.000Z');

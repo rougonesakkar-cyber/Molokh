@@ -14157,7 +14157,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(JSON.stringify(facts.rows[0]?.public_documents)).not.toContain(privateReason);
   });
 
-  it('[AC-106][AC-108][AC-186] releases only the status and preserves Membership plus FIFO', async () => {
+  it('[AC-104][AC-106][AC-108][AC-186] releases only the status and promotes one Contender after three days', async () => {
     const champion = testId(15700);
     const contender = testId(15701);
     const queuedAthlete = testId(15702);
@@ -14384,27 +14384,80 @@ describePostgres('PostgreSQL critical command transaction', () => {
       queueEntryId: queueEntry,
       state: 'WAITING',
       submittedAt: originalSubmittedAt,
+      singleCandidateDeadlineAt: '2026-10-01T11:06:00.000Z',
       version: 2,
+    });
+    const timer = await sql<{ readonly payload: unknown }>`
+      select payload from platform.outbox_messages
+      where message_id = ${testId(15773)}::uuid
+    `.execute(database);
+    expect(timer.rows[0]?.payload).toMatchObject({
+      competitionId: competition,
+      queueEntryId: queueEntry,
+      deadlineAt: '2026-10-01T11:06:00.000Z',
+      timer: {
+        commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+        aggregateType: 'ChallengeQueueEntry',
+        aggregateId: queueEntry,
+        expectedState: 'WAITING',
+        expectedVersion: 2,
+        deadlineAt: '2026-10-01T11:06:00.000Z',
+        idempotencyKey: `genesis:${queueEntry}:single-promote:v2`,
+      },
     });
     await expect(readVacancyQueueReconciliationCandidate(database, competition))
       .resolves.toBeNull();
 
+    const earlyIds = {
+      eventId: testId(15793), auditId: testId(15794), outboxMessageId: testId(15795),
+      statusEventId: testId(15796), notificationOutboxMessageId: testId(15797),
+      notificationId: testId(15798),
+    };
+    await expect(promoteSingleGenesisCandidate(database, {
+      commandId: testId(15790), commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+      idempotencyKey: `early-single-promote-${queueEntry}-v2`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry,
+      expectedVersion: 2, correlationId: testId(15791), causationId: testId(15763),
+      requestId: testId(15792), source: 'scheduler', payloadVersion: 1,
+      payload: { queueEntryId: queueEntry },
+    } satisfies CommandEnvelope<PromoteSingleGenesisCandidatePayload>, earlyIds,
+    () => new Date('2026-10-01T11:05:59.999Z')))
+      .rejects.toThrow('GENESIS_SINGLE_PROMOTION_NOT_DUE');
+
+    const unauthorizedIds = {
+      eventId: testId(15913), auditId: testId(15914), outboxMessageId: testId(15915),
+      statusEventId: testId(15916), notificationOutboxMessageId: testId(15917),
+      notificationId: testId(15918),
+    };
+    await expect(promoteSingleGenesisCandidate(database, {
+      commandId: testId(15910), commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+      idempotencyKey: `athlete-single-promote-${queueEntry}-v2`,
+      actor: { type: 'USER', id: queuedAthlete, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry,
+      expectedVersion: 2, correlationId: testId(15911), causationId: testId(15763),
+      requestId: testId(15912), source: 'api', payloadVersion: 1,
+      payload: { queueEntryId: queueEntry },
+    } satisfies CommandEnvelope<PromoteSingleGenesisCandidatePayload>, unauthorizedIds,
+    () => new Date('2026-10-01T11:06:00.000Z')))
+      .rejects.toThrow('GENESIS_SINGLE_CANDIDATE_CHANGED');
+
+    const promotionCommand = {
+      commandId: testId(15780), commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
+      idempotencyKey: `single-promote-${queueEntry}-v2`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry,
+      expectedVersion: 2, correlationId: testId(15781), causationId: testId(15763),
+      requestId: testId(15782), source: 'scheduler', payloadVersion: 1,
+      payload: { queueEntryId: queueEntry },
+    } satisfies CommandEnvelope<PromoteSingleGenesisCandidatePayload>;
+    const promotionIds = {
+      eventId: testId(15783), auditId: testId(15784), outboxMessageId: testId(15785),
+      statusEventId: testId(15786), notificationOutboxMessageId: testId(15787),
+      notificationId: testId(15788),
+    };
     const promoted = await promoteSingleGenesisCandidate(
-      database,
-      {
-        commandId: testId(15780), commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',
-        idempotencyKey: `single-promote-${queueEntry}-v2`,
-        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
-        aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntry,
-        expectedVersion: 2, correlationId: testId(15781), causationId: testId(15763),
-        requestId: testId(15782), source: 'scheduler', payloadVersion: 1,
-        payload: { queueEntryId: queueEntry },
-      } satisfies CommandEnvelope<PromoteSingleGenesisCandidatePayload>,
-      {
-        eventId: testId(15783), auditId: testId(15784), outboxMessageId: testId(15785),
-        statusEventId: testId(15786), notificationOutboxMessageId: testId(15787),
-        notificationId: testId(15788),
-      },
+      database, promotionCommand, promotionIds,
       () => new Date('2026-10-01T11:06:00.000Z'),
     );
     expect(promoted.response).toMatchObject({
@@ -14413,6 +14466,21 @@ describePostgres('PostgreSQL critical command transaction', () => {
       submittedAt: originalSubmittedAt,
       version: 3,
     });
+    await expect(promoteSingleGenesisCandidate(database, promotionCommand, promotionIds))
+      .resolves.toMatchObject({ replayed: true, eventId: promotionIds.eventId });
+
+    const staleIds = {
+      eventId: testId(15903), auditId: testId(15904), outboxMessageId: testId(15905),
+      statusEventId: testId(15906), notificationOutboxMessageId: testId(15907),
+      notificationId: testId(15908),
+    };
+    await expect(promoteSingleGenesisCandidate(database, {
+      ...promotionCommand,
+      commandId: testId(15900), idempotencyKey: `stale-single-promote-${queueEntry}-v2`,
+      correlationId: testId(15901), requestId: testId(15902),
+    }, staleIds, () => new Date('2026-10-01T11:06:01.000Z')))
+      .rejects.toBeInstanceOf(VersionConflictError);
+
     const promotedCompetition = await sql<{
       readonly champion_user_id: string;
       readonly contender_user_id: string;
@@ -14428,15 +14496,92 @@ describePostgres('PostgreSQL critical command transaction', () => {
       phase: 'RUNNING',
       status_version: '9',
     });
-    const sideEffects = await sql<{
-      readonly results: string;
-      readonly cooldowns: string;
+
+    const currentProjection = await readCompetitionProjection(database, competition);
+    const replayedProjection = await replayCompetitionProjection(database, competition);
+    expect(currentProjection).toEqual(replayedProjection);
+    expect(currentProjection).toMatchObject({
+      championUserId: champion,
+      contenderUserId: queuedAthlete,
+      statusVersion: 9,
+      statusLockResultId: null,
+      cooldowns: [],
+      tenures: expect.arrayContaining([expect.objectContaining({
+        status: 'CONTENDER', userId: queuedAthlete, provisional: false,
+      })]),
+    });
+
+    const facts = await sql<{
+      readonly queue_entry_id: string;
+      readonly submitted_at: Date;
+      readonly queue_state: string;
+      readonly terminal_reason: string;
+      readonly challenge_count: string;
+      readonly session_count: string;
+      readonly result_count: string;
+      readonly appeal_count: string;
+      readonly cooldown_count: string;
+      readonly status_event_count: string;
+      readonly success_event_count: string;
+      readonly success_audit_count: string;
+      readonly success_outbox_count: string;
+      readonly failed_artifact_count: string;
     }>`
-      select
-        (select count(*)::text from competition.results) as results,
-        (select count(*)::text from competition.pair_cooldowns) as cooldowns
+      select entry.queue_entry_id, entry.submitted_at, entry.state as queue_state,
+        entry.terminal_reason,
+        (select count(*)::text from competition.challenges) as challenge_count,
+        (select count(*)::text from scheduling.sessions) as session_count,
+        (select count(*)::text from competition.results) as result_count,
+        (select count(*)::text from competition.appeals) as appeal_count,
+        (select count(*)::text from competition.pair_cooldowns) as cooldown_count,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${promotionIds.statusEventId}::uuid
+            and event_name = 'SuccessionWithoutOpponent' and transition_id = 'C-08'
+        ) as status_event_count,
+        (select count(*)::text from platform.domain_events
+          where event_id in (${promotionIds.eventId}::uuid,
+            ${promotionIds.statusEventId}::uuid)) as success_event_count,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${promotionIds.auditId}::uuid) as success_audit_count,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (${promotionIds.outboxMessageId}::uuid,
+            ${promotionIds.notificationOutboxMessageId}::uuid)) as success_outbox_count,
+        ((select count(*) from platform.domain_events
+          where event_id in (${earlyIds.eventId}::uuid, ${earlyIds.statusEventId}::uuid,
+            ${staleIds.eventId}::uuid, ${staleIds.statusEventId}::uuid,
+            ${unauthorizedIds.eventId}::uuid, ${unauthorizedIds.statusEventId}::uuid))
+          + (select count(*) from platform.audit_events
+            where audit_id in (${earlyIds.auditId}::uuid, ${staleIds.auditId}::uuid,
+              ${unauthorizedIds.auditId}::uuid))
+          + (select count(*) from platform.outbox_messages
+            where message_id in (${earlyIds.outboxMessageId}::uuid,
+              ${earlyIds.notificationOutboxMessageId}::uuid,
+              ${staleIds.outboxMessageId}::uuid,
+              ${staleIds.notificationOutboxMessageId}::uuid,
+              ${unauthorizedIds.outboxMessageId}::uuid,
+              ${unauthorizedIds.notificationOutboxMessageId}::uuid)))::text
+          as failed_artifact_count
+      from competition.challenge_queue_entries entry
+      where entry.queue_entry_id = ${queueEntry}::uuid
     `.execute(database);
-    expect(sideEffects.rows[0]).toEqual({ results: '0', cooldowns: '0' });
+    expect(facts.rows[0]).toEqual({
+      queue_entry_id: queueEntry,
+      submitted_at: new Date(originalSubmittedAt),
+      queue_state: 'CONSUMED',
+      terminal_reason: 'SINGLE_CANDIDATE_PROMOTED',
+      challenge_count: '0', session_count: '0', result_count: '0', appeal_count: '0',
+      cooldown_count: '0', status_event_count: '1', success_event_count: '2',
+      success_audit_count: '1', success_outbox_count: '2', failed_artifact_count: '0',
+    });
+    const publicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where event_id in (${promotionIds.eventId}::uuid, ${promotionIds.statusEventId}::uuid)
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (${promotionIds.outboxMessageId}::uuid,
+        ${promotionIds.notificationOutboxMessageId}::uuid)
+    `.execute(database);
+    expect(JSON.stringify(publicDocuments.rows)).not.toMatch(/\+79991570002|TEST_APPROVED/i);
   });
 
   it('[AC-093] pairs the first two preserved FIFO candidates after a status vacancy', async () => {

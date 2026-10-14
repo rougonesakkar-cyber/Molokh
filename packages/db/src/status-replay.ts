@@ -487,12 +487,13 @@ async function canonicalProjectionEvents(
         and event_name = 'PairCooldownStarted'
         and payload->>'competitionId' = ${competitionId}
     )
-    select event_id, event_name, aggregate_type, aggregate_id,
-      aggregate_version::text, transition_id, occurred_at, payload
-    from platform.domain_events
-    where (aggregate_type = 'Competition' and aggregate_id = ${competitionId}::uuid)
-      or (aggregate_type = 'PairCooldown' and aggregate_id in (select aggregate_id from target_cooldowns))
-    order by aggregate_type, aggregate_id, aggregate_version, event_id
+    select event.event_id, event.event_name, event.aggregate_type, event.aggregate_id,
+      event.aggregate_version::text, event.transition_id, event.occurred_at, event.payload
+    from platform.domain_events as event
+    where (event.aggregate_type = 'Competition' and event.aggregate_id = ${competitionId}::uuid)
+      or (event.aggregate_type = 'PairCooldown'
+        and event.aggregate_id in (select aggregate_id from target_cooldowns))
+    order by event.aggregate_type, event.aggregate_id, event.aggregate_version, event.event_id
   `.execute(database);
   return result.rows;
 }
