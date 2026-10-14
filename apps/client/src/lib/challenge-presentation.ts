@@ -1,7 +1,9 @@
 import type { ChallengeContract } from '@molokh/contracts';
 
 export function challengeStakeLabel(stake: ChallengeContract['stake']): string {
-  return stake === 'NONE'
-    ? 'Открытый поединок · титул не разыгрывается'
-    : 'Статусный поединок';
+  if (stake === 'NONE') return 'Открытый поединок · титул не разыгрывается';
+  if (stake === 'GENESIS_CONTENDER') {
+    return 'Поединок за статус Претендента · Чемпион не меняется';
+  }
+  return 'Статусный поединок';
 }

@@ -349,7 +349,11 @@ This sprint produces a demonstrable Training slice while establishing the same f
   promotion applies C-03/C-08 without Result, loss or Cooldown. Core/client/Worker and PostgreSQL
   scenarios AC-093/AC-094 pass; AC-102 additionally proves exact-deadline SYSTEM promotion of the
   sole eligible founder into final Champion with a vacant Contender, immutable FIFO identity and
-  deterministic replay. AC-104 proves the parallel C-08 path: after the exact server deadline the
+  deterministic replay. AC-103 proves the two-candidate C-07/C-09 path: strict FIFO pairing,
+  mutual acceptance, existing Booking/Official Session scheduling and the frozen
+  `GENESIS_CONTENDER` snapshot end in one final Contender while the Champion remains unchanged.
+  Result, Appeal, Cooldown and replay use the ordinary engine. AC-104 proves the parallel C-08 path:
+  after the exact server deadline the
   only eligible candidate becomes final Contender, the Champion stays unchanged and no sporting
   Result or Cooldown is created. Canonical replay now orders numeric aggregate versions before the
   deterministic event-id tie-breaker, including transitions from version 9 to 10 and beyond.
@@ -414,7 +418,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 187/214 (`181/196 P0`).
+  Acceptance traceability is 188/214 (`182/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,

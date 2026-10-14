@@ -14584,12 +14584,13 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(JSON.stringify(publicDocuments.rows)).not.toMatch(/\+79991570002|TEST_APPROVED/i);
   });
 
-  it('[AC-093] pairs the first two preserved FIFO candidates after a status vacancy', async () => {
+  it('[AC-093][AC-103] runs the first two FIFO candidates through contender GENESIS', async () => {
     const champion = testId(15800);
     const contender = testId(15801);
     const candidateA = testId(15802);
     const candidateB = testId(15803);
     const central = testId(15804);
+    const coach = testId(15821);
     const venue = testId(15805);
     const community = testId(15806);
     const competition = testId(15807);
@@ -14607,7 +14608,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
         (${contender}::uuid, '+79991580001', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Претендент 2', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
         (${candidateA}::uuid, '+79991580002', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Кандидат А', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
         (${candidateB}::uuid, '+79991580003', ${occurredAt}::timestamptz, '1995-01-01', 'ADULT', 'Кандидат Б', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
-        (${central}::uuid, '+79991580004', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Central 2', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
+        (${central}::uuid, '+79991580004', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Central 2', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz),
+        (${coach}::uuid, '+79991580005', ${occurredAt}::timestamptz, '1985-01-01', 'ADULT', 'Coach 2', 'ACTIVE', 'ru-RU', 1, ${occurredAt}::timestamptz)
     `.execute(database);
     await sql`
       insert into identity.account_verifications (
@@ -14635,10 +14637,33 @@ describePostgres('PostgreSQL critical command transaction', () => {
       ],
     });
     await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${testId(15822)}::uuid, ${coach}::uuid, 'COACH', 'COMMUNITY',
+        ${community}::uuid, 'ACTIVE', ${central}::uuid, ${occurredAt}::timestamptz, 1
+      )
+    `.execute(database);
+    await sql`
       update competition.competitions
       set phase = 'RUNNING', champion_user_id = ${champion}::uuid,
         contender_user_id = ${contender}::uuid, status_version = 3, version = 4
       where competition_id = ${competition}::uuid
+    `.execute(database);
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+        occurred_at, payload, idempotency_key_hash
+      ) values (
+        ${testId(15823)}::uuid, 'StatusFixtureEstablished', 1, 'Competition',
+        ${competition}::uuid, 4, 'ST-04', ${testId(15824)}::uuid, null,
+        ${central}::uuid, ${occurredAt}::timestamptz,
+        ${JSON.stringify({ championUserId: champion, contenderUserId: contender,
+          statusVersion: 3, provisional: false })}::jsonb,
+        'fixture:ac-103:initial-status'
+      )
     `.execute(database);
     const submitDirect = async (userId: string, entryId: string, offset: number) =>
       submitStatusQueueEntry(
@@ -14761,6 +14786,370 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(pairedState.rows[0]).toEqual({
       phase: 'CONTENDER_GENESIS', challenge_count: '1', paired_count: '2',
     });
+
+    const contenderChallengeId = testId(15896);
+    const contenderChatId = testId(15898);
+    const respond = async (userId: string, expectedVersion: number, base: number) =>
+      respondToGenesisChallenge(
+        database,
+        {
+          commandId: testId(base), commandType: 'ACCEPT_GENESIS_CHALLENGE',
+          idempotencyKey: `ac-103-accept-${userId}`,
+          actor: { type: 'USER', id: userId, roles: ['ATHLETE'], scopeIds: [] },
+          aggregateType: 'Challenge', aggregateId: contenderChallengeId, expectedVersion,
+          correlationId: testId(base + 1), causationId: testId(15897),
+          requestId: testId(base + 2), source: 'api', payloadVersion: 1,
+          payload: { challengeId: contenderChallengeId, explicitRulesetAcknowledged: true },
+        } satisfies CommandEnvelope<GenesisResponsePayload>,
+        'ACCEPT',
+        {
+          eventId: testId(base + 3), auditId: testId(base + 4),
+          outboxMessageId: testId(base + 5), responseId: testId(base + 6),
+          acknowledgmentId: testId(base + 7),
+          obligationIds: [testId(base + 8), testId(base + 9)],
+          queueEventIds: [testId(base + 10), testId(base + 11)],
+          notificationOutboxMessageId: testId(base + 12),
+          notificationIds: [testId(base + 13), testId(base + 14)],
+        },
+        () => new Date(base === 59000
+          ? '2026-09-28T11:07:00.000Z'
+          : '2026-09-28T11:08:00.000Z'),
+      );
+    const acceptedByA = await respond(candidateA, 1, 59000);
+    expect(acceptedByA.response).toMatchObject({
+      state: 'AWAITING_RESPONSE', acceptedCount: 1,
+    });
+    const beforeMutualAcceptance = await sql<{ readonly obligations: string }>`
+      select count(*)::text as obligations
+      from competition.challenge_participant_obligations
+      where challenge_id = ${contenderChallengeId}::uuid and released_at is null
+    `.execute(database);
+    expect(beforeMutualAcceptance.rows[0]?.obligations).toBe('0');
+    const acceptedByB = await respond(candidateB, 2, 59020);
+    expect(acceptedByB.response).toMatchObject({
+      state: 'ACCEPTED_UNSCHEDULED', acceptedCount: 2,
+    });
+    const acceptedFacts = await sql<{
+      readonly stake: string;
+      readonly phase: string;
+      readonly obligations: string;
+      readonly consumed_entries: string;
+    }>`
+      select challenge.stake, competition.phase,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id
+            and obligation.released_at is null) as obligations,
+        (select count(*)::text from competition.challenge_queue_entries entry
+          where entry.linked_challenge_id = challenge.challenge_id
+            and entry.state = 'CONSUMED') as consumed_entries
+      from competition.challenges challenge
+      join competition.competitions competition
+        on competition.competition_id = challenge.competition_id
+      where challenge.challenge_id = ${contenderChallengeId}::uuid
+    `.execute(database);
+    expect(acceptedFacts.rows[0]).toEqual({
+      stake: 'GENESIS_CONTENDER', phase: 'CONTENDER_GENESIS',
+      obligations: '2', consumed_entries: '2',
+    });
+
+    const slotId = testId(59100);
+    const bookingId = testId(59101);
+    await sql`
+      insert into scheduling.slots (
+        slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+        price_text, cancellation_terms_text, commercial_version, published_by,
+        version, created_at, updated_at
+      ) values (
+        ${slotId}::uuid, ${venue}::uuid, ${coach}::uuid,
+        '2026-10-06T15:00:00.000Z'::timestamptz,
+        '2026-10-06T16:00:00.000Z'::timestamptz,
+        'PERSONAL', 'PUBLISHED', 'Оплата залу', 'Перенос по правилам зала', 1,
+        ${central}::uuid, 1, ${occurredAt}::timestamptz, ${occurredAt}::timestamptz
+      )
+    `.execute(database);
+    await selectSlot(
+      database,
+      {
+        commandId: testId(59102), commandType: 'SELECT_SLOT',
+        idempotencyKey: `ac-103-slot-${bookingId}`,
+        actor: { type: 'USER', id: candidateA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 0,
+        correlationId: testId(59103), causationId: testId(59023),
+        requestId: testId(59104), source: 'api', payloadVersion: 1,
+        payload: { chatId: contenderChatId, slotId, commercialVersion: 1,
+          challengeId: contenderChallengeId },
+      } satisfies CommandEnvelope<SelectSlotPayload>,
+      {
+        eventId: testId(59105), auditId: testId(59106), outboxMessageId: testId(59107),
+        notificationId: testId(59108), notificationOutboxMessageId: testId(59109),
+        challengeEventId: testId(59110), challengeOutboxMessageId: testId(59111),
+      },
+      () => new Date('2026-09-28T12:00:00.000Z'),
+    );
+    await selectSameSlot(
+      database,
+      {
+        commandId: testId(59112), commandType: 'SELECT_SAME_SLOT',
+        idempotencyKey: `ac-103-same-slot-${bookingId}`,
+        actor: { type: 'USER', id: candidateB, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 1,
+        correlationId: testId(59113), causationId: testId(59105),
+        requestId: testId(59114), source: 'api', payloadVersion: 1,
+        payload: { bookingId, commercialVersion: 1 },
+      } satisfies CommandEnvelope<SelectSameSlotPayload>,
+      {
+        eventId: testId(59115), auditId: testId(59116), outboxMessageId: testId(59117),
+        notificationId: testId(59118), notificationOutboxMessageId: testId(59119),
+        challengeEventId: testId(59120), challengeOutboxMessageId: testId(59121),
+      },
+      () => new Date('2026-09-28T12:10:00.000Z'),
+    );
+    const sessionId = testId(59200);
+    await confirmBookingHost(
+      database,
+      {
+        commandId: testId(59122), commandType: 'CONFIRM_BOOKING_HOST',
+        idempotencyKey: `ac-103-host-${bookingId}`,
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'Booking', aggregateId: bookingId, expectedVersion: 2,
+        correlationId: testId(59123), causationId: testId(59115),
+        requestId: testId(59124), source: 'api', payloadVersion: 1,
+        payload: { bookingId },
+      } satisfies CommandEnvelope<ConfirmBookingHostPayload>,
+      {
+        eventId: testId(59125), auditId: testId(59126), outboxMessageId: testId(59127),
+        slotEventId: testId(59128), sessionEventId: testId(59129), sessionId,
+        sessionTimerOutboxMessageId: testId(59130),
+        notificationIds: [testId(59131), testId(59132)],
+        notificationOutboxMessageId: testId(59133),
+        challengeEventId: testId(59134), challengeOutboxMessageId: testId(59135),
+      },
+      () => new Date('2026-09-28T12:15:00.000Z'),
+    );
+
+    const snapshotId = testId(59210);
+    await openSessionWindow(
+      database,
+      {
+        commandId: testId(59201), commandType: 'OPEN_SESSION_WINDOW',
+        idempotencyKey: `ac-103-open-${sessionId}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Session', aggregateId: sessionId, expectedVersion: 1,
+        correlationId: testId(59202), causationId: testId(59129),
+        requestId: testId(59203), source: 'scheduler', payloadVersion: 1,
+        payload: { sessionId },
+      } satisfies CommandEnvelope<OpenSessionWindowPayload>,
+      { eventId: testId(59204), auditId: testId(59205),
+        outboxMessageId: testId(59206), competitiveSnapshotId: snapshotId },
+      () => new Date('2026-10-06T15:00:00.000Z'),
+    );
+    const frozen = await sql<{
+      readonly effective_stake: string;
+      readonly champion_user_id: string | null;
+      readonly contender_user_id: string | null;
+      readonly competition_status_version: string;
+    }>`
+      select effective_stake, champion_user_id, contender_user_id,
+        competition_status_version::text as competition_status_version
+      from scheduling.session_competitive_snapshots
+      where snapshot_id = ${snapshotId}::uuid
+    `.execute(database);
+    expect(frozen.rows[0]).toEqual({
+      effective_stake: 'GENESIS_CONTENDER', champion_user_id: champion,
+      contender_user_id: null, competition_status_version: '4',
+    });
+    const attend = async (athleteUserId: string, expectedVersion: number, base: number) =>
+      recordSessionAttendance(
+        database,
+        {
+          commandId: testId(base), commandType: 'RECORD_ATTENDANCE',
+          idempotencyKey: `ac-103-attendance-${athleteUserId}`,
+          actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+          aggregateType: 'Session', aggregateId: sessionId, expectedVersion,
+          correlationId: testId(base + 1), causationId: testId(59204),
+          requestId: testId(base + 2), source: 'api', payloadVersion: 1,
+          payload: { sessionId, athleteUserId, status: 'PRESENT', comment: null },
+        } satisfies CommandEnvelope<RecordAttendancePayload>,
+        {
+          eventId: testId(base + 3), auditId: testId(base + 4),
+          outboxMessageId: testId(base + 5), attendanceId: testId(base + 6),
+          attendanceEventId: testId(base + 7), challengeEventId: testId(base + 8),
+          challengeOutboxMessageId: testId(base + 9),
+        },
+        () => new Date(`2026-10-06T15:0${expectedVersion - 1}:00.000Z`),
+      );
+    await attend(candidateA, 2, 59220);
+    await attend(candidateB, 3, 59240);
+    await endSession(
+      database,
+      {
+        commandId: testId(59260), commandType: 'END_SESSION',
+        idempotencyKey: `ac-103-end-${sessionId}`,
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'Session', aggregateId: sessionId, expectedVersion: 4,
+        correlationId: testId(59261), causationId: testId(59243),
+        requestId: testId(59262), source: 'api', payloadVersion: 1,
+        payload: { sessionId },
+      } satisfies CommandEnvelope<EndSessionPayload>,
+      {
+        eventId: testId(59263), auditId: testId(59264), outboxMessageId: testId(59265),
+        bookingEventId: testId(59266), slotEventId: testId(59267),
+        challengeEventId: testId(59268), challengeOutboxMessageId: testId(59269),
+      },
+      () => new Date('2026-10-06T15:50:00.000Z'),
+    );
+
+    const resultId = testId(59300);
+    const transitionId = testId(59301);
+    const cooldownId = testId(59302);
+    const recorded = await recordSessionResult(
+      database,
+      {
+        commandId: testId(59303), commandType: 'RECORD_SESSION_RESULT',
+        idempotencyKey: `ac-103-result-${resultId}`,
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'Challenge', aggregateId: contenderChallengeId, expectedVersion: 7,
+        correlationId: testId(59304), causationId: testId(59268),
+        requestId: testId(59305), source: 'api', payloadVersion: 1,
+        payload: {
+          challengeId: contenderChallengeId, sessionId, outcomeCode: 'WIN_A',
+          winnerUserId: null, reasonCode: null, comment: 'private-ac-103-comment',
+          methodCode: null, methodText: null, scorePayload: { rounds: '3-1' },
+          methodPayload: null,
+        },
+      } satisfies CommandEnvelope<RecordSessionResultPayload>,
+      {
+        eventId: testId(59306), auditId: testId(59307), outboxMessageId: testId(59308),
+        resultId, resultEventId: testId(59309), statusTransitionId: transitionId,
+        statusEventId: testId(59310), cooldownId, cooldownEventId: testId(59311),
+        timerOutboxMessageId: testId(59312),
+        notificationOutboxMessageId: testId(59313),
+        notificationIds: [testId(59314), testId(59315)],
+      },
+      () => new Date('2026-10-06T16:00:00.000Z'),
+    );
+    expect(recorded.response).toMatchObject({
+      state: 'RECORDED', winnerUserId: candidateA, loserUserId: candidateB,
+      statusTransitionType: 'CONTENDER_ASSIGNED', provisional: true,
+      appealDeadlineAt: '2026-10-08T16:00:00.000Z',
+      statusBefore: { championUserId: champion, contenderUserId: null, statusVersion: 4 },
+      statusAfter: { championUserId: champion, contenderUserId: candidateA, statusVersion: 5 },
+    });
+    const provisional = await sql<{
+      readonly phase: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string;
+    }>`
+      select phase, champion_user_id, contender_user_id,
+        status_version::text as status_version, status_lock_result_id
+      from competition.competitions where competition_id = ${competition}::uuid
+    `.execute(database);
+    expect(provisional.rows[0]).toEqual({
+      phase: 'CONTENDER_GENESIS', champion_user_id: champion,
+      contender_user_id: candidateA, status_version: '5',
+      status_lock_result_id: resultId,
+    });
+
+    const finalizeCommand = {
+      commandId: testId(59400), commandType: 'FINALIZE_RESULT',
+      idempotencyKey: `ac-103-finalize-${resultId}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Result', aggregateId: resultId, expectedVersion: 1,
+      correlationId: testId(59401), causationId: testId(59309),
+      requestId: testId(59402), source: 'scheduler', payloadVersion: 1,
+      payload: { resultId },
+    } satisfies CommandEnvelope<FinalizeResultPayload>;
+    const finalizeIds = {
+      eventId: testId(59403), auditId: testId(59404), outboxMessageId: testId(59405),
+      challengeEventId: testId(59406), statusFinalizationId: testId(59407),
+      statusEventId: testId(59408), genesisEventId: testId(59409),
+      notificationOutboxMessageId: testId(59410),
+      notificationIds: [testId(59411), testId(59412)] as const,
+    };
+    const finalized = await finalizeResult(
+      database, finalizeCommand, finalizeIds,
+      () => new Date('2026-10-08T16:00:00.000Z'),
+    );
+    expect(finalized.response).toMatchObject({
+      state: 'FINAL', winnerUserId: candidateA, loserUserId: candidateB,
+      statusTransitionType: 'CONTENDER_ASSIGNED', provisional: false,
+    });
+    await expect(finalizeResult(database, finalizeCommand, finalizeIds))
+      .resolves.toMatchObject({ replayed: true, eventId: finalizeIds.eventId });
+    const finalState = await sql<{
+      readonly phase: string;
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly status_version: string;
+      readonly status_lock_result_id: string | null;
+      readonly challenge_state: string;
+      readonly obligations: string;
+      readonly genesis_events: string;
+    }>`
+      select competition.phase, competition.champion_user_id,
+        competition.contender_user_id, competition.status_version::text as status_version,
+        competition.status_lock_result_id, challenge.state as challenge_state,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id
+            and obligation.released_at is null) as obligations,
+        (select count(*)::text from platform.domain_events event
+          where event.aggregate_type = 'Competition'
+            and event.aggregate_id = competition.competition_id
+            and event.event_name = 'ContenderGenesisFinalized'
+            and event.transition_id = 'C-09') as genesis_events
+      from competition.competitions competition
+      join competition.challenges challenge
+        on challenge.challenge_id = ${contenderChallengeId}::uuid
+      where competition.competition_id = ${competition}::uuid
+    `.execute(database);
+    expect(finalState.rows[0]).toEqual({
+      phase: 'RUNNING', champion_user_id: champion, contender_user_id: candidateA,
+      status_version: '6', status_lock_result_id: null,
+      challenge_state: 'COMPLETED', obligations: '0', genesis_events: '1',
+    });
+    const queueHistory = await sql<{
+      readonly queue_entry_id: string;
+      readonly submitted_at: Date;
+      readonly state: string;
+    }>`
+      select queue_entry_id, submitted_at, state
+      from competition.challenge_queue_entries
+      where queue_entry_id in (${entryA}::uuid, ${entryB}::uuid)
+      order by submitted_at, queue_entry_id
+    `.execute(database);
+    expect(queueHistory.rows.map((row) => ({
+      queueEntryId: row.queue_entry_id,
+      submittedAt: row.submitted_at.toISOString(),
+      state: row.state,
+    }))).toEqual([
+      { queueEntryId: entryA, submittedAt: first.response.submittedAt, state: 'CONSUMED' },
+      { queueEntryId: entryB, submittedAt: second.response.submittedAt, state: 'CONSUMED' },
+    ]);
+    const currentProjection = await readCompetitionProjection(database, competition);
+    const replayedProjection = await replayCompetitionProjection(database, competition);
+    expect(replayedProjection).toEqual(currentProjection);
+    expect(currentProjection).toMatchObject({
+      championUserId: champion, contenderUserId: candidateA, statusVersion: 6,
+      statusLockResultId: null,
+      tenures: expect.arrayContaining([
+        expect.objectContaining({ status: 'CHAMPION', userId: champion, provisional: false }),
+        expect.objectContaining({ status: 'CONTENDER', userId: candidateA, provisional: false }),
+      ]),
+      cooldowns: [expect.objectContaining({ cooldownId, invalidatedAt: null })],
+    });
+    const publicDocuments = await sql<{ readonly document: unknown }>`
+      select payload as document from platform.domain_events
+      where event_id in (${testId(59306)}::uuid, ${testId(59309)}::uuid,
+        ${testId(59310)}::uuid, ${testId(59409)}::uuid)
+      union all
+      select payload as document from platform.outbox_messages
+      where message_id in (${testId(59308)}::uuid, ${testId(59313)}::uuid)
+    `.execute(database);
+    expect(JSON.stringify(publicDocuments.rows)).not.toMatch(
+      /private-ac-103-comment|rounds|\+799915800/i,
+    );
   });
 
   it('[AC-067][AC-068][AC-177] governs Community pause and permanent closure without hidden status migration', async () => {

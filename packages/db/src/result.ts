@@ -272,6 +272,7 @@ interface ResultRow {
   readonly session_coach_user_id: string | null;
   readonly challenge_state: string;
   readonly challenge_version: string;
+  readonly effective_stake: ChallengeStake;
   readonly competition_id: string;
   readonly competition_phase: string;
   readonly competition_version: string;
@@ -465,6 +466,7 @@ async function resultRow(
       result.coach_user_id, source_session.coach_user_id as session_coach_user_id,
       challenge.state as challenge_state,
       challenge.version::text as challenge_version,
+      coalesce(snapshot.effective_stake, challenge.stake) as effective_stake,
       competition.competition_id, competition.phase as competition_phase,
       competition.version::text as competition_version,
       competition.status_version::text as competition_status_version,
@@ -528,6 +530,8 @@ async function resultRow(
     join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
     join competition.competitions as competition on competition.competition_id = challenge.competition_id
     left join scheduling.sessions as source_session on source_session.session_id = result.session_id
+    left join scheduling.session_competitive_snapshots as snapshot
+      on snapshot.snapshot_id = result.competitive_snapshot_id
     left join competition.appeal_decisions as decision on decision.result_id = result.result_id
     left join competition.technical_correction_decisions as correction_decision
       on correction_decision.result_id = result.result_id
@@ -1527,19 +1531,25 @@ async function finalizeRecordedResult(
     }
     const foundingGenesis = row.transition_type === 'GENESIS_APPLIED'
       || row.transition_type === 'GENESIS_APPLIED_WITH_VACANCY';
-    const foundingGenesisPhase = row.transition_type === 'GENESIS_APPLIED_WITH_VACANCY'
+    const contenderGenesis = row.transition_type === 'CONTENDER_ASSIGNED'
+      && row.effective_stake === 'GENESIS_CONTENDER';
+    const genesisFinalization = foundingGenesis || contenderGenesis;
+    const genesisFinalPhase = row.transition_type === 'GENESIS_APPLIED_WITH_VACANCY'
       ? 'CONTENDER_VACANT_OPEN'
       : 'RUNNING';
     if (foundingGenesis && row.competition_phase !== 'FOUNDING_CHALLENGE') {
       throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
     }
+    if (contenderGenesis && row.competition_phase !== 'CONTENDER_GENESIS') {
+      throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+    }
     const statusAggregateVersion = Number(row.competition_version) + 1;
-    const competitionAggregateVersion = statusAggregateVersion + Number(foundingGenesis);
+    const competitionAggregateVersion = statusAggregateVersion + Number(genesisFinalization);
     const competitionStatusVersion = Number(row.competition_status_version) + 1;
     await sql`
       update competition.competitions
       set status_lock_result_id = null, status_version = ${competitionStatusVersion},
-        phase = ${foundingGenesis ? foundingGenesisPhase : row.competition_phase},
+        phase = ${genesisFinalization ? genesisFinalPhase : row.competition_phase},
         version = ${competitionAggregateVersion},
         updated_at = ${occurredAt.toISOString()}::timestamptz
       where competition_id = ${row.competition_id}::uuid
@@ -1568,18 +1578,20 @@ async function finalizeRecordedResult(
       },
       metadata: { policyVersion: RESULT_POLICY_VERSION },
     });
-    if (foundingGenesis) {
+    if (genesisFinalization) {
       const genesisEventId = requiredIds(ids, ['genesisEventId'] as const).genesisEventId;
       relatedEvents.push({
         eventId: genesisEventId,
-        eventName: 'FoundingGenesisFinalized', schemaVersion: 1,
+        eventName: contenderGenesis ? 'ContenderGenesisFinalized' : 'FoundingGenesisFinalized',
+        schemaVersion: 1,
         aggregateType: 'Competition', aggregateId: row.competition_id,
-        aggregateVersion: competitionAggregateVersion, transitionId: 'C-04',
+        aggregateVersion: competitionAggregateVersion,
+        transitionId: contenderGenesis ? 'C-09' : 'C-04',
         payload: {
           competitionId: row.competition_id,
           resultId: row.result_id,
-          fromPhase: 'FOUNDING_CHALLENGE',
-          toPhase: foundingGenesisPhase,
+          fromPhase: contenderGenesis ? 'CONTENDER_GENESIS' : 'FOUNDING_CHALLENGE',
+          toPhase: genesisFinalPhase,
           championUserId: row.after_champion_user_id,
           contenderUserId: row.after_contender_user_id,
           finalizedAt: occurredAt.toISOString(),
