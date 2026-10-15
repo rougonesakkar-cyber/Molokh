@@ -17,6 +17,8 @@ import {
   assertSessionCanStart,
   assertSessionCoach,
   assertSessionWindowCanOpen,
+  assertSafetyCancellationCanBeSubmitted,
+  assertExpectedVersion,
   challengeResultReminderDeadlines,
   effectiveChallengeStakeAtSessionWindow,
   externalChallengeRescheduleCount,
@@ -28,6 +30,7 @@ import {
   type ChallengeState,
   type CommandEnvelope,
   type SessionState,
+  type SafetyCancellationReasonCode,
   type TimerAggregateSnapshot,
 } from '@molokh/core';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -124,6 +127,50 @@ export interface FailSessionExternalPayload {
 
 export interface CancelOfficialSessionByAthletePayload {
   readonly sessionId: string;
+}
+
+export interface ReportSafetyAndCancelSessionPayload {
+  readonly sessionId: string;
+  readonly subjectUserId: string;
+  readonly reasonCode: SafetyCancellationReasonCode;
+  readonly explicitConfirmation: true;
+  readonly expectedBookingVersion: number;
+  readonly expectedChallengeVersion: number;
+}
+
+export interface SafetyCancellationEffectIds {
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
+  readonly bookingEventId: string;
+  readonly slotEventId: string;
+  readonly challengeEventId: string;
+  readonly caseId: string;
+  readonly caseEventId: string;
+  readonly caseOutboxMessageId: string;
+  readonly holdId: string;
+  readonly holdEventId: string;
+  readonly holdOutboxMessageId: string;
+  readonly notificationOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string, string, string];
+}
+
+export interface SafetyCancellationProjection {
+  readonly action: 'SAFETY_REPORTED_AND_CANCELLED';
+  readonly caseId: string;
+  readonly caseState: 'SUBMITTED';
+  readonly challengeId: string;
+  readonly bookingId: string;
+  readonly sessionId: string;
+  readonly holdId: string;
+  readonly holdState: 'ACTIVE';
+  readonly initialDueAt: string;
+  readonly finalDueAt: string;
+  readonly submittedAt: string;
+  readonly sessionVersion: number;
+  readonly bookingVersion: number;
+  readonly slotVersion: number;
+  readonly challengeVersion: number;
 }
 
 export interface SessionEffectIds {
@@ -306,6 +353,7 @@ interface OfficialSessionChallengeRow {
   readonly community_id: string;
   readonly community_configuration_id: string;
   readonly community_venue_id: string;
+  readonly source_chat_id: string;
   readonly pair_low_id: string;
   readonly pair_high_id: string;
   readonly state: ChallengeState;
@@ -565,7 +613,7 @@ async function officialChallengeForSession(
     select challenge.challenge_id, challenge.competition_id,
       competition.community_id,
       ruleset.community_configuration_id,
-      community.venue_id as community_venue_id,
+      community.venue_id as community_venue_id, challenge.source_chat_id,
       challenge.pair_low_id, challenge.pair_high_id, challenge.state,
       challenge.stake, challenge.ruleset_snapshot_id,
       competition.champion_user_id, competition.contender_user_id,
@@ -1024,6 +1072,288 @@ async function cancelConfirmedSessionResources(
       version: String(context.nextVersion),
     },
   };
+}
+
+async function operationalSafetyRecipients(
+  transaction: Transaction<Database>,
+  row: SessionRow,
+  reporterUserId: string,
+  subjectUserId: string,
+): Promise<readonly string[]> {
+  const result = await sql<{
+    readonly venue_admin_user_id: string | null;
+    readonly central_user_id: string | null;
+  }>`
+    select
+      (
+        select role_grant.user_id
+        from community.role_grants as role_grant
+        where role_grant.role in ('PRIMARY_ADMIN', 'GYM_ADMIN')
+          and role_grant.scope_type = 'VENUE'
+          and role_grant.scope_id = ${row.venue_id}::uuid
+          and role_grant.state = 'ACTIVE'
+          and role_grant.user_id <> ${reporterUserId}::uuid
+          and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+        order by role_grant.created_at, role_grant.grant_id
+        limit 1
+      ) as venue_admin_user_id,
+      (
+        select role_grant.user_id
+        from community.role_grants as role_grant
+        where role_grant.role = 'CENTRAL_ADMIN'
+          and role_grant.scope_type = 'GLOBAL' and role_grant.scope_id is null
+          and role_grant.state = 'ACTIVE'
+          and role_grant.user_id <> ${reporterUserId}::uuid
+          and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+        order by role_grant.created_at, role_grant.grant_id
+        limit 1
+      ) as central_user_id
+  `.execute(transaction);
+  const operational = result.rows[0];
+  return [...new Set([
+    subjectUserId,
+    row.coach_user_id,
+    operational?.venue_admin_user_id ?? null,
+    operational?.central_user_id ?? null,
+  ].filter((recipient): recipient is string => recipient !== null && recipient !== reporterUserId))];
+}
+
+export async function reportSafetyAndCancelSession(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ReportSafetyAndCancelSessionPayload>,
+  ids: SafetyCancellationEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<SafetyCancellationProjection>> {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'Session'
+    || command.aggregateId !== command.payload.sessionId
+    || command.commandType !== 'REPORT_SAFETY_AND_CANCEL'
+  ) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  const reporterUserId = command.actor.id;
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await readSessionRow(transaction, command.aggregateId, true);
+      if (!row) throw new SchedulingConflictError('SAFETY_CANCELLATION_NOT_ALLOWED');
+      const resource = await readSessionResourcesForUpdate(transaction, row);
+      const challenge = await officialChallengeForSession(transaction, row);
+      if (!challenge) throw new SchedulingConflictError('SAFETY_CANCELLATION_NOT_ALLOWED');
+      assertExpectedVersion(
+        Number(resource.booking_version),
+        command.payload.expectedBookingVersion,
+      );
+      assertExpectedVersion(
+        Number(challenge.version),
+        command.payload.expectedChallengeVersion,
+      );
+      const reporterIsAthlete = [row.pair_low_id, row.pair_high_id].includes(reporterUserId);
+      const actorIsOperational = await hasActiveCoachScope(transaction, row, reporterUserId)
+        || await hasActiveVenueAdminScope(transaction, reporterUserId, row.venue_id)
+        || await hasActiveCentralScope(transaction, reporterUserId);
+      const reasonCode = assertSafetyCancellationCanBeSubmitted({
+        sessionState: row.state,
+        sessionPurpose: row.purpose,
+        bookingState: resource.booking_state,
+        challengeState: challenge.state,
+        actualStartAt: row.actual_start_at?.toISOString() ?? null,
+        resultExists: row.result_id !== null,
+        explicitConfirmation: command.payload.explicitConfirmation,
+        reporterUserId,
+        subjectUserId: command.payload.subjectUserId,
+        athleteUserIds: [row.pair_low_id, row.pair_high_id],
+        actorIsOperational,
+        reasonCode: command.payload.reasonCode,
+      });
+      if (!reporterIsAthlete && !actorIsOperational) {
+        throw new SchedulingPermissionDeniedError();
+      }
+      const initialDueAt = new Date(context.occurredAt.getTime() + 24 * 60 * 60 * 1_000);
+      const finalDueAt = new Date(context.occurredAt.getTime() + 48 * 60 * 60 * 1_000);
+      await sql`
+        insert into governance.moderation_cases (
+          case_id, case_type, state, report_id, chat_id, message_id,
+          reporter_user_id, subject_user_id, reason_code,
+          challenge_id, booking_id, session_id, initial_due_at, final_due_at,
+          submitted_at, version
+        ) values (
+          ${ids.caseId}::uuid, 'SAFETY', 'SUBMITTED', null,
+          ${challenge.source_chat_id}::uuid, null,
+          ${reporterUserId}::uuid, ${command.payload.subjectUserId}::uuid,
+          ${reasonCode}, ${challenge.challenge_id}::uuid, ${row.booking_id}::uuid,
+          ${row.session_id}::uuid, ${initialDueAt.toISOString()}::timestamptz,
+          ${finalDueAt.toISOString()}::timestamptz,
+          ${context.occurredAt.toISOString()}::timestamptz, 1
+        )
+      `.execute(transaction);
+      const cancelled = await cancelConfirmedSessionResources(
+        transaction,
+        row,
+        resource,
+        context,
+        reporterUserId,
+        'SAFETY_CASE_SUBMITTED',
+      );
+      const challengeVersion = Number(challenge.version) + 1;
+      await sql`
+        update competition.challenges
+        set version = ${challengeVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${challenge.challenge_id}::uuid
+          and state = 'BOOKED' and version = ${Number(challenge.version)}
+      `.execute(transaction);
+      await sql`
+        insert into competition.process_holds (
+          hold_id, aggregate_type, aggregate_id, reason, state, deadline_policy,
+          moderation_case_id, created_by, created_by_type, started_at, version,
+          created_at, updated_at
+        ) values (
+          ${ids.holdId}::uuid, 'CHALLENGE', ${challenge.challenge_id}::uuid,
+          'SAFETY', 'ACTIVE', 'PAUSE', ${ids.caseId}::uuid,
+          ${reporterUserId}::uuid, 'USER', ${context.occurredAt.toISOString()}::timestamptz,
+          1, ${context.occurredAt.toISOString()}::timestamptz,
+          ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      const recipients = await operationalSafetyRecipients(
+        transaction,
+        row,
+        reporterUserId,
+        command.payload.subjectUserId,
+      );
+      const response: SafetyCancellationProjection = {
+        action: 'SAFETY_REPORTED_AND_CANCELLED',
+        caseId: ids.caseId,
+        caseState: 'SUBMITTED',
+        challengeId: challenge.challenge_id,
+        bookingId: row.booking_id,
+        sessionId: row.session_id,
+        holdId: ids.holdId,
+        holdState: 'ACTIVE',
+        initialDueAt: initialDueAt.toISOString(),
+        finalDueAt: finalDueAt.toISOString(),
+        submittedAt: context.occurredAt.toISOString(),
+        sessionVersion: context.nextVersion,
+        bookingVersion: cancelled.bookingVersion,
+        slotVersion: cancelled.slotVersion,
+        challengeVersion,
+      };
+      const relatedEvents: RelatedDomainEventDraft[] = [
+        {
+          eventId: ids.caseEventId, eventName: 'SafetyCaseSubmitted', schemaVersion: 1,
+          aggregateType: 'ModerationCase', aggregateId: ids.caseId,
+          aggregateVersion: 1, transitionId: 'MC-02',
+          payload: {
+            caseId: ids.caseId, caseType: 'SAFETY', state: 'SUBMITTED',
+            challengeId: challenge.challenge_id, bookingId: row.booking_id,
+            sessionId: row.session_id, initialDueAt: initialDueAt.toISOString(),
+            finalDueAt: finalDueAt.toISOString(),
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        {
+          eventId: ids.bookingEventId, eventName: 'BookingCancelledNoFault', schemaVersion: 1,
+          aggregateType: 'Booking', aggregateId: row.booking_id,
+          aggregateVersion: cancelled.bookingVersion, transitionId: 'B-32',
+          payload: { bookingId: row.booking_id, cause: 'SAFETY_CASE', noSportingSanction: true },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        {
+          eventId: ids.slotEventId, eventName: 'SlotBookingCancelled', schemaVersion: 1,
+          aggregateType: 'Slot', aggregateId: resource.slot_id,
+          aggregateVersion: cancelled.slotVersion, transitionId: 'SL-06',
+          payload: { slotId: resource.slot_id, cause: 'SAFETY_CASE' },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        {
+          eventId: ids.challengeEventId, eventName: 'ChallengeSafetyHoldStarted', schemaVersion: 1,
+          aggregateType: 'Challenge', aggregateId: challenge.challenge_id,
+          aggregateVersion: challengeVersion, transitionId: 'MC-02',
+          payload: { challengeId: challenge.challenge_id, holdId: ids.holdId, deadlinePaused: true },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        {
+          eventId: ids.holdEventId, eventName: 'ProcessHoldStarted', schemaVersion: 1,
+          aggregateType: 'ProcessHold', aggregateId: ids.holdId,
+          aggregateVersion: 1, transitionId: 'MC-02',
+          payload: {
+            holdId: ids.holdId, aggregateType: 'CHALLENGE',
+            aggregateId: challenge.challenge_id, reason: 'SAFETY', deadlinePolicy: 'PAUSE',
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+      ];
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId, eventName: 'SessionCancelledForSafetyReview',
+          schemaVersion: 1, transitionId: 'MC-02',
+          payload: {
+            sessionId: row.session_id, bookingId: row.booking_id,
+            challengeId: challenge.challenge_id, noFault: true,
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        relatedEvents,
+        audit: {
+          auditId: ids.auditId, action: 'REPORT_SAFETY_AND_CANCEL', transitionId: 'MC-02',
+          reasonCode, beforeState: row.state, afterState: 'CANCELLED',
+          metadata: {
+            caseId: ids.caseId, holdId: ids.holdId, reporterUserId,
+            subjectUserId: command.payload.subjectUserId,
+            challengeId: challenge.challenge_id, bookingId: row.booking_id,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'scheduling.session.cancelled-for-safety-review.v1',
+            payload: {
+              sessionId: row.session_id, bookingId: row.booking_id,
+              challengeId: challenge.challenge_id, noFault: true,
+            },
+          },
+          {
+            messageId: ids.caseOutboxMessageId,
+            topic: 'governance.safety-case.submitted.v1',
+            sourceEventId: ids.caseEventId,
+            payload: {
+              caseId: ids.caseId, challengeId: challenge.challenge_id,
+              bookingId: row.booking_id, sessionId: row.session_id,
+              initialDueAt: initialDueAt.toISOString(), finalDueAt: finalDueAt.toISOString(),
+            },
+          },
+          {
+            messageId: ids.holdOutboxMessageId,
+            topic: 'competition.challenge.safety-hold-started.v1',
+            sourceEventId: ids.holdEventId,
+            payload: { challengeId: challenge.challenge_id, holdId: ids.holdId, deadlinePaused: true },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: {
+              notifications: recipients.map((recipientUserId, index) => ({
+                notificationId: ids.notificationIds[index]!,
+                recipientUserId,
+                category: 'SERVICE',
+                renderKey: 'session.cancelled-safety-review',
+                actionTarget: { type: 'SESSION', sessionId: row.session_id },
+                payload: {
+                  sessionId: row.session_id, bookingId: row.booking_id,
+                  challengeId: challenge.challenge_id, noFault: true,
+                },
+                deadlineAt: null,
+              })),
+            },
+          },
+        ],
+      };
+    },
+  });
 }
 
 function requiredOfficialCancellationIds(ids: SessionEffectIds): {

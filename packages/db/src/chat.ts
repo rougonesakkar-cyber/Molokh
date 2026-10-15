@@ -140,15 +140,20 @@ export interface ReportChatMessageEffectIds extends HideChatMessageEffectIds {
 
 export interface CentralModerationCaseProjection {
   readonly caseId: string;
-  readonly caseType: 'REPORT';
+  readonly caseType: 'REPORT' | 'SAFETY';
   readonly state: 'SUBMITTED' | 'TRIAGED' | 'UNDER_REVIEW' | 'DECIDED' | 'CLOSED';
-  readonly reportId: string;
+  readonly reportId: string | null;
   readonly chatId: string;
-  readonly messageId: string;
+  readonly messageId: string | null;
   readonly reporterUserId: string;
   readonly subjectUserId: string;
   readonly reasonCode: string;
-  readonly evidenceSnapshot: Readonly<Record<string, unknown>>;
+  readonly evidenceSnapshot: Readonly<Record<string, unknown>> | null;
+  readonly challengeId: string | null;
+  readonly bookingId: string | null;
+  readonly sessionId: string | null;
+  readonly initialDueAt: string | null;
+  readonly finalDueAt: string | null;
   readonly submittedAt: string;
   readonly version: number;
 }
@@ -934,15 +939,20 @@ export async function listModerationCasesForCentral(
   }
   const result = await sql<{
     readonly case_id: string;
-    readonly case_type: 'REPORT';
+    readonly case_type: 'REPORT' | 'SAFETY';
     readonly state: CentralModerationCaseProjection['state'];
-    readonly report_id: string;
+    readonly report_id: string | null;
     readonly chat_id: string;
-    readonly message_id: string;
+    readonly message_id: string | null;
     readonly reporter_user_id: string;
     readonly subject_user_id: string;
     readonly reason_code: string;
-    readonly evidence_snapshot: Readonly<Record<string, unknown>>;
+    readonly evidence_snapshot: Readonly<Record<string, unknown>> | null;
+    readonly challenge_id: string | null;
+    readonly booking_id: string | null;
+    readonly session_id: string | null;
+    readonly initial_due_at: Date | null;
+    readonly final_due_at: Date | null;
     readonly submitted_at: Date;
     readonly version: string;
   }>`
@@ -950,9 +960,12 @@ export async function listModerationCasesForCentral(
       moderation_case.report_id, moderation_case.chat_id, moderation_case.message_id,
       moderation_case.reporter_user_id, moderation_case.subject_user_id,
       moderation_case.reason_code, report.evidence_snapshot,
+      moderation_case.challenge_id, moderation_case.booking_id,
+      moderation_case.session_id, moderation_case.initial_due_at,
+      moderation_case.final_due_at,
       moderation_case.submitted_at, moderation_case.version::text
     from governance.moderation_cases moderation_case
-    join social.chat_message_reports report on report.report_id = moderation_case.report_id
+    left join social.chat_message_reports report on report.report_id = moderation_case.report_id
     where moderation_case.state in ('SUBMITTED', 'TRIAGED', 'UNDER_REVIEW')
     order by moderation_case.submitted_at, moderation_case.case_id
   `.execute(database);
@@ -967,6 +980,11 @@ export async function listModerationCasesForCentral(
     subjectUserId: row.subject_user_id,
     reasonCode: row.reason_code,
     evidenceSnapshot: row.evidence_snapshot,
+    challengeId: row.challenge_id,
+    bookingId: row.booking_id,
+    sessionId: row.session_id,
+    initialDueAt: row.initial_due_at?.toISOString() ?? null,
+    finalDueAt: row.final_due_at?.toISOString() ?? null,
     submittedAt: row.submitted_at.toISOString(),
     version: Number(row.version),
   }));

@@ -156,6 +156,7 @@ import {
   MigrationChecksumMismatchError,
   releaseOutboxFailure,
   reportChatMessage,
+  reportSafetyAndCancelSession,
   runMigrations,
   skipDiscoveryCandidate,
   sendChatMessage,
@@ -5534,6 +5535,188 @@ describePostgres('PostgreSQL critical command transaction', () => {
     `.execute(database);
     expect(JSON.stringify(publicRecords.rows)).not.toContain(fixture.athleteB);
     expect(await state()).toEqual(before);
+  });
+
+  it('[AC-124] atomically creates a private SafetyCase, cancels no-fault and pauses Challenge', async () => {
+    const base = 232000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const conversionId = testId(base + 100);
+    const requested = await requestBookingOfficialConversion(database, {
+      commandId: testId(base + 101), commandType: 'REQUEST_BOOKING_OFFICIAL_CONVERSION',
+      idempotencyKey: 'ac-124-conversion-request',
+      actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'BookingOfficialConversion', aggregateId: conversionId,
+      expectedVersion: 0, correlationId: testId(base + 102), causationId: null,
+      requestId: testId(base + 103), source: 'api', payloadVersion: 1,
+      payload: { sessionId: fixture.session },
+    }, bookingConversionEffects(base + 110, conversionId),
+    () => new Date('2026-09-27T10:05:00.000Z'));
+    await decideBookingOfficialConversion(database, {
+      commandId: testId(base + 140), commandType: 'DECIDE_BOOKING_OFFICIAL_CONVERSION',
+      idempotencyKey: 'ac-124-conversion-peer',
+      actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'BookingOfficialConversion', aggregateId: conversionId,
+      expectedVersion: requested.response.version, correlationId: testId(base + 102),
+      causationId: testId(base + 110), requestId: testId(base + 141),
+      source: 'api', payloadVersion: 1,
+      payload: { conversionId, decision: 'ACCEPT' },
+    }, bookingConversionEffects(base + 150, conversionId),
+    () => new Date('2026-09-27T10:10:00.000Z'));
+    const converted = await decideBookingOfficialConversion(database, {
+      commandId: testId(base + 180), commandType: 'DECIDE_BOOKING_OFFICIAL_CONVERSION',
+      idempotencyKey: 'ac-124-conversion-coach',
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      aggregateType: 'BookingOfficialConversion', aggregateId: conversionId,
+      expectedVersion: 2, correlationId: testId(base + 102), causationId: testId(base + 150),
+      requestId: testId(base + 181), source: 'api', payloadVersion: 1,
+      payload: { conversionId, decision: 'ACCEPT' },
+    }, bookingConversionEffects(base + 190, conversionId),
+    () => new Date('2026-09-27T10:15:00.000Z'));
+    const challengeId = converted.response.challengeId!;
+    const before = await sql<{
+      readonly booking_version: string;
+      readonly challenge_version: string;
+      readonly session_version: string;
+      readonly scheduling_deadline_at: Date;
+    }>`
+      select booking.version::text as booking_version,
+        challenge.version::text as challenge_version,
+        session.version::text as session_version, challenge.scheduling_deadline_at
+      from scheduling.sessions session
+      join scheduling.bookings booking on booking.booking_id = session.booking_id
+      join competition.challenges challenge on challenge.challenge_id = session.challenge_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    const source = before.rows[0]!;
+    const submittedAt = new Date('2026-09-27T10:20:00.000Z');
+    const ids = {
+      eventId: testId(base + 230), auditId: testId(base + 231),
+      outboxMessageId: testId(base + 232), bookingEventId: testId(base + 233),
+      slotEventId: testId(base + 234), challengeEventId: testId(base + 235),
+      caseId: testId(base + 236), caseEventId: testId(base + 237),
+      caseOutboxMessageId: testId(base + 238), holdId: testId(base + 239),
+      holdEventId: testId(base + 240), holdOutboxMessageId: testId(base + 241),
+      notificationOutboxMessageId: testId(base + 242),
+      notificationIds: [
+        testId(base + 243), testId(base + 244), testId(base + 245), testId(base + 246),
+      ] as const,
+    };
+    const command = {
+      commandId: testId(base + 220), commandType: 'REPORT_SAFETY_AND_CANCEL',
+      idempotencyKey: 'ac-124-safety-cancel',
+      actor: { type: 'USER' as const, id: fixture.athleteA,
+        roles: ['ATHLETE'] as const, scopeIds: [] as const },
+      aggregateType: 'Session', aggregateId: fixture.session,
+      expectedVersion: Number(source.session_version), correlationId: testId(base + 221),
+      causationId: null, requestId: testId(base + 222), source: 'api' as const,
+      payloadVersion: 1,
+      payload: {
+        sessionId: fixture.session, subjectUserId: fixture.athleteB,
+        reasonCode: 'THREAT' as const, explicitConfirmation: true as const,
+        expectedBookingVersion: Number(source.booking_version),
+        expectedChallengeVersion: Number(source.challenge_version),
+      },
+    };
+    const submitted = await reportSafetyAndCancelSession(database, command, ids, () => submittedAt);
+    expect(submitted.response).toMatchObject({
+      action: 'SAFETY_REPORTED_AND_CANCELLED', caseId: ids.caseId,
+      caseState: 'SUBMITTED', challengeId, bookingId: fixture.booking,
+      sessionId: fixture.session, holdId: ids.holdId, holdState: 'ACTIVE',
+      initialDueAt: '2026-09-28T10:20:00.000Z',
+      finalDueAt: '2026-09-29T10:20:00.000Z',
+    });
+    const replay = await reportSafetyAndCancelSession(database, command, ids, () => submittedAt);
+    expect(replay.replayed).toBe(true);
+    expect(replay.response).toEqual(submitted.response);
+    await expect(reportSafetyAndCancelSession(database, {
+      ...command,
+      commandId: testId(base + 247),
+      payload: { ...command.payload, reasonCode: 'HARASSMENT' as const },
+    }, { ...ids, eventId: testId(base + 248) }, () => submittedAt))
+      .rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+
+    const committed = await sql<{
+      readonly case_type: string; readonly case_state: string;
+      readonly reporter_user_id: string; readonly subject_user_id: string;
+      readonly initial_due_at: Date; readonly final_due_at: Date;
+      readonly booking_state: string; readonly session_state: string;
+      readonly slot_state: string; readonly challenge_state: string;
+      readonly challenge_version: string; readonly scheduling_deadline_at: Date;
+      readonly hold_state: string; readonly deadline_policy: string;
+      readonly results: string; readonly cooldowns: string; readonly blocks: string;
+      readonly reschedules: string; readonly obligations: string;
+      readonly account_state: string; readonly membership_state: string;
+    }>`
+      select moderation_case.case_type, moderation_case.state as case_state,
+        moderation_case.reporter_user_id, moderation_case.subject_user_id,
+        moderation_case.initial_due_at, moderation_case.final_due_at,
+        booking.state as booking_state, session.state as session_state,
+        slot.state as slot_state, challenge.state as challenge_state,
+        challenge.version::text as challenge_version, challenge.scheduling_deadline_at,
+        hold.state as hold_state, hold.deadline_policy,
+        (select count(*)::text from competition.results) as results,
+        (select count(*)::text from competition.pair_cooldowns) as cooldowns,
+        (select count(*)::text from social.blocks) as blocks,
+        (select count(*)::text from competition.challenge_reschedules) as reschedules,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id and obligation.released_at is null
+        ) as obligations,
+        athlete.account_state,
+        membership.state as membership_state
+      from governance.moderation_cases moderation_case
+      join scheduling.sessions session on session.session_id = moderation_case.session_id
+      join scheduling.bookings booking on booking.booking_id = moderation_case.booking_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      join competition.challenges challenge on challenge.challenge_id = moderation_case.challenge_id
+      join competition.process_holds hold on hold.moderation_case_id = moderation_case.case_id
+      join identity.users athlete on athlete.user_id = moderation_case.reporter_user_id
+      join community.community_memberships membership
+        on membership.community_id = ${fixture.community}::uuid
+        and membership.user_id = moderation_case.reporter_user_id
+      where moderation_case.case_id = ${ids.caseId}::uuid
+    `.execute(database);
+    expect(committed.rows[0]).toMatchObject({
+      case_type: 'SAFETY', case_state: 'SUBMITTED',
+      reporter_user_id: fixture.athleteA, subject_user_id: fixture.athleteB,
+      booking_state: 'CANCELLED', session_state: 'CANCELLED', slot_state: 'CANCELLED',
+      challenge_state: 'BOOKED', hold_state: 'ACTIVE', deadline_policy: 'PAUSE',
+      results: '0', cooldowns: '0', blocks: '0', reschedules: '0', obligations: '2',
+      account_state: 'ACTIVE', membership_state: 'ACTIVE',
+    });
+    expect(committed.rows[0]?.scheduling_deadline_at.toISOString())
+      .toBe(source.scheduling_deadline_at.toISOString());
+    expect(Number(committed.rows[0]?.challenge_version)).toBe(Number(source.challenge_version) + 1);
+    expect(committed.rows[0]?.initial_due_at.toISOString()).toBe('2026-09-28T10:20:00.000Z');
+    expect(committed.rows[0]?.final_due_at.toISOString()).toBe('2026-09-29T10:20:00.000Z');
+    expect(await listModerationCasesForCentral(database, fixture.central)).toEqual([
+      expect.objectContaining({
+        caseId: ids.caseId, caseType: 'SAFETY', reportId: null, messageId: null,
+        reporterUserId: fixture.athleteA, subjectUserId: fixture.athleteB,
+        reasonCode: 'THREAT', evidenceSnapshot: null, challengeId,
+        bookingId: fixture.booking, sessionId: fixture.session,
+        initialDueAt: '2026-09-28T10:20:00.000Z',
+        finalDueAt: '2026-09-29T10:20:00.000Z',
+      }),
+    ]);
+    const publicPayloads = await sql<{ readonly payload: unknown }>`
+      select payload from platform.domain_events
+      where event_id in (
+        ${ids.eventId}::uuid, ${ids.caseEventId}::uuid, ${ids.bookingEventId}::uuid,
+        ${ids.slotEventId}::uuid, ${ids.challengeEventId}::uuid, ${ids.holdEventId}::uuid
+      )
+      union all
+      select payload from platform.outbox_messages
+      where message_id in (
+        ${ids.outboxMessageId}::uuid, ${ids.caseOutboxMessageId}::uuid,
+        ${ids.holdOutboxMessageId}::uuid, ${ids.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    expect(JSON.stringify(publicPayloads.rows)).not.toContain(fixture.athleteA);
+    expect(JSON.stringify(publicPayloads.rows)).not.toContain('THREAT');
+    await expect(reportSafetyAndCancelSession(database, {
+      ...command, commandId: testId(base + 250), idempotencyKey: 'ac-124-stale',
+    }, { ...ids, eventId: testId(base + 251), caseId: testId(base + 252) }, () => submittedAt))
+      .rejects.toBeInstanceOf(VersionConflictError);
   });
 
   it('[AC-214] deletes expired unreported Chat payloads while retaining checksums, evidence and audit', async () => {

@@ -27,6 +27,7 @@ export type SchedulingConflictCode =
   | 'COACH_REPLACEMENT_UNAVAILABLE'
   | 'COACH_REPLACEMENT_NOT_REJECTABLE'
   | 'EXTERNAL_FAILURE_NOT_ALLOWED'
+  | 'SAFETY_CANCELLATION_NOT_ALLOWED'
   | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
@@ -756,6 +757,56 @@ export function assertExternalSessionFailureCanBeCommitted(input: {
   ) {
     throw new SchedulingConflictError('EXTERNAL_FAILURE_NOT_ALLOWED');
   }
+}
+
+export type SafetyCancellationReasonCode =
+  | 'THREAT'
+  | 'HARASSMENT'
+  | 'UNSAFE_CONDUCT'
+  | 'OTHER_SAFETY';
+
+const safetyCancellationReasonCodes = new Set<SafetyCancellationReasonCode>([
+  'THREAT',
+  'HARASSMENT',
+  'UNSAFE_CONDUCT',
+  'OTHER_SAFETY',
+]);
+
+export function assertSafetyCancellationCanBeSubmitted(input: {
+  readonly sessionState: SessionState;
+  readonly sessionPurpose: string;
+  readonly bookingState: string;
+  readonly challengeState: string | null;
+  readonly actualStartAt: string | null;
+  readonly resultExists: boolean;
+  readonly explicitConfirmation: boolean;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly actorIsOperational: boolean;
+  readonly reasonCode: string;
+}): SafetyCancellationReasonCode {
+  const reporterIsAthlete = input.athleteUserIds.includes(input.reporterUserId);
+  if (
+    !input.explicitConfirmation
+    || input.sessionPurpose !== 'OFFICIAL_CHALLENGE'
+    || input.bookingState !== 'CONFIRMED_PAIR'
+    || input.challengeState !== 'BOOKED'
+    || !['SCHEDULED', 'READY_FOR_COACH'].includes(input.sessionState)
+    || input.actualStartAt !== null
+    || input.resultExists
+    || (!reporterIsAthlete && !input.actorIsOperational)
+    || !input.athleteUserIds.includes(input.subjectUserId)
+    || input.reporterUserId === input.subjectUserId
+    || (reporterIsAthlete
+      && input.subjectUserId === input.reporterUserId)
+  ) {
+    throw new SchedulingConflictError('SAFETY_CANCELLATION_NOT_ALLOWED');
+  }
+  if (!safetyCancellationReasonCodes.has(input.reasonCode as SafetyCancellationReasonCode)) {
+    throw new SchedulingValidationError('reasonCode');
+  }
+  return input.reasonCode as SafetyCancellationReasonCode;
 }
 
 export function attendanceCountsAsCompletedTraining(status: AttendanceStatus): boolean {

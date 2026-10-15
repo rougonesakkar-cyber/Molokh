@@ -836,7 +836,7 @@ export const ChatMessageActionResponseSchema = Type.Object(
 export const CentralModerationCaseProjectionSchema = Type.Object(
   {
     caseId: Type.String({ format: 'uuid' }),
-    caseType: Type.Literal('REPORT'),
+    caseType: Type.Union([Type.Literal('REPORT'), Type.Literal('SAFETY')]),
     state: Type.Union([
       Type.Literal('SUBMITTED'),
       Type.Literal('TRIAGED'),
@@ -844,13 +844,18 @@ export const CentralModerationCaseProjectionSchema = Type.Object(
       Type.Literal('DECIDED'),
       Type.Literal('CLOSED'),
     ]),
-    reportId: Type.String({ format: 'uuid' }),
+    reportId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     chatId: Type.String({ format: 'uuid' }),
-    messageId: Type.String({ format: 'uuid' }),
+    messageId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     reporterUserId: Type.String({ format: 'uuid' }),
     subjectUserId: Type.String({ format: 'uuid' }),
     reasonCode: Type.String({ minLength: 1, maxLength: 80 }),
-    evidenceSnapshot: Type.Record(Type.String(), Type.Unknown()),
+    evidenceSnapshot: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+    challengeId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    bookingId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    sessionId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    initialDueAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    finalDueAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     submittedAt: Type.String({ format: 'date-time' }),
     version: Type.Integer({ minimum: 1 }),
   },
@@ -2486,6 +2491,64 @@ export const FailSessionExternalBodySchema = Type.Object(
 );
 
 export type FailSessionExternalBody = Static<typeof FailSessionExternalBodySchema>;
+
+export const ReportSafetyAndCancelSessionBodySchema = Type.Object(
+  {
+    subjectUserId: Type.String({ format: 'uuid' }),
+    reasonCode: Type.Union([
+      Type.Literal('THREAT'), Type.Literal('HARASSMENT'),
+      Type.Literal('UNSAFE_CONDUCT'), Type.Literal('OTHER_SAFETY'),
+    ]),
+    explicitConfirmation: Type.Literal(true),
+    expectedBookingVersion: Type.Integer({ minimum: 1 }),
+    expectedChallengeVersion: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'ReportSafetyAndCancelSessionBody', additionalProperties: false },
+);
+
+export type ReportSafetyAndCancelSessionBody = Static<
+  typeof ReportSafetyAndCancelSessionBodySchema
+>;
+
+export const SafetyCancellationProjectionSchema = Type.Object(
+  {
+    action: Type.Literal('SAFETY_REPORTED_AND_CANCELLED'),
+    caseId: Type.String({ format: 'uuid' }),
+    caseState: Type.Literal('SUBMITTED'),
+    challengeId: Type.String({ format: 'uuid' }),
+    bookingId: Type.String({ format: 'uuid' }),
+    sessionId: Type.String({ format: 'uuid' }),
+    holdId: Type.String({ format: 'uuid' }),
+    holdState: Type.Literal('ACTIVE'),
+    initialDueAt: Type.String({ format: 'date-time' }),
+    finalDueAt: Type.String({ format: 'date-time' }),
+    submittedAt: Type.String({ format: 'date-time' }),
+    sessionVersion: Type.Integer({ minimum: 1 }),
+    bookingVersion: Type.Integer({ minimum: 1 }),
+    slotVersion: Type.Integer({ minimum: 1 }),
+    challengeVersion: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'SafetyCancellationProjection', additionalProperties: false },
+);
+
+export const SafetyCancellationCommandResponseSchema = Type.Object(
+  {
+    data: SafetyCancellationProjectionSchema,
+    meta: Type.Object(
+      {
+        requestId: Type.String({ format: 'uuid' }),
+        eventId: Type.String({ format: 'uuid' }),
+        replayed: Type.Boolean(),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'SafetyCancellationCommandResponse', additionalProperties: false },
+);
+
+export type SafetyCancellationCommandResponse = Static<
+  typeof SafetyCancellationCommandResponseSchema
+>;
 
 export const SessionCommandResponseSchema = Type.Object(
   {

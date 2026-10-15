@@ -2392,6 +2392,14 @@ export async function readChallengeTimerSnapshot(
               and process_hold.aggregate_id = competition.competition_id
               and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
           )
+          or exists (
+            select 1 from competition.process_holds as challenge_hold
+            where challenge_hold.aggregate_type = 'CHALLENGE'
+              and challenge_hold.aggregate_id = challenge.challenge_id
+              and challenge_hold.reason = 'SAFETY'
+              and challenge_hold.state = 'ACTIVE'
+              and challenge_hold.deadline_policy = 'PAUSE'
+          )
           then greatest(
             case
               when challenge.state = 'AWAITING_RESPONSE' then challenge.response_deadline_at

@@ -24,6 +24,7 @@ import {
   cancelOfficialSessionByAthlete,
   endSession,
   failSessionExternal,
+  reportSafetyAndCancelSession,
   blockUser,
   createDiscoveryLike,
   createDirectOpenChallenge,
@@ -1487,6 +1488,8 @@ const app = await buildApp({
       cancelOfficialSessionByAthlete(database, command, ids),
     failSessionExternal: (command, ids) =>
       failSessionExternal(database, command, ids),
+    reportSafetyAndCancelSession: (command, ids) =>
+      reportSafetyAndCancelSession(database, command, ids),
     requestBookingOfficialConversion: (command, ids) =>
       requestBookingOfficialConversion(database, command, ids),
     decideBookingOfficialConversion: (command, ids) =>

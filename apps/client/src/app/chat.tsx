@@ -9,6 +9,8 @@ import type {
   GroupPlanOfficialConversionCommandResponse,
   MyGroupPlanOfficialConversionsResponse,
   MutualChallengeRescheduleRequestResponse,
+  SafetyCancellationCommandResponse,
+  SessionResponse,
   TrainingOptionsResponse,
   YouthConsentCommandResponse,
   YouthConsentSummaryResponse,
@@ -32,6 +34,8 @@ import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
 import {
   CHAT_REPORT_CONFIRMATION_COPY,
   CHAT_REPORT_SUBMITTED_LABEL,
+  SAFETY_CANCEL_ACTION_LABEL,
+  SAFETY_CANCEL_CONFIRMATION_COPY,
 } from '../lib/chat-report-presentation';
 import {
   challengeStakeLabel,
@@ -612,6 +616,81 @@ export default function ChatScreen() {
               body: {},
             });
           },
+        },
+      ],
+    );
+  };
+
+  const reportSafetyAndCancel = async (
+    booking: NonNullable<TrainingOptions['activeIntent']['booking']>,
+  ) => {
+    const challenge = chatChallenge?.challenge;
+    if (!booking.sessionId || !challenge || challenge.state !== 'BOOKED' || actingTrainingId) {
+      return;
+    }
+    const subjectUserId = challenge.initiatorUserId === viewerUserId
+      ? challenge.recipientUserId
+      : challenge.recipientUserId === viewerUserId
+        ? challenge.initiatorUserId
+        : null;
+    if (!subjectUserId) {
+      setOptionsError('Safety-cancel доступен участникам этой Official Session.');
+      return;
+    }
+    const operation = `safety-cancel:${booking.sessionId}:v${booking.version}:${challenge.version}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingTrainingId(booking.sessionId);
+    setOptionsError(null);
+    try {
+      const sessionResponse = await fetch(`${apiUrl}/api/v1/sessions/${booking.sessionId}`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!sessionResponse.ok) throw new Error(await apiErrorMessage(sessionResponse));
+      const session = (await sessionResponse.json() as SessionResponse).data;
+      const response = await fetch(
+        `${apiUrl}/api/v1/sessions/${booking.sessionId}/safety-report`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(session.version),
+          },
+          body: JSON.stringify({
+            subjectUserId,
+            reasonCode: 'THREAT',
+            explicitConfirmation: true,
+            expectedBookingVersion: booking.version,
+            expectedChallengeVersion: challenge.version,
+          }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      await response.json() as SafetyCancellationCommandResponse;
+      actionKeys.current.delete(operation);
+      await Promise.all([loadChallenge(), loadTrainingOptions()]);
+    } catch (caught) {
+      setOptionsError(caught instanceof Error ? caught.message : 'Не удалось отправить safety-сообщение');
+    } finally {
+      setActingTrainingId(null);
+    }
+  };
+
+  const confirmSafetyAndCancel = (
+    booking: NonNullable<TrainingOptions['activeIntent']['booking']>,
+  ) => {
+    Alert.alert(
+      'Сообщить об угрозе?',
+      SAFETY_CANCEL_CONFIRMATION_COPY,
+      [
+        { text: 'Не отменять', style: 'cancel' },
+        {
+          text: 'Сообщить и отменить',
+          style: 'destructive',
+          onPress: () => void reportSafetyAndCancel(booking),
         },
       ],
     );
@@ -1252,6 +1331,25 @@ export default function ChatScreen() {
                 <Text style={styles.trainingTerms}>
                   Session запланирована. В назначенное время Coach зафиксирует фактическое начало и посещение.
                 </Text>
+                {trainingOptions.activeIntent.booking.purpose === 'OFFICIAL_CHALLENGE'
+                  && trainingOptions.activeIntent.booking.sessionId
+                  && chatChallenge?.challenge?.state === 'BOOKED'
+                  && ['INITIATOR', 'RECIPIENT'].includes(chatChallenge.challenge.viewerRole) ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={SAFETY_CANCEL_ACTION_LABEL}
+                      accessibilityState={{ disabled: actingTrainingId !== null }}
+                      disabled={actingTrainingId !== null}
+                      onPress={() => confirmSafetyAndCancel(trainingOptions.activeIntent.booking!)}
+                      style={({ pressed }) => [
+                        styles.safetyCancelButton,
+                        actingTrainingId !== null && styles.disabled,
+                        pressed && actingTrainingId === null && styles.pressed,
+                      ]}
+                    >
+                      <Text style={styles.safetyCancelText}>{SAFETY_CANCEL_ACTION_LABEL}</Text>
+                    </Pressable>
+                  ) : null}
               </View>
             ) : null}
             {trainingOptions?.slots.map((slot) => {
@@ -1802,6 +1900,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   trainingButtonText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
+  safetyCancelButton: {
+    alignItems: 'center', borderColor: '#8b2f22', borderRadius: 10,
+    borderWidth: 1, marginTop: 12, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  safetyCancelText: { color: '#8b2f22', fontSize: 13, fontWeight: '800' },
   intentDeadline: { color: '#8b2f22', fontSize: 11, textAlign: 'center' },
   capacityNotice: { color: '#31533a', fontSize: 12, lineHeight: 17, marginTop: 4 },
   phoneAction: {

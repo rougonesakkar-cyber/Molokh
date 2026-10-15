@@ -29,6 +29,8 @@ import {
   RequestTrainingParticipantCancellationBodySchema,
   ReplaceSessionCoachBodySchema,
   FailSessionExternalBodySchema,
+  ReportSafetyAndCancelSessionBodySchema,
+  SafetyCancellationCommandResponseSchema,
   SelectSameSlotBodySchema,
   SelectSlotBodySchema,
   SlotCommandResponseSchema,
@@ -72,6 +74,8 @@ import {
   type RequestTrainingParticipantCancellationBody,
   type ReplaceSessionCoachBody,
   type FailSessionExternalBody,
+  type ReportSafetyAndCancelSessionBody,
+  type SafetyCancellationCommandResponse,
   type SelectSameSlotBody,
   type SelectSlotBody,
   type SlotCommandResponse,
@@ -128,6 +132,9 @@ import type {
   CancelAfterCoachReplacementPayload,
   CancelOfficialSessionByAthletePayload,
   FailSessionExternalPayload,
+  ReportSafetyAndCancelSessionPayload,
+  SafetyCancellationEffectIds,
+  SafetyCancellationProjection,
   RecordAttendancePayload,
   ReplaceSessionCoachPayload,
   SessionEffectIds,
@@ -284,6 +291,10 @@ export interface SchedulingRouteDependencies {
     command: CommandEnvelope<FailSessionExternalPayload>,
     ids: SessionEffectIds,
   ) => Promise<ExecutedCommand<SessionLifecycleProjection>>;
+  readonly reportSafetyAndCancelSession: (
+    command: CommandEnvelope<ReportSafetyAndCancelSessionPayload>,
+    ids: SafetyCancellationEffectIds,
+  ) => Promise<ExecutedCommand<SafetyCancellationProjection>>;
   readonly requestBookingOfficialConversion: (
     command: CommandEnvelope<RequestBookingOfficialConversionPayload>,
     ids: BookingOfficialConversionEffectIds,
@@ -467,6 +478,17 @@ function officialCancellationEffectIds(): SessionEffectIds {
     resultOutboxMessageId: newUuidV7(),
     resultNotificationOutboxMessageId: newUuidV7(),
     resultNotificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+  };
+}
+
+function safetyCancellationEffectIds(): SafetyCancellationEffectIds {
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    bookingEventId: newUuidV7(), slotEventId: newUuidV7(), challengeEventId: newUuidV7(),
+    caseId: newUuidV7(), caseEventId: newUuidV7(), caseOutboxMessageId: newUuidV7(),
+    holdId: newUuidV7(), holdEventId: newUuidV7(), holdOutboxMessageId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7(), newUuidV7()],
   };
 }
 
@@ -717,6 +739,16 @@ function sessionCommandResponse(
 ): SessionCommandResponse {
   return {
     data: sessionContract(executed.response),
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  };
+}
+
+function safetyCancellationCommandResponse(
+  executed: ExecutedCommand<SafetyCancellationProjection>,
+  requestId: string,
+): SafetyCancellationCommandResponse {
+  return {
+    data: executed.response,
     meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
   };
 }
@@ -1508,6 +1540,58 @@ export async function registerSchedulingRoutes(
       );
       reply.status(executed.responseStatus);
       return sessionCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: SessionParams;
+    Body: ReportSafetyAndCancelSessionBody;
+  }>(
+    '/api/v1/sessions/:sessionId/safety-report',
+    {
+      schema: {
+        operationId: 'reportSafetyAndCancelSession',
+        params: Type.Object(
+          { sessionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: ReportSafetyAndCancelSessionBodySchema,
+        response: {
+          200: SafetyCancellationCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SafetyCancellationCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.reportSafetyAndCancelSession(
+        {
+          commandId: newUuidV7(), commandType: 'REPORT_SAFETY_AND_CANCEL',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'Session', aggregateId: request.params.sessionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: { sessionId: request.params.sessionId, ...request.body },
+        },
+        safetyCancellationEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return safetyCancellationCommandResponse(executed, context.requestId);
     },
   );
 

@@ -13,6 +13,7 @@ import {
   assertCoachReplacementCanBeCommitted,
   assertCoachReplacementCanBeRejected,
   assertExternalSessionFailureCanBeCommitted,
+  assertSafetyCancellationCanBeSubmitted,
   assertPublicationWindow,
   assertSessionCanEnd,
   assertSessionCanStart,
@@ -339,6 +340,33 @@ describe('Scheduling publication policy', () => {
     expect(() => assertExternalSessionFailureCanBeCommitted({
       state: 'IN_PROGRESS', actualStartAt: occurredAt.toISOString(),
     })).toThrowError(expect.objectContaining({ reason: 'EXTERNAL_FAILURE_NOT_ALLOWED' }));
+  });
+
+  it('[AC-124] requires an explicit pre-start safety cancellation against the frozen pair', () => {
+    const input = {
+      sessionState: 'SCHEDULED' as const,
+      sessionPurpose: 'OFFICIAL_CHALLENGE',
+      bookingState: 'CONFIRMED_PAIR',
+      challengeState: 'BOOKED',
+      actualStartAt: null,
+      resultExists: false,
+      explicitConfirmation: true,
+      reporterUserId: 'athlete-a',
+      subjectUserId: 'athlete-b',
+      athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      actorIsOperational: false,
+      reasonCode: 'THREAT',
+    };
+    expect(assertSafetyCancellationCanBeSubmitted(input)).toBe('THREAT');
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, explicitConfirmation: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, actualStartAt: occurredAt.toISOString(), sessionState: 'IN_PROGRESS',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, subjectUserId: 'athlete-a',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
   });
 
   it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {

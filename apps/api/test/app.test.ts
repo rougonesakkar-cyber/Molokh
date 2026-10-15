@@ -101,6 +101,9 @@ import type {
   CancelAfterCoachReplacementPayload,
   CancelOfficialSessionByAthletePayload,
   FailSessionExternalPayload,
+  ReportSafetyAndCancelSessionPayload,
+  SafetyCancellationEffectIds,
+  SafetyCancellationProjection,
   SlotProjection,
   TrainingOptionsProjection,
   UpdateGroupOfferingPayload,
@@ -1261,6 +1264,11 @@ describe('runtime contract', () => {
       subjectUserId: '0199a1b2-1234-7000-8000-000000000510',
       reasonCode: 'ABUSE',
       evidenceSnapshot: { revisions: [{ revisionNo: 1 }] },
+      challengeId: null,
+      bookingId: null,
+      sessionId: null,
+      initialDueAt: null,
+      finalDueAt: null,
       submittedAt: '2026-09-07T10:06:00.000Z',
       version: 1,
     };
@@ -2312,6 +2320,32 @@ describe('runtime contract', () => {
       aggregateVersion: 3,
       replayed: false,
     }));
+    const reportSafetyAndCancelSession = vi.fn(async (
+      _command: CommandEnvelope<ReportSafetyAndCancelSessionPayload>,
+      _ids: SafetyCancellationEffectIds,
+    ): Promise<ExecutedCommand<SafetyCancellationProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'SAFETY_REPORTED_AND_CANCELLED',
+        caseId: '0199a1b2-1234-7000-8000-000000000741',
+        caseState: 'SUBMITTED',
+        challengeId: '0199a1b2-1234-7000-8000-000000000725',
+        bookingId: booking.bookingId,
+        sessionId,
+        holdId: '0199a1b2-1234-7000-8000-000000000742',
+        holdState: 'ACTIVE',
+        initialDueAt: '2026-09-08T10:00:00.000Z',
+        finalDueAt: '2026-09-09T10:00:00.000Z',
+        submittedAt: '2026-09-07T10:00:00.000Z',
+        sessionVersion: 3,
+        bookingVersion: booking.version + 1,
+        slotVersion: slot.version + 1,
+        challengeVersion: 5,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000743',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
     const conversionId = '0199a1b2-1234-7000-8000-000000000726';
     const conversion: BookingOfficialConversionProjection = {
       conversionId,
@@ -2467,6 +2501,7 @@ describe('runtime contract', () => {
         cancelSessionAfterCoachReplacement: cancelledAfterReplacement,
         cancelOfficialSessionByAthlete,
         failSessionExternal,
+        reportSafetyAndCancelSession,
         requestBookingOfficialConversion,
         decideBookingOfficialConversion,
         requestTrainingParticipantCancellation,
@@ -3046,6 +3081,39 @@ describe('runtime contract', () => {
       rescheduleId: expect.any(String),
       challengeEventId: expect.any(String),
       challengeOutboxMessageId: expect.any(String),
+    });
+
+    const safetyCancelled = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/safety-report`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-safety-api-1',
+        'if-match': '2',
+      },
+      payload: {
+        subjectUserId: lifecycleSession.athleteUserIds[1],
+        reasonCode: 'THREAT',
+        explicitConfirmation: true,
+        expectedBookingVersion: booking.version,
+        expectedChallengeVersion: 4,
+      },
+    });
+    expect(safetyCancelled.statusCode).toBe(200);
+    expect(safetyCancelled.json()).toMatchObject({
+      data: { action: 'SAFETY_REPORTED_AND_CANCELLED', holdState: 'ACTIVE' },
+    });
+    expect(reportSafetyAndCancelSession.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REPORT_SAFETY_AND_CANCEL', expectedVersion: 2,
+      payload: {
+        sessionId, subjectUserId: lifecycleSession.athleteUserIds[1],
+        reasonCode: 'THREAT', explicitConfirmation: true,
+        expectedBookingVersion: booking.version, expectedChallengeVersion: 4,
+      },
+    });
+    expect(reportSafetyAndCancelSession.mock.calls[0]?.[1]).toMatchObject({
+      caseId: expect.any(String), holdId: expect.any(String),
+      notificationIds: expect.arrayContaining([expect.any(String)]),
     });
 
     const officialCancelled = await app.inject({
