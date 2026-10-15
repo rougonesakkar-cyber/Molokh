@@ -898,6 +898,7 @@ export async function recordAdministrativeForfeit(
   const response = resultProjection(projectionRow, input.recordedByUserId, input.occurredAt);
   const canonicalPayload = {
     resultId: ids.resultId,
+    competitionId: row.competition_id,
     challengeId: row.challenge_id,
     sessionId: null,
     sourceSessionId: input.sourceSessionId,
@@ -1219,6 +1220,7 @@ export async function recordSessionResult(
       const response = resultProjection(projectionRow, actorUserId, context.occurredAt);
       const canonicalPayload = {
         resultId: required.resultId,
+        competitionId: row.competition_id,
         challengeId: row.challenge_id,
         sessionId: row.session_id,
         origin: 'SESSION',

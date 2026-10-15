@@ -2157,6 +2157,7 @@ export const BookingTrainingRetentionProjectionSchema = Type.Object(
     challengeId: Type.String({ format: 'uuid' }),
     cause: Type.Union([
       Type.Literal('YOUTH_CONSENT_REVOKED'), Type.Literal('AGE_TRANSITION'),
+      Type.Literal('COMPETITIVE_CONTEXT_INVALIDATED'),
     ]),
     state: Type.Union([
       Type.Literal('PENDING'), Type.Literal('CONFIRMED'),

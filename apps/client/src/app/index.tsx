@@ -107,6 +107,7 @@ import {
   externalNoContestResult,
   resultCardPresentation,
 } from '../lib/result-presentation';
+import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -5296,6 +5297,9 @@ export default function IdentityScreen() {
                       const missingResultReview = missingResultReviews.find(
                         (review) => review.sessionId === session.sessionId,
                       ) ?? null;
+                      const trainingRetentionCopy = session.trainingRetention
+                        ? trainingRetentionActionCopy(session.trainingRetention.cause)
+                        : null;
                       return (
                         <View key={session.sessionId} style={styles.hostConfirmationCard}>
                           <View style={styles.row}>
@@ -5514,11 +5518,9 @@ export default function IdentityScreen() {
                           ) : null}
                           {session.trainingRetention?.state === 'PENDING' ? (
                             <View style={styles.attendanceCard}>
-                              <Text style={styles.label}>Сохранить время как обычную тренировку?</Text>
+                              <Text style={styles.label}>{trainingRetentionCopy?.title}</Text>
                               <Text style={styles.hint}>
-                                Official Challenge закрыт без поражения. Слот пока сохранён.
-                                Чтобы продолжить как Training, нужны ответы обоих спортсменов
-                                и Coach/зала. Подтверждено{' '}
+                                {trainingRetentionCopy?.detail} Подтверждено{' '}
                                 {session.trainingRetention.confirmations.filter(
                                   (item) => item.decision === 'ACCEPT',
                                 ).length} из 3 · до {formatDateTime(session.trainingRetention.deadlineAt)}.
@@ -5539,7 +5541,9 @@ export default function IdentityScreen() {
                                       pressed && !sessionActionBlocked && styles.buttonPressed,
                                     ]}
                                   >
-                                    <Text style={styles.buttonText}>Сохранить как Training</Text>
+                                    <Text style={styles.buttonText}>
+                                      {trainingRetentionCopy?.confirmLabel}
+                                    </Text>
                                   </Pressable>
                                   <Pressable
                                     accessibilityRole="button"
@@ -5552,7 +5556,9 @@ export default function IdentityScreen() {
                                       pressed && !sessionActionBlocked && styles.buttonPressed,
                                     ]}
                                   >
-                                    <Text style={styles.secondaryButtonText}>Отменить Session</Text>
+                                    <Text style={styles.secondaryButtonText}>
+                                      {trainingRetentionCopy?.declineLabel}
+                                    </Text>
                                   </Pressable>
                                 </View>
                               ) : null}

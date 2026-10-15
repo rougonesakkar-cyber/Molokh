@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **190/214** (`184/196 P0`);
+- executable acceptance traceability: **191/214** (`185/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0068` and **65/65** integration scenarios pass locally; AC-047 preserves one shared server FIFO when Champion offers the current Contender an optional TITLE Challenge, starts the 48-hour clock only on activation and permits no-fault decline; AC-100/101 carry the first mutually accepted founding GENESIS pair through Slot, Official Session, normal or FORFEIT Result, provisional status, 48-hour Appeal window and atomic C-04 finalization into either `RUNNING` or the public `CONTENDER_VACANT_OPEN` phase with deterministic status/Cooldown replay; AC-102 proves the separate C-03/ST-03 path that promotes the sole eligible founder only after the full three-day server window, without Result, loss or Cooldown; AC-103 proves strict-FIFO contender GENESIS through mutual acceptance, Scheduling, frozen Session snapshot and C-09 finalization while preserving the Champion; AC-104 proves the equivalent C-08/ST-04 single-candidate succession into the vacant Contender slot; AC-105 keeps either GENESIS phase and the same immutable pair/FIFO facts after DRAW, NO_CONTEST or an independent repeat decision, while creating no status change or Cooldown;
+- database gate: PostgreSQL migrations `0001`–`0069` and **66/66** integration scenarios pass locally; AC-072 closes a stale pre-start TITLE context no-fault and reuses the explicit B-26…B-29 physical Booking decision without Result, loss, status movement or Cooldown; AC-047 preserves one shared server FIFO when Champion offers the current Contender an optional TITLE Challenge, starts the 48-hour clock only on activation and permits no-fault decline; AC-100/101 carry the first mutually accepted founding GENESIS pair through Slot, Official Session, normal or FORFEIT Result, provisional status, 48-hour Appeal window and atomic C-04 finalization into either `RUNNING` or the public `CONTENDER_VACANT_OPEN` phase with deterministic status/Cooldown replay; AC-102 proves the separate C-03/ST-03 path that promotes the sole eligible founder only after the full three-day server window, without Result, loss or Cooldown; AC-103 proves strict-FIFO contender GENESIS through mutual acceptance, Scheduling, frozen Session snapshot and C-09 finalization while preserving the Champion; AC-104 proves the equivalent C-08/ST-04 single-candidate succession into the vacant Contender slot; AC-105 keeps either GENESIS phase and the same immutable pair/FIFO facts after DRAW, NO_CONTEST or an independent repeat decision, while creating no status change or Cooldown;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -514,6 +514,13 @@ physical Slot for at most one hour or until scheduled start. The same Session be
 Training only after both Athletes and the assigned Coach or Venue host explicitly accept; decline
 or timeout cancels the Booking/Session no-fault. The retained lineage stays auditable while no
 Result, status, loss or Cooldown is created.
+
+AC-072 applies the same explicit retention bridge when a not-started TITLE Session no longer
+contains the current Champion and Contender. Holder-changing events trigger a SYSTEM recheck under
+the Competition/Challenge/Session/Booking locks. The competitive Session and Challenge close
+no-fault while the physical Slot is held only in `OFFICIAL_RELEASE_PENDING`; it is not shown as
+Training until both Athletes and Coach/host accept. Decline or expiry cancels all physical
+resources without a sporting effect. Migration `0069` adds only the normalized retention cause.
 
 The 18th-birthday boundary is now a single idempotent `AgeDivisionTransition` (`0→1`) scheduled
 at UTC server-date midnight. Migration `0048_age_division_transition.sql` records immutable

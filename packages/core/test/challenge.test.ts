@@ -21,6 +21,8 @@ import {
   challengeResultReminderDeadlines,
   challengeRescheduleLimitForfeitWinner,
   effectiveChallengeStakeAtSessionWindow,
+  titleChallengeCompetitiveContextIsCurrent,
+  titleSessionRequiresCompetitiveInvalidation,
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
   assertMutualChallengeRescheduleCanBeProposed,
@@ -355,6 +357,38 @@ describe('Official Challenge policy', () => {
       championUserId: 'athlete-a',
       contenderUserId: 'someone-else',
     })).toBe('NONE');
+  });
+
+  it('[AC-072] detects a stale planned TITLE context before the Session window', () => {
+    const base = {
+      plannedStake: 'TITLE' as const,
+      participantUserIds: ['champion', 'contender'] as const,
+      championUserId: 'champion',
+      contenderUserId: 'contender',
+    };
+    expect(titleChallengeCompetitiveContextIsCurrent(base)).toBe(true);
+    expect(titleChallengeCompetitiveContextIsCurrent({
+      ...base,
+      contenderUserId: 'new-contender',
+    })).toBe(false);
+    expect(titleChallengeCompetitiveContextIsCurrent({
+      ...base,
+      championUserId: null,
+    })).toBe(false);
+    expect(titleChallengeCompetitiveContextIsCurrent({
+      ...base,
+      plannedStake: 'NONE',
+    })).toBe(true);
+    expect(titleSessionRequiresCompetitiveInvalidation({
+      ...base,
+      contenderUserId: 'new-contender',
+      actualStartAt: null,
+    })).toBe(true);
+    expect(titleSessionRequiresCompetitiveInvalidation({
+      ...base,
+      contenderUserId: 'new-contender',
+      actualStartAt: '2026-10-02T10:00:00.000Z',
+    })).toBe(false);
   });
 
   it('requires a booked obligated Challenge and its immutable snapshot before actual Start', () => {

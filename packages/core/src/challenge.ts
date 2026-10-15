@@ -338,6 +338,30 @@ export function effectiveChallengeStakeAtSessionWindow(input: {
   return 'NONE';
 }
 
+export function titleChallengeCompetitiveContextIsCurrent(input: {
+  readonly plannedStake: ChallengeStake;
+  readonly participantUserIds: readonly [string, string];
+  readonly championUserId: string | null;
+  readonly contenderUserId: string | null;
+}): boolean {
+  if (input.plannedStake !== 'TITLE') return true;
+  if (input.championUserId === null || input.contenderUserId === null) return false;
+  const participants = new Set(input.participantUserIds);
+  return participants.has(input.championUserId) && participants.has(input.contenderUserId);
+}
+
+export function titleSessionRequiresCompetitiveInvalidation(input: {
+  readonly actualStartAt: string | null;
+  readonly plannedStake: ChallengeStake;
+  readonly participantUserIds: readonly [string, string];
+  readonly championUserId: string | null;
+  readonly contenderUserId: string | null;
+}): boolean {
+  return input.actualStartAt === null
+    && input.plannedStake === 'TITLE'
+    && !titleChallengeCompetitiveContextIsCurrent(input);
+}
+
 export function assertChallengeSessionWindowCanOpen(input: {
   readonly state: ChallengeState;
   readonly activeObligationCount: number;

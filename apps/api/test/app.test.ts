@@ -2372,7 +2372,7 @@ describe('runtime contract', () => {
       bookingId: booking.bookingId,
       sessionId,
       challengeId: '0199a1b2-1234-7000-8000-000000000735',
-      cause: 'YOUTH_CONSENT_REVOKED',
+      cause: 'COMPETITIVE_CONTEXT_INVALIDATED',
       state: 'PENDING',
       deadlineAt: '2026-09-07T11:00:00.000Z',
       confirmations: [],
@@ -2885,7 +2885,9 @@ describe('runtime contract', () => {
       payload: { decision: 'ACCEPT' },
     });
     expect(retentionDecisionRecorded.statusCode).toBe(200);
-    expect(retentionDecisionRecorded.json()).toMatchObject({ data: { version: 2 } });
+    expect(retentionDecisionRecorded.json()).toMatchObject({
+      data: { cause: 'COMPETITIVE_CONTEXT_INVALIDATED', version: 2 },
+    });
     expect(decideBookingTrainingRetention.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'DECIDE_BOOKING_TRAINING_RETENTION',
       aggregateType: 'BookingTrainingRetention',

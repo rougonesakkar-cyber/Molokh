@@ -21,6 +21,8 @@ import {
   effectiveChallengeStakeAtSessionWindow,
   externalChallengeRescheduleCount,
   officialCancellationWinner,
+  titleChallengeCompetitiveContextIsCurrent,
+  titleSessionRequiresCompetitiveInvalidation,
   type AttendanceStatus,
   type ChallengeStake,
   type ChallengeState,
@@ -35,7 +37,12 @@ import {
   readBookingOfficialConversionForSession,
   type BookingOfficialConversionProjection,
 } from './booking-conversion.js';
-import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import {
+  executeCriticalCommand,
+  type ExecutedCommand,
+  type OutboxDraft,
+  type RelatedDomainEventDraft,
+} from './platform-command.js';
 import {
   recordAdministrativeForfeit,
   type AdministrativeForfeitEffectIds,
@@ -45,12 +52,39 @@ import {
   type BookingSoloContinuationProjection,
 } from './solo-continuation.js';
 import {
+  openBookedOfficialTrainingRetention,
   readBookingTrainingRetentionForSession,
   type BookingTrainingRetentionProjection,
 } from './training-retention.js';
 
 export interface OpenSessionWindowPayload {
   readonly sessionId: string;
+}
+
+export interface InvalidateCompetitiveSessionPayload {
+  readonly sessionId: string;
+}
+
+export interface CompetitiveSessionInvalidationEffectIds {
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
+  readonly challengeEventId: string;
+  readonly challengeOutboxMessageId: string;
+  readonly bookingEventId: string;
+  readonly slotEventId: string;
+  readonly retentionId: string;
+  readonly retentionEventId: string;
+  readonly retentionOutboxMessageId: string;
+  readonly retentionTimerOutboxMessageId: string;
+  readonly notificationOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string, string];
+}
+
+export interface InvalidPlannedTitleSessionCandidate {
+  readonly sessionId: string;
+  readonly competitionId: string;
+  readonly version: number;
 }
 
 export interface StartSessionPayload {
@@ -257,6 +291,13 @@ interface SessionResourceRow {
   readonly slot_state: 'BOOKED';
   readonly slot_version: string;
   readonly commercial_terms_snapshot: unknown;
+}
+
+interface CompetitiveSessionResourceRow {
+  readonly booking_state: string;
+  readonly booking_version: string;
+  readonly slot_state: string;
+  readonly slot_version: string;
 }
 
 interface OfficialSessionChallengeRow {
@@ -1613,6 +1654,371 @@ export async function cancelOfficialSessionByAthlete(
   });
 }
 
+export async function listInvalidPlannedTitleSessions(
+  database: Kysely<Database>,
+  competitionId: string,
+  limit = 100,
+): Promise<readonly InvalidPlannedTitleSessionCandidate[]> {
+  const result = await sql<{
+    readonly session_id: string;
+    readonly competition_id: string;
+    readonly version: string;
+  }>`
+    select session.session_id, challenge.competition_id,
+      session.version::text as version
+    from scheduling.sessions as session
+    join scheduling.bookings as booking on booking.booking_id = session.booking_id
+    join scheduling.slots as slot on slot.slot_id = booking.slot_id
+    join competition.challenges as challenge on challenge.challenge_id = session.challenge_id
+    join competition.competitions as competitive
+      on competitive.competition_id = challenge.competition_id
+    where challenge.competition_id = ${competitionId}::uuid
+      and challenge.stake = 'TITLE' and challenge.state = 'BOOKED'
+      and session.purpose = 'OFFICIAL_CHALLENGE'
+      and session.state = 'SCHEDULED' and session.actual_start_at is null
+      and booking.state = 'CONFIRMED_PAIR' and slot.state = 'BOOKED'
+      and not (
+        competitive.champion_user_id is not null
+        and competitive.contender_user_id is not null
+        and competitive.champion_user_id in (session.pair_low_id, session.pair_high_id)
+        and competitive.contender_user_id in (session.pair_low_id, session.pair_high_id)
+      )
+    order by session.scheduled_start_at, session.session_id
+    limit ${limit}
+  `.execute(database);
+  return result.rows.map((row) => ({
+    sessionId: row.session_id,
+    competitionId: row.competition_id,
+    version: Number(row.version),
+  }));
+}
+
+export async function invalidateCompetitiveSession(
+  database: Kysely<Database>,
+  command: CommandEnvelope<InvalidateCompetitiveSessionPayload>,
+  ids: CompetitiveSessionInvalidationEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<SessionLifecycleProjection>> {
+  if (
+    command.actor.type !== 'SYSTEM'
+    || command.aggregateType !== 'Session'
+    || command.aggregateId !== command.payload.sessionId
+  ) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await readSessionRow(transaction, command.aggregateId, true);
+      if (
+        !row
+        || row.state !== 'SCHEDULED'
+        || row.actual_start_at !== null
+        || row.purpose !== 'OFFICIAL_CHALLENGE'
+        || row.booking_state !== 'CONFIRMED_PAIR'
+      ) {
+        throw new SchedulingConflictError('COMPETITIVE_SESSION_NOT_INVALIDATABLE');
+      }
+      const challenge = await officialChallengeForSession(transaction, row);
+      if (
+        !challenge
+        || challenge.state !== 'BOOKED'
+        || challenge.stake !== 'TITLE'
+        || Number(challenge.active_obligation_count) !== 2
+      ) {
+        throw new SchedulingConflictError('COMPETITIVE_SESSION_NOT_INVALIDATABLE');
+      }
+      if (!titleSessionRequiresCompetitiveInvalidation({
+        actualStartAt: null,
+        plannedStake: challenge.stake,
+        participantUserIds: [row.pair_low_id, row.pair_high_id],
+        championUserId: challenge.champion_user_id,
+        contenderUserId: challenge.contender_user_id,
+      })) {
+        throw new SchedulingConflictError('COMPETITIVE_CONTEXT_CURRENT');
+      }
+      const resourcesResult = await sql<CompetitiveSessionResourceRow>`
+        select booking.state as booking_state,
+          booking.version::text as booking_version,
+          slot.state as slot_state, slot.version::text as slot_version
+        from scheduling.bookings as booking
+        join scheduling.slots as slot on slot.slot_id = booking.slot_id
+        where booking.booking_id = ${row.booking_id}::uuid
+        for update of booking, slot
+      `.execute(transaction);
+      const resources = resourcesResult.rows[0];
+      if (!resources || resources.booking_state !== 'CONFIRMED_PAIR'
+        || resources.slot_state !== 'BOOKED') {
+        throw new SchedulingConflictError('COMPETITIVE_SESSION_NOT_INVALIDATABLE');
+      }
+
+      const retainable = row.scheduled_start_at > context.occurredAt;
+      const retention = retainable
+        ? await openBookedOfficialTrainingRetention(transaction, {
+            challengeId: challenge.challenge_id,
+            cause: 'COMPETITIVE_CONTEXT_INVALIDATED',
+            occurredAt: context.occurredAt,
+            ids: { retentionId: ids.retentionId },
+          })
+        : null;
+      const timestamp = context.occurredAt.toISOString();
+      await sql`
+        update competition.challenges
+        set state = 'CANCELLED_NO_FAULT', decided_at = ${timestamp}::timestamptz,
+          version = version + 1, updated_at = ${timestamp}::timestamptz
+        where challenge_id = ${challenge.challenge_id}::uuid
+          and state = 'BOOKED' and version = ${Number(challenge.version)}
+      `.execute(transaction);
+      await sql`
+        update competition.challenge_participant_obligations
+        set released_at = ${timestamp}::timestamptz,
+          release_reason = 'COMPETITIVE_CONTEXT_INVALIDATED'
+        where challenge_id = ${challenge.challenge_id}::uuid and released_at is null
+      `.execute(transaction);
+      if (retention) {
+        await sql`
+          update scheduling.sessions
+          set version = ${context.nextVersion}, updated_at = ${timestamp}::timestamptz
+          where session_id = ${row.session_id}::uuid and state = 'SCHEDULED'
+        `.execute(transaction);
+      } else {
+        await sql`
+          update scheduling.bookings
+          set state = 'CANCELLED', cancelled_at = ${timestamp}::timestamptz,
+            cancel_actor = null, cancel_reason = 'COMPETITIVE_CONTEXT_INVALIDATED',
+            version = version + 1, updated_at = ${timestamp}::timestamptz
+          where booking_id = ${row.booking_id}::uuid and state = 'CONFIRMED_PAIR'
+        `.execute(transaction);
+        await sql`
+          update scheduling.sessions
+          set state = 'CANCELLED', cancelled_at = ${timestamp}::timestamptz,
+            cancelled_by = null,
+            cancellation_reason_code = 'COMPETITIVE_CONTEXT_INVALIDATED',
+            version = ${context.nextVersion}, updated_at = ${timestamp}::timestamptz
+          where session_id = ${row.session_id}::uuid and state = 'SCHEDULED'
+        `.execute(transaction);
+        await sql`
+          update scheduling.slots
+          set state = 'CANCELLED', version = version + 1,
+            updated_at = ${timestamp}::timestamptz
+          where slot_id = ${row.slot_id}::uuid and state = 'BOOKED'
+        `.execute(transaction);
+      }
+
+      const updated = await readSessionRow(transaction, row.session_id);
+      if (!updated) throw new SchedulingConflictError('SESSION_NOT_READY');
+      const response = await sessionProjection(transaction, updated, row.pair_low_id);
+      const relatedEvents: RelatedDomainEventDraft[] = [{
+        eventId: ids.challengeEventId,
+        eventName: 'ChallengeCancelledNoFault',
+        schemaVersion: 1,
+        aggregateType: 'Challenge',
+        aggregateId: challenge.challenge_id,
+        aggregateVersion: Number(challenge.version) + 1,
+        transitionId: 'CH-26',
+        payload: {
+          challengeId: challenge.challenge_id,
+          competitionId: challenge.competition_id,
+          reason: 'COMPETITIVE_CONTEXT_INVALIDATED',
+          noForfeit: true,
+        },
+        metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+      }];
+      if (retention) {
+        relatedEvents.push({
+          eventId: ids.retentionEventId,
+          eventName: 'BookingTrainingRetentionRequested',
+          schemaVersion: 1,
+          aggregateType: 'BookingTrainingRetention',
+          aggregateId: retention.retentionId,
+          aggregateVersion: 1,
+          transitionId: 'B-26',
+          payload: {
+            retentionId: retention.retentionId,
+            bookingId: retention.bookingId,
+            sessionId: retention.sessionId,
+            sourceChallengeId: retention.challengeId,
+            cause: 'COMPETITIVE_CONTEXT_INVALIDATED',
+            deadlineAt: retention.deadlineAt,
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        }, {
+          eventId: ids.bookingEventId,
+          eventName: 'BookingOfficialReleasePending',
+          schemaVersion: 1,
+          aggregateType: 'Booking',
+          aggregateId: retention.bookingId,
+          aggregateVersion: retention.bookingVersion,
+          transitionId: 'B-26',
+          payload: {
+            bookingId: retention.bookingId,
+            retentionId: retention.retentionId,
+            sourceChallengeId: retention.challengeId,
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        });
+      } else {
+        relatedEvents.push({
+          eventId: ids.bookingEventId,
+          eventName: 'BookingCancelledNoFault',
+          schemaVersion: 1,
+          aggregateType: 'Booking',
+          aggregateId: row.booking_id,
+          aggregateVersion: Number(resources.booking_version) + 1,
+          transitionId: 'B-29',
+          payload: {
+            bookingId: row.booking_id,
+            reason: 'COMPETITIVE_CONTEXT_INVALIDATED',
+            noForfeit: true,
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        }, {
+          eventId: ids.slotEventId,
+          eventName: 'SlotBookingCancelled',
+          schemaVersion: 1,
+          aggregateType: 'Slot',
+          aggregateId: row.slot_id,
+          aggregateVersion: Number(resources.slot_version) + 1,
+          transitionId: 'SL-06',
+          payload: {
+            slotId: row.slot_id,
+            reasonCode: 'COMPETITIVE_CONTEXT_INVALIDATED',
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        });
+      }
+
+      const outbox: OutboxDraft[] = [{
+        messageId: ids.outboxMessageId,
+        topic: 'scheduling.session.competitive-context-invalidated.v1',
+        payload: {
+          sessionId: row.session_id,
+          bookingId: row.booking_id,
+          challengeId: challenge.challenge_id,
+          competitionId: challenge.competition_id,
+          physicalDisposition: retention ? 'RETENTION_PENDING' : 'CANCELLED',
+          noForfeit: true,
+        },
+      }, {
+        messageId: ids.challengeOutboxMessageId,
+        topic: 'competition.challenge.cancelled-no-fault.v1',
+        sourceEventId: ids.challengeEventId,
+        payload: {
+          challengeId: challenge.challenge_id,
+          competitionId: challenge.competition_id,
+          reason: 'COMPETITIVE_CONTEXT_INVALIDATED',
+          noForfeit: true,
+        },
+      }];
+      if (retention) {
+        outbox.push({
+          messageId: ids.retentionOutboxMessageId,
+          topic: 'scheduling.booking.training-retention-requested.v1',
+          sourceEventId: ids.retentionEventId,
+          payload: {
+            retentionId: retention.retentionId,
+            bookingId: retention.bookingId,
+            sessionId: retention.sessionId,
+            sourceChallengeId: retention.challengeId,
+            cause: 'COMPETITIVE_CONTEXT_INVALIDATED',
+            deadlineAt: retention.deadlineAt,
+          },
+        }, {
+          messageId: ids.retentionTimerOutboxMessageId,
+          topic: 'scheduling.booking.training-retention-timer.v1',
+          sourceEventId: ids.retentionEventId,
+          payload: {
+            retentionId: retention.retentionId,
+            timer: {
+              commandType: 'EXPIRE_BOOKING_TRAINING_RETENTION',
+              aggregateType: 'BookingTrainingRetention',
+              aggregateId: retention.retentionId,
+              expectedState: 'PENDING',
+              expectedVersion: 1,
+              deadlineAt: retention.deadlineAt,
+              policyVersion: SCHEDULING_POLICY_VERSION,
+              idempotencyKey: `booking-training-retention:${retention.retentionId}:expire:v1`,
+            },
+          },
+        }, {
+          messageId: ids.notificationOutboxMessageId,
+          topic: 'notification.in_app.v1',
+          sourceEventId: ids.retentionEventId,
+          payload: {
+            notifications: [...retention.athleteUserIds, retention.coachUserId]
+              .map((recipientUserId, index) => ({
+                notificationId: ids.notificationIds[index]!,
+                recipientUserId,
+                category: 'MANDATORY',
+                renderKey: 'booking.training-retention-required',
+                actionTarget: { type: 'SESSION', sessionId: retention.sessionId },
+                payload: {
+                  retentionId: retention.retentionId,
+                  cause: 'COMPETITIVE_CONTEXT_INVALIDATED',
+                },
+                deadlineAt: retention.deadlineAt,
+              })),
+          },
+        });
+      } else {
+        outbox.push({
+          messageId: ids.notificationOutboxMessageId,
+          topic: 'notification.in_app.v1',
+          sourceEventId: ids.eventId,
+          payload: {
+            notifications: [row.pair_low_id, row.pair_high_id, row.coach_user_id]
+              .map((recipientUserId, index) => ({
+                notificationId: ids.notificationIds[index]!,
+                recipientUserId,
+                category: 'MANDATORY',
+                renderKey: 'session.competitive-context-invalidated',
+                actionTarget: { type: 'SESSION', sessionId: row.session_id },
+                payload: { reason: 'COMPETITIVE_CONTEXT_INVALIDATED', noForfeit: true },
+                deadlineAt: null,
+              })),
+          },
+        });
+      }
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'CompetitiveSessionInvalidated',
+          schemaVersion: 1,
+          transitionId: 'S-03',
+          payload: {
+            sessionId: row.session_id,
+            bookingId: row.booking_id,
+            challengeId: challenge.challenge_id,
+            competitionId: challenge.competition_id,
+            physicalDisposition: retention ? 'RETENTION_PENDING' : 'CANCELLED',
+            noForfeit: true,
+          },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        relatedEvents,
+        audit: {
+          auditId: ids.auditId,
+          action: 'INVALIDATE_COMPETITIVE_SESSION_CONTEXT',
+          transitionId: 'S-03',
+          reasonCode: 'COMPETITIVE_CONTEXT_INVALIDATED',
+          beforeState: 'SCHEDULED_OFFICIAL',
+          afterState: retention ? 'TRAINING_RETENTION_PENDING' : 'CANCELLED',
+          metadata: {
+            bookingId: row.booking_id,
+            challengeId: challenge.challenge_id,
+            competitionId: challenge.competition_id,
+            noForfeit: true,
+          },
+        },
+        outbox,
+      };
+    },
+  });
+}
+
 export async function openSessionWindow(
   database: Kysely<Database>,
   command: CommandEnvelope<OpenSessionWindowPayload>,
@@ -1707,6 +2113,14 @@ export async function openSessionWindow(
           state: challenge.state,
           activeObligationCount: Number(challenge.active_obligation_count),
         });
+        if (!titleChallengeCompetitiveContextIsCurrent({
+          plannedStake: challenge.stake,
+          participantUserIds: [row.pair_low_id, row.pair_high_id],
+          championUserId: challenge.champion_user_id,
+          contenderUserId: challenge.contender_user_id,
+        })) {
+          throw new SchedulingConflictError('COMPETITIVE_CONTEXT_INVALID');
+        }
         const snapshotId = requiredCompetitiveSnapshotId(ids);
         const effectiveStake = effectiveChallengeStakeAtSessionWindow({
           plannedStake: challenge.stake,

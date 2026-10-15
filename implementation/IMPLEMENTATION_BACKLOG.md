@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 190/214 (`184/196 P0`).
+  Acceptance traceability is 191/214 (`185/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -440,6 +440,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Contender may decline without Result, Forfeit, status movement or Cooldown; role drift cannot
   silently reinterpret the saved offer as an Ordinary mandatory Challenge. Migration `0068` adds
   only the direct-intent mode needed to preserve that meaning.
+- M5 stale TITLE Session invalidation increment: complete. AC-072 makes holder-changing
+  Competition events recheck every not-started booked TITLE Session under the existing row and
+  aggregate locks. SYSTEM closes the Challenge and obligations no-fault, advances the Session so
+  its old start timer becomes stale, and opens exactly one B-26 decision. The physical Booking is
+  held temporarily, remains explicitly non-Training until both Athletes and Coach/host accept,
+  and B-29 cancels Booking/Session/Slot on decline or expiry. No Result, loss, status transition,
+  Cooldown or reschedule count is created. Migration `0069` adds the normalized retention cause.
 - M5 mandatory TITLE response-clock increment: complete. CH-07 publishes a separate +48h
   state/version-guarded reminder to the current Champion and expires only at the immutable +72h
   server deadline. The existing administrative Result engine records exactly one `FORFEIT`, swaps

@@ -53,7 +53,10 @@ export interface BookingTrainingRetentionProjection {
   readonly bookingId: string;
   readonly sessionId: string;
   readonly challengeId: string;
-  readonly cause: 'YOUTH_CONSENT_REVOKED' | 'AGE_TRANSITION';
+  readonly cause:
+    | 'YOUTH_CONSENT_REVOKED'
+    | 'AGE_TRANSITION'
+    | 'COMPETITIVE_CONTEXT_INVALIDATED';
   readonly state: TrainingRetentionState;
   readonly deadlineAt: string;
   readonly confirmations: readonly BookingTrainingRetentionConfirmationProjection[];

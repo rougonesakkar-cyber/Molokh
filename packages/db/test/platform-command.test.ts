@@ -56,6 +56,7 @@ import {
   decideBookingSoloContinuation,
   decideBookingTrainingRetention,
   invalidateActiveBookingOfficialConversion,
+  invalidateCompetitiveSession,
   changeDisplayName,
   changeHomeVenue,
   changeCommunityPairCooldown,
@@ -149,6 +150,7 @@ import {
   authorizeGuestCoach,
   expireGuestCoachGrant,
   listExpirableGuestCoachGrants,
+  listInvalidPlannedTitleSessions,
   inviteCoach,
   MigrationChecksumMismatchError,
   releaseOutboxFailure,
@@ -306,6 +308,7 @@ import {
   type ExpireBookingOfficialConversionPayload,
   type ExpireBookingSoloContinuationPayload,
   type InvalidateActiveBookingOfficialConversionPayload,
+  type InvalidateCompetitiveSessionPayload,
   type ExpireGroupPlanPayload,
   type ExpireBookingIntentPayload,
   type ExpireChallengeSchedulingPayload,
@@ -17703,6 +17706,187 @@ describePostgres('PostgreSQL critical command transaction', () => {
       readAgeDivisionTransitionTimerSnapshot(database, fixture.athleteA),
     ).resolves.toEqual({
       state: 'ADULT', version: 1, deadlineAt: fixture.boundary,
+    });
+  });
+
+  it('[AC-072] closes a stale pre-start TITLE context and offers explicit no-fault Training retention', async () => {
+    const fixture = await seedYouthOfficialAtAgeBoundary(126000, false);
+    await expect(
+      listInvalidPlannedTitleSessions(database, fixture.competition),
+    ).resolves.toEqual([]);
+    await sql`
+      update competition.competitions
+      set contender_user_id = ${fixture.athleteC}::uuid,
+        status_version = status_version + 1, version = version + 1,
+        updated_at = '2026-10-02T01:00:00.000Z'
+      where competition_id = ${fixture.competition}::uuid
+    `.execute(database);
+
+    await expect(
+      listInvalidPlannedTitleSessions(database, fixture.competition),
+    ).resolves.toEqual([{
+      sessionId: fixture.session,
+      competitionId: fixture.competition,
+      version: 1,
+    }]);
+
+    const effectIds = {
+      eventId: testId(126100), auditId: testId(126101),
+      outboxMessageId: testId(126102), challengeEventId: testId(126103),
+      challengeOutboxMessageId: testId(126104), bookingEventId: testId(126105),
+      slotEventId: testId(126106), retentionId: testId(126107),
+      retentionEventId: testId(126108), retentionOutboxMessageId: testId(126109),
+      retentionTimerOutboxMessageId: testId(126110),
+      notificationOutboxMessageId: testId(126111),
+      notificationIds: [testId(126112), testId(126113), testId(126114)] as const,
+    };
+    const command: CommandEnvelope<InvalidateCompetitiveSessionPayload> = {
+      commandId: testId(126090), commandType: 'INVALIDATE_COMPETITIVE_CONTEXT',
+      idempotencyKey: `session:${fixture.session}:invalidate-competitive-context:v1`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 1,
+      correlationId: testId(126091), causationId: testId(126092),
+      requestId: testId(126093), source: 'scheduler', payloadVersion: 1,
+      payload: { sessionId: fixture.session },
+    };
+    const invalidated = await invalidateCompetitiveSession(
+      database, command, effectIds, () => new Date('2026-10-02T01:00:00.000Z'),
+    );
+    const replay = await invalidateCompetitiveSession(
+      database, command, effectIds, () => new Date('2026-10-02T01:00:00.000Z'),
+    );
+    expect(invalidated).toMatchObject({
+      replayed: false,
+      response: {
+        sessionId: fixture.session,
+        state: 'SCHEDULED',
+        purpose: 'OFFICIAL_CHALLENGE',
+        challengeState: 'CANCELLED_NO_FAULT',
+        version: 2,
+        trainingRetention: {
+          retentionId: effectIds.retentionId,
+          cause: 'COMPETITIVE_CONTEXT_INVALIDATED',
+          state: 'PENDING',
+        },
+      },
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.eventId).toBe(invalidated.eventId);
+
+    const facts = await sql<{
+      readonly booking_state: string;
+      readonly session_state: string;
+      readonly slot_state: string;
+      readonly challenge_state: string;
+      readonly active_obligations: string;
+      readonly retention_count: string;
+      readonly result_count: string;
+      readonly cooldown_count: string;
+      readonly snapshot_count: string;
+      readonly reschedule_count: number;
+      readonly champion_user_id: string | null;
+      readonly contender_user_id: string | null;
+      readonly status_version: string;
+      readonly invalidation_events: string;
+    }>`
+      select booking.state as booking_state, session.state as session_state,
+        slot.state as slot_state, challenge.state as challenge_state,
+        challenge.user_reschedule_count as reschedule_count,
+        competitive.champion_user_id, competitive.contender_user_id,
+        competitive.status_version::text as status_version,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id
+            and obligation.released_at is null) as active_obligations,
+        (select count(*)::text from scheduling.booking_training_retentions retention
+          where retention.session_id = session.session_id
+            and retention.cause = 'COMPETITIVE_CONTEXT_INVALIDATED') as retention_count,
+        (select count(*)::text from competition.results result
+          where result.challenge_id = challenge.challenge_id) as result_count,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.competition_id = competitive.competition_id) as cooldown_count,
+        (select count(*)::text from scheduling.session_competitive_snapshots snapshot
+          where snapshot.session_id = session.session_id) as snapshot_count,
+        (select count(*)::text from platform.domain_events event
+          where event.aggregate_type = 'Session' and event.aggregate_id = session.session_id
+            and event.event_name = 'CompetitiveSessionInvalidated') as invalidation_events
+      from scheduling.sessions session
+      join scheduling.bookings booking on booking.booking_id = session.booking_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      join competition.challenges challenge on challenge.challenge_id = ${fixture.challenge}::uuid
+      join competition.competitions competitive
+        on competitive.competition_id = challenge.competition_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    expect(facts.rows[0]).toEqual({
+      booking_state: 'OFFICIAL_RELEASE_PENDING', session_state: 'SCHEDULED',
+      slot_state: 'BOOKED', challenge_state: 'CANCELLED_NO_FAULT',
+      active_obligations: '0', retention_count: '1', result_count: '0',
+      cooldown_count: '0', snapshot_count: '0', reschedule_count: 0,
+      champion_user_id: fixture.athleteB, contender_user_id: fixture.athleteC,
+      status_version: '3', invalidation_events: '1',
+    });
+    await expect(listInvalidPlannedTitleSessions(database, fixture.competition))
+      .resolves.toEqual([]);
+    await expect(openSessionWindow(
+      database,
+      {
+        commandId: testId(126120), commandType: 'OPEN_SESSION_WINDOW',
+        idempotencyKey: `session:${fixture.session}:open-session-window:v1`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Session', aggregateId: fixture.session, expectedVersion: 1,
+        correlationId: testId(126121), causationId: testId(126100),
+        requestId: testId(126122), source: 'scheduler', payloadVersion: 1,
+        payload: { sessionId: fixture.session },
+      } satisfies CommandEnvelope<OpenSessionWindowPayload>,
+      { eventId: testId(126123), auditId: testId(126124),
+        outboxMessageId: testId(126125), competitiveSnapshotId: testId(126126) },
+      () => new Date(fixture.scheduledStart),
+    )).rejects.toBeInstanceOf(VersionConflictError);
+
+    const declined = await decideBookingTrainingRetention(
+      database,
+      {
+        commandId: testId(126130), commandType: 'DECIDE_BOOKING_TRAINING_RETENTION',
+        idempotencyKey: `training-retention:${effectIds.retentionId}:decline:v1`,
+        actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'BookingTrainingRetention', aggregateId: effectIds.retentionId,
+        expectedVersion: 1, correlationId: testId(126131), causationId: testId(126100),
+        requestId: testId(126132), source: 'api', payloadVersion: 1,
+        payload: { retentionId: effectIds.retentionId, decision: 'DECLINE' },
+      } satisfies CommandEnvelope<DecideBookingTrainingRetentionPayload>,
+      {
+        eventId: testId(126133), auditId: testId(126134),
+        outboxMessageId: testId(126135), confirmationId: testId(126136),
+        bookingEventId: testId(126137), sessionEventId: testId(126138),
+        slotEventId: testId(126139), notificationOutboxMessageId: testId(126140),
+        notificationIds: [testId(126141), testId(126142), testId(126143)],
+      },
+      () => new Date('2026-10-02T01:10:00.000Z'),
+    );
+    expect(declined.response).toMatchObject({
+      state: 'DECLINED', cause: 'COMPETITIVE_CONTEXT_INVALIDATED', version: 2,
+    });
+    const cancelled = await sql<{
+      readonly booking_state: string;
+      readonly session_state: string;
+      readonly slot_state: string;
+      readonly result_count: string;
+      readonly cooldown_count: string;
+    }>`
+      select booking.state as booking_state, session.state as session_state,
+        slot.state as slot_state,
+        (select count(*)::text from competition.results result
+          where result.challenge_id = ${fixture.challenge}::uuid) as result_count,
+        (select count(*)::text from competition.pair_cooldowns cooldown
+          where cooldown.competition_id = ${fixture.competition}::uuid) as cooldown_count
+      from scheduling.sessions session
+      join scheduling.bookings booking on booking.booking_id = session.booking_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    expect(cancelled.rows[0]).toEqual({
+      booking_state: 'CANCELLED', session_state: 'CANCELLED', slot_state: 'CANCELLED',
+      result_count: '0', cooldown_count: '0',
     });
   });
 

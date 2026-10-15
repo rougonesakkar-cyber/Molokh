@@ -11,6 +11,7 @@ import {
 import {
   activateBookingOfficialConversionFromQueue,
   invalidateActiveBookingOfficialConversion,
+  invalidateCompetitiveSession,
   invalidateBookingOfficialConversionFromQueue,
   activateStatusQueueHead,
   claimInboxEvent,
@@ -67,6 +68,7 @@ import {
   readGroupPlanTimerSnapshot,
   readGroupPlanOfficialConversionTimerSnapshot,
   listExpirableGuestCoachGrants,
+  listInvalidPlannedTitleSessions,
   readLikeTimerSnapshot,
   readMatchTimerSnapshot,
   readMembershipTimerSnapshot,
@@ -92,6 +94,7 @@ import {
   type ExpireBookingIntentPayload,
   type ExpireBookingOfficialConversionPayload,
   type InvalidateActiveBookingOfficialConversionPayload,
+  type InvalidateCompetitiveSessionPayload,
   type ExpireBookingSoloContinuationPayload,
   type ExpireBookingTrainingRetentionPayload,
   type ExpireAccountExportPayload,
@@ -146,6 +149,9 @@ import {
   platformIncidentIdFromResolvedOutbox,
   reconcilePlatformIncidentEffects,
 } from './platform-incident-reconciliation.js';
+import {
+  competitionIdFromCompetitiveSessionEvent,
+} from './competitive-context-reconciliation.js';
 
 const production = process.env.NODE_ENV === 'production';
 const connectionString =
@@ -211,6 +217,56 @@ const statusQueueActivationTopics = new Set([
   'competition.integrity-case.decided.v1',
   'scheduling.booking.official-conversion-closed.v1',
 ]);
+
+const reconcileInvalidCompetitiveSessions = async (
+  competitionId: string,
+  causationId: string,
+): Promise<void> => {
+  const candidates = await listInvalidPlannedTitleSessions(database, competitionId, 100);
+  for (const candidate of candidates) {
+    const command: CommandEnvelope<InvalidateCompetitiveSessionPayload> = {
+      commandId: randomUUID(),
+      commandType: 'INVALIDATE_COMPETITIVE_CONTEXT',
+      idempotencyKey: `session:${candidate.sessionId}:invalidate-competitive-context:v${candidate.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Session',
+      aggregateId: candidate.sessionId,
+      expectedVersion: candidate.version,
+      correlationId: randomUUID(),
+      causationId,
+      requestId: randomUUID(),
+      source: 'scheduler',
+      payloadVersion: 1,
+      payload: { sessionId: candidate.sessionId },
+    };
+    try {
+      await invalidateCompetitiveSession(database, command, {
+        eventId: randomUUID(),
+        auditId: randomUUID(),
+        outboxMessageId: randomUUID(),
+        challengeEventId: randomUUID(),
+        challengeOutboxMessageId: randomUUID(),
+        bookingEventId: randomUUID(),
+        slotEventId: randomUUID(),
+        retentionId: randomUUID(),
+        retentionEventId: randomUUID(),
+        retentionOutboxMessageId: randomUUID(),
+        retentionTimerOutboxMessageId: randomUUID(),
+        notificationOutboxMessageId: randomUUID(),
+        notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+      });
+    } catch (error) {
+      if (error instanceof SchedulingConflictError || error instanceof VersionConflictError) {
+        logger.info(
+          { competitionId, sessionId: candidate.sessionId },
+          'stale competitive Session invalidation ignored',
+        );
+        continue;
+      }
+      throw error;
+    }
+  }
+};
 
 const statusQueueHolderChangeTopics = new Set([
   'competition.result.finalized.v1',
@@ -1352,6 +1408,13 @@ const taskList = createTaskList({
     const requestedExportId = accountExportIdFromRequestedOutbox(message.topic, message.payload);
     if (requestedExportId) {
       await prepareRequestedAccountExport(requestedExportId, message.eventId);
+    }
+    const competitiveCompetitionId = competitionIdFromCompetitiveSessionEvent(
+      message.topic,
+      message.payload,
+    );
+    if (competitiveCompetitionId) {
+      await reconcileInvalidCompetitiveSessions(competitiveCompetitionId, message.eventId);
     }
     const competitionId = competitionIdFromOutbox(message.topic, message.payload);
     if (competitionId) {

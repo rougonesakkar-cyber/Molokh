@@ -1,4 +1,7 @@
-import type { ChallengeContract } from '@molokh/contracts';
+import type {
+  BookingTrainingRetentionContract,
+  ChallengeContract,
+} from '@molokh/contracts';
 
 export function challengeStakeLabel(stake: ChallengeContract['stake']): string {
   if (stake === 'NONE') return 'Открытый поединок · титул не разыгрывается';
@@ -42,5 +45,25 @@ export function statusQueueActionCopy(input: {
   return {
     title: 'Встать в очередь',
     detail: 'Вызов текущему Претенденту активируется строго по FIFO, когда статусный слот освободится.',
+  };
+}
+
+export function trainingRetentionActionCopy(
+  cause: BookingTrainingRetentionContract['cause'],
+): {
+  readonly title: string;
+  readonly detail: string;
+  readonly confirmLabel: string;
+  readonly declineLabel: string;
+} {
+  return {
+    title: cause === 'COMPETITIVE_CONTEXT_INVALIDATED'
+      ? 'Титульный контекст изменился'
+      : 'Сохранить время как обычную тренировку?',
+    detail: cause === 'COMPETITIVE_CONTEXT_INVALIDATED'
+      ? 'Official Challenge закрыт без поражения: участники больше не являются текущими Champion и Contender. Слот станет Training только после согласия обоих спортсменов и Coach/зала.'
+      : 'Official Challenge закрыт без поражения. Слот станет Training только после согласия обоих спортсменов и Coach/зала.',
+    confirmLabel: 'Сохранить как тренировку',
+    declineLabel: 'Отменить без санкций',
   };
 }

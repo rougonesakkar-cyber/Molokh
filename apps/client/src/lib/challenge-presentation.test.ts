@@ -4,6 +4,7 @@ import {
   challengeStakeLabel,
   genesisSchedulingExplanation,
   statusQueueActionCopy,
+  trainingRetentionActionCopy,
 } from './challenge-presentation';
 
 describe('Challenge presentation', () => {
@@ -32,5 +33,13 @@ describe('Challenge presentation', () => {
     expect(copy.title).toBe('Предложить титульный бой');
     expect(copy.detail).toContain('FIFO-очередь без привилегии');
     expect(copy.detail).toContain('без поражения и Forfeit');
+  });
+
+  it('[AC-072] explains the explicit no-fault Booking choice after TITLE invalidation', () => {
+    const copy = trainingRetentionActionCopy('COMPETITIVE_CONTEXT_INVALIDATED');
+    expect(copy.title).toContain('Титульный контекст');
+    expect(copy.detail).toContain('только после согласия');
+    expect(copy.confirmLabel).toBe('Сохранить как тренировку');
+    expect(copy.declineLabel).toBe('Отменить без санкций');
   });
 });
