@@ -4,6 +4,7 @@ import {
   assertCanEditMessage,
   assertCanReportMessage,
   assertChatAcceptsPayload,
+  normalizeChatReportReasonCode,
   normalizePersonalMessageText,
   normalizeSocialPair,
   type ChatMessagePayloadType,
@@ -100,6 +101,8 @@ export interface ReportedMessageProjection {
   readonly messageId: string;
   readonly reportId: string;
   readonly state: 'PENDING_CENTRAL';
+  readonly caseId: string;
+  readonly caseState: 'SUBMITTED';
   readonly reportedAt: string;
   readonly version: number;
 }
@@ -128,6 +131,26 @@ export interface HideChatMessageEffectIds {
 
 export interface ReportChatMessageEffectIds extends HideChatMessageEffectIds {
   readonly reportId: string;
+  readonly caseId: string;
+  readonly caseEventId: string;
+  readonly caseOutboxMessageId: string;
+  readonly notificationId: string;
+  readonly notificationOutboxMessageId: string;
+}
+
+export interface CentralModerationCaseProjection {
+  readonly caseId: string;
+  readonly caseType: 'REPORT';
+  readonly state: 'SUBMITTED' | 'TRIAGED' | 'UNDER_REVIEW' | 'DECIDED' | 'CLOSED';
+  readonly reportId: string;
+  readonly chatId: string;
+  readonly messageId: string;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly reasonCode: string;
+  readonly evidenceSnapshot: Readonly<Record<string, unknown>>;
+  readonly submittedAt: string;
+  readonly version: number;
 }
 
 interface ChatRow {
@@ -718,10 +741,7 @@ export async function reportChatMessage(
   ) {
     throw new ChatActionDeniedError('CHAT_PARTICIPANT_REQUIRED');
   }
-  const reasonCode = command.payload.reasonCode.trim();
-  if (!reasonCode || reasonCode.length > 80) {
-    throw new ChatActionDeniedError('REPORT_REASON_INVALID');
-  }
+  const reasonCode = normalizeChatReportReasonCode(command.payload.reasonCode);
   return executeCriticalCommand<ReportChatMessagePayload, ReportedMessageProjection>(database, {
     command: { ...command, payload: { ...command.payload, reasonCode } },
     ...(now ? { now } : {}),
@@ -770,6 +790,30 @@ export async function reportChatMessage(
           ${context.occurredAt.toISOString()}::timestamptz
         )
       `.execute(transaction);
+      const centralRecipient = await sql<{ readonly user_id: string }>`
+        select user_id
+        from community.role_grants
+        where role = 'CENTRAL_ADMIN' and scope_type = 'GLOBAL' and scope_id is null
+          and state = 'ACTIVE' and (expires_at is null or expires_at > clock_timestamp())
+          and user_id <> ${command.actor.id}::uuid
+        order by authorized_at, user_id
+        limit 1
+      `.execute(transaction);
+      const centralRecipientUserId = centralRecipient.rows[0]?.user_id;
+      if (!centralRecipientUserId) {
+        throw new ChatActionDeniedError('MODERATION_CENTRAL_UNAVAILABLE');
+      }
+      await sql`
+        insert into governance.moderation_cases (
+          case_id, case_type, state, report_id, chat_id, message_id,
+          reporter_user_id, subject_user_id, reason_code, submitted_at, version
+        ) values (
+          ${ids.caseId}::uuid, 'REPORT', 'SUBMITTED', ${ids.reportId}::uuid,
+          ${row.chat_id}::uuid, ${row.message_id}::uuid, ${command.actor.id}::uuid,
+          ${row.sender_user_id}::uuid, ${reasonCode},
+          ${context.occurredAt.toISOString()}::timestamptz, 1
+        )
+      `.execute(transaction);
       await sql`
         update social.chat_messages
         set reported_at = ${context.occurredAt.toISOString()}::timestamptz,
@@ -784,6 +828,8 @@ export async function reportChatMessage(
           messageId: row.message_id,
           reportId: ids.reportId,
           state: 'PENDING_CENTRAL',
+          caseId: ids.caseId,
+          caseState: 'SUBMITTED',
           reportedAt: context.occurredAt.toISOString(),
           version: context.nextVersion,
         },
@@ -795,6 +841,25 @@ export async function reportChatMessage(
           payload: { messageId: row.message_id, chatId: row.chat_id, reportId: ids.reportId },
           metadata: { policyVersion: CHAT_POLICY_VERSION },
         },
+        relatedEvents: [{
+          eventId: ids.caseEventId,
+          eventName: 'ModerationCaseSubmitted',
+          schemaVersion: 1,
+          transitionId: 'MC-01',
+          aggregateType: 'ModerationCase',
+          aggregateId: ids.caseId,
+          aggregateVersion: 1,
+          payload: {
+            caseId: ids.caseId,
+            caseType: 'REPORT',
+            state: 'SUBMITTED',
+            reportId: ids.reportId,
+            chatId: row.chat_id,
+            messageId: row.message_id,
+            reasonCode,
+          },
+          metadata: { policyVersion: CHAT_POLICY_VERSION },
+        }],
         audit: {
           auditId: ids.auditId,
           action: 'REPORT_CHAT_MESSAGE',
@@ -802,7 +867,15 @@ export async function reportChatMessage(
           reasonCode,
           beforeState: 'ACTIVE',
           afterState: 'ACTIVE_REPORTED',
-          metadata: { messageId: row.message_id, chatId: row.chat_id, reportId: ids.reportId },
+          metadata: {
+            messageId: row.message_id,
+            chatId: row.chat_id,
+            reportId: ids.reportId,
+            caseId: ids.caseId,
+            reporterUserId: command.actor.id,
+            subjectUserId: row.sender_user_id,
+            evidenceSnapshot,
+          },
         },
         outbox: [
           {
@@ -810,8 +883,91 @@ export async function reportChatMessage(
             topic: 'moderation.chat-message.reported.v1',
             payload: { messageId: row.message_id, chatId: row.chat_id, reportId: ids.reportId },
           },
+          {
+            messageId: ids.caseOutboxMessageId,
+            topic: 'governance.moderation-case.submitted.v1',
+            sourceEventId: ids.caseEventId,
+            payload: {
+              caseId: ids.caseId,
+              caseType: 'REPORT',
+              state: 'SUBMITTED',
+              reportId: ids.reportId,
+              chatId: row.chat_id,
+              messageId: row.message_id,
+              reasonCode,
+            },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            sourceEventId: ids.caseEventId,
+            payload: {
+              notifications: [{
+                notificationId: ids.notificationId,
+                recipientUserId: centralRecipientUserId,
+                category: 'SERVICE',
+                renderKey: 'moderation.report-submitted',
+                actionTarget: { type: 'MODERATION_CASE', caseId: ids.caseId },
+                payload: { caseId: ids.caseId, caseType: 'REPORT', state: 'SUBMITTED' },
+                deadlineAt: null,
+              }],
+            },
+          },
         ],
       };
     },
   });
+}
+
+export async function listModerationCasesForCentral(
+  database: Kysely<Database>,
+  centralUserId: string,
+): Promise<CentralModerationCaseProjection[]> {
+  const grant = await sql<{ readonly allowed: boolean }>`select exists (
+    select 1 from community.role_grants
+    where user_id = ${centralUserId}::uuid and role = 'CENTRAL_ADMIN'
+      and scope_type = 'GLOBAL' and scope_id is null and state = 'ACTIVE'
+      and (expires_at is null or expires_at > clock_timestamp())
+  ) as allowed`.execute(database);
+  if (grant.rows[0]?.allowed !== true) {
+    throw new ChatActionDeniedError('MODERATION_CENTRAL_REQUIRED');
+  }
+  const result = await sql<{
+    readonly case_id: string;
+    readonly case_type: 'REPORT';
+    readonly state: CentralModerationCaseProjection['state'];
+    readonly report_id: string;
+    readonly chat_id: string;
+    readonly message_id: string;
+    readonly reporter_user_id: string;
+    readonly subject_user_id: string;
+    readonly reason_code: string;
+    readonly evidence_snapshot: Readonly<Record<string, unknown>>;
+    readonly submitted_at: Date;
+    readonly version: string;
+  }>`
+    select moderation_case.case_id, moderation_case.case_type, moderation_case.state,
+      moderation_case.report_id, moderation_case.chat_id, moderation_case.message_id,
+      moderation_case.reporter_user_id, moderation_case.subject_user_id,
+      moderation_case.reason_code, report.evidence_snapshot,
+      moderation_case.submitted_at, moderation_case.version::text
+    from governance.moderation_cases moderation_case
+    join social.chat_message_reports report on report.report_id = moderation_case.report_id
+    where moderation_case.state in ('SUBMITTED', 'TRIAGED', 'UNDER_REVIEW')
+    order by moderation_case.submitted_at, moderation_case.case_id
+  `.execute(database);
+  return result.rows.map((row) => ({
+    caseId: row.case_id,
+    caseType: row.case_type,
+    state: row.state,
+    reportId: row.report_id,
+    chatId: row.chat_id,
+    messageId: row.message_id,
+    reporterUserId: row.reporter_user_id,
+    subjectUserId: row.subject_user_id,
+    reasonCode: row.reason_code,
+    evidenceSnapshot: row.evidence_snapshot,
+    submittedAt: row.submitted_at.toISOString(),
+    version: Number(row.version),
+  }));
 }

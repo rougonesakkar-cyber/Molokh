@@ -30,6 +30,7 @@ import type {
   ChangePrimaryAdminPayload,
   ChatMessagePage,
   ChatMessageProjection,
+  CentralModerationCaseProjection,
   DiscoveryActionProjection,
   CreateLikePayload,
   StartVerificationPayload,
@@ -1163,9 +1164,13 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/blocks');
   });
 
-  it('[AC-193][AC-194] exposes participant-only Chat message commands without parsing action text', async () => {
+  it('[AC-123][AC-193][AC-194] exposes neutral Chat reporting and a protected Central queue', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000000501';
     const messageId = '0199a1b2-1234-7000-8000-000000000502';
+    const reportId = '0199a1b2-1234-7000-8000-000000000506';
+    const caseId = '0199a1b2-1234-7000-8000-000000000508';
+    const centralUserId = '0199a1b2-1234-7000-8000-000000000509';
+    const centralToken = 'molokh-central-api-test-token';
     const message: ChatMessageProjection = {
       messageId,
       chatId,
@@ -1234,8 +1239,10 @@ describe('runtime contract', () => {
       response: {
         action: 'REPORTED',
         messageId,
-        reportId: '0199a1b2-1234-7000-8000-000000000506',
+        reportId,
         state: 'PENDING_CENTRAL',
+        caseId,
+        caseState: 'SUBMITTED',
         reportedAt: '2026-09-07T10:06:00.000Z',
         version: 2,
       },
@@ -1243,14 +1250,31 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     }));
+    const moderationCase: CentralModerationCaseProjection = {
+      caseId,
+      caseType: 'REPORT',
+      state: 'SUBMITTED',
+      reportId,
+      chatId,
+      messageId,
+      reporterUserId: userId,
+      subjectUserId: '0199a1b2-1234-7000-8000-000000000510',
+      reasonCode: 'ABUSE',
+      evidenceSnapshot: { revisions: [{ revisionNo: 1 }] },
+      submittedAt: '2026-09-07T10:06:00.000Z',
+      version: 1,
+    };
+    const readModerationCases = vi.fn(async () => [moderationCase]);
     const app = await buildApp({
       chat: {
         auth: new StaticBearerAuthAdapter(token, userId),
+        centralAuth: new StaticBearerAuthAdapter(centralToken, centralUserId),
         readMessages,
         sendMessage,
         editMessage,
         hideMessage,
         reportMessage,
+        readModerationCases,
       },
     });
     apps.push(app);
@@ -1320,13 +1344,33 @@ describe('runtime contract', () => {
       payload: { reasonCode: 'ABUSE' },
     });
     expect(reported.statusCode).toBe(201);
-    expect(reported.json()).toMatchObject({ data: { action: 'REPORTED' } });
+    expect(reported.json()).toMatchObject({
+      data: { action: 'REPORTED', state: 'PENDING_CENTRAL', caseId, caseState: 'SUBMITTED' },
+    });
+
+    const protectedQueue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/moderation-cases',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(protectedQueue.statusCode).toBe(401);
+    const centralQueue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/moderation-cases',
+      headers: { authorization: `Bearer ${centralToken}` },
+    });
+    expect(centralQueue.statusCode).toBe(200);
+    expect(centralQueue.json()).toMatchObject({
+      data: [{ caseId, reporterUserId: userId, evidenceSnapshot: moderationCase.evidenceSnapshot }],
+    });
+    expect(readModerationCases).toHaveBeenCalledWith(centralUserId);
 
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/messages');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/visibility');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/reports');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/moderation-cases');
   });
 
   it('runs the no-document Athlete-to-Central verification workflow', async () => {

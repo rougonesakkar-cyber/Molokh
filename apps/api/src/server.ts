@@ -45,6 +45,7 @@ import {
   listTechnicalCorrectionsForViewer,
   listAppealsForCentral,
   listPendingVerifications,
+  listModerationCasesForCentral,
   probeDatabase,
   publishGroupOffering,
   publishSlot,
@@ -1339,12 +1340,15 @@ const app = await buildApp({
   releaseSha: runtimeConfig.releaseSha,
   chat: {
     auth: localAuth,
+    centralAuth: localCentralAuth,
     readMessages: (chatId, userId, limit, cursor) =>
       readChatMessages(database, chatId, userId, limit, cursor),
     sendMessage: (command, ids) => sendChatMessage(database, command, ids),
     editMessage: (command, ids) => editChatMessage(database, command, ids),
     hideMessage: (command, ids) => hideChatMessageForUser(database, command, ids),
     reportMessage: (command, ids) => reportChatMessage(database, command, ids),
+    readModerationCases: (centralUserId) =>
+      listModerationCasesForCentral(database, centralUserId),
   },
   challenge: {
     auth: localAuth,

@@ -5,6 +5,7 @@ import {
   assertCanEditMessage,
   assertCanReportMessage,
   assertChatAcceptsPayload,
+  normalizeChatReportReasonCode,
   normalizePersonalMessageText,
   personalMessageEditDeadline,
 } from '../src/index.js';
@@ -50,10 +51,17 @@ describe('chat policy', () => {
     })).toThrowError(expect.objectContaining({ code: 'SERVICE_MESSAGE_IMMUTABLE' }));
   });
 
-  it('[AC-194] freezes reported content and keeps reporting separate from self-delete', () => {
+  it('[AC-123][AC-194] permits ordinary participant review without a safety-cancel consequence', () => {
     expect(() => assertCanReportMessage('b', 'a', null)).not.toThrow();
     expect(() => assertCanReportMessage('a', 'a', null)).toThrowError(
       expect.objectContaining({ code: 'REPORT_SELF_NOT_ALLOWED' }),
+    );
+    expect(() => assertCanReportMessage('b', null, null)).toThrowError(
+      expect.objectContaining({ code: 'REPORT_SUBJECT_REQUIRED' }),
+    );
+    expect(normalizeChatReportReasonCode('  inappropriate_content ')).toBe('INAPPROPRIATE_CONTENT');
+    expect(() => normalizeChatReportReasonCode('private free text')).toThrowError(
+      expect.objectContaining({ code: 'REPORT_REASON_INVALID' }),
     );
     expect(() => assertCanEditMessage({
       actorUserId: 'a',

@@ -30,6 +30,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
 import {
+  CHAT_REPORT_CONFIRMATION_COPY,
+  CHAT_REPORT_SUBMITTED_LABEL,
+} from '../lib/chat-report-presentation';
+import {
   challengeStakeLabel,
   genesisSchedulingExplanation,
 } from '../lib/challenge-presentation';
@@ -1535,7 +1539,7 @@ export default function ChatScreen() {
                 <Text style={styles.messageMeta}>
                   {formatDateTime(message.createdAt)}
                   {message.edited ? ' · изменено' : ''}
-                  {message.reported ? ' · передано Central' : ''}
+                  {message.reported ? ` · ${CHAT_REPORT_SUBMITTED_LABEL}` : ''}
                 </Text>
                 <View style={styles.messageActions}>
                   {chatIsOpen && own && message.content.kind === 'PERSONAL_TEXT' && !message.reported ? (
@@ -1566,7 +1570,7 @@ export default function ChatScreen() {
                     <Text style={styles.confirmationText}>
                       {pendingMessageAction.action === 'hide'
                         ? 'Удалить сообщение только из вашей истории? Отменить это действие нельзя.'
-                        : 'Передать сообщение команде Central для рассмотрения?'}
+                        : CHAT_REPORT_CONFIRMATION_COPY}
                     </Text>
                     <View style={styles.confirmationActions}>
                       <Pressable

@@ -810,6 +810,8 @@ const ReportedMessageProjectionSchema = Type.Object(
     messageId: Type.String({ format: 'uuid' }),
     reportId: Type.String({ format: 'uuid' }),
     state: Type.Literal('PENDING_CENTRAL'),
+    caseId: Type.String({ format: 'uuid' }),
+    caseState: Type.Literal('SUBMITTED'),
     reportedAt: Type.String({ format: 'date-time' }),
     version: Type.Integer({ minimum: 2 }),
   },
@@ -830,6 +832,45 @@ export const ChatMessageActionResponseSchema = Type.Object(
   },
   { $id: 'ChatMessageActionResponse', additionalProperties: false },
 );
+
+export const CentralModerationCaseProjectionSchema = Type.Object(
+  {
+    caseId: Type.String({ format: 'uuid' }),
+    caseType: Type.Literal('REPORT'),
+    state: Type.Union([
+      Type.Literal('SUBMITTED'),
+      Type.Literal('TRIAGED'),
+      Type.Literal('UNDER_REVIEW'),
+      Type.Literal('DECIDED'),
+      Type.Literal('CLOSED'),
+    ]),
+    reportId: Type.String({ format: 'uuid' }),
+    chatId: Type.String({ format: 'uuid' }),
+    messageId: Type.String({ format: 'uuid' }),
+    reporterUserId: Type.String({ format: 'uuid' }),
+    subjectUserId: Type.String({ format: 'uuid' }),
+    reasonCode: Type.String({ minLength: 1, maxLength: 80 }),
+    evidenceSnapshot: Type.Record(Type.String(), Type.Unknown()),
+    submittedAt: Type.String({ format: 'date-time' }),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'CentralModerationCaseProjection', additionalProperties: false },
+);
+
+export type CentralModerationCaseContract = Static<typeof CentralModerationCaseProjectionSchema>;
+
+export const CentralModerationCaseListResponseSchema = Type.Object(
+  {
+    data: Type.Array(CentralModerationCaseProjectionSchema),
+    meta: Type.Object(
+      { requestId: Type.String({ format: 'uuid' }) },
+      { additionalProperties: false },
+    ),
+  },
+  { $id: 'CentralModerationCaseListResponse', additionalProperties: false },
+);
+
+export type CentralModerationCaseListResponse = Static<typeof CentralModerationCaseListResponseSchema>;
 
 export type ChatMessageActionResponse = Static<typeof ChatMessageActionResponseSchema>;
 

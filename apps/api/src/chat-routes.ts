@@ -3,12 +3,14 @@ import {
   ChatMessageActionResponseSchema,
   ChatMessageCommandResponseSchema,
   ChatMessagesResponseSchema,
+  CentralModerationCaseListResponseSchema,
   EditChatMessageBodySchema,
   ReportChatMessageBodySchema,
   SendChatMessageBodySchema,
   type ChatMessageActionResponse,
   type ChatMessageCommandResponse,
   type ChatMessagesResponse,
+  type CentralModerationCaseListResponse,
   type EditChatMessageBody,
   type ReportChatMessageBody,
   type SendChatMessageBody,
@@ -17,6 +19,7 @@ import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core'
 import type {
   ChatMessagePage,
   ChatMessageProjection,
+  CentralModerationCaseProjection,
   EditChatMessageEffectIds,
   EditChatMessagePayload,
   ExecutedCommand,
@@ -52,6 +55,7 @@ interface MessageParams {
 
 export interface ChatRouteDependencies {
   readonly auth: AuthAdapter;
+  readonly centralAuth: AuthAdapter;
   readonly readMessages: (
     chatId: string,
     viewerUserId: string,
@@ -74,6 +78,9 @@ export interface ChatRouteDependencies {
     command: CommandEnvelope<ReportChatMessagePayload>,
     ids: ReportChatMessageEffectIds,
   ) => Promise<ExecutedCommand<ReportedMessageProjection>>;
+  readonly readModerationCases: (
+    centralUserId: string,
+  ) => Promise<readonly CentralModerationCaseProjection[]>;
 }
 
 function unauthorized(request: FastifyRequest) {
@@ -151,6 +158,33 @@ export async function registerChatRoutes(
   app: FastifyInstance,
   dependencies: ChatRouteDependencies,
 ): Promise<void> {
+  app.get<{ Headers: ChatHeaders }>(
+    '/api/v1/central/moderation-cases',
+    {
+      schema: {
+        operationId: 'listCentralModerationCases',
+        response: {
+          200: CentralModerationCaseListResponseSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<CentralModerationCaseListResponse | undefined> => {
+      const authenticated = await dependencies.centralAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      return {
+        data: [...await dependencies.readModerationCases(authenticated.userId)],
+        meta: { requestId: requestContext(request).requestId },
+      } as CentralModerationCaseListResponse;
+    },
+  );
+
   app.get<{
     Headers: ChatHeaders;
     Params: ChatParams;
@@ -416,6 +450,7 @@ export async function registerChatRoutes(
       const context = requestContext(request);
       const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
       const reportId = idempotentResourceId('ChatMessageReport', authenticated.userId, idempotencyKey);
+      const caseId = idempotentResourceId('ModerationCase', authenticated.userId, idempotencyKey);
       const command: CommandEnvelope<ReportChatMessagePayload> = {
         commandId: newUuidV7(),
         commandType: 'REPORT_MESSAGE',
@@ -434,6 +469,11 @@ export async function registerChatRoutes(
       const executed = await dependencies.reportMessage(command, {
         ...basicEffectIds(),
         reportId,
+        caseId,
+        caseEventId: newUuidV7(),
+        caseOutboxMessageId: newUuidV7(),
+        notificationId: newUuidV7(),
+        notificationOutboxMessageId: newUuidV7(),
       });
       await reply.status(201).send(actionResponse(executed, context.requestId));
     },

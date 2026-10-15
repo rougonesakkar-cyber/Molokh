@@ -185,7 +185,9 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
         ? 404
         : error.code === 'CHAT_PARTICIPANT_REQUIRED' ||
             error.code === 'MESSAGE_SENDER_REQUIRED' ||
-            error.code === 'REPORT_SELF_NOT_ALLOWED'
+            error.code === 'REPORT_SELF_NOT_ALLOWED' ||
+            error.code === 'REPORT_SUBJECT_REQUIRED' ||
+            error.code === 'MODERATION_CENTRAL_REQUIRED'
           ? 403
           : error.code === 'MESSAGE_CONTENT_INVALID' || error.code === 'REPORT_REASON_INVALID'
             ? 422

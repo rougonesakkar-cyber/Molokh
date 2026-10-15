@@ -103,6 +103,7 @@ import {
   listPendingVerifications,
   listPendingCoachInvites,
   listPendingMemberships,
+  listModerationCasesForCentral,
   listAppealsForCentral,
   projectNotificationBatch,
   projectPendingMandatoryChallengeReminder,
@@ -2321,6 +2322,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         scheduling.bookings,
         scheduling.group_offerings,
         scheduling.slots,
+        governance.moderation_cases,
         social.chat_message_reports,
         social.chat_message_user_visibility,
         social.chat_message_revisions,
@@ -5133,6 +5135,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
         auditId: testId(934),
         outboxMessageId: testId(935),
         reportId: testId(936),
+        caseId: testId(987),
+        caseEventId: testId(988),
+        caseOutboxMessageId: testId(989),
+        notificationId: testId(990),
+        notificationOutboxMessageId: testId(991),
       },
       () => new Date('2026-09-07T10:12:00.000Z'),
     );
@@ -5315,6 +5322,218 @@ describePostgres('PostgreSQL critical command transaction', () => {
         expect.objectContaining({ messageId: reactivationMessageId }),
       ]),
     });
+  });
+
+  it('[AC-123] creates one protected ModerationCase while unrelated sport state remains active', async () => {
+    const base = 231000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const serviceChatId = testId(base + 30);
+    const rulesetSnapshotId = testId(base + 31);
+    const challengeId = testId(base + 32);
+    const messageId = testId(base + 35);
+    const submittedAt = new Date('2026-09-27T10:20:00.000Z');
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+        values (${serviceChatId}::uuid, 'CHALLENGE_SERVICE', 'OPEN', 1,
+          '2026-09-27T10:00:00.000Z'::timestamptz, '2026-09-27T10:00:00.000Z'::timestamptz)
+      `.execute(transaction);
+      await sql`
+        insert into social.chat_participants (chat_id, user_id, joined_at) values
+          (${serviceChatId}::uuid, ${fixture.athleteA}::uuid, '2026-09-27T10:00:00.000Z'),
+          (${serviceChatId}::uuid, ${fixture.athleteB}::uuid, '2026-09-27T10:00:00.000Z')
+      `.execute(transaction);
+      await sql`
+        insert into competition.ruleset_snapshots (
+          ruleset_snapshot_id, competition_id, community_configuration_id,
+          ruleset_ref, ruleset_ack_mode, policy_version, created_at
+        ) values (
+          ${rulesetSnapshotId}::uuid, ${fixture.competition}::uuid, ${testId(base + 15)}::uuid,
+          'ruleset://ac-123', 'IMPLICIT_ON_ACCEPT', 'competition-mvp-v1',
+          '2026-09-27T10:00:00.000Z'::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenges (
+          challenge_id, competition_id, source_match_id, source_chat_id, service_chat_id,
+          initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+          response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+          accepted_at, scheduling_deadline_at, version, created_at, updated_at
+        ) values (
+          ${challengeId}::uuid, ${fixture.competition}::uuid, ${fixture.match}::uuid,
+          ${fixture.chat}::uuid, ${serviceChatId}::uuid, ${fixture.athleteA}::uuid,
+          ${fixture.athleteB}::uuid, least(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid),
+          greatest(${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid), 'OPTIONAL', 'NONE',
+          'ACCEPTED_UNSCHEDULED', ${rulesetSnapshotId}::uuid,
+          '2026-09-29T10:00:00.000Z'::timestamptz, '2026-09-27T10:00:00.000Z'::timestamptz,
+          '2026-10-12T10:00:00.000Z'::timestamptz, 2,
+          '2026-09-27T10:00:00.000Z'::timestamptz, '2026-09-27T10:00:00.000Z'::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.challenge_participant_obligations (
+          obligation_id, challenge_id, user_id, accepted_at
+        ) values
+          (${testId(base + 33)}::uuid, ${challengeId}::uuid, ${fixture.athleteA}::uuid,
+            '2026-09-27T10:00:00.000Z'::timestamptz),
+          (${testId(base + 34)}::uuid, ${challengeId}::uuid, ${fixture.athleteB}::uuid,
+            '2026-09-27T10:00:00.000Z'::timestamptz)
+      `.execute(transaction);
+    });
+    const sent = await sendChatMessage(database, {
+      commandId: testId(base + 36), commandType: 'SEND_MESSAGE',
+      idempotencyKey: 'ac-123-send',
+      actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'ChatMessage', aggregateId: messageId, expectedVersion: 0,
+      correlationId: testId(base + 37), causationId: null, requestId: testId(base + 38),
+      source: 'api', payloadVersion: 1,
+      payload: { chatId: fixture.chat,
+        content: { kind: 'PERSONAL_TEXT', text: 'Исходный текст сообщения' } },
+    }, {
+      eventId: testId(base + 39), auditId: testId(base + 40), outboxMessageId: testId(base + 41),
+      revisionId: testId(base + 42), matchEventId: testId(base + 43), chatEventId: testId(base + 44),
+    }, () => new Date('2026-09-27T10:05:00.000Z'));
+    expect(sent.aggregateVersion).toBe(1);
+    await editChatMessage(database, {
+      commandId: testId(base + 45), commandType: 'EDIT_MESSAGE', idempotencyKey: 'ac-123-edit',
+      actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'ChatMessage', aggregateId: messageId, expectedVersion: 1,
+      correlationId: testId(base + 37), causationId: testId(base + 39), requestId: testId(base + 46),
+      source: 'api', payloadVersion: 1,
+      payload: { messageId, text: 'Исправленный текст сообщения' },
+    }, {
+      eventId: testId(base + 47), auditId: testId(base + 48), outboxMessageId: testId(base + 49),
+      revisionId: testId(base + 50),
+    }, () => new Date('2026-09-27T10:10:00.000Z'));
+
+    const state = async () => (await sql<{
+      readonly account_state: string;
+      readonly membership_state: string;
+      readonly challenge_state: string;
+      readonly challenge_version: string;
+      readonly booking_state: string;
+      readonly booking_version: string;
+      readonly session_state: string;
+      readonly session_version: string;
+      readonly obligations: string;
+      readonly holds: string;
+      readonly results: string;
+      readonly cooldowns: string;
+    }>`select
+      (select account_state from identity.users where user_id = ${fixture.athleteA}::uuid) as account_state,
+      (select state from community.community_memberships
+        where community_id = ${fixture.community}::uuid and user_id = ${fixture.athleteA}::uuid) as membership_state,
+      (select state from competition.challenges where challenge_id = ${challengeId}::uuid) as challenge_state,
+      (select version::text from competition.challenges where challenge_id = ${challengeId}::uuid) as challenge_version,
+      (select state from scheduling.bookings where booking_id = ${fixture.booking}::uuid) as booking_state,
+      (select version::text from scheduling.bookings where booking_id = ${fixture.booking}::uuid) as booking_version,
+      (select state from scheduling.sessions where session_id = ${fixture.session}::uuid) as session_state,
+      (select version::text from scheduling.sessions where session_id = ${fixture.session}::uuid) as session_version,
+      (select count(*)::text from competition.challenge_participant_obligations
+        where challenge_id = ${challengeId}::uuid and released_at is null) as obligations,
+      (select count(*)::text from competition.process_holds) as holds,
+      (select count(*)::text from competition.results) as results,
+      (select count(*)::text from competition.pair_cooldowns) as cooldowns
+    `.execute(database)).rows[0]!;
+    const before = await state();
+
+    const command = (offset: number, key: string): CommandEnvelope<ReportChatMessagePayload> => ({
+      commandId: testId(base + offset), commandType: 'REPORT_MESSAGE', idempotencyKey: key,
+      actor: { type: 'USER', id: fixture.athleteB, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'ChatMessage', aggregateId: messageId, expectedVersion: 2,
+      correlationId: testId(base + 37), causationId: testId(base + 47),
+      requestId: testId(base + offset + 1), source: 'api', payloadVersion: 1,
+      payload: { messageId, reasonCode: ' inappropriate_content ' },
+    });
+    const effects = (offset: number) => ({
+      eventId: testId(base + offset), auditId: testId(base + offset + 1),
+      outboxMessageId: testId(base + offset + 2), reportId: testId(base + offset + 3),
+      caseId: testId(base + offset + 4), caseEventId: testId(base + offset + 5),
+      caseOutboxMessageId: testId(base + offset + 6), notificationId: testId(base + offset + 7),
+      notificationOutboxMessageId: testId(base + offset + 8),
+    });
+    const commands = [command(60, 'ac-123-report-a'), command(80, 'ac-123-report-b')] as const;
+    const effectSets = [effects(100), effects(120)] as const;
+    const raced = await Promise.allSettled(commands.map((item, index) =>
+      reportChatMessage(database, item, effectSets[index]!, () => submittedAt)));
+    expect(raced.filter((item) => item.status === 'fulfilled')).toHaveLength(1);
+    expect(raced.filter((item) => item.status === 'rejected')).toHaveLength(1);
+    const winningIndex = raced.findIndex((item) => item.status === 'fulfilled');
+    const winner = raced[winningIndex]!;
+    if (winner.status !== 'fulfilled') throw new Error('Expected one successful report');
+    expect(winner.value.response).toMatchObject({
+      action: 'REPORTED', state: 'PENDING_CENTRAL', caseState: 'SUBMITTED', version: 3,
+    });
+    const winningCommand = commands[winningIndex]!;
+    const winningEffects = effectSets[winningIndex]!;
+    const replay = await reportChatMessage(database, winningCommand, winningEffects, () => submittedAt);
+    expect(replay.replayed).toBe(true);
+    expect(replay.response).toEqual(winner.value.response);
+    await expect(reportChatMessage(database, {
+      ...winningCommand,
+      commandId: testId(base + 150),
+      payload: { messageId, reasonCode: 'SPAM' },
+    }, effects(160), () => submittedAt)).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+    await expect(reportChatMessage(database, {
+      ...winningCommand,
+      commandId: testId(base + 180), idempotencyKey: 'ac-123-stale',
+    }, effects(190), () => submittedAt)).rejects.toBeInstanceOf(VersionConflictError);
+    await expect(reportChatMessage(database, {
+      ...winningCommand,
+      commandId: testId(base + 210), idempotencyKey: 'ac-123-forbidden', expectedVersion: 3,
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+    }, effects(220), () => submittedAt)).rejects.toMatchObject({ code: 'CHAT_PARTICIPANT_REQUIRED' });
+    await expect(reportChatMessage(database, {
+      ...winningCommand,
+      commandId: testId(base + 240), idempotencyKey: 'ac-123-self', expectedVersion: 3,
+      actor: { type: 'USER', id: fixture.athleteA, roles: ['ATHLETE'], scopeIds: [] },
+    }, effects(250), () => submittedAt)).rejects.toMatchObject({ code: 'REPORT_SELF_NOT_ALLOWED' });
+
+    const stored = await sql<{
+      readonly case_count: string;
+      readonly report_count: string;
+      readonly revision_count: number;
+      readonly reporter_user_id: string;
+      readonly subject_user_id: string;
+      readonly case_state: string;
+    }>`select
+      (select count(*)::text from governance.moderation_cases) as case_count,
+      (select count(*)::text from social.chat_message_reports) as report_count,
+      jsonb_array_length(report.evidence_snapshot->'revisions') as revision_count,
+      moderation_case.reporter_user_id, moderation_case.subject_user_id,
+      moderation_case.state as case_state
+    from governance.moderation_cases moderation_case
+    join social.chat_message_reports report on report.report_id = moderation_case.report_id
+    `.execute(database);
+    expect(stored.rows[0]).toMatchObject({
+      case_count: '1', report_count: '1', revision_count: 2,
+      reporter_user_id: fixture.athleteB, subject_user_id: fixture.athleteA,
+      case_state: 'SUBMITTED',
+    });
+    const centralQueue = await listModerationCasesForCentral(database, fixture.central);
+    expect(centralQueue).toEqual([expect.objectContaining({
+      caseId: winningEffects.caseId,
+      reporterUserId: fixture.athleteB,
+      subjectUserId: fixture.athleteA,
+      reasonCode: 'INAPPROPRIATE_CONTENT',
+      evidenceSnapshot: expect.objectContaining({ revisions: expect.any(Array) }),
+    })]);
+    await expect(listModerationCasesForCentral(database, fixture.athleteA))
+      .rejects.toMatchObject({ code: 'MODERATION_CENTRAL_REQUIRED' });
+    const publicRecords = await sql<{ readonly payload: unknown }>`
+      select payload from platform.domain_events
+      where event_id in (${winningEffects.eventId}::uuid, ${winningEffects.caseEventId}::uuid)
+      union all
+      select payload from platform.outbox_messages
+      where message_id in (
+        ${winningEffects.outboxMessageId}::uuid,
+        ${winningEffects.caseOutboxMessageId}::uuid,
+        ${winningEffects.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    expect(JSON.stringify(publicRecords.rows)).not.toContain(fixture.athleteB);
+    expect(await state()).toEqual(before);
   });
 
   it('[AC-214] deletes expired unreported Chat payloads while retaining checksums, evidence and audit', async () => {
