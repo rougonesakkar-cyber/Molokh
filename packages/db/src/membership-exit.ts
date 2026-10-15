@@ -889,7 +889,8 @@ export async function confirmMembershipExit(
           const migrated = await sql<{ readonly queue_entry_id: string }>`
             update competition.challenge_queue_entries
             set target_status = ${targetStatus}, kind = 'GENESIS_CANDIDATE', state = 'WAITING',
-              bound_holder_user_id = null, reconfirmation_deadline_at = null,
+              bound_holder_user_id = null, direct_challenge_mode = null,
+              reconfirmation_deadline_at = null,
               version = version + 1, updated_at = ${occurredAt}::timestamptz
             where competition_id = ${current.competition_id}::uuid
               and kind = 'DIRECT_STATUS'
@@ -963,7 +964,8 @@ export async function confirmMembershipExit(
         const migrated = await sql<{ readonly queue_entry_id: string }>`
           update competition.challenge_queue_entries
           set target_status = ${targetStatus}, kind = 'GENESIS_CANDIDATE', state = 'WAITING',
-            bound_holder_user_id = null, reconfirmation_deadline_at = null,
+            bound_holder_user_id = null, direct_challenge_mode = null,
+            reconfirmation_deadline_at = null,
             version = version + 1, updated_at = ${context.occurredAt.toISOString()}::timestamptz
           where competition_id = ${current.competition_id}::uuid
             and kind = 'DIRECT_STATUS'

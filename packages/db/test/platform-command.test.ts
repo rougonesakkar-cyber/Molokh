@@ -217,6 +217,7 @@ import {
   openMissingResultReview,
   submitMissingResultStatement,
   submitStatusQueueEntry,
+  withdrawStatusQueueEntry,
   requestStatusQueueReconfirmation,
   reconfirmStatusQueueEntry,
   respondToGenesisChallenge,
@@ -349,6 +350,7 @@ import {
   type StartIntegrityReviewPayload,
   type DecideIntegrityCasePayload,
   type SubmitStatusQueueEntryPayload,
+  type WithdrawStatusQueueEntryPayload,
   type ActivateStatusQueueHeadPayload,
   type FinalizeResultPayload,
   type GenesisResponsePayload,
@@ -2736,12 +2738,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
       await sql`
         insert into competition.challenge_queue_entries (
           queue_entry_id, competition_id, initiator_user_id, target_status,
-          kind, state, bound_holder_user_id, source_type,
+          kind, state, bound_holder_user_id, direct_challenge_mode, source_type,
           submitted_at, version, created_at, updated_at
         ) values (
           ${queueEntry}::uuid, ${seeded.competition}::uuid, ${athleteC}::uuid,
           'CONTENDER', 'DIRECT_STATUS', 'WAITING', ${seeded.athleteA}::uuid,
-          'DIRECT', '2026-09-28T10:00:00.000Z', 1,
+          'MANDATORY_CONTENDER', 'DIRECT', '2026-09-28T10:00:00.000Z', 1,
           '2026-09-28T10:00:00.000Z', '2026-09-28T10:00:00.000Z'
         )
       `.execute(database);
@@ -5873,12 +5875,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await sql`
       insert into competition.challenge_queue_entries (
         queue_entry_id, competition_id, initiator_user_id, target_status,
-        kind, state, bound_holder_user_id, source_type, source_id,
+        kind, state, bound_holder_user_id, direct_challenge_mode, source_type, source_id,
         submitted_at, version, created_at, updated_at
       ) values (
         ${olderEntryId}::uuid, ${fixture.competition}::uuid, ${fixture.athleteB}::uuid,
         'CONTENDER', 'DIRECT_STATUS', 'WAITING', ${fixture.athleteA}::uuid,
-        'DIRECT', null, '2026-09-27T10:02:00.000Z'::timestamptz, 1,
+        'MANDATORY_CONTENDER', 'DIRECT', null, '2026-09-27T10:02:00.000Z'::timestamptz, 1,
         '2026-09-27T10:02:00.000Z'::timestamptz, '2026-09-27T10:02:00.000Z'::timestamptz
       )
     `.execute(database);
@@ -11717,11 +11719,13 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await sql`
       insert into competition.challenge_queue_entries (
         queue_entry_id, competition_id, initiator_user_id, target_status, kind, state,
-        bound_holder_user_id, source_type, submitted_at, version, created_at, updated_at
+        bound_holder_user_id, direct_challenge_mode, source_type, submitted_at,
+        version, created_at, updated_at
       ) values (
         ${formerTitleQueueEntryId}::uuid, ${refusedFixture.competition}::uuid,
         ${refusedFixture.contender}::uuid, 'CHAMPION', 'DIRECT_STATUS', 'WAITING',
-        ${refusedFixture.champion}::uuid, 'DIRECT', ${formerTitleSubmittedAt}::timestamptz,
+        ${refusedFixture.champion}::uuid, 'MANDATORY_TITLE', 'DIRECT',
+        ${formerTitleSubmittedAt}::timestamptz,
         1, ${formerTitleSubmittedAt}::timestamptz, ${formerTitleSubmittedAt}::timestamptz
       )
     `.execute(database);
@@ -12227,6 +12231,241 @@ describePostgres('PostgreSQL critical command transaction', () => {
         position: 1,
         version: 1,
       }],
+    });
+  });
+
+  it('[AC-047] activates a Champion optional TITLE offer only at the strict FIFO head', async () => {
+    const base = 126000;
+    const ordinary = testId(base);
+    const contender = testId(base + 1);
+    const champion = testId(base + 2);
+    const central = testId(base + 3);
+    const venue = testId(base + 4);
+    const community = testId(base + 5);
+    const competition = testId(base + 6);
+    const ordinaryEntry = testId(base + 20);
+    const championEntry = testId(base + 40);
+    const challenge = testId(base + 60);
+    const serviceChat = testId(base + 61);
+    const occurredAt = '2026-10-10T10:00:00.000Z';
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${ordinary}::uuid, '+79991260000', ${occurredAt}::timestamptz,
+          '1995-01-01', 'ADULT', 'Older FIFO Athlete', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt}::timestamptz),
+        (${contender}::uuid, '+79991260001', ${occurredAt}::timestamptz,
+          '1994-01-01', 'ADULT', 'Optional TITLE Contender', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt}::timestamptz),
+        (${champion}::uuid, '+79991260002', ${occurredAt}::timestamptz,
+          '1993-01-01', 'ADULT', 'Optional TITLE Champion', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt}::timestamptz),
+        (${central}::uuid, '+79991260003', ${occurredAt}::timestamptz,
+          '1985-01-01', 'ADULT', 'Optional TITLE Central', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt}::timestamptz)
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        is_current, verified_at, decided_by, decision_reason, version
+      ) values
+        (${testId(base + 7)}::uuid, ${ordinary}::uuid, 'VERIFIED',
+          'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz,
+          ${central}::uuid, 'TEST_APPROVED', 1),
+        (${testId(base + 8)}::uuid, ${contender}::uuid, 'VERIFIED',
+          'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz,
+          ${central}::uuid, 'TEST_APPROVED', 1),
+        (${testId(base + 9)}::uuid, ${champion}::uuid, 'VERIFIED',
+          'CENTRAL_MODERATION', 'identity-mvp-v1', true, ${occurredAt}::timestamptz,
+          ${central}::uuid, 'TEST_APPROVED', 1)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue,
+      venueConfigurationId: testId(base + 10),
+      communityId: community,
+      communityConfigurationId: testId(base + 11),
+      membershipId: testId(base + 12),
+      centralGrantId: testId(base + 13),
+      athleteUserId: ordinary,
+      centralActorId: central,
+      legalName: 'AC-047 Pilot Gym',
+      venueDisplayName: 'AC-047 Pilot Gym',
+      communityName: 'AC-047 Community',
+      address: 'Москва',
+      cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow',
+      contactPayload: {},
+      occurredAt,
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition,
+      communityId: community,
+      centralActorId: central,
+      occurredAt,
+      memberships: [
+        { membershipId: testId(base + 12), userId: ordinary },
+        { membershipId: testId(base + 14), userId: contender },
+        { membershipId: testId(base + 15), userId: champion },
+      ],
+    });
+    await sql`
+      update competition.competitions
+      set phase = 'RUNNING', champion_user_id = ${champion}::uuid,
+        contender_user_id = ${contender}::uuid, status_version = 2,
+        version = version + 1
+      where competition_id = ${competition}::uuid
+    `.execute(database);
+
+    const submit = async (userId: string, queueEntryId: string, offset: number) =>
+      submitStatusQueueEntry(database, {
+        commandId: testId(offset), commandType: 'SUBMIT_STATUS_QUEUE_ENTRY',
+        idempotencyKey: `ac-047-submit-${queueEntryId}`,
+        actor: { type: 'USER', id: userId, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'ChallengeQueueEntry', aggregateId: queueEntryId,
+        expectedVersion: 0, correlationId: testId(offset + 1), causationId: null,
+        requestId: testId(offset + 2), source: 'api', payloadVersion: 1,
+        payload: { competitionId: competition },
+      } satisfies CommandEnvelope<SubmitStatusQueueEntryPayload>, {
+        eventId: testId(offset + 3), auditId: testId(offset + 4),
+        outboxMessageId: testId(offset + 5), challengeId: testId(offset + 6),
+        challengeEventId: testId(offset + 7), serviceChatId: testId(offset + 8),
+        serviceChatEventId: testId(offset + 9), rulesetSnapshotId: testId(offset + 10),
+        acknowledgmentId: testId(offset + 11), pairedQueueEventId: testId(offset + 12),
+        timerOutboxMessageId: testId(offset + 13), staleQueueEventId: testId(offset + 14),
+        staleQueueOutboxMessageId: testId(offset + 15),
+        notificationOutboxMessageId: testId(offset + 16),
+        notificationIds: [testId(offset + 17), testId(offset + 18)],
+      });
+    const older = await submit(ordinary, ordinaryEntry, base + 100);
+    const offered = await submit(champion, championEntry, base + 130);
+    expect([older.response.position, offered.response.position]).toEqual([1, 2]);
+
+    const activationCommand = {
+      commandId: testId(base + 160), commandType: 'ACTIVATE_STATUS_QUEUE_HEAD',
+      idempotencyKey: `ac-047-activate-${championEntry}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: championEntry,
+      expectedVersion: 1, correlationId: testId(base + 161),
+      causationId: offered.eventId, requestId: testId(base + 162),
+      source: 'scheduler', payloadVersion: 1,
+      payload: { competitionId: competition, queueEntryId: championEntry },
+    } satisfies CommandEnvelope<ActivateStatusQueueHeadPayload>;
+    const activationIds = {
+      eventId: testId(base + 163), auditId: testId(base + 164),
+      outboxMessageId: testId(base + 165), challengeId: challenge,
+      challengeEventId: testId(base + 166), serviceChatId: serviceChat,
+      serviceChatEventId: testId(base + 167), rulesetSnapshotId: testId(base + 168),
+      acknowledgmentId: testId(base + 169), pairedQueueEventId: testId(base + 170),
+      timerOutboxMessageId: testId(base + 171),
+      optionalReminderTimerOutboxMessageIds: [testId(base + 172), testId(base + 173)] as const,
+      staleQueueEventId: testId(base + 174), staleQueueOutboxMessageId: testId(base + 175),
+      notificationOutboxMessageId: testId(base + 176),
+      notificationIds: [testId(base + 177), testId(base + 178)] as const,
+    };
+    await expect(activateStatusQueueHead(
+      database, activationCommand, activationIds, () => new Date(occurredAt),
+    )).rejects.toThrow('QUEUE_ENTRY_NOT_HEAD');
+    await expect(readStatusQueueActivationCandidate(database, competition)).resolves.toEqual({
+      competitionId: competition, queueEntryId: ordinaryEntry, version: 1,
+    });
+
+    await withdrawStatusQueueEntry(database, {
+      commandId: testId(base + 180), commandType: 'WITHDRAW_STATUS_QUEUE_ENTRY',
+      idempotencyKey: `ac-047-withdraw-${ordinaryEntry}`,
+      actor: { type: 'USER', id: ordinary, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'ChallengeQueueEntry', aggregateId: ordinaryEntry,
+      expectedVersion: 1, correlationId: testId(base + 181), causationId: older.eventId,
+      requestId: testId(base + 182), source: 'api', payloadVersion: 1,
+      payload: { queueEntryId: ordinaryEntry },
+    } satisfies CommandEnvelope<WithdrawStatusQueueEntryPayload>, {
+      eventId: testId(base + 183), auditId: testId(base + 184),
+      outboxMessageId: testId(base + 185), challengeId: testId(base + 186),
+      challengeEventId: testId(base + 187), serviceChatId: testId(base + 188),
+      serviceChatEventId: testId(base + 189), rulesetSnapshotId: testId(base + 190),
+      acknowledgmentId: testId(base + 191), pairedQueueEventId: testId(base + 192),
+      timerOutboxMessageId: testId(base + 193), staleQueueEventId: testId(base + 194),
+      staleQueueOutboxMessageId: testId(base + 195),
+      notificationOutboxMessageId: testId(base + 196),
+      notificationIds: [testId(base + 197), testId(base + 198)],
+    });
+    await expect(readStatusQueueActivationCandidate(database, competition)).resolves.toEqual({
+      competitionId: competition, queueEntryId: championEntry, version: 1,
+    });
+
+    const activated = await activateStatusQueueHead(
+      database, activationCommand, activationIds, () => new Date(occurredAt),
+    );
+    expect(activated.response).toMatchObject({ state: 'CONSUMED', position: null });
+    await expect(activateStatusQueueHead(
+      database, activationCommand, activationIds, () => new Date(occurredAt),
+    )).resolves.toMatchObject({ replayed: true, response: activated.response });
+    await expect(readChatChallenge(database, serviceChat, contender)).resolves.toMatchObject({
+      challenge: {
+        challengeId: challenge, responsePolicy: 'OPTIONAL', stake: 'TITLE',
+        responseDeadlineAt: '2026-10-12T10:00:00.000Z', viewerRole: 'RECIPIENT',
+      },
+    });
+    await expect(readCompetitionStatus(database, competition, contender)).resolves.toMatchObject({
+      champion: { userId: champion }, contender: { userId: contender },
+      activeChallenge: {
+        challengeId: challenge, responsePolicy: 'OPTIONAL', stake: 'TITLE',
+        viewerIsParticipant: true,
+      },
+    });
+    const timerFacts = await sql<{ readonly topic: string; readonly payload: unknown }>`
+      select topic, payload from platform.outbox_messages
+      where message_id in (
+        ${activationIds.timerOutboxMessageId}::uuid,
+        ${activationIds.optionalReminderTimerOutboxMessageIds[0]}::uuid,
+        ${activationIds.optionalReminderTimerOutboxMessageIds[1]}::uuid
+      ) order by topic
+    `.execute(database);
+    expect(timerFacts.rows.map((row) => row.topic)).toEqual([
+      'competition.challenge.created.v1',
+      'competition.challenge.optional-response-reminder-12h-timer.v1',
+      'competition.challenge.optional-response-reminder-24h-timer.v1',
+    ]);
+    expect(JSON.stringify(timerFacts.rows)).toContain('2026-10-10T22:00:00.000Z');
+    expect(JSON.stringify(timerFacts.rows)).toContain('2026-10-11T10:00:00.000Z');
+    expect(JSON.stringify(timerFacts.rows)).toContain('2026-10-12T10:00:00.000Z');
+
+    const declined = await declineOptionalChallenge(database, {
+      commandId: testId(base + 200), commandType: 'DECLINE_OPTIONAL_CHALLENGE',
+      idempotencyKey: `ac-047-decline-${challenge}`,
+      actor: { type: 'USER', id: contender, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challenge,
+      expectedVersion: 1, correlationId: testId(base + 201),
+      causationId: activationIds.challengeEventId, requestId: testId(base + 202),
+      source: 'api', payloadVersion: 1, payload: { challengeId: challenge },
+    } satisfies CommandEnvelope<RespondToChallengePayload>, {
+      eventId: testId(base + 203), auditId: testId(base + 204),
+      outboxMessageId: testId(base + 205), notificationId: testId(base + 206),
+      notificationOutboxMessageId: testId(base + 207), quietPeriodId: testId(base + 208),
+    }, () => new Date('2026-10-10T11:00:00.000Z'));
+    expect(declined.response).toMatchObject({ state: 'DECLINED', responsePolicy: 'OPTIONAL', stake: 'TITLE' });
+    const finalFacts = await sql<{
+      readonly champion_user_id: string;
+      readonly contender_user_id: string;
+      readonly result_count: string;
+      readonly cooldown_count: string;
+      readonly obligation_count: string;
+    }>`
+      select competitive.champion_user_id, competitive.contender_user_id,
+        (select count(*)::text from competition.results where challenge_id = ${challenge}::uuid) as result_count,
+        (select count(*)::text from competition.pair_cooldowns where source_result_id in (
+          select result_id from competition.results where challenge_id = ${challenge}::uuid
+        )) as cooldown_count,
+        (select count(*)::text from competition.challenge_participant_obligations
+          where challenge_id = ${challenge}::uuid) as obligation_count
+      from competition.competitions as competitive
+      where competitive.competition_id = ${competition}::uuid
+    `.execute(database);
+    expect(finalFacts.rows[0]).toEqual({
+      champion_user_id: champion, contender_user_id: contender,
+      result_count: '0', cooldown_count: '0', obligation_count: '0',
     });
   });
 
@@ -12882,11 +13121,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
       await sql`
         insert into competition.challenge_queue_entries (
           queue_entry_id, competition_id, initiator_user_id, target_status, kind, state,
-          bound_holder_user_id, source_type, submitted_at, version, created_at, updated_at
+          bound_holder_user_id, direct_challenge_mode, source_type, submitted_at,
+          version, created_at, updated_at
         ) values (
           ${queueEntryId}::uuid, ${fixture.competition}::uuid,
           ${fixture.athleteB}::uuid, 'CHAMPION', 'DIRECT_STATUS', 'WAITING', null,
-          'DIRECT', '2026-09-29T08:00:00.000Z', 1,
+          'MANDATORY_TITLE', 'DIRECT', '2026-09-29T08:00:00.000Z', 1,
           '2026-09-29T08:00:00.000Z', '2026-09-29T08:00:00.000Z'
         )
       `.execute(transaction);
@@ -19064,16 +19304,18 @@ describePostgres('PostgreSQL critical command transaction', () => {
         .execute(transaction);
       await sql`insert into competition.challenge_queue_entries (
         queue_entry_id, competition_id, initiator_user_id, target_status, kind, state,
-        bound_holder_user_id, source_type, submitted_at, reconfirmation_deadline_at,
+        bound_holder_user_id, direct_challenge_mode, source_type, submitted_at,
+        reconfirmation_deadline_at,
         single_candidate_since_at, single_candidate_deadline_at,
         version, created_at, updated_at
       ) values
         (${reconfirmationEntry}::uuid, ${competition}::uuid, ${athleteA}::uuid,
           'CONTENDER', 'DIRECT_STATUS', 'RECONFIRMATION_REQUIRED', ${athleteB}::uuid,
-          'DIRECT', '2026-09-26T10:00:00Z', '2026-09-26T11:00:00Z', null, null,
+          'MANDATORY_CONTENDER', 'DIRECT', '2026-09-26T10:00:00Z',
+          '2026-09-26T11:00:00Z', null, null,
           1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z'),
         (${genesisEntry}::uuid, ${competition}::uuid, ${athleteB}::uuid,
-          'CHAMPION', 'GENESIS_CANDIDATE', 'WAITING', null, 'DIRECT',
+          'CHAMPION', 'GENESIS_CANDIDATE', 'WAITING', null, null, 'DIRECT',
           '2026-09-26T10:00:00Z', null, '2026-09-26T10:00:00Z',
           '2026-09-26T11:00:00Z', 1, '2026-09-26T10:00:00Z', '2026-09-26T10:00:00Z')`
         .execute(transaction);

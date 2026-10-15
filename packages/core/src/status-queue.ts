@@ -15,6 +15,10 @@ export type CompetitionAvailability = 'ACTIVE' | 'PAUSED' | 'CLOSED';
 export type CompetitionStatus = 'ORDINARY' | 'CHAMPION' | 'CONTENDER';
 export type QueueTargetStatus = 'CHAMPION' | 'CONTENDER';
 export type QueueEntryKind = 'DIRECT_STATUS' | 'GENESIS_CANDIDATE' | 'PREBOOKED_CONVERSION';
+export type DirectStatusChallengeMode =
+  | 'MANDATORY_CONTENDER'
+  | 'OPTIONAL_TITLE'
+  | 'MANDATORY_TITLE';
 export type QueueEntryState =
   | 'WAITING'
   | 'PAIRED_PENDING_ACCEPTANCE'
@@ -37,6 +41,7 @@ export type StatusQueueConflictCode =
   | 'ALREADY_STATUS_HOLDER'
   | 'LIVE_QUEUE_ENTRY_EXISTS'
   | 'PAIR_COOLDOWN_ACTIVE'
+  | 'PAIR_CHALLENGE_EXISTS'
   | 'QUEUE_ENTRY_NOT_FOUND'
   | 'QUEUE_ENTRY_INITIATOR_REQUIRED'
   | 'QUEUE_ENTRY_NOT_WAITING'
@@ -72,6 +77,7 @@ export interface StatusQueueIntent {
   readonly kind: Exclude<QueueEntryKind, 'PREBOOKED_CONVERSION'>;
   readonly targetStatus: QueueTargetStatus;
   readonly boundHolderUserId: string | null;
+  readonly directChallengeMode: DirectStatusChallengeMode | null;
 }
 
 export interface SubmitStatusQueueEligibility {
@@ -87,17 +93,19 @@ export interface SubmitStatusQueueEligibility {
   readonly contenderUserId: string | null;
   readonly hasLiveEntry: boolean;
   readonly pairCooldownActive: boolean;
+  readonly pairChallengeExists: boolean;
 }
 
 export function statusQueueIntent(input: Pick<
   SubmitStatusQueueEligibility,
-  'competitionPhase' | 'contenderUserId'
+  'competitionPhase' | 'contenderUserId' | 'actorStatus'
 >): StatusQueueIntent {
   if (input.competitionPhase === 'FOUNDING_OPEN') {
     return {
       kind: 'GENESIS_CANDIDATE',
       targetStatus: 'CHAMPION',
       boundHolderUserId: null,
+      directChallengeMode: null,
     };
   }
   if (input.competitionPhase === 'CONTENDER_VACANT_OPEN') {
@@ -105,6 +113,7 @@ export function statusQueueIntent(input: Pick<
       kind: 'GENESIS_CANDIDATE',
       targetStatus: 'CONTENDER',
       boundHolderUserId: null,
+      directChallengeMode: null,
     };
   }
   if (input.competitionPhase === 'RUNNING' && input.contenderUserId !== null) {
@@ -112,6 +121,9 @@ export function statusQueueIntent(input: Pick<
       kind: 'DIRECT_STATUS',
       targetStatus: 'CONTENDER',
       boundHolderUserId: input.contenderUserId,
+      directChallengeMode: input.actorStatus === 'CHAMPION'
+        ? 'OPTIONAL_TITLE'
+        : 'MANDATORY_CONTENDER',
     };
   }
   throw new StatusQueueConflictError('COMPETITION_PHASE_UNAVAILABLE');
@@ -131,12 +143,17 @@ export function assertStatusQueueEntryCanBeSubmitted(
   if (input.integrityHoldActive) {
     throw new StatusQueueConflictError('COMPETITION_INTEGRITY_HOLD');
   }
-  if (input.actorStatus !== 'ORDINARY') {
+  const intent = statusQueueIntent(input);
+  if (
+    input.actorStatus === 'CONTENDER'
+    || (input.actorStatus === 'CHAMPION' && intent.directChallengeMode !== 'OPTIONAL_TITLE')
+  ) {
     throw new StatusQueueConflictError('ALREADY_STATUS_HOLDER');
   }
   if (input.hasLiveEntry) throw new StatusQueueConflictError('LIVE_QUEUE_ENTRY_EXISTS');
   if (input.pairCooldownActive) throw new StatusQueueConflictError('PAIR_COOLDOWN_ACTIVE');
-  return statusQueueIntent(input);
+  if (input.pairChallengeExists) throw new StatusQueueConflictError('PAIR_CHALLENGE_EXISTS');
+  return intent;
 }
 
 export function assertStatusQueueEntryCanBeWithdrawn(input: {

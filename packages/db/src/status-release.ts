@@ -378,7 +378,8 @@ export async function confirmStatusRelease(
       const migratedResult = await sql<{ readonly queue_entry_id: string }>`
         update competition.challenge_queue_entries
         set target_status = ${targetStatus}, kind = 'GENESIS_CANDIDATE', state = 'WAITING',
-          bound_holder_user_id = null, reconfirmation_deadline_at = null,
+          bound_holder_user_id = null, direct_challenge_mode = null,
+          reconfirmation_deadline_at = null,
           updated_at = ${context.occurredAt.toISOString()}::timestamptz
         where competition_id = ${competitive.competition_id}::uuid
           and kind = 'DIRECT_STATUS'

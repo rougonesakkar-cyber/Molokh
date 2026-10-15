@@ -17,12 +17,15 @@ import {
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
   normalizeSocialPair,
+  optionalChallengeReminderDeadlines,
+  optionalChallengeResponseDeadline,
   statusQueueReconfirmationDeadline,
   type ChallengeState,
   type CommandEnvelope,
   type CompetitionAvailability,
   type CompetitionPhase,
   type CompetitionStatus,
+  type DirectStatusChallengeMode,
   type QueueEntryKind,
   type QueueEntryState,
   type QueueTargetStatus,
@@ -102,6 +105,7 @@ export interface StatusQueueEffectIds {
   readonly pairedQueueEventId: string;
   readonly timerOutboxMessageId: string;
   readonly mandatoryReminderTimerOutboxMessageId?: string;
+  readonly optionalReminderTimerOutboxMessageIds?: readonly [string, string];
   readonly staleQueueEventId: string;
   readonly staleQueueOutboxMessageId: string;
   readonly notificationOutboxMessageId: string;
@@ -173,6 +177,8 @@ export interface ActiveStatusChallengeProjection {
   readonly challengeId: string;
   readonly serviceChatId: string;
   readonly state: ChallengeState;
+  readonly responsePolicy: 'OPTIONAL' | 'MANDATORY' | 'MUTUAL_GENESIS';
+  readonly stake: 'CONTENDER' | 'TITLE' | 'GENESIS_CHAMPION' | 'GENESIS_CONTENDER';
   readonly initiatorDisplayName: string;
   readonly recipientDisplayName: string;
   readonly viewerIsParticipant: boolean;
@@ -255,6 +261,7 @@ interface CompetitionViewerRow {
   readonly competition_enabled: boolean | null;
   readonly has_live_entry: boolean;
   readonly pair_cooldown_active: boolean;
+  readonly pair_challenge_exists: boolean;
 }
 
 interface QueueEntryRow {
@@ -266,6 +273,7 @@ interface QueueEntryRow {
   readonly kind: QueueEntryKind;
   readonly state: QueueEntryState;
   readonly bound_holder_user_id: string | null;
+  readonly direct_challenge_mode: DirectStatusChallengeMode | null;
   readonly submitted_at: Date;
   readonly reconfirmation_deadline_at: Date | null;
   readonly single_candidate_since_at: Date | null;
@@ -303,6 +311,7 @@ interface ActivationCompetitionRow {
   readonly availability: CompetitionAvailability;
   readonly integrity_hold_active: boolean;
   readonly community_active: boolean;
+  readonly champion_user_id: string | null;
   readonly contender_user_id: string | null;
   readonly status_slot_free: boolean;
 }
@@ -356,6 +365,8 @@ interface GenesisEligibilityRow {
 interface ActiveChallengeRow {
   readonly challenge_id: string;
   readonly state: ChallengeState;
+  readonly response_policy: 'OPTIONAL' | 'MANDATORY' | 'MUTUAL_GENESIS';
+  readonly stake: 'CONTENDER' | 'TITLE' | 'GENESIS_CHAMPION' | 'GENESIS_CONTENDER';
   readonly initiator_display_name: string;
   readonly recipient_display_name: string;
 }
@@ -445,6 +456,21 @@ async function competitionViewerContext(
             or (cooldown.pair_high_id = viewer.user_id and cooldown.pair_low_id = competitive.contender_user_id)
           )
       ) as pair_cooldown_active
+      , exists (
+        select 1 from competition.challenges as challenge
+        where challenge.competition_id = competitive.competition_id
+          and competitive.contender_user_id is not null
+          and (
+            (challenge.pair_low_id = viewer.user_id
+              and challenge.pair_high_id = competitive.contender_user_id)
+            or (challenge.pair_high_id = viewer.user_id
+              and challenge.pair_low_id = competitive.contender_user_id)
+          )
+          and challenge.state in (
+            'AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED',
+            'IN_SESSION', 'RESULT_PENDING', 'RESULT_RECORDED', 'UNDER_APPEAL'
+          )
+      ) as pair_challenge_exists
     from competition.competitions as competitive
     join community.communities as community on community.community_id = competitive.community_id
     cross join identity.users as viewer
@@ -475,6 +501,7 @@ function eligibility(row: CompetitionViewerRow, userId: string) {
     contenderUserId: row.contender_user_id,
     hasLiveEntry: row.has_live_entry,
     pairCooldownActive: row.pair_cooldown_active,
+    pairChallengeExists: row.pair_challenge_exists,
   } as const;
 }
 
@@ -515,6 +542,7 @@ async function queueEntries(
       entry.kind,
       entry.state,
       entry.bound_holder_user_id,
+      entry.direct_challenge_mode,
       entry.submitted_at,
       entry.reconfirmation_deadline_at,
       entry.single_candidate_since_at,
@@ -542,6 +570,7 @@ async function queueEntry(
         select entry.queue_entry_id, entry.competition_id, entry.initiator_user_id,
           athlete.display_name as initiator_display_name, entry.target_status, entry.kind,
           entry.state, entry.bound_holder_user_id, entry.submitted_at,
+          entry.direct_challenge_mode,
           entry.reconfirmation_deadline_at, entry.single_candidate_since_at,
           entry.single_candidate_deadline_at,
           null::text as position, entry.version::text
@@ -554,6 +583,7 @@ async function queueEntry(
         select entry.queue_entry_id, entry.competition_id, entry.initiator_user_id,
           athlete.display_name as initiator_display_name, entry.target_status, entry.kind,
           entry.state, entry.bound_holder_user_id, entry.submitted_at,
+          entry.direct_challenge_mode,
           entry.reconfirmation_deadline_at, entry.single_candidate_since_at,
           entry.single_candidate_deadline_at,
           case when entry.state in (
@@ -586,6 +616,7 @@ async function activeStatusChallenge(
   }>`
     select challenge.challenge_id, challenge.service_chat_id,
       challenge.initiator_user_id, challenge.recipient_user_id, challenge.state,
+      challenge.response_policy, challenge.stake,
       initiator.display_name as initiator_display_name,
       recipient.display_name as recipient_display_name
     from competition.challenges as challenge
@@ -605,6 +636,8 @@ async function activeStatusChallenge(
     challengeId: row.challenge_id,
     serviceChatId: row.service_chat_id,
     state: row.state,
+    responsePolicy: row.response_policy,
+    stake: row.stake,
     initiatorDisplayName: row.initiator_display_name,
     recipientDisplayName: row.recipient_display_name,
     viewerIsParticipant: [row.initiator_user_id, row.recipient_user_id].includes(viewerUserId),
@@ -1038,6 +1071,7 @@ async function directCandidateInvalidationReason(
   competitionId: string,
   userId: string,
   currentContenderUserId: string,
+  directChallengeMode: DirectStatusChallengeMode,
 ): Promise<StatusQueueConflictCode | null> {
   const viewer = await competitionViewerContext(transaction, competitionId, userId);
   if (!viewer) return 'MEMBERSHIP_NOT_ACTIVE';
@@ -1048,6 +1082,9 @@ async function directCandidateInvalidationReason(
     });
     if (intent.kind !== 'DIRECT_STATUS') return 'COMPETITION_PHASE_UNAVAILABLE';
     if (intent.boundHolderUserId !== currentContenderUserId) return 'BOUND_HOLDER_CHANGED';
+    if (intent.directChallengeMode !== directChallengeMode) {
+      return 'COMPETITION_PHASE_UNAVAILABLE';
+    }
   } catch (error) {
     if (!(error instanceof StatusQueueConflictError)) throw error;
     return error.code;
@@ -1115,6 +1152,7 @@ export async function requestStatusQueueReconfirmation(
             competition.competition_id,
             existing.initiator_user_id,
             competition.contender_user_id,
+            existing.direct_challenge_mode ?? 'MANDATORY_CONTENDER',
           );
       if (invalidationReason !== null) {
         const reason = invalidationReason;
@@ -1312,6 +1350,7 @@ export async function reconfirmStatusQueueEntry(
         existing.competition_id,
         existing.initiator_user_id,
         currentContenderUserId!,
+        existing.direct_challenge_mode ?? 'MANDATORY_CONTENDER',
       );
       if (invalidationReason !== null) throw new StatusQueueConflictError(invalidationReason);
       await sql`
@@ -1497,6 +1536,7 @@ export async function activateStatusQueueHead(
               and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
           )) as integrity_hold_active,
           community.state = 'ACTIVE' as community_active,
+          competitive.champion_user_id,
           competitive.contender_user_id,
           (
             competitive.status_lock_result_id is null
@@ -1568,6 +1608,7 @@ export async function activateStatusQueueHead(
         competition.competition_id,
         existing.initiator_user_id,
         contenderUserId,
+        existing.direct_challenge_mode ?? 'MANDATORY_CONTENDER',
       );
       if (invalidationReason && invalidationReason !== 'BOUND_HOLDER_CHANGED') {
         await sql`
@@ -1673,8 +1714,18 @@ export async function activateStatusQueueHead(
         throw new StatusQueueConflictError('RULESET_ACK_REQUIRED');
       }
       const pair = normalizeSocialPair(existing.initiator_user_id, contenderUserId);
-      const responseDeadline = mandatoryChallengeResponseDeadline(context.occurredAt);
-      const reminderDeadlines = mandatoryChallengeReminderDeadlines(context.occurredAt);
+      const optionalTitle = existing.direct_challenge_mode === 'OPTIONAL_TITLE';
+      if (optionalTitle && competition.champion_user_id !== existing.initiator_user_id) {
+        throw new StatusQueueConflictError('COMPETITION_PHASE_UNAVAILABLE');
+      }
+      const responsePolicy = optionalTitle ? 'OPTIONAL' as const : 'MANDATORY' as const;
+      const stake = optionalTitle ? 'TITLE' as const : 'CONTENDER' as const;
+      const responseDeadline = optionalTitle
+        ? optionalChallengeResponseDeadline(context.occurredAt)
+        : mandatoryChallengeResponseDeadline(context.occurredAt);
+      const reminderDeadlines = optionalTitle
+        ? optionalChallengeReminderDeadlines(context.occurredAt)
+        : mandatoryChallengeReminderDeadlines(context.occurredAt);
 
       await sql`
         insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
@@ -1710,7 +1761,7 @@ export async function activateStatusQueueHead(
           ${ids.serviceChatId}::uuid, ${ids.serviceChatId}::uuid,
           ${existing.initiator_user_id}::uuid, ${contenderUserId}::uuid,
           ${pair.lowUserId}::uuid, ${pair.highUserId}::uuid,
-          'MANDATORY', 'CONTENDER', 'AWAITING_RESPONSE', ${ids.rulesetSnapshotId}::uuid,
+          ${responsePolicy}, ${stake}, 'AWAITING_RESPONSE', ${ids.rulesetSnapshotId}::uuid,
           ${responseDeadline.toISOString()}::timestamptz, 1,
           ${context.occurredAt.toISOString()}::timestamptz,
           ${context.occurredAt.toISOString()}::timestamptz
@@ -1766,8 +1817,8 @@ export async function activateStatusQueueHead(
               challengeId: ids.challengeId,
               competitionId: competition.competition_id,
               participants: [existing.initiator_user_id, contenderUserId],
-              responsePolicy: 'MANDATORY',
-              stake: 'CONTENDER',
+              responsePolicy,
+              stake,
               responseDeadlineAt: responseDeadline.toISOString(),
             },
             metadata: { policyVersion: CHALLENGE_POLICY_VERSION, rulesetSnapshotId: ids.rulesetSnapshotId },
@@ -1808,6 +1859,47 @@ export async function activateStatusQueueHead(
               challengeId: ids.challengeId,
             },
           },
+          ...(optionalTitle ? [
+            {
+              messageId: ids.timerOutboxMessageId,
+              topic: 'competition.challenge.created.v1',
+              payload: {
+                challengeId: ids.challengeId,
+                timer: {
+                  commandType: 'EXPIRE_OPTIONAL_CHALLENGE',
+                  aggregateType: 'Challenge',
+                  aggregateId: ids.challengeId,
+                  expectedState: 'AWAITING_RESPONSE',
+                  expectedVersion: 1,
+                  deadlineAt: responseDeadline.toISOString(),
+                  policyVersion: CHALLENGE_POLICY_VERSION,
+                  idempotencyKey: `challenge:${ids.challengeId}:expire-optional:v1`,
+                },
+              },
+            },
+            ...reminderDeadlines.map((deadlineAt, index) => ({
+              messageId: ids.optionalReminderTimerOutboxMessageIds?.[index]
+                ?? (index === 0 ? ids.staleQueueEventId : ids.staleQueueOutboxMessageId),
+              topic: index === 0
+                ? 'competition.challenge.optional-response-reminder-12h-timer.v1'
+                : 'competition.challenge.optional-response-reminder-24h-timer.v1',
+              payload: {
+                challengeId: ids.challengeId,
+                timer: {
+                  commandType: index === 0
+                    ? 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H'
+                    : 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H',
+                  aggregateType: 'Challenge',
+                  aggregateId: ids.challengeId,
+                  expectedState: 'AWAITING_RESPONSE',
+                  expectedVersion: 1,
+                  deadlineAt: deadlineAt.toISOString(),
+                  policyVersion: CHALLENGE_POLICY_VERSION,
+                  idempotencyKey: `challenge:${ids.challengeId}:optional-response-reminder-${index === 0 ? '12h' : '24h'}:v1`,
+                },
+              },
+            })),
+          ] : [
           {
             messageId: ids.timerOutboxMessageId,
             topic: 'competition.challenge.mandatory-response-timer.v1',
@@ -1843,6 +1935,7 @@ export async function activateStatusQueueHead(
               },
             },
           },
+          ]),
           {
             messageId: ids.notificationOutboxMessageId,
             topic: 'notification.in_app.v1',
@@ -1852,9 +1945,17 @@ export async function activateStatusQueueHead(
                   notificationId: ids.notificationIds[0],
                   recipientUserId: contenderUserId,
                   category: 'MANDATORY',
-                  renderKey: 'challenge.mandatory-received',
+                  renderKey: optionalTitle
+                    ? 'challenge.optional-title-received'
+                    : 'challenge.mandatory-received',
                   actionTarget: { type: 'CHAT', chatId: ids.serviceChatId },
-                  payload: { challengeId: ids.challengeId, challengerUserId: existing.initiator_user_id },
+                  payload: {
+                    challengeId: ids.challengeId,
+                    challengerUserId: existing.initiator_user_id,
+                    responsePolicy,
+                    stake,
+                    declineHasNoForfeit: optionalTitle,
+                  },
                   deadlineAt: responseDeadline.toISOString(),
                 },
                 {
@@ -1863,7 +1964,12 @@ export async function activateStatusQueueHead(
                   category: 'MANDATORY',
                   renderKey: 'status.queue-entry-activated',
                   actionTarget: { type: 'CHAT', chatId: ids.serviceChatId },
-                  payload: { challengeId: ids.challengeId, contenderUserId },
+                  payload: {
+                    challengeId: ids.challengeId,
+                    contenderUserId,
+                    responsePolicy,
+                    stake,
+                  },
                   deadlineAt: responseDeadline.toISOString(),
                 },
               ],
@@ -2309,12 +2415,12 @@ export async function submitStatusQueueEntry(
       await sql`
         insert into competition.challenge_queue_entries (
           queue_entry_id, competition_id, initiator_user_id, target_status,
-          kind, state, bound_holder_user_id, source_type, source_id,
+          kind, state, bound_holder_user_id, direct_challenge_mode, source_type, source_id,
           submitted_at, version, created_at, updated_at
         ) values (
           ${command.aggregateId}::uuid, ${command.payload.competitionId}::uuid,
           ${command.actor.id}::uuid, ${intent.targetStatus}, ${intent.kind}, 'WAITING',
-          ${intent.boundHolderUserId}::uuid, 'DIRECT', null,
+          ${intent.boundHolderUserId}::uuid, ${intent.directChallengeMode}, 'DIRECT', null,
           clock_timestamp(), ${context.nextVersion}, clock_timestamp(), clock_timestamp()
         )
       `.execute(transaction);

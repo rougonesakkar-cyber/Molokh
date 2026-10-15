@@ -373,7 +373,8 @@ export async function transitionYouthToAdult(
         await sql`
           update competition.challenge_queue_entries
           set target_status = ${targetStatus}, kind = 'GENESIS_CANDIDATE', state = 'WAITING',
-            bound_holder_user_id = null, reconfirmation_deadline_at = null,
+            bound_holder_user_id = null, direct_challenge_mode = null,
+            reconfirmation_deadline_at = null,
             version = version + 1, updated_at = ${timestamp}::timestamptz
           where competition_id = ${competition.competition_id}::uuid
             and kind = 'DIRECT_STATUS'

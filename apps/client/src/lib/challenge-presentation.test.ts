@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   challengeStakeLabel,
   genesisSchedulingExplanation,
+  statusQueueActionCopy,
 } from './challenge-presentation';
 
 describe('Challenge presentation', () => {
@@ -24,5 +25,12 @@ describe('Challenge presentation', () => {
       'повторной Session',
     );
     expect(genesisSchedulingExplanation('OPTIONAL')).toBeNull();
+  });
+
+  it('[AC-047] explains Champion FIFO order and no-fault optional response', () => {
+    const copy = statusQueueActionCopy({ phase: 'RUNNING', viewerStatus: 'CHAMPION' });
+    expect(copy.title).toBe('Предложить титульный бой');
+    expect(copy.detail).toContain('FIFO-очередь без привилегии');
+    expect(copy.detail).toContain('без поражения и Forfeit');
   });
 });

@@ -438,6 +438,7 @@ const activateWaitingStatusHead = async (
       acknowledgmentId: randomUUID(),
       pairedQueueEventId: randomUUID(),
       timerOutboxMessageId: randomUUID(),
+      optionalReminderTimerOutboxMessageIds: [randomUUID(), randomUUID()],
       staleQueueEventId: randomUUID(),
       staleQueueOutboxMessageId: randomUUID(),
       notificationOutboxMessageId: randomUUID(),

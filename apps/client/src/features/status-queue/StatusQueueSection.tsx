@@ -1,6 +1,8 @@
 import type { CompetitionStatusResponse, StatusReleaseCommandResponse } from '@molokh/contracts';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { statusQueueActionCopy } from '../../lib/challenge-presentation';
+
 type CompetitionStatus = CompetitionStatusResponse['data'];
 type QueueEntry = CompetitionStatus['queue'][number];
 type StatusRelease = StatusReleaseCommandResponse['data'];
@@ -49,6 +51,7 @@ const denialLabels: Partial<Record<NonNullable<CompetitionStatus['joinDenialCode
   COMPETITION_PHASE_UNAVAILABLE: 'Сейчас идёт статусный Challenge. Очередь откроется после его завершения.',
   ALREADY_STATUS_HOLDER: 'У вас уже есть спортивный статус в Community.',
   PAIR_COOLDOWN_ACTIVE: 'С текущим Претендентом ещё действует 15-дневный cooldown.',
+  PAIR_CHALLENGE_EXISTS: 'С текущим Претендентом уже есть активный Challenge.',
 };
 
 function localDate(value: string): string {
@@ -58,25 +61,6 @@ function localDate(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function joinCopy(competition: CompetitionStatus): { readonly title: string; readonly detail: string } {
-  if (competition.phase === 'FOUNDING_OPEN') {
-    return {
-      title: 'Бороться за статус',
-      detail: 'Вы явно вступите в GENESIS. Ожидание не имеет скрытого срока и не считается обязательством.',
-    };
-  }
-  if (competition.phase === 'CONTENDER_VACANT_OPEN') {
-    return {
-      title: 'Бороться за статус',
-      detail: 'Вы встанете в прозрачную очередь кандидатов на статус Претендента.',
-    };
-  }
-  return {
-    title: 'Встать в очередь',
-    detail: 'Вызов текущему Претенденту активируется строго по FIFO, когда статусный слот освободится.',
-  };
 }
 
 function releaseCopy(release: StatusRelease): { readonly title: string; readonly detail: string } {
@@ -114,7 +98,7 @@ export function StatusQueueSection({
   onCancelRelease,
 }: StatusQueueSectionProps) {
   const ownEntry = competition.queue.find((entry) => entry.isViewerEntry) ?? null;
-  const actionCopy = joinCopy(competition);
+  const actionCopy = statusQueueActionCopy(competition);
 
   return (
     <View style={styles.card}>
@@ -209,6 +193,12 @@ export function StatusQueueSection({
           <Text style={styles.activeChallengeText}>
             {competition.activeChallenge.initiatorDisplayName} · {competition.activeChallenge.recipientDisplayName}
           </Text>
+          {competition.activeChallenge.responsePolicy === 'OPTIONAL'
+            && competition.activeChallenge.stake === 'TITLE' ? (
+              <Text style={styles.hint}>
+                Титульное предложение №1: Претендент может принять или отказаться без Forfeit.
+              </Text>
+            ) : null}
           {competition.activeChallenge.viewerIsParticipant ? (
             <Pressable
               accessibilityRole="button"

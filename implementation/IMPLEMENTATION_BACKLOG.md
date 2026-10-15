@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 189/214 (`183/196 P0`).
+  Acceptance traceability is 190/214 (`184/196 P0`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -433,6 +433,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
   remains an immutable official Result with the normal Appeal and pair-rematch Cooldown, while the
   Champion/Contender projection, status lock and status-tenure history remain unchanged. The Chat
   explicitly says that the title is not at stake. Core/API/client and real PostgreSQL proofs pass.
+- M5 Champion-to-Contender optional TITLE increment: complete. AC-047 stores an immutable
+  `OPTIONAL_TITLE` queue intent, preserves the shared `(submitted_at, entry_id)` order without a
+  Champion privilege, and creates the TITLE Challenge, service Chat, ruleset snapshot and
+  +12h/+24h/+48h stale-safe response timers only when that entry becomes the strict head. The
+  Contender may decline without Result, Forfeit, status movement or Cooldown; role drift cannot
+  silently reinterpret the saved offer as an Ordinary mandatory Challenge. Migration `0068` adds
+  only the direct-intent mode needed to preserve that meaning.
 - M5 mandatory TITLE response-clock increment: complete. CH-07 publishes a separate +48h
   state/version-guarded reminder to the current Champion and expires only at the immutable +72h
   server deadline. The existing administrative Result engine records exactly one `FORFEIT`, swaps

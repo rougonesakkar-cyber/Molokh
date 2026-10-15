@@ -30,6 +30,7 @@ const eligible = {
   contenderUserId: null,
   hasLiveEntry: false,
   pairCooldownActive: false,
+  pairChallengeExists: false,
 } as const;
 
 describe('status queue policy', () => {
@@ -38,6 +39,7 @@ describe('status queue policy', () => {
       kind: 'GENESIS_CANDIDATE',
       targetStatus: 'CHAMPION',
       boundHolderUserId: null,
+      directChallengeMode: null,
     });
   });
 
@@ -50,6 +52,7 @@ describe('status queue policy', () => {
       kind: 'DIRECT_STATUS',
       targetStatus: 'CONTENDER',
       boundHolderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      directChallengeMode: 'MANDATORY_CONTENDER',
     });
     expect(() => assertStatusQueueEntryCanBeSubmitted({
       ...eligible,
@@ -89,15 +92,35 @@ describe('status queue policy', () => {
     })).toThrowError(StatusQueueConflictError);
   });
 
-  it('does not let a holder or duplicate live intent enter the queue', () => {
+  it('[AC-047] lets Champion offer an optional TITLE only through the ordinary FIFO', () => {
+    expect(assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      actorStatus: 'CHAMPION',
+    })).toEqual({
+      kind: 'DIRECT_STATUS',
+      targetStatus: 'CONTENDER',
+      boundHolderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      directChallengeMode: 'OPTIONAL_TITLE',
+    });
     expect(() => assertStatusQueueEntryCanBeSubmitted({
       ...eligible,
-      actorStatus: 'CHAMPION',
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      actorStatus: 'CONTENDER',
     })).toThrowError('ALREADY_STATUS_HOLDER');
     expect(() => assertStatusQueueEntryCanBeSubmitted({
       ...eligible,
       hasLiveEntry: true,
     })).toThrowError('LIVE_QUEUE_ENTRY_EXISTS');
+    expect(() => assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      actorStatus: 'CHAMPION',
+      pairChallengeExists: true,
+    })).toThrowError('PAIR_CHALLENGE_EXISTS');
   });
 
   it('[AC-048][AC-092] activates only the strict FIFO head against the still-current Contender', () => {
