@@ -912,6 +912,14 @@ export const SafetyReplacementRemedySchema = Type.Union([
 export const SafetyCaseRemedySchema = Type.Union([
   SafetyReplacementRemedySchema,
   Type.Literal('FORFEIT_BY_ENFORCEMENT'),
+  Type.Literal('ACCOUNT_RESTRICTION'),
+]);
+
+export const SafetyAccountRestrictionCategorySchema = Type.Union([
+  Type.Literal('VIOLENCE'),
+  Type.Literal('FRAUD'),
+  Type.Literal('IDENTITY_ABUSE'),
+  Type.Literal('ILLEGAL_USE'),
 ]);
 
 export const ResolveSafetyCaseBodySchema = Type.Object({
@@ -919,6 +927,8 @@ export const ResolveSafetyCaseBodySchema = Type.Object({
   replacementCoachUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
   replacementVenueId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
   causalLinkConfirmed: Type.Optional(Type.Boolean()),
+  restrictionCategoryCode: Type.Optional(SafetyAccountRestrictionCategorySchema),
+  seriousCategoryConfirmed: Type.Optional(Type.Boolean()),
   consequencesConfirmed: Type.Optional(Type.Boolean()),
   reason: Type.String({ minLength: 10, maxLength: 1000 }),
   expectedChallengeVersion: Type.Integer({ minimum: 1 }),
@@ -978,11 +988,37 @@ const SafetyEnforcementForfeitAppliedProjectionSchema = Type.Object({
   version: Type.Integer({ minimum: 3 }),
 }, { additionalProperties: false });
 
+const SafetyAccountRestrictionAppliedProjectionSchema = Type.Object({
+  action: Type.Literal('SAFETY_ACCOUNT_RESTRICTION_APPLIED'),
+  caseId: Type.String({ format: 'uuid' }),
+  state: Type.Literal('CLOSED'),
+  decisionId: Type.String({ format: 'uuid' }),
+  remedyCode: Type.Literal('ACCOUNT_RESTRICTION'),
+  enforcementId: Type.String({ format: 'uuid' }),
+  subjectUserId: Type.String({ format: 'uuid' }),
+  categoryCode: SafetyAccountRestrictionCategorySchema,
+  accountState: Type.Literal('RESTRICTED'),
+  appealDeadlineAt: Type.String({ format: 'date-time' }),
+  challengeId: Type.String({ format: 'uuid' }),
+  challengeState: Type.Literal('BOOKED'),
+  challengeVersion: Type.Integer({ minimum: 1 }),
+  holdId: Type.String({ format: 'uuid' }),
+  holdState: Type.Literal('ACTIVE'),
+  holdVersion: Type.Integer({ minimum: 1 }),
+  competitionId: Type.String({ format: 'uuid' }),
+  subjectStatus: Type.Union([
+    Type.Literal('CHAMPION'), Type.Literal('CONTENDER'), Type.Null(),
+  ]),
+  statusReviewHoldId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  version: Type.Integer({ minimum: 3 }),
+}, { additionalProperties: false });
+
 export const SafetyCaseReviewCommandResponseSchema = Type.Object({
   data: Type.Union([
     SafetyReviewStartedProjectionSchema,
     SafetyReplacementAppliedProjectionSchema,
     SafetyEnforcementForfeitAppliedProjectionSchema,
+    SafetyAccountRestrictionAppliedProjectionSchema,
   ]),
   meta: Type.Object({
     requestId: Type.String({ format: 'uuid' }),

@@ -41,9 +41,11 @@ import {
   normalizeCommercialPrice,
   normalizeOptionalScheduleText,
   normalizeScheduleMutationReason,
+  normalizeSafetyAccountRestrictionDecision,
   normalizeSafetyEnforcementDecision,
   normalizeSafetyCaseReleaseDecision,
   normalizeScheduleLabel,
+  safetyRestrictionSubjectStatus,
 } from '../src/scheduling.js';
 
 describe('Scheduling publication policy', () => {
@@ -442,6 +444,31 @@ describe('Scheduling publication policy', () => {
     expect(() => normalizeSafetyEnforcementDecision({
       ...decision, consequencesConfirmed: false,
     })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED' }));
+  });
+
+  it('[AC-128] permits account restriction only for a confirmed serious category', () => {
+    const decision = {
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      subjectUserId: 'athlete-a', athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      categoryCode: 'VIOLENCE', seriousCategoryConfirmed: true,
+      consequencesConfirmed: true, reason: ' confirmed serious safety violation ',
+    };
+    expect(normalizeSafetyAccountRestrictionDecision(decision)).toEqual({
+      remedyCode: 'ACCOUNT_RESTRICTION', subjectUserId: 'athlete-a',
+      categoryCode: 'VIOLENCE', reason: 'confirmed serious safety violation',
+    });
+    expect(() => normalizeSafetyAccountRestrictionDecision({
+      ...decision, categoryCode: 'THREAT',
+    })).toThrowError(expect.objectContaining({ field: 'restrictionCategoryCode' }));
+    expect(() => normalizeSafetyAccountRestrictionDecision({
+      ...decision, seriousCategoryConfirmed: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_SERIOUS_CATEGORY_REQUIRED' }));
+    expect(safetyRestrictionSubjectStatus({
+      subjectUserId: 'athlete-a', championUserId: 'athlete-a', contenderUserId: 'athlete-b',
+    })).toBe('CHAMPION');
+    expect(safetyRestrictionSubjectStatus({
+      subjectUserId: 'ordinary', championUserId: 'athlete-a', contenderUserId: 'athlete-b',
+    })).toBeNull();
   });
 
   it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {

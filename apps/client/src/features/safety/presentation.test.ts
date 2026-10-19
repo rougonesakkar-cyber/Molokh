@@ -40,4 +40,14 @@ describe('Coach safety refusal presentation', () => {
     expect(decision.explanation).toContain('Forfeit');
     expect(decision.explanation).toContain('Appeal');
   });
+
+  it('[AC-128] explains immediate restriction without automatic status transfer', () => {
+    const decision = safetyCaseResolutionPresentation({
+      state: 'UNDER_REVIEW', viewerCanStartReview: false, viewerCanResolve: true,
+    });
+    expect(decision.explanation).toContain('подтверждённой серьёзной категории');
+    expect(decision.explanation).toContain('блокирует новые действия сразу');
+    expect(decision.explanation).toContain('не передаёт статус автоматически');
+    expect(decision.explanation).toContain('Appeal 7 дней');
+  });
 });

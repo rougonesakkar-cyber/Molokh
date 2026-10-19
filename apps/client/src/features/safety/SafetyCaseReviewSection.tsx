@@ -11,12 +11,21 @@ import { safetyCaseResolutionPresentation } from './presentation';
 
 type ModerationCase = CentralModerationCaseListResponse['data'][number];
 type Remedy = ResolveSafetyCaseBody['remedyCode'];
+type RestrictionCategory = NonNullable<ResolveSafetyCaseBody['restrictionCategoryCode']>;
 
 const remedyLabels: Readonly<Record<Remedy, string>> = {
   REPLACE_COACH: 'Заменить Coach',
   REPLACE_VENUE: 'Заменить зал',
   REPLACE_COACH_AND_VENUE: 'Заменить Coach и зал',
   FORFEIT_BY_ENFORCEMENT: 'Forfeit по решению Central',
+  ACCOUNT_RESTRICTION: 'Ограничить аккаунт',
+};
+
+const restrictionCategoryLabels: Readonly<Record<RestrictionCategory, string>> = {
+  VIOLENCE: 'Подтверждённое насилие',
+  FRAUD: 'Подтверждённое мошенничество',
+  IDENTITY_ABUSE: 'Злоупотребление идентичностью',
+  ILLEGAL_USE: 'Незаконное использование',
 };
 
 export function SafetyCaseReviewSection(props: {
@@ -31,6 +40,8 @@ export function SafetyCaseReviewSection(props: {
   const [venueByCase, setVenueByCase] = useState<Record<string, string>>({});
   const [reasonByCase, setReasonByCase] = useState<Record<string, string>>({});
   const [enforcementConfirmedByCase, setEnforcementConfirmedByCase] = useState<Record<string, boolean>>({});
+  const [restrictionCategoryByCase, setRestrictionCategoryByCase] = useState<Record<string, RestrictionCategory>>({});
+  const [restrictionConfirmedByCase, setRestrictionConfirmedByCase] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const keys = useRef(new Map<string, string>());
@@ -43,8 +54,11 @@ export function SafetyCaseReviewSection(props: {
     const venue = venueByCase[item.caseId] ?? '';
     const reason = reasonByCase[item.caseId]?.trim() ?? '';
     const enforcementConfirmed = enforcementConfirmedByCase[item.caseId] === true;
+    const restrictionCategory = restrictionCategoryByCase[item.caseId];
+    const restrictionConfirmed = restrictionConfirmedByCase[item.caseId] === true;
     const signature = [
       item.caseId, item.version, action, remedy, coach, venue, reason, enforcementConfirmed,
+      restrictionCategory, restrictionConfirmed,
     ].join(':');
     const key = keys.current.get(signature) ?? `safety-case:${action}:${item.caseId}:${Date.now().toString(36)}`;
     keys.current.set(signature, key);
@@ -58,6 +72,16 @@ export function SafetyCaseReviewSection(props: {
         replacementVenueId: null,
         causalLinkConfirmed: enforcementConfirmed,
         consequencesConfirmed: enforcementConfirmed,
+        reason,
+        expectedChallengeVersion: item.challengeVersion,
+        expectedHoldVersion: item.holdVersion,
+      } : remedy === 'ACCOUNT_RESTRICTION' ? {
+        remedyCode: remedy,
+        replacementCoachUserId: null,
+        replacementVenueId: null,
+        restrictionCategoryCode: restrictionCategory,
+        seriousCategoryConfirmed: restrictionConfirmed,
+        consequencesConfirmed: restrictionConfirmed,
         reason,
         expectedChallengeVersion: item.challengeVersion,
         expectedHoldVersion: item.holdVersion,
@@ -84,7 +108,9 @@ export function SafetyCaseReviewSection(props: {
       const result = (await response.json()) as SafetyCaseReviewCommandResponse;
       keys.current.delete(signature);
       props.onUpdated(item.caseId, result.data.state);
-      setNotice(result.data.action === 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED'
+      setNotice(result.data.action === 'SAFETY_ACCOUNT_RESTRICTION_APPLIED'
+        ? 'Аккаунт ограничен. Спортивная история сохранена; статус не передан автоматически.'
+        : result.data.action === 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED'
         ? 'Решение применено: Result записан, hold освобождён, открыт 48-часовой Appeal.'
         : result.data.state === 'CLOSED'
           ? 'Hold освобождён. Тот же Challenge вернулся к выбору слота; новая Session не создана.'
@@ -114,13 +140,18 @@ export function SafetyCaseReviewSection(props: {
         const reason = reasonByCase[item.caseId] ?? '';
         const coach = coachByCase[item.caseId] ?? '';
         const venue = venueByCase[item.caseId] ?? '';
-        const isEnforcement = remedy === 'FORFEIT_BY_ENFORCEMENT';
+        const isForfeit = remedy === 'FORFEIT_BY_ENFORCEMENT';
+        const isRestriction = remedy === 'ACCOUNT_RESTRICTION';
+        const isEnforcement = isForfeit || isRestriction;
         const needsCoach = !isEnforcement && remedy !== 'REPLACE_VENUE';
         const needsVenue = !isEnforcement && remedy !== 'REPLACE_COACH';
         const enforcementConfirmed = enforcementConfirmedByCase[item.caseId] === true;
+        const restrictionCategory = restrictionCategoryByCase[item.caseId];
+        const restrictionConfirmed = restrictionConfirmedByCase[item.caseId] === true;
         const canResolve = presentation.action === 'RESOLVE' && reason.trim().length >= 10
           && (!needsCoach || coach.length > 0) && (!needsVenue || venue.length > 0)
-          && (!isEnforcement || enforcementConfirmed)
+          && (!isForfeit || enforcementConfirmed)
+          && (!isRestriction || (restrictionCategory !== undefined && restrictionConfirmed))
           && item.challengeVersion !== null && item.holdVersion !== null;
         return (
           <View key={item.caseId} style={styles.card}>
@@ -164,7 +195,7 @@ export function SafetyCaseReviewSection(props: {
                     style={[styles.choice, coach === option.userId && styles.selected]}
                   ><Text>{option.displayName}</Text></Pressable>
                 )) : null}
-                {isEnforcement ? (
+                {isForfeit ? (
                   <View style={styles.warning}>
                     <Text style={styles.label}>Спортивные последствия</Text>
                     <Text style={styles.hint}>
@@ -183,11 +214,44 @@ export function SafetyCaseReviewSection(props: {
                     </Pressable>
                   </View>
                 ) : null}
+                {isRestriction ? (
+                  <View style={styles.warning}>
+                    <Text style={styles.label}>Немедленное ограничение аккаунта</Text>
+                    <Text style={styles.hint}>
+                      Выберите только подтверждённую серьёзную категорию. Новые действия аккаунта
+                      будут заблокированы сразу. Спортивная история сохранится, а статус
+                      Champion/Contender не будет передан автоматически. Appeal доступен 7 дней.
+                    </Text>
+                    {(Object.keys(restrictionCategoryLabels) as RestrictionCategory[]).map((value) => (
+                      <Pressable
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected: restrictionCategory === value }}
+                        key={value}
+                        onPress={() => setRestrictionCategoryByCase((current) => ({
+                          ...current, [item.caseId]: value,
+                        }))}
+                        style={[styles.choice, restrictionCategory === value && styles.selected]}
+                      ><Text>{restrictionCategoryLabels[value]}</Text></Pressable>
+                    ))}
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: restrictionConfirmed }}
+                      onPress={() => setRestrictionConfirmedByCase((current) => ({
+                        ...current, [item.caseId]: !restrictionConfirmed,
+                      }))}
+                      style={[styles.choice, restrictionConfirmed && styles.selected]}
+                    >
+                      <Text>Категория подтверждена, немедленные последствия понятны</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
                 <TextInput
                   accessibilityLabel="Закрытая причина решения SafetyCase"
                   multiline maxLength={1000}
-                  placeholder={isEnforcement
+                  placeholder={isForfeit
                     ? 'Почему поведение Athlete напрямую сорвало Session'
+                    : isRestriction
+                      ? 'Закрытое основание подтверждённой серьёзной категории'
                     : 'Почему эта замена безопасна'}
                   style={styles.input} value={reason}
                   onChangeText={(value) => setReasonByCase((current) => ({ ...current, [item.caseId]: value }))}
@@ -197,8 +261,10 @@ export function SafetyCaseReviewSection(props: {
                   disabled={!canResolve || actingId !== null}
                   onPress={() => void run(item, 'resolve')}
                   style={[styles.primaryButton, (!canResolve || actingId !== null) && styles.disabled]}
-                ><Text style={styles.primaryText}>{isEnforcement
+                ><Text style={styles.primaryText}>{isForfeit
                   ? 'Записать Forfeit и освободить hold'
+                  : isRestriction
+                    ? 'Ограничить аккаунт без передачи статуса'
                   : 'Применить замену и освободить hold'}</Text></Pressable>
               </View>
             ) : null}

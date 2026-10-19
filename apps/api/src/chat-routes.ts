@@ -170,6 +170,12 @@ function safetyResolutionEffectIds(): SafetyCaseResolutionEffectIds {
     resultOutboxMessageId: newUuidV7(),
     resultNotificationOutboxMessageId: newUuidV7(),
     resultNotificationIds: [newUuidV7(), newUuidV7()],
+    enforcementId: newUuidV7(), restrictionEventId: newUuidV7(),
+    restrictionOutboxMessageId: newUuidV7(),
+    restrictionNotificationOutboxMessageId: newUuidV7(),
+    restrictionNotificationId: newUuidV7(),
+    statusReviewHoldId: newUuidV7(), statusReviewHoldEventId: newUuidV7(),
+    statusReviewHoldOutboxMessageId: newUuidV7(),
   };
 }
 

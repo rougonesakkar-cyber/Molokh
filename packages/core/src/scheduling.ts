@@ -34,8 +34,10 @@ export type SchedulingConflictCode =
   | 'SAFETY_CASE_REVIEWER_MISMATCH'
   | 'SAFETY_CASE_REPLACEMENT_UNAVAILABLE'
   | 'SAFETY_CASE_CAUSAL_LINK_REQUIRED'
+  | 'SAFETY_CASE_SERIOUS_CATEGORY_REQUIRED'
   | 'SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED'
   | 'SAFETY_CASE_SUBJECT_INVALID'
+  | 'SAFETY_CASE_SUBJECT_NOT_ACTIVE'
   | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
@@ -825,7 +827,16 @@ export type SafetyReplacementRemedy =
   | 'REPLACE_VENUE'
   | 'REPLACE_COACH_AND_VENUE';
 
-export type SafetyCaseRemedy = SafetyReplacementRemedy | 'FORFEIT_BY_ENFORCEMENT';
+export type SafetyAccountRestrictionCategory =
+  | 'VIOLENCE'
+  | 'FRAUD'
+  | 'IDENTITY_ABUSE'
+  | 'ILLEGAL_USE';
+
+export type SafetyCaseRemedy =
+  | SafetyReplacementRemedy
+  | 'FORFEIT_BY_ENFORCEMENT'
+  | 'ACCOUNT_RESTRICTION';
 
 export function assertSafetyCaseReviewCanStart(input: {
   readonly state: string;
@@ -953,6 +964,71 @@ export function normalizeSafetyEnforcementDecision(input: {
     causalLinkCode: 'SUBJECT_CAUSED_SESSION_FAILURE',
     reason,
   };
+}
+
+const safetyAccountRestrictionCategories = new Set<SafetyAccountRestrictionCategory>([
+  'VIOLENCE', 'FRAUD', 'IDENTITY_ABUSE', 'ILLEGAL_USE',
+]);
+
+export function normalizeSafetyAccountRestrictionDecision(input: {
+  readonly state: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly categoryCode: string | null;
+  readonly seriousCategoryConfirmed: boolean;
+  readonly consequencesConfirmed: boolean;
+  readonly reason: string;
+}): {
+  readonly remedyCode: 'ACCOUNT_RESTRICTION';
+  readonly subjectUserId: string;
+  readonly categoryCode: SafetyAccountRestrictionCategory;
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_MISMATCH');
+  }
+  if (!input.athleteUserIds.includes(input.subjectUserId)) {
+    throw new SchedulingConflictError('SAFETY_CASE_SUBJECT_INVALID');
+  }
+  if (
+    input.categoryCode === null
+    || !safetyAccountRestrictionCategories.has(
+      input.categoryCode as SafetyAccountRestrictionCategory,
+    )
+  ) {
+    throw new SchedulingValidationError('restrictionCategoryCode');
+  }
+  if (!input.seriousCategoryConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_SERIOUS_CATEGORY_REQUIRED');
+  }
+  if (!input.consequencesConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 1000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return {
+    remedyCode: 'ACCOUNT_RESTRICTION',
+    subjectUserId: input.subjectUserId,
+    categoryCode: input.categoryCode as SafetyAccountRestrictionCategory,
+    reason,
+  };
+}
+
+export function safetyRestrictionSubjectStatus(input: {
+  readonly subjectUserId: string;
+  readonly championUserId: string | null;
+  readonly contenderUserId: string | null;
+}): 'CHAMPION' | 'CONTENDER' | null {
+  if (input.championUserId === input.subjectUserId) return 'CHAMPION';
+  if (input.contenderUserId === input.subjectUserId) return 'CONTENDER';
+  return null;
 }
 
 export function extendSchedulingDeadlineForSafetyHold(input: {

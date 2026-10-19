@@ -1309,8 +1309,19 @@ describe('runtime contract', () => {
       command: CommandEnvelope<ResolveSafetyCasePayload>,
       ids: SafetyCaseResolutionEffectIds,
     ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> => {
-      const response: SafetyCaseReviewProjection = command.payload.remedyCode === 'FORFEIT_BY_ENFORCEMENT'
+      const response: SafetyCaseReviewProjection = command.payload.remedyCode === 'ACCOUNT_RESTRICTION'
         ? {
+            action: 'SAFETY_ACCOUNT_RESTRICTION_APPLIED', caseId, state: 'CLOSED',
+            decisionId: ids.decisionId, remedyCode: 'ACCOUNT_RESTRICTION',
+            enforcementId: ids.enforcementId!, subjectUserId: userId,
+            categoryCode: 'VIOLENCE', accountState: 'RESTRICTED',
+            appealDeadlineAt: '2026-09-14T12:00:00.000Z',
+            challengeId: chatId, challengeState: 'BOOKED', challengeVersion: 2,
+            holdId: reportId, holdState: 'ACTIVE', holdVersion: 1,
+            competitionId: chatId, subjectStatus: 'CHAMPION',
+            statusReviewHoldId: ids.statusReviewHoldId!, version: 3,
+          }
+        : command.payload.remedyCode === 'FORFEIT_BY_ENFORCEMENT' ? {
             action: 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED', caseId, state: 'CLOSED',
             decisionId: ids.decisionId, remedyCode: 'FORFEIT_BY_ENFORCEMENT',
             resultId: ids.resultId!, challengeId: chatId, challengeState: 'RESULT_RECORDED',
@@ -1484,6 +1495,30 @@ describe('runtime contract', () => {
       payload: {
         remedyCode: 'FORFEIT_BY_ENFORCEMENT', causalLinkConfirmed: true,
         consequencesConfirmed: true, expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    const restricted = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/resolve`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-restrict-1', 'if-match': '2' },
+      payload: {
+        remedyCode: 'ACCOUNT_RESTRICTION', replacementCoachUserId: null,
+        replacementVenueId: null, restrictionCategoryCode: 'VIOLENCE',
+        seriousCategoryConfirmed: true, consequencesConfirmed: true,
+        reason: 'Подтверждена серьёзная категория нарушения безопасности',
+        expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    expect(restricted.statusCode, restricted.body).toBe(200);
+    expect(restricted.json()).toMatchObject({
+      data: {
+        action: 'SAFETY_ACCOUNT_RESTRICTION_APPLIED', accountState: 'RESTRICTED',
+        challengeState: 'BOOKED', holdState: 'ACTIVE', subjectStatus: 'CHAMPION',
+      },
+    });
+    expect(resolveSafetyCase.mock.calls[2]?.[0]).toMatchObject({
+      payload: {
+        remedyCode: 'ACCOUNT_RESTRICTION', restrictionCategoryCode: 'VIOLENCE',
+        seriousCategoryConfirmed: true, consequencesConfirmed: true,
       },
     });
 

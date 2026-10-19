@@ -24,8 +24,10 @@ import {
   effectiveChallengeStakeAtSessionWindow,
   externalChallengeRescheduleCount,
   extendSchedulingDeadlineForSafetyHold,
+  normalizeSafetyAccountRestrictionDecision,
   normalizeSafetyEnforcementDecision,
   normalizeSafetyCaseReleaseDecision,
+  safetyRestrictionSubjectStatus,
   officialCancellationWinner,
   titleChallengeCompetitiveContextIsCurrent,
   titleSessionRequiresCompetitiveInvalidation,
@@ -35,6 +37,7 @@ import {
   type CommandEnvelope,
   type SessionState,
   type SafetyCancellationReasonCode,
+  type SafetyAccountRestrictionCategory,
   type SafetyCaseRemedy,
   type SafetyReplacementRemedy,
   type TimerAggregateSnapshot,
@@ -189,6 +192,8 @@ export interface ResolveSafetyCasePayload {
   readonly replacementCoachUserId: string | null;
   readonly replacementVenueId: string | null;
   readonly causalLinkConfirmed?: boolean;
+  readonly restrictionCategoryCode?: SafetyAccountRestrictionCategory;
+  readonly seriousCategoryConfirmed?: boolean;
   readonly consequencesConfirmed?: boolean;
   readonly reason: string;
   readonly expectedChallengeVersion: number;
@@ -219,6 +224,14 @@ export interface SafetyCaseResolutionEffectIds extends SafetyCaseReviewEffectIds
   readonly resultOutboxMessageId?: string;
   readonly resultNotificationOutboxMessageId?: string;
   readonly resultNotificationIds?: readonly [string, string];
+  readonly enforcementId?: string;
+  readonly restrictionEventId?: string;
+  readonly restrictionOutboxMessageId?: string;
+  readonly restrictionNotificationOutboxMessageId?: string;
+  readonly restrictionNotificationId?: string;
+  readonly statusReviewHoldId?: string;
+  readonly statusReviewHoldEventId?: string;
+  readonly statusReviewHoldOutboxMessageId?: string;
 }
 
 export type SafetyCaseReviewProjection =
@@ -269,6 +282,28 @@ export type SafetyCaseReviewProjection =
       readonly holdState: 'RELEASED';
       readonly holdVersion: number;
       readonly releasedAt: string;
+      readonly version: number;
+    }
+  | {
+      readonly action: 'SAFETY_ACCOUNT_RESTRICTION_APPLIED';
+      readonly caseId: string;
+      readonly state: 'CLOSED';
+      readonly decisionId: string;
+      readonly remedyCode: 'ACCOUNT_RESTRICTION';
+      readonly enforcementId: string;
+      readonly subjectUserId: string;
+      readonly categoryCode: SafetyAccountRestrictionCategory;
+      readonly accountState: 'RESTRICTED';
+      readonly appealDeadlineAt: string;
+      readonly challengeId: string;
+      readonly challengeState: 'BOOKED';
+      readonly challengeVersion: number;
+      readonly holdId: string;
+      readonly holdState: 'ACTIVE';
+      readonly holdVersion: number;
+      readonly competitionId: string;
+      readonly subjectStatus: 'CHAMPION' | 'CONTENDER' | null;
+      readonly statusReviewHoldId: string | null;
       readonly version: number;
     };
 
@@ -654,11 +689,13 @@ async function hasActiveCentralScope(
   const result = await sql<{ readonly allowed: boolean }>`
     select true as allowed
     where exists (
-      select 1 from community.role_grants
-      where user_id = ${actorId}::uuid
-        and role = 'CENTRAL_ADMIN' and scope_type = 'GLOBAL'
-        and state = 'ACTIVE'
-        and (expires_at is null or expires_at > clock_timestamp())
+      select 1 from community.role_grants role_grant
+      join identity.users actor on actor.user_id = role_grant.user_id
+      where role_grant.user_id = ${actorId}::uuid
+        and actor.account_state = 'ACTIVE'
+        and role_grant.role = 'CENTRAL_ADMIN' and role_grant.scope_type = 'GLOBAL'
+        and role_grant.state = 'ACTIVE'
+        and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
     )
   `.execute(database);
   return result.rows[0]?.allowed === true;
@@ -1497,6 +1534,13 @@ interface SafetyCaseReviewRow {
   readonly coach_user_id: string;
   readonly venue_id: string;
   readonly community_id: string;
+  readonly competition_id: string;
+  readonly champion_user_id: string | null;
+  readonly contender_user_id: string | null;
+  readonly competition_status_version: string;
+  readonly competition_version: string;
+  readonly subject_account_state: 'ACTIVE' | 'RESTRICTED' | 'CLOSED';
+  readonly subject_account_version: string;
   readonly challenge_state: ChallengeState;
   readonly scheduling_deadline_at: Date | null;
   readonly user_reschedule_count: number;
@@ -1521,7 +1565,12 @@ async function safetyCaseReviewRow(
       moderation_case.challenge_id, moderation_case.booking_id,
       moderation_case.session_id, moderation_case.version::text,
       session.pair_low_id, session.pair_high_id, session.coach_user_id,
-      session.venue_id, competition.community_id,
+      session.venue_id, competition.community_id, competition.competition_id,
+      competition.champion_user_id, competition.contender_user_id,
+      competition.status_version::text as competition_status_version,
+      competition.version::text as competition_version,
+      subject.account_state as subject_account_state,
+      subject.version::text as subject_account_version,
       challenge.state as challenge_state, challenge.scheduling_deadline_at,
       challenge.user_reschedule_count, challenge.version::text as challenge_version,
       (select count(*)::text
@@ -1542,6 +1591,8 @@ async function safetyCaseReviewRow(
       and challenge.challenge_id = session.challenge_id
     join competition.competitions competition
       on competition.competition_id = challenge.competition_id
+    join identity.users subject
+      on subject.user_id = moderation_case.subject_user_id
     join competition.process_holds process_hold
       on process_hold.moderation_case_id = moderation_case.case_id
       and process_hold.aggregate_type = 'CHALLENGE'
@@ -1549,7 +1600,7 @@ async function safetyCaseReviewRow(
       and process_hold.reason = 'SAFETY'
     where moderation_case.case_id = ${caseId}::uuid
       and moderation_case.case_type = 'SAFETY'
-    for update of moderation_case, session, booking, challenge, process_hold
+    for update of moderation_case, session, booking, challenge, competition, subject, process_hold
   `.execute(transaction);
   return result.rows[0];
 }
@@ -1727,6 +1778,30 @@ function requiredSafetyEnforcementIds(
   };
 }
 
+type SafetyAccountRestrictionEffectIds = Required<Pick<
+  SafetyCaseResolutionEffectIds,
+  | 'enforcementId'
+  | 'restrictionEventId'
+  | 'restrictionOutboxMessageId'
+  | 'restrictionNotificationOutboxMessageId'
+  | 'restrictionNotificationId'
+  | 'statusReviewHoldId'
+  | 'statusReviewHoldEventId'
+  | 'statusReviewHoldOutboxMessageId'
+>>;
+
+function requiredSafetyAccountRestrictionIds(
+  ids: SafetyCaseResolutionEffectIds,
+): SafetyAccountRestrictionEffectIds {
+  if (
+    !ids.enforcementId || !ids.restrictionEventId || !ids.restrictionOutboxMessageId
+    || !ids.restrictionNotificationOutboxMessageId || !ids.restrictionNotificationId
+    || !ids.statusReviewHoldId || !ids.statusReviewHoldEventId
+    || !ids.statusReviewHoldOutboxMessageId
+  ) throw new TypeError('Safety account restriction effect IDs are required');
+  return ids as SafetyAccountRestrictionEffectIds;
+}
+
 export async function resolveSafetyCase(
   database: Kysely<Database>,
   command: CommandEnvelope<ResolveSafetyCasePayload>,
@@ -1752,6 +1827,219 @@ export async function resolveSafetyCase(
         || row.scheduling_deadline_at === null
         || Number(row.active_obligation_count) !== 2
       ) throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+      if (command.payload.remedyCode === 'ACCOUNT_RESTRICTION') {
+        const restrictionIds = requiredSafetyAccountRestrictionIds(ids);
+        if (
+          command.payload.replacementCoachUserId !== null
+          || command.payload.replacementVenueId !== null
+        ) throw new SchedulingValidationError('replacement');
+        const normalized = normalizeSafetyAccountRestrictionDecision({
+          state: row.state,
+          assignedReviewerUserId: row.assigned_reviewer_user_id,
+          reviewerUserId: command.actor.id,
+          subjectUserId: row.subject_user_id,
+          athleteUserIds: [row.pair_low_id, row.pair_high_id],
+          categoryCode: command.payload.restrictionCategoryCode ?? null,
+          seriousCategoryConfirmed: command.payload.seriousCategoryConfirmed === true,
+          consequencesConfirmed: command.payload.consequencesConfirmed === true,
+          reason: command.payload.reason,
+        });
+        if (row.subject_account_state !== 'ACTIVE') {
+          throw new SchedulingConflictError('SAFETY_CASE_SUBJECT_NOT_ACTIVE');
+        }
+        const subjectStatus = safetyRestrictionSubjectStatus({
+          subjectUserId: normalized.subjectUserId,
+          championUserId: row.champion_user_id,
+          contenderUserId: row.contender_user_id,
+        });
+        const appealDeadlineAt = new Date(
+          context.occurredAt.getTime() + 7 * 24 * 60 * 60 * 1000,
+        );
+        await sql`
+          insert into governance.safety_case_decisions (
+            decision_id, case_id, reviewer_user_id, remedy_code,
+            replacement_coach_user_id, replacement_venue_id, decision_reason,
+            restriction_category_code, decided_at
+          ) values (
+            ${ids.decisionId}::uuid, ${row.case_id}::uuid, ${command.actor.id}::uuid,
+            ${normalized.remedyCode}, null, null, ${normalized.reason},
+            ${normalized.categoryCode}, ${context.occurredAt.toISOString()}::timestamptz
+          )
+        `.execute(transaction);
+        await sql`
+          insert into governance.enforcements (
+            enforcement_id, source_case_id, source_decision_id, subject_user_id,
+            enforcement_type, state, category_code, applied_by_user_id,
+            applied_at, appeal_deadline_at, version
+          ) values (
+            ${restrictionIds.enforcementId}::uuid, ${row.case_id}::uuid, ${ids.decisionId}::uuid,
+            ${normalized.subjectUserId}::uuid, 'ACCOUNT_RESTRICTION', 'ACTIVE',
+            ${normalized.categoryCode}, ${command.actor.id}::uuid,
+            ${context.occurredAt.toISOString()}::timestamptz,
+            ${appealDeadlineAt.toISOString()}::timestamptz, 1
+          )
+        `.execute(transaction);
+        const subjectAccountVersion = Number(row.subject_account_version) + 1;
+        await sql`
+          update identity.users
+          set account_state = 'RESTRICTED', version = ${subjectAccountVersion},
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where user_id = ${normalized.subjectUserId}::uuid
+            and account_state = 'ACTIVE' and version = ${Number(row.subject_account_version)}
+        `.execute(transaction);
+        if (subjectStatus !== null) {
+          await sql`
+            insert into competition.process_holds (
+              hold_id, aggregate_type, aggregate_id, reason, state, deadline_policy,
+              moderation_case_id, created_by, created_by_type, started_at, version,
+              created_at, updated_at
+            ) values (
+              ${restrictionIds.statusReviewHoldId}::uuid, 'COMPETITION', ${row.competition_id}::uuid,
+              'STATUS_REVIEW', 'ACTIVE', 'CONTINUE', ${row.case_id}::uuid,
+              ${command.actor.id}::uuid, 'USER',
+              ${context.occurredAt.toISOString()}::timestamptz, 1,
+              ${context.occurredAt.toISOString()}::timestamptz,
+              ${context.occurredAt.toISOString()}::timestamptz
+            )
+          `.execute(transaction);
+        }
+        await sql`
+          update governance.moderation_cases
+          set state = 'CLOSED', closed_at = ${context.occurredAt.toISOString()}::timestamptz,
+            version = ${context.nextVersion}
+          where case_id = ${row.case_id}::uuid and state = 'UNDER_REVIEW'
+            and assigned_reviewer_user_id = ${command.actor.id}::uuid
+            and version = ${Number(row.version)}
+        `.execute(transaction);
+        const response: SafetyCaseReviewProjection = {
+          action: 'SAFETY_ACCOUNT_RESTRICTION_APPLIED',
+          caseId: row.case_id,
+          state: 'CLOSED',
+          decisionId: ids.decisionId,
+          remedyCode: normalized.remedyCode,
+          enforcementId: restrictionIds.enforcementId,
+          subjectUserId: normalized.subjectUserId,
+          categoryCode: normalized.categoryCode,
+          accountState: 'RESTRICTED',
+          appealDeadlineAt: appealDeadlineAt.toISOString(),
+          challengeId: row.challenge_id,
+          challengeState: 'BOOKED',
+          challengeVersion: Number(row.challenge_version),
+          holdId: row.hold_id,
+          holdState: 'ACTIVE',
+          holdVersion: Number(row.hold_version),
+          competitionId: row.competition_id,
+          subjectStatus,
+          statusReviewHoldId: subjectStatus === null ? null : restrictionIds.statusReviewHoldId,
+          version: context.nextVersion,
+        };
+        const publicDecision = {
+          caseId: row.case_id,
+          decisionId: ids.decisionId,
+          remedyCode: normalized.remedyCode,
+          enforcementId: restrictionIds.enforcementId,
+        };
+        const relatedEvents: RelatedDomainEventDraft[] = [
+          {
+            eventId: ids.decisionEventId, eventName: 'CaseDecided', schemaVersion: 1,
+            transitionId: 'MC-05', aggregateType: 'SafetyCaseDecision',
+            aggregateId: ids.decisionId, aggregateVersion: 1,
+            payload: publicDecision,
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+          {
+            eventId: restrictionIds.restrictionEventId, eventName: 'AccountRestrictionApplied',
+            schemaVersion: 1, transitionId: 'U-02', aggregateType: 'Enforcement',
+            aggregateId: restrictionIds.enforcementId, aggregateVersion: 1,
+            payload: {
+              enforcementId: restrictionIds.enforcementId, enforcementType: 'ACCOUNT_RESTRICTION',
+              state: 'ACTIVE', appealDeadlineAt: appealDeadlineAt.toISOString(),
+            },
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+        ];
+        const outbox: OutboxDraft[] = [
+          {
+            messageId: ids.outboxMessageId, topic: 'governance.safety-case.closed.v1',
+            payload: { ...publicDecision, state: 'CLOSED' },
+          },
+          {
+            messageId: restrictionIds.restrictionOutboxMessageId,
+            topic: 'identity.account-restriction.applied.v1',
+            sourceEventId: restrictionIds.restrictionEventId,
+            payload: {
+              enforcementId: restrictionIds.enforcementId, enforcementType: 'ACCOUNT_RESTRICTION',
+              state: 'ACTIVE', appealDeadlineAt: appealDeadlineAt.toISOString(),
+            },
+          },
+          {
+            messageId: restrictionIds.restrictionNotificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: { notifications: [{
+              notificationId: restrictionIds.restrictionNotificationId,
+              recipientUserId: normalized.subjectUserId,
+              category: 'SERVICE', renderKey: 'safety.account-restriction-applied',
+              actionTarget: { type: 'ACCOUNT', userId: normalized.subjectUserId },
+              payload: {
+                accountState: 'RESTRICTED', appealDeadlineAt: appealDeadlineAt.toISOString(),
+                appealWindowDays: 7, statusTransferred: false,
+              },
+            }] },
+          },
+        ];
+        if (subjectStatus !== null) {
+          relatedEvents.push({
+            eventId: restrictionIds.statusReviewHoldEventId, eventName: 'ProcessHoldStarted',
+            schemaVersion: 1, transitionId: 'U-02', aggregateType: 'ProcessHold',
+            aggregateId: restrictionIds.statusReviewHoldId, aggregateVersion: 1,
+            payload: {
+              holdId: restrictionIds.statusReviewHoldId, competitionId: row.competition_id,
+              reason: 'STATUS_REVIEW', state: 'ACTIVE',
+            },
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          });
+          outbox.push({
+            messageId: restrictionIds.statusReviewHoldOutboxMessageId,
+            topic: 'competition.process-hold.started.v1',
+            sourceEventId: restrictionIds.statusReviewHoldEventId,
+            payload: {
+              holdId: restrictionIds.statusReviewHoldId, competitionId: row.competition_id,
+              reason: 'STATUS_REVIEW', state: 'ACTIVE',
+            },
+          });
+        }
+        return {
+          responseStatus: 200,
+          response,
+          event: {
+            eventId: ids.eventId, eventName: 'CaseClosed', schemaVersion: 1,
+            transitionId: 'MC-05/MC-06',
+            payload: { ...publicDecision, state: 'CLOSED' },
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+          relatedEvents,
+          audit: {
+            auditId: ids.auditId, action: 'RESOLVE_SAFETY_CASE',
+            transitionId: 'MC-05/MC-06/U-02', reasonCode: normalized.remedyCode,
+            beforeState: row.state, afterState: 'CLOSED',
+            metadata: {
+              ...publicDecision, reviewerUserId: command.actor.id,
+              reporterUserId: row.reporter_user_id,
+              subjectUserId: normalized.subjectUserId,
+              restrictionCategoryCode: normalized.categoryCode,
+              decisionReason: normalized.reason,
+              challengeId: row.challenge_id, bookingId: row.booking_id,
+              sessionId: row.session_id, competitionId: row.competition_id,
+              subjectStatus, statusReviewHoldId: response.statusReviewHoldId,
+              beforeAccountState: row.subject_account_state,
+              afterAccountState: 'RESTRICTED', subjectAccountVersion,
+              competitionStatusVersion: Number(row.competition_status_version),
+              competitionVersion: Number(row.competition_version),
+            },
+          },
+          outbox,
+        };
+      }
       if (command.payload.remedyCode === 'FORFEIT_BY_ENFORCEMENT') {
         if (
           command.payload.replacementCoachUserId !== null
