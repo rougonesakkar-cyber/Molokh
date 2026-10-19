@@ -28,6 +28,11 @@ export type SchedulingConflictCode =
   | 'COACH_REPLACEMENT_NOT_REJECTABLE'
   | 'EXTERNAL_FAILURE_NOT_ALLOWED'
   | 'SAFETY_CANCELLATION_NOT_ALLOWED'
+  | 'SAFETY_CASE_NOT_SUBMITTED'
+  | 'SAFETY_CASE_NOT_UNDER_REVIEW'
+  | 'SAFETY_CASE_REVIEWER_CONFLICT'
+  | 'SAFETY_CASE_REVIEWER_MISMATCH'
+  | 'SAFETY_CASE_REPLACEMENT_UNAVAILABLE'
   | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
@@ -810,6 +815,100 @@ export function assertSafetyCancellationCanBeSubmitted(input: {
     throw new SchedulingValidationError('reasonCode');
   }
   return input.reasonCode as SafetyCancellationReasonCode;
+}
+
+export type SafetyReplacementRemedy =
+  | 'REPLACE_COACH'
+  | 'REPLACE_VENUE'
+  | 'REPLACE_COACH_AND_VENUE';
+
+export function assertSafetyCaseReviewCanStart(input: {
+  readonly state: string;
+  readonly actorIsCentral: boolean;
+  readonly reviewerUserId: string;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly assignedCoachUserId: string;
+  readonly reviewerIsInterestedVenueAdmin: boolean;
+}): void {
+  if (!input.actorIsCentral) throw new SchedulingPermissionDeniedError();
+  if (input.state !== 'SUBMITTED') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_SUBMITTED');
+  }
+  if (
+    input.reviewerUserId === input.reporterUserId
+    || input.reviewerUserId === input.subjectUserId
+    || input.athleteUserIds.includes(input.reviewerUserId)
+    || input.reviewerUserId === input.assignedCoachUserId
+    || input.reviewerIsInterestedVenueAdmin
+  ) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_CONFLICT');
+  }
+}
+
+export function normalizeSafetyCaseReleaseDecision(input: {
+  readonly state: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly remedyCode: string;
+  readonly replacementCoachUserId: string | null;
+  readonly replacementVenueId: string | null;
+  readonly replacementCoachAvailable: boolean;
+  readonly replacementVenueAvailable: boolean;
+  readonly reason: string;
+}): {
+  readonly remedyCode: SafetyReplacementRemedy;
+  readonly replacementCoachUserId: string | null;
+  readonly replacementVenueId: string | null;
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_MISMATCH');
+  }
+  const remedyCodes = new Set<SafetyReplacementRemedy>([
+    'REPLACE_COACH', 'REPLACE_VENUE', 'REPLACE_COACH_AND_VENUE',
+  ]);
+  if (!remedyCodes.has(input.remedyCode as SafetyReplacementRemedy)) {
+    throw new SchedulingValidationError('remedyCode');
+  }
+  const remedyCode = input.remedyCode as SafetyReplacementRemedy;
+  const needsCoach = remedyCode === 'REPLACE_COACH' || remedyCode === 'REPLACE_COACH_AND_VENUE';
+  const needsVenue = remedyCode === 'REPLACE_VENUE' || remedyCode === 'REPLACE_COACH_AND_VENUE';
+  if (
+    needsCoach !== (input.replacementCoachUserId !== null)
+    || needsVenue !== (input.replacementVenueId !== null)
+    || (needsCoach && !input.replacementCoachAvailable)
+    || (needsVenue && !input.replacementVenueAvailable)
+  ) {
+    throw new SchedulingConflictError('SAFETY_CASE_REPLACEMENT_UNAVAILABLE');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 1000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return {
+    remedyCode,
+    replacementCoachUserId: input.replacementCoachUserId,
+    replacementVenueId: input.replacementVenueId,
+    reason,
+  };
+}
+
+export function extendSchedulingDeadlineForSafetyHold(input: {
+  readonly schedulingDeadlineAt: string;
+  readonly holdStartedAt: string;
+  readonly releasedAt: Date;
+}): Date {
+  const deadline = validDate(input.schedulingDeadlineAt, 'schedulingDeadlineAt');
+  const startedAt = validDate(input.holdStartedAt, 'holdStartedAt');
+  if (!Number.isFinite(input.releasedAt.getTime()) || input.releasedAt < startedAt) {
+    throw new SchedulingValidationError('releasedAt');
+  }
+  return new Date(deadline.getTime() + input.releasedAt.getTime() - startedAt.getTime());
 }
 
 export function attendanceCountsAsCompletedTraining(status: AttendanceStatus): boolean {

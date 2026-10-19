@@ -13,6 +13,7 @@ import {
   assertCoachReplacementCanBeCommitted,
   assertCoachReplacementCanBeRejected,
   assertExternalSessionFailureCanBeCommitted,
+  assertSafetyCaseReviewCanStart,
   assertSafetyCancellationCanBeSubmitted,
   assertPublicationWindow,
   assertSessionCanEnd,
@@ -33,12 +34,14 @@ import {
   attendanceCountsAsCompletedTraining,
   bookingSelectionExpiresAt,
   hostConfirmationDeadline,
+  extendSchedulingDeadlineForSafetyHold,
   officialConversionDeadline,
   soloContinuationDeadline,
   trainingRetentionDeadline,
   normalizeCommercialPrice,
   normalizeOptionalScheduleText,
   normalizeScheduleMutationReason,
+  normalizeSafetyCaseReleaseDecision,
   normalizeScheduleLabel,
 } from '../src/scheduling.js';
 
@@ -388,6 +391,35 @@ describe('Scheduling publication policy', () => {
     expect(() => assertSafetyCancellationCanBeSubmitted({
       ...input, subjectUserId: 'outsider',
     })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+  });
+
+  it('[AC-126] releases a reviewed Safety hold with a normalized replacement and exact deadline extension', () => {
+    expect(() => assertSafetyCaseReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'central',
+      reporterUserId: 'coach-a', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'], assignedCoachUserId: 'coach-a',
+      reviewerIsInterestedVenueAdmin: false,
+    })).not.toThrow();
+    expect(() => assertSafetyCaseReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'coach-a',
+      reporterUserId: 'coach-a', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'], assignedCoachUserId: 'coach-a',
+      reviewerIsInterestedVenueAdmin: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' }));
+    expect(normalizeSafetyCaseReleaseDecision({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      remedyCode: 'REPLACE_COACH', replacementCoachUserId: 'coach-b',
+      replacementVenueId: null, replacementCoachAvailable: true,
+      replacementVenueAvailable: false, reason: ' independent safe replacement ',
+    })).toEqual({
+      remedyCode: 'REPLACE_COACH', replacementCoachUserId: 'coach-b',
+      replacementVenueId: null, reason: 'independent safe replacement',
+    });
+    expect(extendSchedulingDeadlineForSafetyHold({
+      schedulingDeadlineAt: '2026-10-20T10:00:00.000Z',
+      holdStartedAt: '2026-10-18T10:00:00.000Z',
+      releasedAt: new Date('2026-10-18T13:30:00.000Z'),
+    }).toISOString()).toBe('2026-10-20T13:30:00.000Z');
   });
 
   it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {

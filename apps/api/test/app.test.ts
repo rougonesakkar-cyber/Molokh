@@ -104,6 +104,11 @@ import type {
   ReportSafetyAndCancelSessionPayload,
   SafetyCancellationEffectIds,
   SafetyCancellationProjection,
+  SafetyCaseReviewEffectIds,
+  SafetyCaseResolutionEffectIds,
+  SafetyCaseReviewProjection,
+  StartSafetyCaseReviewPayload,
+  ResolveSafetyCasePayload,
   SlotProjection,
   TrainingOptionsProjection,
   UpdateGroupOfferingPayload,
@@ -1167,7 +1172,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/blocks');
   });
 
-  it('[AC-123][AC-193][AC-194] exposes neutral Chat reporting and a protected Central queue', async () => {
+  it('[AC-123][AC-126][AC-193][AC-194] exposes reporting plus protected Safety review commands', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000000501';
     const messageId = '0199a1b2-1234-7000-8000-000000000502';
     const reportId = '0199a1b2-1234-7000-8000-000000000506';
@@ -1269,10 +1274,52 @@ describe('runtime contract', () => {
       sessionId: null,
       initialDueAt: null,
       finalDueAt: null,
+      assignedReviewerUserId: null,
+      reviewStartedAt: null,
+      challengeVersion: null,
+      schedulingDeadlineAt: null,
+      holdId: null,
+      holdState: null,
+      holdStartedAt: null,
+      holdVersion: null,
+      originalCoachUserId: null,
+      originalVenueId: null,
+      viewerCanStartReview: false,
+      viewerCanResolve: false,
+      replacementCoachOptions: [],
+      replacementVenueOptions: [],
       submittedAt: '2026-09-07T10:06:00.000Z',
       version: 1,
     };
     const readModerationCases = vi.fn(async () => [moderationCase]);
+    const startSafetyCaseReview = vi.fn(async (
+      _command: CommandEnvelope<StartSafetyCaseReviewPayload>,
+      _ids: SafetyCaseReviewEffectIds,
+    ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'SAFETY_REVIEW_STARTED', caseId, state: 'UNDER_REVIEW',
+        assignedReviewerUserId: centralUserId, reviewStartedAt: '2026-09-07T11:00:00.000Z',
+        challengeId: chatId, challengeVersion: 2, holdId: reportId, holdVersion: 1, version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000520', aggregateVersion: 2, replayed: false,
+    }));
+    const resolveSafetyCase = vi.fn(async (
+      _command: CommandEnvelope<ResolveSafetyCasePayload>,
+      ids: SafetyCaseResolutionEffectIds,
+    ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'SAFETY_REPLACEMENT_APPLIED', caseId, state: 'CLOSED',
+        decisionId: ids.decisionId, remedyCode: 'REPLACE_COACH',
+        replacementCoachUserId: userId, replacementVenueId: null,
+        challengeId: chatId, challengeState: 'ACCEPTED_UNSCHEDULED',
+        schedulingDeadlineAt: '2026-09-10T12:00:00.000Z', challengeVersion: 3,
+        holdId: reportId, holdState: 'RELEASED', holdVersion: 2,
+        releasedAt: '2026-09-07T12:00:00.000Z', version: 3,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000521', aggregateVersion: 3, replayed: false,
+    }));
     const app = await buildApp({
       chat: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -1283,6 +1330,8 @@ describe('runtime contract', () => {
         hideMessage,
         reportMessage,
         readModerationCases,
+        startSafetyCaseReview,
+        resolveSafetyCase,
       },
     });
     apps.push(app);
@@ -1373,12 +1422,42 @@ describe('runtime contract', () => {
     });
     expect(readModerationCases).toHaveBeenCalledWith(centralUserId);
 
+    const reviewStarted = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/review`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-review-1', 'if-match': '1' },
+      payload: {},
+    });
+    expect(reviewStarted.statusCode).toBe(200);
+    expect(reviewStarted.json()).toMatchObject({ data: { state: 'UNDER_REVIEW', version: 2 } });
+    expect(startSafetyCaseReview.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'START_SAFETY_CASE_REVIEW', aggregateId: caseId, expectedVersion: 1,
+    });
+    const resolved = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/resolve`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-resolve-1', 'if-match': '2' },
+      payload: {
+        remedyCode: 'REPLACE_COACH', replacementCoachUserId: userId,
+        replacementVenueId: null, reason: 'Независимо выбран безопасный Coach',
+        expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(resolved.json()).toMatchObject({
+      data: { state: 'CLOSED', challengeState: 'ACCEPTED_UNSCHEDULED', holdState: 'RELEASED' },
+    });
+    expect(resolveSafetyCase.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'RESOLVE_SAFETY_CASE', expectedVersion: 2,
+      payload: { expectedChallengeVersion: 2, expectedHoldVersion: 1 },
+    });
+
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/messages');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/visibility');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/reports');
     expect(app.swagger().paths).toHaveProperty('/api/v1/central/moderation-cases');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/moderation-cases/{caseId}/review');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/moderation-cases/{caseId}/resolve');
   });
 
   it('runs the no-document Athlete-to-Central verification workflow', async () => {

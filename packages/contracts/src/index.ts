@@ -856,6 +856,29 @@ export const CentralModerationCaseProjectionSchema = Type.Object(
     sessionId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     initialDueAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     finalDueAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    assignedReviewerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    reviewStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    challengeVersion: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+    schedulingDeadlineAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    holdId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    holdState: Type.Union([
+      Type.Literal('ACTIVE'), Type.Literal('RELEASED'), Type.Null(),
+    ]),
+    holdStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    holdVersion: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+    originalCoachUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    originalVenueId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    viewerCanStartReview: Type.Boolean(),
+    viewerCanResolve: Type.Boolean(),
+    replacementCoachOptions: Type.Array(Type.Object({
+      userId: Type.String({ format: 'uuid' }),
+      displayName: Type.String({ minLength: 1 }),
+      venueId: Type.String({ format: 'uuid' }),
+    }, { additionalProperties: false })),
+    replacementVenueOptions: Type.Array(Type.Object({
+      venueId: Type.String({ format: 'uuid' }),
+      displayName: Type.String({ minLength: 1 }),
+    }, { additionalProperties: false })),
     submittedAt: Type.String({ format: 'date-time' }),
     version: Type.Integer({ minimum: 1 }),
   },
@@ -876,6 +899,70 @@ export const CentralModerationCaseListResponseSchema = Type.Object(
 );
 
 export type CentralModerationCaseListResponse = Static<typeof CentralModerationCaseListResponseSchema>;
+
+export const StartSafetyCaseReviewBodySchema = Type.Object({}, { additionalProperties: false });
+export type StartSafetyCaseReviewBody = Static<typeof StartSafetyCaseReviewBodySchema>;
+
+export const SafetyReplacementRemedySchema = Type.Union([
+  Type.Literal('REPLACE_COACH'),
+  Type.Literal('REPLACE_VENUE'),
+  Type.Literal('REPLACE_COACH_AND_VENUE'),
+]);
+
+export const ResolveSafetyCaseBodySchema = Type.Object({
+  remedyCode: SafetyReplacementRemedySchema,
+  replacementCoachUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  replacementVenueId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  reason: Type.String({ minLength: 10, maxLength: 1000 }),
+  expectedChallengeVersion: Type.Integer({ minimum: 1 }),
+  expectedHoldVersion: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type ResolveSafetyCaseBody = Static<typeof ResolveSafetyCaseBodySchema>;
+
+const SafetyReviewStartedProjectionSchema = Type.Object({
+  action: Type.Literal('SAFETY_REVIEW_STARTED'),
+  caseId: Type.String({ format: 'uuid' }),
+  state: Type.Literal('UNDER_REVIEW'),
+  assignedReviewerUserId: Type.String({ format: 'uuid' }),
+  reviewStartedAt: Type.String({ format: 'date-time' }),
+  challengeId: Type.String({ format: 'uuid' }),
+  challengeVersion: Type.Integer({ minimum: 1 }),
+  holdId: Type.String({ format: 'uuid' }),
+  holdVersion: Type.Integer({ minimum: 1 }),
+  version: Type.Integer({ minimum: 2 }),
+}, { additionalProperties: false });
+
+const SafetyReplacementAppliedProjectionSchema = Type.Object({
+  action: Type.Literal('SAFETY_REPLACEMENT_APPLIED'),
+  caseId: Type.String({ format: 'uuid' }),
+  state: Type.Literal('CLOSED'),
+  decisionId: Type.String({ format: 'uuid' }),
+  remedyCode: SafetyReplacementRemedySchema,
+  replacementCoachUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  replacementVenueId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  challengeId: Type.String({ format: 'uuid' }),
+  challengeState: Type.Literal('ACCEPTED_UNSCHEDULED'),
+  schedulingDeadlineAt: Type.String({ format: 'date-time' }),
+  challengeVersion: Type.Integer({ minimum: 1 }),
+  holdId: Type.String({ format: 'uuid' }),
+  holdState: Type.Literal('RELEASED'),
+  holdVersion: Type.Integer({ minimum: 2 }),
+  releasedAt: Type.String({ format: 'date-time' }),
+  version: Type.Integer({ minimum: 3 }),
+}, { additionalProperties: false });
+
+export const SafetyCaseReviewCommandResponseSchema = Type.Object({
+  data: Type.Union([
+    SafetyReviewStartedProjectionSchema,
+    SafetyReplacementAppliedProjectionSchema,
+  ]),
+  meta: Type.Object({
+    requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }),
+    replayed: Type.Boolean(),
+  }, { additionalProperties: false }),
+}, { $id: 'SafetyCaseReviewCommandResponse', additionalProperties: false });
+export type SafetyCaseReviewCommandResponse = Static<typeof SafetyCaseReviewCommandResponseSchema>;
 
 export type ChatMessageActionResponse = Static<typeof ChatMessageActionResponseSchema>;
 

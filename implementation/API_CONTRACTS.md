@@ -320,6 +320,9 @@ contact and action token are omitted from projections and audit metadata.
 | POST | `/sessions/{id}/fail-external` | Gym Admin/Central closes a pre-start operational failure no-fault |
 | POST | `/sessions/{id}/safety-report` | participant explicitly cancels booked Official and opens protected SafetyCase |
 | POST | `/sessions/{id}/refuse-unsafe` | assigned Coach refuses unstarted booked Official; no-fault resources plus Challenge hold |
+| GET | `/central/moderation-cases` | Central-only FIFO projection with protected SafetyCase facts and valid replacement options |
+| POST | `/central/moderation-cases/{id}/review` | independent Central claims a submitted SafetyCase |
+| POST | `/central/moderation-cases/{id}/resolve` | assigned reviewer records safe Coach/Venue remedy, releases hold and returns Challenge to scheduling |
 | POST | `/sessions/{id}/cancel-official` | either Athlete explicitly accepts the pre-start `FORFEIT` consequence and cancels a confirmed Official Session |
 | GET | `/results/{id}` | Athlete/Coach/scoped Admin Result projection and currently allowed Appeal action |
 | POST | `/challenges/{id}/result` | assigned non-participant Coach, one effective Result after ended Official Session |
@@ -334,6 +337,13 @@ select a subject only from the frozen Athlete pair. The command creates one prot
 SafetyCase with 24h/48h Central SLA, closes Booking/Session/Slot no-fault and pauses the linked
 Challenge deadline. Public and Athlete-facing payloads omit the reporter and reason. Until Central
 decides, the API creates no Result, loss, Forfeit, Cooldown, Block or account restriction.
+
+Safety release is a separate two-step Central action. The first command verifies the reviewer against
+the reporter, subject, frozen Athlete pair, assigned Coach and interested Venue Admin. The second command
+records one immutable normalized Coach/Venue replacement decision, releases the hold exactly once and adds
+only the measured server interval `released_at - started_at` to the existing scheduling deadline. Cancelled
+Booking/Session/Slot records remain closed. The same Challenge returns to `ACCEPTED_UNSCHEDULED`; the normal
+Booking flow must create any later Session. Public payloads omit the protected reporter and decision reason.
 
 `LATE` is a visit fact, not a sporting outcome. It does not synthesize `NO_SHOW`, Forfeit, loss,
 administrative Result or Cooldown. After an ended Official Session, the assigned Coach records the

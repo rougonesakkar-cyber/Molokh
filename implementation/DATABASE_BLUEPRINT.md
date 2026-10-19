@@ -425,6 +425,7 @@ Critical constraints:
 ### governance
 
 - `moderation_cases`
+- `safety_case_decisions` — one immutable Central remedy per reviewed SafetyCase; protected reason and replacement lineage
 - `enforcements`
 - `enforcement_appeals`
 - `youth_challenge_consents`
@@ -435,6 +436,7 @@ Critical constraints:
 Critical constraints:
 
 - reviewer conflict checks stored and enforced in command layer;
+- SafetyCase reviewer assignment is versioned; release updates the linked Challenge and hold atomically while the decision row remains append-only;
 - one consent per Challenge/Youth Athlete/policy version;
 - Youth consent persists only a token-keyed contact hash/mask plus consent audit hash; the raw delivery
   destination is transient outbox data and guardian accounts/documents remain absent;

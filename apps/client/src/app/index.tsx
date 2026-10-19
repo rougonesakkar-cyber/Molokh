@@ -8,6 +8,7 @@ import type {
   BookingTrainingRetentionCommandResponse,
   CommunityLifecycleCommandResponse,
   CommunityLifecycleResponse,
+  CentralModerationCaseListResponse,
   CommunityClosureCandidatesResponse,
   CommunityClosureCommandResponse,
   CommunityClosurePlanResponse,
@@ -110,6 +111,7 @@ import {
 } from '../lib/result-presentation';
 import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
 import { coachSafetyRefusalPresentation } from '../features/safety/presentation';
+import { SafetyCaseReviewSection } from '../features/safety/SafetyCaseReviewSection';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -165,6 +167,7 @@ type BlockedUser = BlockedUsersResponse['data'][number];
 type MissingResultReview = MissingResultReviewListResponse['data'][number];
 type IntegrityCase = IntegrityCaseListResponse['data'][number];
 type TechnicalCorrection = TechnicalCorrectionListResponse['data'][number];
+type CentralModerationCase = CentralModerationCaseListResponse['data'][number];
 type VenueAdminDashboard = VenueAdminDashboardResponse['data'];
 type MainSection = 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
 type AdminPublicationKind = 'SLOT' | 'GROUP';
@@ -558,6 +561,7 @@ export default function IdentityScreen() {
   const [missingResultReviews, setMissingResultReviews] = useState<MissingResultReview[]>([]);
   const [integrityCases, setIntegrityCases] = useState<IntegrityCase[]>([]);
   const [technicalCorrections, setTechnicalCorrections] = useState<TechnicalCorrection[]>([]);
+  const [moderationCases, setModerationCases] = useState<CentralModerationCase[]>([]);
   const [actingCentralAppealId, setActingCentralAppealId] = useState<string | null>(null);
   const [centralDecisionAppealId, setCentralDecisionAppealId] = useState<string | null>(null);
   const [centralDecisionReason, setCentralDecisionReason] = useState('');
@@ -695,6 +699,18 @@ export default function IdentityScreen() {
         const removalQueue =
           (await removalQueueResponse.json()) as MembershipRemovalListResponse;
         setMembershipRemovals(removalQueue.data);
+        const moderationQueueResponse = await fetch(
+          `${apiUrl}/api/v1/central/moderation-cases`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (!moderationQueueResponse.ok) {
+          throw new Error(await apiErrorMessage(moderationQueueResponse));
+        }
+        const moderationQueue =
+          (await moderationQueueResponse.json()) as CentralModerationCaseListResponse;
+        setModerationCases(moderationQueue.data);
+      } else {
+        setModerationCases([]);
       }
       if (
         loadedCommunity?.access.capabilities.includes('MANAGE_MEMBERSHIPS')
@@ -4477,6 +4493,24 @@ export default function IdentityScreen() {
                       : current.map((item) => item.correctionId === updated.correctionId
                         ? updated : item))}
                 />
+
+                {activeTestAccount.role === 'Central' ? (
+                  <SafetyCaseReviewSection
+                    cases={moderationCases}
+                    token={activeTestToken}
+                    onUpdated={(caseId, state) => setModerationCases((current) =>
+                      state === 'CLOSED'
+                        ? current.filter((item) => item.caseId !== caseId)
+                        : current.map((item) => item.caseId === caseId
+                            ? {
+                                ...item, state: 'UNDER_REVIEW',
+                                assignedReviewerUserId: identity?.userId ?? null,
+                                viewerCanStartReview: false, viewerCanResolve: true,
+                                version: item.version + 1,
+                              }
+                            : item))}
+                  />
+                ) : null}
 
                 {activeTestAccount.role === 'Central' ? (
                   <>

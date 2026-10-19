@@ -157,10 +157,12 @@ import {
   releaseOutboxFailure,
   reportChatMessage,
   reportSafetyAndCancelSession,
+  resolveSafetyCase,
   runMigrations,
   skipDiscoveryCandidate,
   sendChatMessage,
   startAccountVerification,
+  startSafetyCaseReview,
   startAppealReview,
   unblockUser,
   unmatchPair,
@@ -2323,6 +2325,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         scheduling.bookings,
         scheduling.group_offerings,
         scheduling.slots,
+        governance.safety_case_decisions,
         governance.moderation_cases,
         social.chat_message_reports,
         social.chat_message_user_visibility,
@@ -5936,6 +5939,226 @@ describePostgres('PostgreSQL critical command transaction', () => {
       ...command, commandId: testId(base + 250), idempotencyKey: 'ac-125-stale',
     }, { ...effects, eventId: testId(base + 251), caseId: testId(base + 252) }, () => submittedAt))
       .rejects.toBeInstanceOf(VersionConflictError);
+  });
+
+  it('[AC-126] independently releases one Safety hold and extends the same Challenge deadline exactly once', async () => {
+    const base = 234000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const replacementCoach = testId(base + 300);
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${replacementCoach}::uuid, '+79992343000', '2026-09-27T10:00:00.000Z'::timestamptz,
+        '1987-01-01', 'ADULT', 'Safe replacement Coach', 'ACTIVE', 'ru-RU', 1,
+        '2026-09-27T10:00:00.000Z'::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${testId(base + 301)}::uuid, ${replacementCoach}::uuid, 'COACH', 'COMMUNITY',
+        ${fixture.community}::uuid, 'ACTIVE', ${fixture.central}::uuid,
+        '2026-09-27T10:00:00.000Z'::timestamptz, 1
+      )
+    `.execute(database);
+    const converted = await convertTrainingFixtureToOfficial(base + 100, fixture, 'ac-126-conversion');
+    const challengeId = converted.response.challengeId!;
+    const sourceResult = await sql<{
+      readonly booking_version: string;
+      readonly challenge_version: string;
+      readonly session_version: string;
+      readonly scheduling_deadline_at: Date;
+    }>`
+      select booking.version::text as booking_version,
+        challenge.version::text as challenge_version,
+        session.version::text as session_version, challenge.scheduling_deadline_at
+      from scheduling.sessions session
+      join scheduling.bookings booking on booking.booking_id = session.booking_id
+      join competition.challenges challenge on challenge.challenge_id = session.challenge_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    const source = sourceResult.rows[0]!;
+    const submittedAt = new Date('2026-09-27T10:20:00.000Z');
+    const safetyIds = {
+      eventId: testId(base + 330), auditId: testId(base + 331),
+      outboxMessageId: testId(base + 332), bookingEventId: testId(base + 333),
+      slotEventId: testId(base + 334), challengeEventId: testId(base + 335),
+      caseId: testId(base + 336), caseEventId: testId(base + 337),
+      caseOutboxMessageId: testId(base + 338), holdId: testId(base + 339),
+      holdEventId: testId(base + 340), holdOutboxMessageId: testId(base + 341),
+      notificationOutboxMessageId: testId(base + 342),
+      notificationIds: [
+        testId(base + 343), testId(base + 344), testId(base + 345), testId(base + 346),
+      ] as const,
+    };
+    const submitted = await reportSafetyAndCancelSession(database, {
+      commandId: testId(base + 320), commandType: 'REFUSE_UNSAFE_SESSION',
+      idempotencyKey: 'ac-126-submit',
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      aggregateType: 'Session', aggregateId: fixture.session,
+      expectedVersion: Number(source.session_version), correlationId: testId(base + 321),
+      causationId: null, requestId: testId(base + 322), source: 'api', payloadVersion: 1,
+      payload: {
+        sessionId: fixture.session, subjectUserId: fixture.athleteA,
+        reasonCode: 'THREAT', explicitConfirmation: true,
+        expectedBookingVersion: Number(source.booking_version),
+        expectedChallengeVersion: Number(source.challenge_version),
+      },
+    }, safetyIds, () => submittedAt);
+    const queued = await listModerationCasesForCentral(database, fixture.central);
+    expect(queued).toEqual([expect.objectContaining({
+      caseId: safetyIds.caseId, state: 'SUBMITTED', viewerCanStartReview: true,
+      viewerCanResolve: false, challengeVersion: submitted.response.challengeVersion,
+      holdId: safetyIds.holdId, holdVersion: 1, originalCoachUserId: fixture.coach,
+      originalVenueId: fixture.venue,
+      replacementCoachOptions: expect.arrayContaining([expect.objectContaining({
+        userId: replacementCoach, venueId: fixture.venue,
+      })]),
+    })]);
+
+    const reviewCommand = {
+      commandId: testId(base + 350), commandType: 'START_SAFETY_CASE_REVIEW',
+      idempotencyKey: 'ac-126-review',
+      actor: { type: 'USER' as const, id: fixture.central,
+        roles: ['CENTRAL_ADMIN'] as const, scopeIds: [] as const },
+      aggregateType: 'ModerationCase', aggregateId: safetyIds.caseId, expectedVersion: 1,
+      correlationId: testId(base + 351), causationId: safetyIds.caseEventId,
+      requestId: testId(base + 352), source: 'api' as const, payloadVersion: 1,
+      payload: { caseId: safetyIds.caseId },
+    };
+    const reviewIds = {
+      eventId: testId(base + 353), auditId: testId(base + 354),
+      outboxMessageId: testId(base + 355),
+    };
+    const review = await startSafetyCaseReview(
+      database, reviewCommand, reviewIds, () => new Date('2026-09-27T11:20:00.000Z'),
+    );
+    expect(review.response).toMatchObject({
+      action: 'SAFETY_REVIEW_STARTED', state: 'UNDER_REVIEW', version: 2,
+      assignedReviewerUserId: fixture.central, challengeVersion: submitted.response.challengeVersion,
+      holdVersion: 1,
+    });
+    expect((await startSafetyCaseReview(
+      database, reviewCommand, reviewIds, () => new Date('2026-09-27T11:20:00.000Z'),
+    )).replayed).toBe(true);
+    expect(await listModerationCasesForCentral(database, fixture.central)).toEqual([
+      expect.objectContaining({
+        caseId: safetyIds.caseId, state: 'UNDER_REVIEW', viewerCanStartReview: false,
+        viewerCanResolve: true, assignedReviewerUserId: fixture.central, version: 2,
+      }),
+    ]);
+
+    const releaseAt = new Date('2026-09-27T13:20:00.000Z');
+    const resolutionIds = {
+      eventId: testId(base + 360), auditId: testId(base + 361),
+      outboxMessageId: testId(base + 362), decisionId: testId(base + 363),
+      decisionEventId: testId(base + 364), challengeEventId: testId(base + 365),
+      challengeOutboxMessageId: testId(base + 366), holdEventId: testId(base + 367),
+      holdOutboxMessageId: testId(base + 368),
+      notificationOutboxMessageId: testId(base + 369),
+      notificationIds: [testId(base + 370), testId(base + 371), testId(base + 372)] as const,
+    };
+    const resolveCommand = {
+      commandId: testId(base + 356), commandType: 'RESOLVE_SAFETY_CASE',
+      idempotencyKey: 'ac-126-resolve',
+      actor: { type: 'USER' as const, id: fixture.central,
+        roles: ['CENTRAL_ADMIN'] as const, scopeIds: [] as const },
+      aggregateType: 'ModerationCase', aggregateId: safetyIds.caseId, expectedVersion: 2,
+      correlationId: testId(base + 351), causationId: reviewIds.eventId,
+      requestId: testId(base + 357), source: 'api' as const, payloadVersion: 1,
+      payload: {
+        caseId: safetyIds.caseId, remedyCode: 'REPLACE_COACH' as const,
+        replacementCoachUserId: replacementCoach, replacementVenueId: null,
+        reason: 'Независимо выбран активный резервный Coach без конфликта интересов',
+        expectedChallengeVersion: submitted.response.challengeVersion, expectedHoldVersion: 1,
+      },
+    };
+    const resolved = await resolveSafetyCase(database, resolveCommand, resolutionIds, () => releaseAt);
+    const expectedDeadline = new Date(
+      source.scheduling_deadline_at.getTime() + releaseAt.getTime() - submittedAt.getTime(),
+    ).toISOString();
+    expect(resolved.response).toMatchObject({
+      action: 'SAFETY_REPLACEMENT_APPLIED', state: 'CLOSED',
+      remedyCode: 'REPLACE_COACH', replacementCoachUserId: replacementCoach,
+      replacementVenueId: null, challengeState: 'ACCEPTED_UNSCHEDULED',
+      schedulingDeadlineAt: expectedDeadline, holdState: 'RELEASED',
+      holdVersion: 2, version: 3,
+    });
+    expect((await resolveSafetyCase(database, resolveCommand, resolutionIds, () => releaseAt)).replayed)
+      .toBe(true);
+
+    const committed = await sql<{
+      readonly case_state: string; readonly assigned_reviewer_user_id: string;
+      readonly remedy_code: string; readonly replacement_coach_user_id: string;
+      readonly challenge_state: string; readonly scheduling_deadline_at: Date;
+      readonly challenge_version: string; readonly user_reschedule_count: number;
+      readonly hold_state: string; readonly hold_version: string; readonly released_at: Date;
+      readonly obligations: string; readonly results: string; readonly cooldowns: string;
+      readonly blocks: string; readonly reschedules: string;
+    }>`
+      select moderation_case.state as case_state,
+        moderation_case.assigned_reviewer_user_id, decision.remedy_code,
+        decision.replacement_coach_user_id, challenge.state as challenge_state,
+        challenge.scheduling_deadline_at, challenge.version::text as challenge_version,
+        challenge.user_reschedule_count, hold.state as hold_state,
+        hold.version::text as hold_version, hold.released_at,
+        (select count(*)::text from competition.challenge_participant_obligations obligation
+          where obligation.challenge_id = challenge.challenge_id and obligation.released_at is null
+        ) as obligations,
+        (select count(*)::text from competition.results) as results,
+        (select count(*)::text from competition.pair_cooldowns) as cooldowns,
+        (select count(*)::text from social.blocks) as blocks,
+        (select count(*)::text from competition.challenge_reschedules) as reschedules
+      from governance.moderation_cases moderation_case
+      join governance.safety_case_decisions decision on decision.case_id = moderation_case.case_id
+      join competition.challenges challenge on challenge.challenge_id = moderation_case.challenge_id
+      join competition.process_holds hold on hold.moderation_case_id = moderation_case.case_id
+      where moderation_case.case_id = ${safetyIds.caseId}::uuid
+    `.execute(database);
+    expect(committed.rows[0]).toMatchObject({
+      case_state: 'CLOSED', assigned_reviewer_user_id: fixture.central,
+      remedy_code: 'REPLACE_COACH', replacement_coach_user_id: replacementCoach,
+      challenge_state: 'ACCEPTED_UNSCHEDULED', user_reschedule_count: 0,
+      hold_state: 'RELEASED', hold_version: '2', obligations: '2',
+      results: '0', cooldowns: '0', blocks: '0', reschedules: '0',
+    });
+    expect(committed.rows[0]?.scheduling_deadline_at.toISOString()).toBe(expectedDeadline);
+    expect(committed.rows[0]?.released_at.toISOString()).toBe(releaseAt.toISOString());
+    expect(await listModerationCasesForCentral(database, fixture.central)).toEqual([]);
+
+    await expect(resolveSafetyCase(database, {
+      ...resolveCommand, commandId: testId(base + 380), idempotencyKey: 'ac-126-no-double',
+      expectedVersion: 3,
+      payload: {
+        ...resolveCommand.payload,
+        expectedChallengeVersion: Number(committed.rows[0]?.challenge_version),
+        expectedHoldVersion: 2,
+      },
+    }, { ...resolutionIds, eventId: testId(base + 381), decisionId: testId(base + 382) },
+    () => new Date('2026-09-27T14:20:00.000Z')))
+      .rejects.toMatchObject({ reason: 'SAFETY_CASE_NOT_UNDER_REVIEW' });
+    const publicPayloads = await sql<{ readonly payload: unknown }>`
+      select payload from platform.domain_events
+      where event_id in (
+        ${resolutionIds.eventId}::uuid, ${resolutionIds.decisionEventId}::uuid,
+        ${resolutionIds.challengeEventId}::uuid, ${resolutionIds.holdEventId}::uuid
+      )
+      union all
+      select payload from platform.outbox_messages
+      where message_id in (
+        ${resolutionIds.outboxMessageId}::uuid,
+        ${resolutionIds.challengeOutboxMessageId}::uuid,
+        ${resolutionIds.holdOutboxMessageId}::uuid,
+        ${resolutionIds.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    const publicJson = JSON.stringify(publicPayloads.rows);
+    expect(publicJson).not.toContain(fixture.coach);
+    expect(publicJson).not.toContain('Независимо выбран');
   });
 
   it('[AC-214] deletes expired unreported Chat payloads while retaining checksums, evidence and audit', async () => {

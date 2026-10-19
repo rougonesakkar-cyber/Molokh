@@ -25,6 +25,7 @@ import {
   endSession,
   failSessionExternal,
   reportSafetyAndCancelSession,
+  resolveSafetyCase,
   blockUser,
   createDiscoveryLike,
   createDirectOpenChallenge,
@@ -47,6 +48,7 @@ import {
   listAppealsForCentral,
   listPendingVerifications,
   listModerationCasesForCentral,
+  startSafetyCaseReview,
   probeDatabase,
   publishGroupOffering,
   publishSlot,
@@ -1350,6 +1352,9 @@ const app = await buildApp({
     reportMessage: (command, ids) => reportChatMessage(database, command, ids),
     readModerationCases: (centralUserId) =>
       listModerationCasesForCentral(database, centralUserId),
+    startSafetyCaseReview: (command, ids) =>
+      startSafetyCaseReview(database, command, ids),
+    resolveSafetyCase: (command, ids) => resolveSafetyCase(database, command, ids),
   },
   challenge: {
     auth: localAuth,

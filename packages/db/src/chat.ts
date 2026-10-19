@@ -154,6 +154,27 @@ export interface CentralModerationCaseProjection {
   readonly sessionId: string | null;
   readonly initialDueAt: string | null;
   readonly finalDueAt: string | null;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewStartedAt: string | null;
+  readonly challengeVersion: number | null;
+  readonly schedulingDeadlineAt: string | null;
+  readonly holdId: string | null;
+  readonly holdState: 'ACTIVE' | 'RELEASED' | null;
+  readonly holdStartedAt: string | null;
+  readonly holdVersion: number | null;
+  readonly originalCoachUserId: string | null;
+  readonly originalVenueId: string | null;
+  readonly viewerCanStartReview: boolean;
+  readonly viewerCanResolve: boolean;
+  readonly replacementCoachOptions: readonly {
+    readonly userId: string;
+    readonly displayName: string;
+    readonly venueId: string;
+  }[];
+  readonly replacementVenueOptions: readonly {
+    readonly venueId: string;
+    readonly displayName: string;
+  }[];
   readonly submittedAt: string;
   readonly version: number;
 }
@@ -953,6 +974,19 @@ export async function listModerationCasesForCentral(
     readonly session_id: string | null;
     readonly initial_due_at: Date | null;
     readonly final_due_at: Date | null;
+    readonly assigned_reviewer_user_id: string | null;
+    readonly review_started_at: Date | null;
+    readonly challenge_version: string | null;
+    readonly scheduling_deadline_at: Date | null;
+    readonly hold_id: string | null;
+    readonly hold_state: 'ACTIVE' | 'RELEASED' | null;
+    readonly hold_started_at: Date | null;
+    readonly hold_version: string | null;
+    readonly pair_low_id: string | null;
+    readonly pair_high_id: string | null;
+    readonly coach_user_id: string | null;
+    readonly venue_id: string | null;
+    readonly reviewer_is_venue_admin: boolean;
     readonly submitted_at: Date;
     readonly version: string;
   }>`
@@ -963,11 +997,58 @@ export async function listModerationCasesForCentral(
       moderation_case.challenge_id, moderation_case.booking_id,
       moderation_case.session_id, moderation_case.initial_due_at,
       moderation_case.final_due_at,
+      moderation_case.assigned_reviewer_user_id, moderation_case.review_started_at,
+      challenge.version::text as challenge_version, challenge.scheduling_deadline_at,
+      process_hold.hold_id, process_hold.state as hold_state,
+      process_hold.started_at as hold_started_at,
+      process_hold.version::text as hold_version,
+      session.pair_low_id, session.pair_high_id, session.coach_user_id, session.venue_id,
+      exists (
+        select 1 from community.role_grants role_grant
+        where role_grant.user_id = ${centralUserId}::uuid
+          and role_grant.role in ('PRIMARY_ADMIN', 'GYM_ADMIN')
+          and role_grant.scope_type = 'VENUE' and role_grant.scope_id = session.venue_id
+          and role_grant.state = 'ACTIVE'
+          and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+      ) as reviewer_is_venue_admin,
       moderation_case.submitted_at, moderation_case.version::text
     from governance.moderation_cases moderation_case
     left join social.chat_message_reports report on report.report_id = moderation_case.report_id
+    left join scheduling.sessions session on session.session_id = moderation_case.session_id
+    left join competition.challenges challenge
+      on challenge.challenge_id = moderation_case.challenge_id
+    left join competition.process_holds process_hold
+      on process_hold.moderation_case_id = moderation_case.case_id
+      and process_hold.reason = 'SAFETY'
     where moderation_case.state in ('SUBMITTED', 'TRIAGED', 'UNDER_REVIEW')
     order by moderation_case.submitted_at, moderation_case.case_id
+  `.execute(database);
+  const coachOptions = await sql<{
+    readonly user_id: string;
+    readonly display_name: string;
+    readonly venue_id: string;
+  }>`
+    select distinct coach.user_id, coach.display_name, community.venue_id
+    from identity.users coach
+    join community.role_grants role_grant on role_grant.user_id = coach.user_id
+    join community.communities community on community.community_id = role_grant.scope_id
+    join community.venues venue on venue.venue_id = community.venue_id
+    where coach.account_state = 'ACTIVE'
+      and role_grant.role = 'COACH' and role_grant.scope_type = 'COMMUNITY'
+      and role_grant.state = 'ACTIVE'
+      and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+      and community.state = 'ACTIVE' and venue.state = 'ACTIVE'
+    order by coach.display_name, coach.user_id, community.venue_id
+  `.execute(database);
+  const venueOptions = await sql<{
+    readonly venue_id: string;
+    readonly display_name: string;
+  }>`
+    select distinct venue.venue_id, venue.display_name
+    from community.venues venue
+    join community.communities community on community.venue_id = venue.venue_id
+    where venue.state = 'ACTIVE' and community.state = 'ACTIVE'
+    order by venue.display_name, venue.venue_id
   `.execute(database);
   return result.rows.map((row) => ({
     caseId: row.case_id,
@@ -985,6 +1066,35 @@ export async function listModerationCasesForCentral(
     sessionId: row.session_id,
     initialDueAt: row.initial_due_at?.toISOString() ?? null,
     finalDueAt: row.final_due_at?.toISOString() ?? null,
+    assignedReviewerUserId: row.assigned_reviewer_user_id,
+    reviewStartedAt: row.review_started_at?.toISOString() ?? null,
+    challengeVersion: row.challenge_version === null ? null : Number(row.challenge_version),
+    schedulingDeadlineAt: row.scheduling_deadline_at?.toISOString() ?? null,
+    holdId: row.hold_id,
+    holdState: row.hold_state,
+    holdStartedAt: row.hold_started_at?.toISOString() ?? null,
+    holdVersion: row.hold_version === null ? null : Number(row.hold_version),
+    originalCoachUserId: row.coach_user_id,
+    originalVenueId: row.venue_id,
+    viewerCanStartReview: row.case_type === 'SAFETY' && row.state === 'SUBMITTED'
+      && centralUserId !== row.reporter_user_id
+      && centralUserId !== row.subject_user_id
+      && centralUserId !== row.pair_low_id
+      && centralUserId !== row.pair_high_id
+      && centralUserId !== row.coach_user_id
+      && !row.reviewer_is_venue_admin,
+    viewerCanResolve: row.case_type === 'SAFETY' && row.state === 'UNDER_REVIEW'
+      && row.assigned_reviewer_user_id === centralUserId,
+    replacementCoachOptions: row.case_type === 'SAFETY'
+      ? coachOptions.rows.map((option) => ({
+          userId: option.user_id, displayName: option.display_name, venueId: option.venue_id,
+        }))
+      : [],
+    replacementVenueOptions: row.case_type === 'SAFETY'
+      ? venueOptions.rows.map((option) => ({
+          venueId: option.venue_id, displayName: option.display_name,
+        }))
+      : [],
     submittedAt: row.submitted_at.toISOString(),
     version: Number(row.version),
   }));

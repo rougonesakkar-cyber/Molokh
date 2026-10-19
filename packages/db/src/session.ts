@@ -13,6 +13,7 @@ import {
   assertChallengeSessionCanStart,
   assertChallengeSessionWindowCanOpen,
   assertExternalSessionFailureCanBeCommitted,
+  assertSafetyCaseReviewCanStart,
   assertSessionCanEnd,
   assertSessionCanStart,
   assertSessionCoach,
@@ -22,6 +23,8 @@ import {
   challengeResultReminderDeadlines,
   effectiveChallengeStakeAtSessionWindow,
   externalChallengeRescheduleCount,
+  extendSchedulingDeadlineForSafetyHold,
+  normalizeSafetyCaseReleaseDecision,
   officialCancellationWinner,
   titleChallengeCompetitiveContextIsCurrent,
   titleSessionRequiresCompetitiveInvalidation,
@@ -31,6 +34,7 @@ import {
   type CommandEnvelope,
   type SessionState,
   type SafetyCancellationReasonCode,
+  type SafetyReplacementRemedy,
   type TimerAggregateSnapshot,
 } from '@molokh/core';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -172,6 +176,69 @@ export interface SafetyCancellationProjection {
   readonly slotVersion: number;
   readonly challengeVersion: number;
 }
+
+export interface StartSafetyCaseReviewPayload {
+  readonly caseId: string;
+}
+
+export interface ResolveSafetyCasePayload {
+  readonly caseId: string;
+  readonly remedyCode: SafetyReplacementRemedy;
+  readonly replacementCoachUserId: string | null;
+  readonly replacementVenueId: string | null;
+  readonly reason: string;
+  readonly expectedChallengeVersion: number;
+  readonly expectedHoldVersion: number;
+}
+
+export interface SafetyCaseReviewEffectIds {
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
+}
+
+export interface SafetyCaseResolutionEffectIds extends SafetyCaseReviewEffectIds {
+  readonly decisionId: string;
+  readonly decisionEventId: string;
+  readonly challengeEventId: string;
+  readonly challengeOutboxMessageId: string;
+  readonly holdEventId: string;
+  readonly holdOutboxMessageId: string;
+  readonly notificationOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string, string];
+}
+
+export type SafetyCaseReviewProjection =
+  | {
+      readonly action: 'SAFETY_REVIEW_STARTED';
+      readonly caseId: string;
+      readonly state: 'UNDER_REVIEW';
+      readonly assignedReviewerUserId: string;
+      readonly reviewStartedAt: string;
+      readonly challengeId: string;
+      readonly challengeVersion: number;
+      readonly holdId: string;
+      readonly holdVersion: number;
+      readonly version: number;
+    }
+  | {
+      readonly action: 'SAFETY_REPLACEMENT_APPLIED';
+      readonly caseId: string;
+      readonly state: 'CLOSED';
+      readonly decisionId: string;
+      readonly remedyCode: SafetyReplacementRemedy;
+      readonly replacementCoachUserId: string | null;
+      readonly replacementVenueId: string | null;
+      readonly challengeId: string;
+      readonly challengeState: 'ACCEPTED_UNSCHEDULED';
+      readonly schedulingDeadlineAt: string;
+      readonly challengeVersion: number;
+      readonly holdId: string;
+      readonly holdState: 'RELEASED';
+      readonly holdVersion: number;
+      readonly releasedAt: string;
+      readonly version: number;
+    };
 
 export interface SessionEffectIds {
   readonly eventId: string;
@@ -1376,6 +1443,414 @@ export async function reportSafetyAndCancelSession(
                 deadlineAt: null,
               })),
             },
+          },
+        ],
+      };
+    },
+  });
+}
+
+interface SafetyCaseReviewRow {
+  readonly case_id: string;
+  readonly state: 'SUBMITTED' | 'UNDER_REVIEW' | 'CLOSED';
+  readonly reporter_user_id: string;
+  readonly subject_user_id: string;
+  readonly assigned_reviewer_user_id: string | null;
+  readonly challenge_id: string;
+  readonly booking_id: string;
+  readonly session_id: string;
+  readonly pair_low_id: string;
+  readonly pair_high_id: string;
+  readonly coach_user_id: string;
+  readonly venue_id: string;
+  readonly community_id: string;
+  readonly challenge_state: ChallengeState;
+  readonly scheduling_deadline_at: Date | null;
+  readonly user_reschedule_count: number;
+  readonly challenge_version: string;
+  readonly active_obligation_count: string;
+  readonly hold_id: string;
+  readonly hold_state: 'ACTIVE' | 'RELEASED';
+  readonly hold_started_at: Date;
+  readonly hold_version: string;
+  readonly version: string;
+}
+
+async function safetyCaseReviewRow(
+  transaction: Transaction<Database>,
+  caseId: string,
+): Promise<SafetyCaseReviewRow | undefined> {
+  const result = await sql<SafetyCaseReviewRow>`
+    select moderation_case.case_id, moderation_case.state,
+      moderation_case.reporter_user_id, moderation_case.subject_user_id,
+      moderation_case.assigned_reviewer_user_id,
+      moderation_case.challenge_id, moderation_case.booking_id,
+      moderation_case.session_id, moderation_case.version::text,
+      session.pair_low_id, session.pair_high_id, session.coach_user_id,
+      session.venue_id, competition.community_id,
+      challenge.state as challenge_state, challenge.scheduling_deadline_at,
+      challenge.user_reschedule_count, challenge.version::text as challenge_version,
+      (select count(*)::text
+       from competition.challenge_participant_obligations obligation
+       where obligation.challenge_id = challenge.challenge_id
+         and obligation.released_at is null) as active_obligation_count,
+      process_hold.hold_id, process_hold.state as hold_state,
+      process_hold.started_at as hold_started_at,
+      process_hold.version::text as hold_version
+    from governance.moderation_cases moderation_case
+    join scheduling.sessions session
+      on session.session_id = moderation_case.session_id
+    join scheduling.bookings booking
+      on booking.booking_id = moderation_case.booking_id
+      and booking.booking_id = session.booking_id
+    join competition.challenges challenge
+      on challenge.challenge_id = moderation_case.challenge_id
+      and challenge.challenge_id = session.challenge_id
+    join competition.competitions competition
+      on competition.competition_id = challenge.competition_id
+    join competition.process_holds process_hold
+      on process_hold.moderation_case_id = moderation_case.case_id
+      and process_hold.aggregate_type = 'CHALLENGE'
+      and process_hold.aggregate_id = challenge.challenge_id
+      and process_hold.reason = 'SAFETY'
+    where moderation_case.case_id = ${caseId}::uuid
+      and moderation_case.case_type = 'SAFETY'
+    for update of moderation_case, session, booking, challenge, process_hold
+  `.execute(transaction);
+  return result.rows[0];
+}
+
+async function reviewerIsInterestedVenueAdmin(
+  transaction: Transaction<Database>, reviewerUserId: string, venueId: string,
+): Promise<boolean> {
+  const result = await sql<{ readonly interested: boolean }>`select exists (
+    select 1 from community.role_grants
+    where user_id = ${reviewerUserId}::uuid
+      and role in ('PRIMARY_ADMIN', 'GYM_ADMIN')
+      and scope_type = 'VENUE' and scope_id = ${venueId}::uuid
+      and state = 'ACTIVE'
+      and (expires_at is null or expires_at > clock_timestamp())
+  ) as interested`.execute(transaction);
+  return result.rows[0]?.interested === true;
+}
+
+async function safetyReplacementAvailability(
+  transaction: Transaction<Database>,
+  row: SafetyCaseReviewRow,
+  replacementCoachUserId: string | null,
+  replacementVenueId: string | null,
+): Promise<{ readonly coach: boolean; readonly venue: boolean }> {
+  const venueResult = replacementVenueId === null
+    ? { rows: [{ available: false }] }
+    : await sql<{ readonly available: boolean }>`select exists (
+        select 1 from community.venues venue
+        join community.communities community on community.venue_id = venue.venue_id
+        where venue.venue_id = ${replacementVenueId}::uuid
+          and venue.venue_id <> ${row.venue_id}::uuid
+          and venue.state = 'ACTIVE' and community.state = 'ACTIVE'
+      ) as available`.execute(transaction);
+  const targetVenueId = replacementVenueId ?? row.venue_id;
+  const coachResult = replacementCoachUserId === null
+    ? { rows: [{ available: false }] }
+    : await sql<{ readonly available: boolean }>`select exists (
+        select 1 from identity.users coach
+        join community.role_grants role_grant on role_grant.user_id = coach.user_id
+        join community.communities community
+          on community.community_id = role_grant.scope_id
+        join community.venues venue on venue.venue_id = community.venue_id
+        where coach.user_id = ${replacementCoachUserId}::uuid
+          and coach.user_id <> ${row.coach_user_id}::uuid
+          and coach.user_id not in (${row.pair_low_id}::uuid, ${row.pair_high_id}::uuid)
+          and coach.account_state = 'ACTIVE'
+          and role_grant.role = 'COACH' and role_grant.scope_type = 'COMMUNITY'
+          and role_grant.state = 'ACTIVE'
+          and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+          and community.state = 'ACTIVE' and venue.state = 'ACTIVE'
+          and venue.venue_id = ${targetVenueId}::uuid
+      ) as available`.execute(transaction);
+  return {
+    coach: coachResult.rows[0]?.available === true,
+    venue: venueResult.rows[0]?.available === true,
+  };
+}
+
+async function safetyReleaseRecipients(
+  transaction: Transaction<Database>, row: SafetyCaseReviewRow,
+): Promise<readonly string[]> {
+  const admin = await sql<{ readonly user_id: string }>`
+    select user_id from community.role_grants
+    where role in ('PRIMARY_ADMIN', 'GYM_ADMIN') and scope_type = 'VENUE'
+      and scope_id = ${row.venue_id}::uuid and state = 'ACTIVE'
+      and (expires_at is null or expires_at > clock_timestamp())
+    order by authorized_at, user_id limit 1
+  `.execute(transaction);
+  return [...new Set([
+    row.pair_low_id,
+    row.pair_high_id,
+    admin.rows[0]?.user_id ?? null,
+  ].filter((userId): userId is string => userId !== null))];
+}
+
+function assertSafetyCaseCommand(
+  command: CommandEnvelope<StartSafetyCaseReviewPayload | ResolveSafetyCasePayload>,
+  commandType: 'START_SAFETY_CASE_REVIEW' | 'RESOLVE_SAFETY_CASE',
+): asserts command is CommandEnvelope<StartSafetyCaseReviewPayload | ResolveSafetyCasePayload> & {
+  readonly actor: { readonly id: string };
+} {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'ModerationCase'
+    || command.commandType !== commandType
+    || command.aggregateId !== command.payload.caseId
+  ) throw new SchedulingPermissionDeniedError();
+}
+
+export async function startSafetyCaseReview(
+  database: Kysely<Database>,
+  command: CommandEnvelope<StartSafetyCaseReviewPayload>,
+  ids: SafetyCaseReviewEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<SafetyCaseReviewProjection>> {
+  assertSafetyCaseCommand(command, 'START_SAFETY_CASE_REVIEW');
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await safetyCaseReviewRow(transaction, command.aggregateId);
+      if (!row) throw new SchedulingPermissionDeniedError();
+      assertExpectedVersion(Number(row.version), command.expectedVersion);
+      assertSafetyCaseReviewCanStart({
+        state: row.state,
+        actorIsCentral: await hasActiveCentralScope(transaction, command.actor.id),
+        reviewerUserId: command.actor.id,
+        reporterUserId: row.reporter_user_id,
+        subjectUserId: row.subject_user_id,
+        athleteUserIds: [row.pair_low_id, row.pair_high_id],
+        assignedCoachUserId: row.coach_user_id,
+        reviewerIsInterestedVenueAdmin: await reviewerIsInterestedVenueAdmin(
+          transaction, command.actor.id, row.venue_id,
+        ),
+      });
+      await sql`
+        update governance.moderation_cases
+        set state = 'UNDER_REVIEW', assigned_reviewer_user_id = ${command.actor.id}::uuid,
+          review_started_at = ${context.occurredAt.toISOString()}::timestamptz,
+          version = ${context.nextVersion}
+        where case_id = ${row.case_id}::uuid and state = 'SUBMITTED'
+          and version = ${Number(row.version)}
+      `.execute(transaction);
+      const response: SafetyCaseReviewProjection = {
+        action: 'SAFETY_REVIEW_STARTED', caseId: row.case_id, state: 'UNDER_REVIEW',
+        assignedReviewerUserId: command.actor.id,
+        reviewStartedAt: context.occurredAt.toISOString(),
+        challengeId: row.challenge_id, challengeVersion: Number(row.challenge_version),
+        holdId: row.hold_id, holdVersion: Number(row.hold_version),
+        version: context.nextVersion,
+      };
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId, eventName: 'CaseReviewStarted', schemaVersion: 1,
+          transitionId: 'MC-03/MC-04',
+          payload: { caseId: row.case_id, state: 'UNDER_REVIEW' },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        audit: {
+          auditId: ids.auditId, action: 'START_SAFETY_CASE_REVIEW',
+          transitionId: 'MC-03/MC-04', reasonCode: 'SAFETY_REVIEW',
+          beforeState: row.state, afterState: 'UNDER_REVIEW',
+          metadata: { reviewerUserId: command.actor.id, challengeId: row.challenge_id },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'governance.safety-case.review-started.v1',
+          payload: { caseId: row.case_id, state: 'UNDER_REVIEW' },
+        }],
+      };
+    },
+  });
+}
+
+export async function resolveSafetyCase(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ResolveSafetyCasePayload>,
+  ids: SafetyCaseResolutionEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<SafetyCaseReviewProjection>> {
+  assertSafetyCaseCommand(command, 'RESOLVE_SAFETY_CASE');
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      if (!(await hasActiveCentralScope(transaction, command.actor.id))) {
+        throw new SchedulingPermissionDeniedError();
+      }
+      const row = await safetyCaseReviewRow(transaction, command.aggregateId);
+      if (!row) throw new SchedulingPermissionDeniedError();
+      assertExpectedVersion(Number(row.version), command.expectedVersion);
+      assertExpectedVersion(Number(row.challenge_version), command.payload.expectedChallengeVersion);
+      assertExpectedVersion(Number(row.hold_version), command.payload.expectedHoldVersion);
+      if (
+        row.challenge_state !== 'BOOKED'
+        || row.hold_state !== 'ACTIVE'
+        || row.scheduling_deadline_at === null
+        || Number(row.active_obligation_count) !== 2
+      ) throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+      const availability = await safetyReplacementAvailability(
+        transaction,
+        row,
+        command.payload.replacementCoachUserId,
+        command.payload.replacementVenueId,
+      );
+      const normalized = normalizeSafetyCaseReleaseDecision({
+        state: row.state,
+        assignedReviewerUserId: row.assigned_reviewer_user_id,
+        reviewerUserId: command.actor.id,
+        remedyCode: command.payload.remedyCode,
+        replacementCoachUserId: command.payload.replacementCoachUserId,
+        replacementVenueId: command.payload.replacementVenueId,
+        replacementCoachAvailable: availability.coach,
+        replacementVenueAvailable: availability.venue,
+        reason: command.payload.reason,
+      });
+      const extendedDeadline = extendSchedulingDeadlineForSafetyHold({
+        schedulingDeadlineAt: row.scheduling_deadline_at.toISOString(),
+        holdStartedAt: row.hold_started_at.toISOString(),
+        releasedAt: context.occurredAt,
+      });
+      await sql`
+        insert into governance.safety_case_decisions (
+          decision_id, case_id, reviewer_user_id, remedy_code,
+          replacement_coach_user_id, replacement_venue_id, decision_reason, decided_at
+        ) values (
+          ${ids.decisionId}::uuid, ${row.case_id}::uuid, ${command.actor.id}::uuid,
+          ${normalized.remedyCode}, ${normalized.replacementCoachUserId}::uuid,
+          ${normalized.replacementVenueId}::uuid, ${normalized.reason},
+          ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        update governance.moderation_cases
+        set state = 'CLOSED', closed_at = ${context.occurredAt.toISOString()}::timestamptz,
+          version = ${context.nextVersion}
+        where case_id = ${row.case_id}::uuid and state = 'UNDER_REVIEW'
+          and assigned_reviewer_user_id = ${command.actor.id}::uuid
+          and version = ${Number(row.version)}
+      `.execute(transaction);
+      const holdVersion = Number(row.hold_version) + 1;
+      await sql`
+        update competition.process_holds
+        set state = 'RELEASED', released_by = ${command.actor.id}::uuid,
+          released_at = ${context.occurredAt.toISOString()}::timestamptz,
+          version = ${holdVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where hold_id = ${row.hold_id}::uuid and state = 'ACTIVE'
+          and version = ${Number(row.hold_version)}
+      `.execute(transaction);
+      const challengeVersion = Number(row.challenge_version) + 1;
+      await sql`
+        update competition.challenges
+        set state = 'ACCEPTED_UNSCHEDULED',
+          scheduling_deadline_at = ${extendedDeadline.toISOString()}::timestamptz,
+          version = ${challengeVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid and state = 'BOOKED'
+          and version = ${Number(row.challenge_version)}
+      `.execute(transaction);
+      const recipients = await safetyReleaseRecipients(transaction, row);
+      const response: SafetyCaseReviewProjection = {
+        action: 'SAFETY_REPLACEMENT_APPLIED', caseId: row.case_id, state: 'CLOSED',
+        decisionId: ids.decisionId, remedyCode: normalized.remedyCode,
+        replacementCoachUserId: normalized.replacementCoachUserId,
+        replacementVenueId: normalized.replacementVenueId,
+        challengeId: row.challenge_id, challengeState: 'ACCEPTED_UNSCHEDULED',
+        schedulingDeadlineAt: extendedDeadline.toISOString(), challengeVersion,
+        holdId: row.hold_id, holdState: 'RELEASED', holdVersion,
+        releasedAt: context.occurredAt.toISOString(), version: context.nextVersion,
+      };
+      const publicDecision = {
+        caseId: row.case_id, decisionId: ids.decisionId,
+        remedyCode: normalized.remedyCode,
+        replacementCoachUserId: normalized.replacementCoachUserId,
+        replacementVenueId: normalized.replacementVenueId,
+      };
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId, eventName: 'CaseClosed', schemaVersion: 1,
+          transitionId: 'MC-05/MC-06',
+          payload: { ...publicDecision, state: 'CLOSED' },
+          metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+        },
+        relatedEvents: [
+          {
+            eventId: ids.decisionEventId, eventName: 'CaseDecided', schemaVersion: 1,
+            transitionId: 'MC-05', aggregateType: 'SafetyCaseDecision',
+            aggregateId: ids.decisionId, aggregateVersion: 1, payload: publicDecision,
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+          {
+            eventId: ids.challengeEventId, eventName: 'ChallengeReturnedToScheduling', schemaVersion: 1,
+            transitionId: 'MC-06', aggregateType: 'Challenge', aggregateId: row.challenge_id,
+            aggregateVersion: challengeVersion,
+            payload: {
+              challengeId: row.challenge_id, state: 'ACCEPTED_UNSCHEDULED',
+              schedulingDeadlineAt: extendedDeadline.toISOString(),
+            },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          },
+          {
+            eventId: ids.holdEventId, eventName: 'ProcessHoldReleased', schemaVersion: 1,
+            transitionId: 'MC-06', aggregateType: 'ProcessHold', aggregateId: row.hold_id,
+            aggregateVersion: holdVersion,
+            payload: { holdId: row.hold_id, state: 'RELEASED' },
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+        ],
+        audit: {
+          auditId: ids.auditId, action: 'RESOLVE_SAFETY_CASE',
+          transitionId: 'MC-05/MC-06', reasonCode: normalized.remedyCode,
+          beforeState: row.state, afterState: 'CLOSED',
+          metadata: {
+            ...publicDecision, reviewerUserId: command.actor.id,
+            reporterUserId: row.reporter_user_id, subjectUserId: row.subject_user_id,
+            decisionReason: normalized.reason, challengeId: row.challenge_id,
+            bookingId: row.booking_id, sessionId: row.session_id,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId, topic: 'governance.safety-case.closed.v1',
+            payload: { ...publicDecision, state: 'CLOSED' },
+          },
+          {
+            messageId: ids.challengeOutboxMessageId,
+            topic: 'competition.challenge.safety-hold-released.v1',
+            sourceEventId: ids.challengeEventId,
+            payload: {
+              challengeId: row.challenge_id, state: 'ACCEPTED_UNSCHEDULED',
+              schedulingDeadlineAt: extendedDeadline.toISOString(),
+            },
+          },
+          {
+            messageId: ids.holdOutboxMessageId,
+            topic: 'competition.process-hold.released.v1',
+            sourceEventId: ids.holdEventId,
+            payload: { holdId: row.hold_id, state: 'RELEASED' },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: { notifications: recipients.map((recipientUserId, index) => ({
+              notificationId: ids.notificationIds[index]!, recipientUserId,
+              category: 'SERVICE', renderKey: 'safety.case-returned-to-scheduling',
+              actionTarget: { type: 'CHALLENGE', challengeId: row.challenge_id },
+              payload: {
+                challengeId: row.challenge_id, state: 'ACCEPTED_UNSCHEDULED',
+                automaticBooking: false, noSportingSanction: true,
+              },
+              deadlineAt: extendedDeadline.toISOString(),
+            })) },
           },
         ],
       };
