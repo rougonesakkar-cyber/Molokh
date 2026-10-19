@@ -1598,6 +1598,58 @@ export async function registerSchedulingRoutes(
   app.post<{
     Headers: SchedulingHeaders;
     Params: SessionParams;
+    Body: ReportSafetyAndCancelSessionBody;
+  }>(
+    '/api/v1/sessions/:sessionId/refuse-unsafe',
+    {
+      schema: {
+        operationId: 'refuseUnsafeSession',
+        params: Type.Object(
+          { sessionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: ReportSafetyAndCancelSessionBodySchema,
+        response: {
+          200: SafetyCancellationCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SafetyCancellationCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.reportSafetyAndCancelSession(
+        {
+          commandId: newUuidV7(), commandType: 'REFUSE_UNSAFE_SESSION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'Session', aggregateId: request.params.sessionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: { sessionId: request.params.sessionId, ...request.body },
+        },
+        safetyCancellationEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return safetyCancellationCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: SessionParams;
     Body: FailSessionExternalBody;
   }>(
     '/api/v1/sessions/:sessionId/fail-external',

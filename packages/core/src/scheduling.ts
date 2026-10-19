@@ -784,6 +784,8 @@ export function assertSafetyCancellationCanBeSubmitted(input: {
   readonly subjectUserId: string;
   readonly athleteUserIds: readonly [string, string];
   readonly actorIsOperational: boolean;
+  readonly actorIsAssignedCoach: boolean;
+  readonly reporterPolicy: 'PARTICIPANT_OR_OPERATIONAL' | 'ASSIGNED_COACH_ONLY';
   readonly reasonCode: string;
 }): SafetyCancellationReasonCode {
   const reporterIsAthlete = input.athleteUserIds.includes(input.reporterUserId);
@@ -796,6 +798,7 @@ export function assertSafetyCancellationCanBeSubmitted(input: {
     || input.actualStartAt !== null
     || input.resultExists
     || (!reporterIsAthlete && !input.actorIsOperational)
+    || (input.reporterPolicy === 'ASSIGNED_COACH_ONLY' && !input.actorIsAssignedCoach)
     || !input.athleteUserIds.includes(input.subjectUserId)
     || input.reporterUserId === input.subjectUserId
     || (reporterIsAthlete

@@ -2150,6 +2150,7 @@ describe('runtime contract', () => {
     const lifecycleSession: SessionLifecycleProjection = {
       sessionId,
       bookingId: booking.bookingId,
+      bookingVersion: booking.version,
       challengeId: null,
       challengeState: null,
       challengeVersion: null,
@@ -2180,6 +2181,7 @@ describe('runtime contract', () => {
       viewerCanRecordResult: true,
       viewerCanAdminister: false,
       viewerCanAuthorizeGuestCoach: false,
+      viewerCanReportCoachSafetyRefusal: false,
       viewerCanRequestNoFaultReschedule: false,
       viewerCanRequestOfficialConversion: false,
       viewerCanCancelTraining: false,
@@ -3114,6 +3116,32 @@ describe('runtime contract', () => {
     expect(reportSafetyAndCancelSession.mock.calls[0]?.[1]).toMatchObject({
       caseId: expect.any(String), holdId: expect.any(String),
       notificationIds: expect.arrayContaining([expect.any(String)]),
+    });
+
+    const coachRefusal = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/refuse-unsafe`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-coach-safety-refusal-api-1',
+        'if-match': '2',
+      },
+      payload: {
+        subjectUserId: lifecycleSession.athleteUserIds[0],
+        reasonCode: 'UNSAFE_CONDUCT',
+        explicitConfirmation: true,
+        expectedBookingVersion: booking.version,
+        expectedChallengeVersion: 4,
+      },
+    });
+    expect(coachRefusal.statusCode).toBe(200);
+    expect(reportSafetyAndCancelSession.mock.calls[1]?.[0]).toMatchObject({
+      commandType: 'REFUSE_UNSAFE_SESSION', expectedVersion: 2,
+      payload: {
+        sessionId, subjectUserId: lifecycleSession.athleteUserIds[0],
+        reasonCode: 'UNSAFE_CONDUCT', explicitConfirmation: true,
+        expectedBookingVersion: booking.version, expectedChallengeVersion: 4,
+      },
     });
 
     const officialCancelled = await app.inject({

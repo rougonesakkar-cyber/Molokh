@@ -44,6 +44,7 @@ import type {
   RoleGrantCommandResponse,
   SocialRelationshipCommandResponse,
   SessionCommandResponse,
+  SafetyCancellationCommandResponse,
   ScheduleMutationReasonBody,
   SlotCommandResponse,
   StatusQueueEntryCommandResponse,
@@ -108,6 +109,7 @@ import {
   resultCardPresentation,
 } from '../lib/result-presentation';
 import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
+import { coachSafetyRefusalPresentation } from '../features/safety/presentation';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -183,6 +185,7 @@ type SessionAction =
   | 'cancel-after-coach-replacement'
   | 'fail-external'
   | 'cancel-official'
+  | 'refuse-unsafe'
   | 'cancel-training-participation';
 
 interface PendingSessionAction {
@@ -1678,6 +1681,57 @@ export default function IdentityScreen() {
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Session');
+    } finally {
+      setActingSessionKey(null);
+    }
+  };
+
+  const refuseUnsafeSession = async (
+    session: Session,
+    subjectUserId: string,
+  ) => {
+    if (actingSessionKey !== null || session.challengeVersion === null) return;
+    const operation = `${session.sessionId}:refuse-unsafe:${subjectUserId}:v${session.version}`;
+    const idempotencyKey = sessionActionKeys.current.get(operation)
+      ?? `session:${operation}`;
+    sessionActionKeys.current.set(operation, idempotencyKey);
+    setActingSessionKey(operation);
+    setSessionNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/sessions/${session.sessionId}/refuse-unsafe`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(session.version),
+          },
+          body: JSON.stringify({
+            subjectUserId,
+            reasonCode: 'THREAT',
+            explicitConfirmation: true,
+            expectedBookingVersion: session.bookingVersion,
+            expectedChallengeVersion: session.challengeVersion,
+          }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadIdentity();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as SafetyCancellationCommandResponse;
+      sessionActionKeys.current.delete(operation);
+      await loadIdentity();
+      setSessionNotice(
+        result.data.action === 'COACH_REFUSED_UNSAFE_SESSION'
+          ? 'Отказ Coach записан. Session закрыта без виновного, а Challenge приостановлен до независимого решения Central.'
+          : 'Safety-сообщение записано.',
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отправить safety-сообщение');
     } finally {
       setActingSessionKey(null);
     }
@@ -5668,6 +5722,44 @@ export default function IdentityScreen() {
                                     Зал не может провести Session
                                   </Text>
                                 </Pressable>
+                                {session.viewerCanReportCoachSafetyRefusal
+                                  ? session.athleteUserIds.map((athleteUserId, index) => {
+                                    const presentation = coachSafetyRefusalPresentation({
+                                      athleteDisplayName: session.athleteDisplayNames[index],
+                                      purpose: session.purpose,
+                                      sessionState: session.state,
+                                      viewerCanReportCoachSafetyRefusal:
+                                        session.viewerCanReportCoachSafetyRefusal,
+                                    });
+                                    return presentation ? (
+                                      <Pressable
+                                        key={`safety-refusal:${athleteUserId}`}
+                                        accessibilityRole="button"
+                                        accessibilityState={{ disabled: sessionActionBlocked }}
+                                        disabled={sessionActionBlocked}
+                                        onPress={() => setPendingSessionAction({
+                                          action: 'refuse-unsafe',
+                                          body: { subjectUserId: athleteUserId },
+                                          confirmLabel: 'Отказаться и передать Central',
+                                          description: presentation.confirmation,
+                                          operationSuffix: athleteUserId,
+                                          sessionId: session.sessionId,
+                                          title: 'Отказаться от небезопасной Session?',
+                                          tone: 'danger',
+                                        })}
+                                        style={({ pressed }) => [
+                                          styles.dangerButton,
+                                          sessionActionBlocked && styles.buttonDisabled,
+                                          pressed && !sessionActionBlocked && styles.buttonPressed,
+                                        ]}
+                                      >
+                                        <Text style={styles.dangerButtonText}>
+                                          {presentation.actionLabel}
+                                        </Text>
+                                      </Pressable>
+                                    ) : null;
+                                  })
+                                  : null}
                               </View>
                             ) : null}
                           {session.viewerCanRequestNoFaultReschedule ? (
@@ -5731,6 +5823,11 @@ export default function IdentityScreen() {
                                     setPendingSessionAction(null);
                                     if (pending.action === 'cancel-training-participation') {
                                       void cancelTrainingParticipation(session);
+                                    } else if (pending.action === 'refuse-unsafe') {
+                                      void refuseUnsafeSession(
+                                        session,
+                                        String(pending.body.subjectUserId),
+                                      );
                                     } else {
                                       void runSessionAction(
                                         session,

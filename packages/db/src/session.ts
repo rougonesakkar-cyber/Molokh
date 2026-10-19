@@ -156,7 +156,7 @@ export interface SafetyCancellationEffectIds {
 }
 
 export interface SafetyCancellationProjection {
-  readonly action: 'SAFETY_REPORTED_AND_CANCELLED';
+  readonly action: 'SAFETY_REPORTED_AND_CANCELLED' | 'COACH_REFUSED_UNSAFE_SESSION';
   readonly caseId: string;
   readonly caseState: 'SUBMITTED';
   readonly challengeId: string;
@@ -225,6 +225,7 @@ export interface AttendanceProjection {
 export interface SessionLifecycleProjection {
   readonly sessionId: string;
   readonly bookingId: string;
+  readonly bookingVersion: number;
   readonly challengeId: string | null;
   readonly challengeState: ChallengeState | null;
   readonly challengeVersion: number | null;
@@ -255,6 +256,7 @@ export interface SessionLifecycleProjection {
   readonly viewerCanRecordResult: boolean;
   readonly viewerCanAdminister: boolean;
   readonly viewerCanAuthorizeGuestCoach: boolean;
+  readonly viewerCanReportCoachSafetyRefusal: boolean;
   readonly viewerCanRequestNoFaultReschedule: boolean;
   readonly viewerCanRequestOfficialConversion: boolean;
   readonly viewerCanCancelTraining: boolean;
@@ -275,6 +277,7 @@ interface SessionRow {
   readonly session_id: string;
   readonly booking_id: string;
   readonly booking_state: string;
+  readonly booking_version: string;
   readonly challenge_id: string | null;
   readonly challenge_state: ChallengeState | null;
   readonly challenge_version: string | null;
@@ -689,7 +692,7 @@ async function readSessionRow(
 ): Promise<SessionRow | null> {
   const result = await sql<SessionRow>`
     select session.session_id, session.booking_id, session.challenge_id,
-      booking.state as booking_state,
+      booking.state as booking_state, booking.version::text as booking_version,
       challenge.state as challenge_state,
       challenge.version::text as challenge_version,
       result.result_id,
@@ -792,6 +795,7 @@ async function sessionProjection(
   return {
     sessionId: row.session_id,
     bookingId: row.booking_id,
+    bookingVersion: Number(row.booking_version),
     challengeId: row.challenge_id,
     challengeState: row.challenge_state,
     challengeVersion: row.challenge_version === null ? null : Number(row.challenge_version),
@@ -827,6 +831,13 @@ async function sessionProjection(
       && ![row.pair_low_id, row.pair_high_id].includes(row.coach_user_id)
       && !row.assigned_coach_has_community_grant
       && row.guest_coach_grant_state !== 'ACTIVE',
+    viewerCanReportCoachSafetyRefusal:
+      viewerCanManage
+      && row.purpose === 'OFFICIAL_CHALLENGE'
+      && row.challenge_state === 'BOOKED'
+      && (row.state === 'SCHEDULED' || row.state === 'READY_FOR_COACH')
+      && row.actual_start_at === null
+      && row.result_id === null,
     viewerCanRequestNoFaultReschedule:
       viewerIsAthlete
       && row.latest_coach_replacement_at !== null
@@ -1078,7 +1089,6 @@ async function operationalSafetyRecipients(
   transaction: Transaction<Database>,
   row: SessionRow,
   reporterUserId: string,
-  subjectUserId: string,
 ): Promise<readonly string[]> {
   const result = await sql<{
     readonly venue_admin_user_id: string | null;
@@ -1111,7 +1121,8 @@ async function operationalSafetyRecipients(
   `.execute(transaction);
   const operational = result.rows[0];
   return [...new Set([
-    subjectUserId,
+    row.pair_low_id,
+    row.pair_high_id,
     row.coach_user_id,
     operational?.venue_admin_user_id ?? null,
     operational?.central_user_id ?? null,
@@ -1128,7 +1139,7 @@ export async function reportSafetyAndCancelSession(
     !command.actor.id
     || command.aggregateType !== 'Session'
     || command.aggregateId !== command.payload.sessionId
-    || command.commandType !== 'REPORT_SAFETY_AND_CANCEL'
+    || !['REPORT_SAFETY_AND_CANCEL', 'REFUSE_UNSAFE_SESSION'].includes(command.commandType)
   ) {
     throw new SchedulingPermissionDeniedError();
   }
@@ -1151,9 +1162,19 @@ export async function reportSafetyAndCancelSession(
         command.payload.expectedChallengeVersion,
       );
       const reporterIsAthlete = [row.pair_low_id, row.pair_high_id].includes(reporterUserId);
-      const actorIsOperational = await hasActiveCoachScope(transaction, row, reporterUserId)
+      const actorIsAssignedCoach = await hasActiveCoachScope(transaction, row, reporterUserId);
+      const actorIsOperational = actorIsAssignedCoach
         || await hasActiveVenueAdminScope(transaction, reporterUserId, row.venue_id)
         || await hasActiveCentralScope(transaction, reporterUserId);
+      const isCoachRefusal = command.commandType === 'REFUSE_UNSAFE_SESSION';
+      if (isCoachRefusal) {
+        assertSessionCoach({
+          actorId: reporterUserId,
+          coachUserId: row.coach_user_id,
+          athleteUserIds: [row.pair_low_id, row.pair_high_id],
+        });
+        if (!actorIsAssignedCoach) throw new SchedulingPermissionDeniedError();
+      }
       const reasonCode = assertSafetyCancellationCanBeSubmitted({
         sessionState: row.state,
         sessionPurpose: row.purpose,
@@ -1166,6 +1187,8 @@ export async function reportSafetyAndCancelSession(
         subjectUserId: command.payload.subjectUserId,
         athleteUserIds: [row.pair_low_id, row.pair_high_id],
         actorIsOperational,
+        actorIsAssignedCoach,
+        reporterPolicy: isCoachRefusal ? 'ASSIGNED_COACH_ONLY' : 'PARTICIPANT_OR_OPERATIONAL',
         reasonCode: command.payload.reasonCode,
       });
       if (!reporterIsAthlete && !actorIsOperational) {
@@ -1195,7 +1218,7 @@ export async function reportSafetyAndCancelSession(
         resource,
         context,
         reporterUserId,
-        'SAFETY_CASE_SUBMITTED',
+        isCoachRefusal ? 'COACH_SAFETY_REFUSAL' : 'SAFETY_CASE_SUBMITTED',
       );
       const challengeVersion = Number(challenge.version) + 1;
       await sql`
@@ -1221,10 +1244,11 @@ export async function reportSafetyAndCancelSession(
         transaction,
         row,
         reporterUserId,
-        command.payload.subjectUserId,
       );
       const response: SafetyCancellationProjection = {
-        action: 'SAFETY_REPORTED_AND_CANCELLED',
+        action: isCoachRefusal
+          ? 'COACH_REFUSED_UNSAFE_SESSION'
+          : 'SAFETY_REPORTED_AND_CANCELLED',
         caseId: ids.caseId,
         caseState: 'SUBMITTED',
         challengeId: challenge.challenge_id,
@@ -1299,12 +1323,15 @@ export async function reportSafetyAndCancelSession(
         },
         relatedEvents,
         audit: {
-          auditId: ids.auditId, action: 'REPORT_SAFETY_AND_CANCEL', transitionId: 'MC-02',
+          auditId: ids.auditId,
+          action: isCoachRefusal ? 'REFUSE_UNSAFE_SESSION' : 'REPORT_SAFETY_AND_CANCEL',
+          transitionId: 'MC-02',
           reasonCode, beforeState: row.state, afterState: 'CANCELLED',
           metadata: {
             caseId: ids.caseId, holdId: ids.holdId, reporterUserId,
             subjectUserId: command.payload.subjectUserId,
             challengeId: challenge.challenge_id, bookingId: row.booking_id,
+            ...(isCoachRefusal ? { faultAttribution: 'EXTERNAL' } : {}),
           },
         },
         outbox: [

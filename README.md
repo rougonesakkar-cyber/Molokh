@@ -8,17 +8,17 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **193/214** (`187/196 P0`);
+- executable acceptance traceability: **194/214** (`188/196 P0`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0071` and **68/68** integration scenarios pass locally; AC-124 separates an explicitly confirmed safety cancellation from ordinary reporting, creates one protected `SUBMITTED` SafetyCase with 24h/48h Central SLA, closes the booked Session no-fault and starts a Challenge-scoped `SAFETY/PAUSE` hold without Result, Forfeit, Block, Cooldown or account restriction; AC-123 converts an ordinary Chat Report into one immutable `SUBMITTED` ModerationCase with revision-complete evidence and Central-only reporter identity while leaving Account, Block, Challenge, Booking, Session, Membership, Result, Cooldown and process holds unchanged; AC-072 closes a stale pre-start TITLE context no-fault and reuses the explicit B-26…B-29 physical Booking decision without Result, loss, status movement or Cooldown; AC-047 preserves one shared server FIFO when Champion offers the current Contender an optional TITLE Challenge, starts the 48-hour clock only on activation and permits no-fault decline; AC-100/101 carry the first mutually accepted founding GENESIS pair through Slot, Official Session, normal or FORFEIT Result, provisional status, 48-hour Appeal window and atomic C-04 finalization into either `RUNNING` or the public `CONTENDER_VACANT_OPEN` phase with deterministic status/Cooldown replay; AC-102 proves the separate C-03/ST-03 path that promotes the sole eligible founder only after the full three-day server window, without Result, loss or Cooldown; AC-103 proves strict-FIFO contender GENESIS through mutual acceptance, Scheduling, frozen Session snapshot and C-09 finalization while preserving the Champion; AC-104 proves the equivalent C-08/ST-04 single-candidate succession into the vacant Contender slot; AC-105 keeps either GENESIS phase and the same immutable pair/FIFO facts after DRAW, NO_CONTEST or an independent repeat decision, while creating no status change or Cooldown;
+- database gate: PostgreSQL migrations `0001`–`0071` and **69/69** integration scenarios pass locally; AC-125 lets only the DB-authorized assigned Coach refuse an unstarted booked Official Session for a normalized Athlete safety threat, reuses the protected SafetyCase/no-fault cancellation/`SAFETY/PAUSE` hold transaction and notifies both Athletes neutrally without Result, Forfeit, Block, Cooldown, account restriction or reschedule change; AC-124 separates an explicitly confirmed Athlete safety cancellation from ordinary reporting and creates the same protected Central-review contour without sporting or account sanction; AC-123 converts an ordinary Chat Report into one immutable `SUBMITTED` ModerationCase with revision-complete evidence and Central-only reporter identity while leaving account and sporting state unchanged; AC-072 closes a stale pre-start TITLE context no-fault; AC-047 preserves one shared server FIFO for an optional Champion-to-Contender TITLE offer; AC-100–105 cover founding and Contender GENESIS, single-candidate succession and same-pair repeat with deterministic status/Cooldown replay;
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
 - production dependency gate: Expo patch releases are aligned; all published production-runtime fixes are installed, and the
   resolved `shell-quote` security release is pinned transitively; the unresolved upstream
   `node-forge` and `braces` advisories are covered by narrow regression-tested local backports that
-  expire on 2026-10-16 and reject every other high/critical advisory;
+  expire on 2026-11-16 and reject every other high/critical advisory;
 - external deployment/accounts: not configured.
 
 Production API startup is fail-closed and uses the database-backed session model only: local
@@ -232,6 +232,13 @@ pre-start Booking/Session/Slot по CH-21/B-15/SL-06 и возвращает Cha
 до actual start, те же ресурсы закрываются no-fault, но пользовательский счётчик не расходуется
 даже после двух переносов. Challenge возвращается к выбору времени с исходными обязательствами и
 deadline; EXTERNAL-причина и связанная Session сохраняются в прозрачной audit/event lineage.
+
+Для отдельного safety-сценария назначенный Coach может явно отказаться от ещё не начавшейся
+booked Official Session и выбрать только одного из двух спортсменов frozen pair как subject.
+Molokh закрывает Booking, Session и Slot no-fault, создаёт `SUBMITTED` SafetyCase и ставит только
+этот Challenge на `SAFETY/PAUSE` hold. Оба спортсмена и Venue получают нейтральное уведомление;
+личность Coach и закрытая причина доступны только в защищённом Central-контуре. До независимого
+решения нет поражения, Forfeit, Result, Cooldown, Block или ограничения аккаунта.
 
 Gym Admin can edit or remove future personal Slots and GroupOfferings directly from Community.
 The action is intentionally refused after a pair has started choosing that publication, so terms

@@ -2231,6 +2231,7 @@ export const SessionLifecycleProjectionSchema = Type.Object(
   {
     sessionId: Type.String({ format: 'uuid' }),
     bookingId: Type.String({ format: 'uuid' }),
+    bookingVersion: Type.Integer({ minimum: 1 }),
     challengeId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     challengeState: Type.Union([ChallengeStateSchema, Type.Null()]),
     challengeVersion: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
@@ -2286,6 +2287,7 @@ export const SessionLifecycleProjectionSchema = Type.Object(
     viewerCanRecordResult: Type.Boolean(),
     viewerCanAdminister: Type.Boolean(),
     viewerCanAuthorizeGuestCoach: Type.Boolean(),
+    viewerCanReportCoachSafetyRefusal: Type.Boolean(),
     viewerCanRequestNoFaultReschedule: Type.Boolean(),
     viewerCanRequestOfficialConversion: Type.Boolean(),
     viewerCanCancelTraining: Type.Boolean(),
@@ -2512,7 +2514,10 @@ export type ReportSafetyAndCancelSessionBody = Static<
 
 export const SafetyCancellationProjectionSchema = Type.Object(
   {
-    action: Type.Literal('SAFETY_REPORTED_AND_CANCELLED'),
+    action: Type.Union([
+      Type.Literal('SAFETY_REPORTED_AND_CANCELLED'),
+      Type.Literal('COACH_REFUSED_UNSAFE_SESSION'),
+    ]),
     caseId: Type.String({ format: 'uuid' }),
     caseState: Type.Literal('SUBMITTED'),
     challengeId: Type.String({ format: 'uuid' }),

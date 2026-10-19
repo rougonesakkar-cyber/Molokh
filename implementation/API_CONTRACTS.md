@@ -318,6 +318,8 @@ contact and action token are omitted from projections and audit metadata.
 | POST | `/sessions/{id}/replace-coach` | Gym Admin assigns an equivalent authorized Coach before actual start |
 | POST | `/sessions/{id}/cancel-after-coach-replacement` | either Athlete rejects the replacement; external no-fault cancellation |
 | POST | `/sessions/{id}/fail-external` | Gym Admin/Central closes a pre-start operational failure no-fault |
+| POST | `/sessions/{id}/safety-report` | participant explicitly cancels booked Official and opens protected SafetyCase |
+| POST | `/sessions/{id}/refuse-unsafe` | assigned Coach refuses unstarted booked Official; no-fault resources plus Challenge hold |
 | POST | `/sessions/{id}/cancel-official` | either Athlete explicitly accepts the pre-start `FORFEIT` consequence and cancels a confirmed Official Session |
 | GET | `/results/{id}` | Athlete/Coach/scoped Admin Result projection and currently allowed Appeal action |
 | POST | `/challenges/{id}/result` | assigned non-participant Coach, one effective Result after ended Official Session |
@@ -325,6 +327,13 @@ contact and action token are omitted from projections and audit metadata.
 | POST | `/results/{id}/technical-corrections` | implemented assigned-Coach TC-01 request; source Result `If-Match` |
 
 `scheduled_start_at`, `window_opened_at` and `actual_start_at` are separate fields. A READY Session never contributes Training stats. For the closed-pilot MVP, Coach records both Athlete facts before manual End; only `PRESENT/LATE` on an `ENDED` Training Session contributes to the count. Equivalent replacement changes Session and booked Slot assignment atomically while preserving the original commercial snapshot. It is append-only audited and exposes a pre-start Athlete opt-out. An assigned Coach, scoped Gym Admin or Central may confirm a normalized pre-start Venue/Coach failure; Booking, Session and Slot then close with `EXTERNAL` fault and no Athlete penalty. An Official Challenge returns to `ACCEPTED_UNSCHEDULED` with its original obligations, deadline and user-reschedule count, while the immutable competitive snapshot remains retained if the Session window already opened. By contrast, an Athlete explicitly cancelling a confirmed Official before actual start must confirm the sporting consequence: the resources close, the peer wins one administrative `FORFEIT`, and the normal 48-hour Appeal, status and Cooldown lifecycle begins. The client never presents that action as a no-fault reschedule.
+
+Safety refusal is separate from ordinary external cancellation. Only the assigned active Coach
+(including a Guest Coach whose grant matches this exact Session) may call `refuse-unsafe` and may
+select a subject only from the frozen Athlete pair. The command creates one protected `SUBMITTED`
+SafetyCase with 24h/48h Central SLA, closes Booking/Session/Slot no-fault and pauses the linked
+Challenge deadline. Public and Athlete-facing payloads omit the reporter and reason. Until Central
+decides, the API creates no Result, loss, Forfeit, Cooldown, Block or account restriction.
 
 `LATE` is a visit fact, not a sporting outcome. It does not synthesize `NO_SHOW`, Forfeit, loss,
 administrative Result or Cooldown. After an ended Official Session, the assigned Coach records the

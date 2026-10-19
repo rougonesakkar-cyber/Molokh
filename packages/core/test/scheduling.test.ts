@@ -355,6 +355,8 @@ describe('Scheduling publication policy', () => {
       subjectUserId: 'athlete-b',
       athleteUserIds: ['athlete-a', 'athlete-b'] as const,
       actorIsOperational: false,
+      actorIsAssignedCoach: false,
+      reporterPolicy: 'PARTICIPANT_OR_OPERATIONAL' as const,
       reasonCode: 'THREAT',
     };
     expect(assertSafetyCancellationCanBeSubmitted(input)).toBe('THREAT');
@@ -366,6 +368,25 @@ describe('Scheduling publication policy', () => {
     })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
     expect(() => assertSafetyCancellationCanBeSubmitted({
       ...input, subjectUserId: 'athlete-a',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+  });
+
+  it('[AC-125] permits only the assigned Coach to refuse a pre-start unsafe Session', () => {
+    const input = {
+      sessionState: 'READY_FOR_COACH' as const,
+      sessionPurpose: 'OFFICIAL_CHALLENGE', bookingState: 'CONFIRMED_PAIR',
+      challengeState: 'BOOKED', actualStartAt: null, resultExists: false,
+      explicitConfirmation: true, reporterUserId: 'coach', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      actorIsOperational: true, actorIsAssignedCoach: true,
+      reporterPolicy: 'ASSIGNED_COACH_ONLY' as const, reasonCode: 'UNSAFE_CONDUCT',
+    };
+    expect(assertSafetyCancellationCanBeSubmitted(input)).toBe('UNSAFE_CONDUCT');
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, actorIsAssignedCoach: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, subjectUserId: 'outsider',
     })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
   });
 

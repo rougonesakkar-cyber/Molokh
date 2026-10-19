@@ -7,7 +7,7 @@ const EXCEPTIONS = Object.freeze([
     moduleName: "node-forge",
     installedVersion: "1.4.0",
     patchedVersion: "1.4.1",
-    expiresOn: "2026-10-16",
+    expiresOn: "2026-11-16",
     probe: "./verify-node-forge-cve.mjs",
     pathAllowed: (path) =>
       path.startsWith("apps__client>") &&
@@ -19,7 +19,7 @@ const EXCEPTIONS = Object.freeze([
     moduleName: "braces",
     installedVersion: "3.0.3",
     patchedVersion: "3.0.4",
-    expiresOn: "2026-10-16",
+    expiresOn: "2026-11-16",
     probe: "./verify-braces-cve.mjs",
     pathAllowed: (path) =>
       path.startsWith("apps__client>") && path.includes(">braces"),
