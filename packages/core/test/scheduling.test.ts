@@ -41,6 +41,7 @@ import {
   normalizeCommercialPrice,
   normalizeOptionalScheduleText,
   normalizeScheduleMutationReason,
+  normalizeSafetyEnforcementDecision,
   normalizeSafetyCaseReleaseDecision,
   normalizeScheduleLabel,
 } from '../src/scheduling.js';
@@ -420,6 +421,27 @@ describe('Scheduling publication policy', () => {
       holdStartedAt: '2026-10-18T10:00:00.000Z',
       releasedAt: new Date('2026-10-18T13:30:00.000Z'),
     }).toISOString()).toBe('2026-10-20T13:30:00.000Z');
+  });
+
+  it('[AC-127] requires a direct causal link before Safety enforcement Forfeit', () => {
+    const decision = {
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      subjectUserId: 'athlete-a', athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      caseReasonCode: 'UNSAFE_CONDUCT', causalLinkConfirmed: true,
+      consequencesConfirmed: true, reason: ' direct conduct caused session failure ',
+    };
+    expect(normalizeSafetyEnforcementDecision(decision)).toEqual({
+      remedyCode: 'FORFEIT_BY_ENFORCEMENT', loserUserId: 'athlete-a',
+      winnerUserId: 'athlete-b', enforcementReasonCode: 'UNSAFE_CONDUCT',
+      causalLinkCode: 'SUBJECT_CAUSED_SESSION_FAILURE',
+      reason: 'direct conduct caused session failure',
+    });
+    expect(() => normalizeSafetyEnforcementDecision({
+      ...decision, causalLinkConfirmed: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_CAUSAL_LINK_REQUIRED' }));
+    expect(() => normalizeSafetyEnforcementDecision({
+      ...decision, consequencesConfirmed: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED' }));
   });
 
   it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {

@@ -1178,6 +1178,7 @@ describe('runtime contract', () => {
     const reportId = '0199a1b2-1234-7000-8000-000000000506';
     const caseId = '0199a1b2-1234-7000-8000-000000000508';
     const centralUserId = '0199a1b2-1234-7000-8000-000000000509';
+    const peerId = '0199a1b2-1234-7000-8000-000000000510';
     const centralToken = 'molokh-central-api-test-token';
     const message: ChatMessageProjection = {
       messageId,
@@ -1305,11 +1306,20 @@ describe('runtime contract', () => {
       eventId: '0199a1b2-1234-7000-8000-000000000520', aggregateVersion: 2, replayed: false,
     }));
     const resolveSafetyCase = vi.fn(async (
-      _command: CommandEnvelope<ResolveSafetyCasePayload>,
+      command: CommandEnvelope<ResolveSafetyCasePayload>,
       ids: SafetyCaseResolutionEffectIds,
-    ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> => ({
-      responseStatus: 200,
-      response: {
+    ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> => {
+      const response: SafetyCaseReviewProjection = command.payload.remedyCode === 'FORFEIT_BY_ENFORCEMENT'
+        ? {
+            action: 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED', caseId, state: 'CLOSED',
+            decisionId: ids.decisionId, remedyCode: 'FORFEIT_BY_ENFORCEMENT',
+            resultId: ids.resultId!, challengeId: chatId, challengeState: 'RESULT_RECORDED',
+            challengeVersion: 3, loserUserId: userId, winnerUserId: peerId,
+            appealDeadlineAt: '2026-09-09T12:00:00.000Z',
+            holdId: reportId, holdState: 'RELEASED', holdVersion: 2,
+            releasedAt: '2026-09-07T12:00:00.000Z', version: 3,
+          }
+        : {
         action: 'SAFETY_REPLACEMENT_APPLIED', caseId, state: 'CLOSED',
         decisionId: ids.decisionId, remedyCode: 'REPLACE_COACH',
         replacementCoachUserId: userId, replacementVenueId: null,
@@ -1317,9 +1327,13 @@ describe('runtime contract', () => {
         schedulingDeadlineAt: '2026-09-10T12:00:00.000Z', challengeVersion: 3,
         holdId: reportId, holdState: 'RELEASED', holdVersion: 2,
         releasedAt: '2026-09-07T12:00:00.000Z', version: 3,
-      },
+      };
+      return {
+      responseStatus: 200,
+      response,
       eventId: '0199a1b2-1234-7000-8000-000000000521', aggregateVersion: 3, replayed: false,
-    }));
+      };
+    });
     const app = await buildApp({
       chat: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -1448,6 +1462,29 @@ describe('runtime contract', () => {
     expect(resolveSafetyCase.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'RESOLVE_SAFETY_CASE', expectedVersion: 2,
       payload: { expectedChallengeVersion: 2, expectedHoldVersion: 1 },
+    });
+    const enforced = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/resolve`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-enforce-1', 'if-match': '2' },
+      payload: {
+        remedyCode: 'FORFEIT_BY_ENFORCEMENT', replacementCoachUserId: null,
+        replacementVenueId: null, causalLinkConfirmed: true, consequencesConfirmed: true,
+        reason: 'Поведение напрямую сорвало связанную Official Session',
+        expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    expect(enforced.statusCode, enforced.body).toBe(200);
+    expect(enforced.json()).toMatchObject({
+      data: {
+        action: 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED',
+        challengeState: 'RESULT_RECORDED', loserUserId: userId, winnerUserId: peerId,
+      },
+    });
+    expect(resolveSafetyCase.mock.calls[1]?.[0]).toMatchObject({
+      payload: {
+        remedyCode: 'FORFEIT_BY_ENFORCEMENT', causalLinkConfirmed: true,
+        consequencesConfirmed: true, expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
     });
 
     await app.ready();

@@ -29,7 +29,15 @@ describe('Coach safety refusal presentation', () => {
       state: 'UNDER_REVIEW', viewerCanStartReview: false, viewerCanResolve: true,
     });
     expect(decision.action).toBe('RESOLVE');
-    expect(decision.explanation).toContain('Новая Session автоматически не создаётся');
     expect(decision.explanation).toContain('тот же Challenge');
+  });
+
+  it('[AC-127] exposes enforcement only as an independent causal decision with Appeal', () => {
+    const decision = safetyCaseResolutionPresentation({
+      state: 'UNDER_REVIEW', viewerCanStartReview: false, viewerCanResolve: true,
+    });
+    expect(decision.explanation).toContain('прямой причинной связи');
+    expect(decision.explanation).toContain('Forfeit');
+    expect(decision.explanation).toContain('Appeal');
   });
 });

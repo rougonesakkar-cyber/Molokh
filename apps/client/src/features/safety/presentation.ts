@@ -39,8 +39,10 @@ export function safetyCaseResolutionPresentation(input: {
     action: 'START_REVIEW',
   };
   if (input.state === 'UNDER_REVIEW' && input.viewerCanResolve) return {
-    title: 'Выберите безопасную замену',
-    explanation: 'Решение освободит hold и вернёт тот же Challenge к выбору слота. Новая Session автоматически не создаётся.',
+    title: 'Выберите независимое решение',
+    explanation:
+      'Безопасная замена вернёт тот же Challenge к выбору слота. '
+      + 'Forfeit допустим только при доказанной прямой причинной связи и сохраняет право на Appeal.',
     action: 'RESOLVE',
   };
   return {

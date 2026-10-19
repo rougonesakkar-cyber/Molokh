@@ -24,6 +24,7 @@ import {
   effectiveChallengeStakeAtSessionWindow,
   externalChallengeRescheduleCount,
   extendSchedulingDeadlineForSafetyHold,
+  normalizeSafetyEnforcementDecision,
   normalizeSafetyCaseReleaseDecision,
   officialCancellationWinner,
   titleChallengeCompetitiveContextIsCurrent,
@@ -34,6 +35,7 @@ import {
   type CommandEnvelope,
   type SessionState,
   type SafetyCancellationReasonCode,
+  type SafetyCaseRemedy,
   type SafetyReplacementRemedy,
   type TimerAggregateSnapshot,
 } from '@molokh/core';
@@ -183,9 +185,11 @@ export interface StartSafetyCaseReviewPayload {
 
 export interface ResolveSafetyCasePayload {
   readonly caseId: string;
-  readonly remedyCode: SafetyReplacementRemedy;
+  readonly remedyCode: SafetyCaseRemedy;
   readonly replacementCoachUserId: string | null;
   readonly replacementVenueId: string | null;
+  readonly causalLinkConfirmed?: boolean;
+  readonly consequencesConfirmed?: boolean;
   readonly reason: string;
   readonly expectedChallengeVersion: number;
   readonly expectedHoldVersion: number;
@@ -206,6 +210,15 @@ export interface SafetyCaseResolutionEffectIds extends SafetyCaseReviewEffectIds
   readonly holdOutboxMessageId: string;
   readonly notificationOutboxMessageId: string;
   readonly notificationIds: readonly [string, string, string];
+  readonly resultId?: string;
+  readonly resultEventId?: string;
+  readonly statusTransitionId?: string;
+  readonly statusEventId?: string;
+  readonly cooldownId?: string;
+  readonly cooldownEventId?: string;
+  readonly resultOutboxMessageId?: string;
+  readonly resultNotificationOutboxMessageId?: string;
+  readonly resultNotificationIds?: readonly [string, string];
 }
 
 export type SafetyCaseReviewProjection =
@@ -233,6 +246,25 @@ export type SafetyCaseReviewProjection =
       readonly challengeState: 'ACCEPTED_UNSCHEDULED';
       readonly schedulingDeadlineAt: string;
       readonly challengeVersion: number;
+      readonly holdId: string;
+      readonly holdState: 'RELEASED';
+      readonly holdVersion: number;
+      readonly releasedAt: string;
+      readonly version: number;
+    }
+  | {
+      readonly action: 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED';
+      readonly caseId: string;
+      readonly state: 'CLOSED';
+      readonly decisionId: string;
+      readonly remedyCode: 'FORFEIT_BY_ENFORCEMENT';
+      readonly resultId: string;
+      readonly challengeId: string;
+      readonly challengeState: 'RESULT_RECORDED';
+      readonly challengeVersion: number;
+      readonly loserUserId: string;
+      readonly winnerUserId: string;
+      readonly appealDeadlineAt: string;
       readonly holdId: string;
       readonly holdState: 'RELEASED';
       readonly holdVersion: number;
@@ -1455,6 +1487,7 @@ interface SafetyCaseReviewRow {
   readonly state: 'SUBMITTED' | 'UNDER_REVIEW' | 'CLOSED';
   readonly reporter_user_id: string;
   readonly subject_user_id: string;
+  readonly reason_code: string;
   readonly assigned_reviewer_user_id: string | null;
   readonly challenge_id: string;
   readonly booking_id: string;
@@ -1483,6 +1516,7 @@ async function safetyCaseReviewRow(
   const result = await sql<SafetyCaseReviewRow>`
     select moderation_case.case_id, moderation_case.state,
       moderation_case.reporter_user_id, moderation_case.subject_user_id,
+      moderation_case.reason_code,
       moderation_case.assigned_reviewer_user_id,
       moderation_case.challenge_id, moderation_case.booking_id,
       moderation_case.session_id, moderation_case.version::text,
@@ -1672,6 +1706,27 @@ export async function startSafetyCaseReview(
   });
 }
 
+function requiredSafetyEnforcementIds(
+  ids: SafetyCaseResolutionEffectIds,
+): AdministrativeForfeitEffectIds {
+  if (
+    !ids.resultId || !ids.resultEventId || !ids.statusTransitionId || !ids.statusEventId
+    || !ids.cooldownId || !ids.cooldownEventId || !ids.resultOutboxMessageId
+    || !ids.resultNotificationOutboxMessageId || !ids.resultNotificationIds
+  ) throw new TypeError('Safety enforcement Result effect IDs are required');
+  return {
+    resultId: ids.resultId,
+    resultEventId: ids.resultEventId,
+    statusTransitionId: ids.statusTransitionId,
+    statusEventId: ids.statusEventId,
+    cooldownId: ids.cooldownId,
+    cooldownEventId: ids.cooldownEventId,
+    resultOutboxMessageId: ids.resultOutboxMessageId,
+    notificationOutboxMessageId: ids.resultNotificationOutboxMessageId,
+    notificationIds: ids.resultNotificationIds,
+  };
+}
+
 export async function resolveSafetyCase(
   database: Kysely<Database>,
   command: CommandEnvelope<ResolveSafetyCasePayload>,
@@ -1679,7 +1734,7 @@ export async function resolveSafetyCase(
   now?: () => Date,
 ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> {
   assertSafetyCaseCommand(command, 'RESOLVE_SAFETY_CASE');
-  return executeCriticalCommand(database, {
+  return executeCriticalCommand<ResolveSafetyCasePayload, SafetyCaseReviewProjection>(database, {
     command,
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
@@ -1697,6 +1752,151 @@ export async function resolveSafetyCase(
         || row.scheduling_deadline_at === null
         || Number(row.active_obligation_count) !== 2
       ) throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+      if (command.payload.remedyCode === 'FORFEIT_BY_ENFORCEMENT') {
+        if (
+          command.payload.replacementCoachUserId !== null
+          || command.payload.replacementVenueId !== null
+        ) throw new SchedulingValidationError('replacement');
+        const normalized = normalizeSafetyEnforcementDecision({
+          state: row.state,
+          assignedReviewerUserId: row.assigned_reviewer_user_id,
+          reviewerUserId: command.actor.id,
+          subjectUserId: row.subject_user_id,
+          athleteUserIds: [row.pair_low_id, row.pair_high_id],
+          caseReasonCode: row.reason_code,
+          causalLinkConfirmed: command.payload.causalLinkConfirmed === true,
+          consequencesConfirmed: command.payload.consequencesConfirmed === true,
+          reason: command.payload.reason,
+        });
+        const forfeit = await recordAdministrativeForfeit(transaction, {
+          challengeId: row.challenge_id,
+          loserUserId: normalized.loserUserId,
+          recordedByUserId: command.actor.id,
+          reasonCode: 'SAFETY_ENFORCEMENT_FORFEIT',
+          comment: 'Independent Central safety enforcement decision',
+          sourceSessionId: row.session_id,
+          sourceCoachUserId: null,
+          notificationRecipientUserIds: [row.pair_low_id, row.pair_high_id],
+          occurredAt: context.occurredAt,
+          expectedChallengeState: 'BOOKED',
+        }, requiredSafetyEnforcementIds(ids));
+        await sql`
+          insert into governance.safety_case_decisions (
+            decision_id, case_id, reviewer_user_id, remedy_code,
+            replacement_coach_user_id, replacement_venue_id, decision_reason,
+            source_result_id, enforcement_reason_code, causal_link_code, decided_at
+          ) values (
+            ${ids.decisionId}::uuid, ${row.case_id}::uuid, ${command.actor.id}::uuid,
+            ${normalized.remedyCode}, null, null, ${normalized.reason},
+            ${forfeit.resultId}::uuid, ${normalized.enforcementReasonCode},
+            ${normalized.causalLinkCode},
+            ${context.occurredAt.toISOString()}::timestamptz
+          )
+        `.execute(transaction);
+        await sql`
+          update governance.moderation_cases
+          set state = 'CLOSED', closed_at = ${context.occurredAt.toISOString()}::timestamptz,
+            version = ${context.nextVersion}
+          where case_id = ${row.case_id}::uuid and state = 'UNDER_REVIEW'
+            and assigned_reviewer_user_id = ${command.actor.id}::uuid
+            and version = ${Number(row.version)}
+        `.execute(transaction);
+        const holdVersion = Number(row.hold_version) + 1;
+        await sql`
+          update competition.process_holds
+          set state = 'RELEASED', released_by = ${command.actor.id}::uuid,
+            released_at = ${context.occurredAt.toISOString()}::timestamptz,
+            version = ${holdVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where hold_id = ${row.hold_id}::uuid and state = 'ACTIVE'
+            and version = ${Number(row.hold_version)}
+        `.execute(transaction);
+        const response: SafetyCaseReviewProjection = {
+          action: 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED',
+          caseId: row.case_id,
+          state: 'CLOSED',
+          decisionId: ids.decisionId,
+          remedyCode: normalized.remedyCode,
+          resultId: forfeit.resultId,
+          challengeId: row.challenge_id,
+          challengeState: 'RESULT_RECORDED',
+          challengeVersion: forfeit.challengeVersion,
+          loserUserId: normalized.loserUserId,
+          winnerUserId: normalized.winnerUserId,
+          appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+          holdId: row.hold_id,
+          holdState: 'RELEASED',
+          holdVersion,
+          releasedAt: context.occurredAt.toISOString(),
+          version: context.nextVersion,
+        };
+        const publicDecision = {
+          caseId: row.case_id,
+          decisionId: ids.decisionId,
+          remedyCode: normalized.remedyCode,
+          resultId: forfeit.resultId,
+          challengeId: row.challenge_id,
+          outcomeCode: 'FORFEIT',
+          winnerUserId: normalized.winnerUserId,
+          loserUserId: normalized.loserUserId,
+          appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+        };
+        return {
+          responseStatus: 200,
+          response,
+          event: {
+            eventId: ids.eventId, eventName: 'CaseClosed', schemaVersion: 1,
+            transitionId: 'MC-05/MC-06',
+            payload: { ...publicDecision, state: 'CLOSED' },
+            metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+          },
+          relatedEvents: [
+            {
+              eventId: ids.decisionEventId, eventName: 'CaseDecided', schemaVersion: 1,
+              transitionId: 'MC-05', aggregateType: 'SafetyCaseDecision',
+              aggregateId: ids.decisionId, aggregateVersion: 1,
+              payload: publicDecision,
+              metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+            },
+            {
+              eventId: ids.holdEventId, eventName: 'ProcessHoldReleased', schemaVersion: 1,
+              transitionId: 'MC-06', aggregateType: 'ProcessHold', aggregateId: row.hold_id,
+              aggregateVersion: holdVersion,
+              payload: { holdId: row.hold_id, state: 'RELEASED' },
+              metadata: { policyVersion: SCHEDULING_POLICY_VERSION },
+            },
+            ...forfeit.relatedEvents,
+          ],
+          audit: {
+            auditId: ids.auditId, action: 'RESOLVE_SAFETY_CASE',
+            transitionId: 'MC-05/MC-06', reasonCode: normalized.remedyCode,
+            beforeState: row.state, afterState: 'CLOSED',
+            metadata: {
+              ...publicDecision,
+              reviewerUserId: command.actor.id,
+              reporterUserId: row.reporter_user_id,
+              subjectUserId: row.subject_user_id,
+              enforcementReasonCode: normalized.enforcementReasonCode,
+              causalLinkCode: normalized.causalLinkCode,
+              decisionReason: normalized.reason,
+              bookingId: row.booking_id,
+              sessionId: row.session_id,
+            },
+          },
+          outbox: [
+            {
+              messageId: ids.outboxMessageId, topic: 'governance.safety-case.closed.v1',
+              payload: { ...publicDecision, state: 'CLOSED' },
+            },
+            {
+              messageId: ids.holdOutboxMessageId,
+              topic: 'competition.process-hold.released.v1',
+              sourceEventId: ids.holdEventId,
+              payload: { holdId: row.hold_id, state: 'RELEASED' },
+            },
+            ...forfeit.outbox,
+          ],
+        };
+      }
       const availability = await safetyReplacementAvailability(
         transaction,
         row,

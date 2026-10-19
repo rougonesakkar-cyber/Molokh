@@ -164,6 +164,12 @@ function safetyResolutionEffectIds(): SafetyCaseResolutionEffectIds {
     holdEventId: newUuidV7(), holdOutboxMessageId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+    resultId: newUuidV7(), resultEventId: newUuidV7(),
+    statusTransitionId: newUuidV7(), statusEventId: newUuidV7(),
+    cooldownId: newUuidV7(), cooldownEventId: newUuidV7(),
+    resultOutboxMessageId: newUuidV7(),
+    resultNotificationOutboxMessageId: newUuidV7(),
+    resultNotificationIds: [newUuidV7(), newUuidV7()],
   };
 }
 

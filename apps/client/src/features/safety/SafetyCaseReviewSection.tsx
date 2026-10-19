@@ -16,6 +16,7 @@ const remedyLabels: Readonly<Record<Remedy, string>> = {
   REPLACE_COACH: 'Заменить Coach',
   REPLACE_VENUE: 'Заменить зал',
   REPLACE_COACH_AND_VENUE: 'Заменить Coach и зал',
+  FORFEIT_BY_ENFORCEMENT: 'Forfeit по решению Central',
 };
 
 export function SafetyCaseReviewSection(props: {
@@ -29,6 +30,7 @@ export function SafetyCaseReviewSection(props: {
   const [coachByCase, setCoachByCase] = useState<Record<string, string>>({});
   const [venueByCase, setVenueByCase] = useState<Record<string, string>>({});
   const [reasonByCase, setReasonByCase] = useState<Record<string, string>>({});
+  const [enforcementConfirmedByCase, setEnforcementConfirmedByCase] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const keys = useRef(new Map<string, string>());
@@ -40,14 +42,26 @@ export function SafetyCaseReviewSection(props: {
     const coach = coachByCase[item.caseId] ?? '';
     const venue = venueByCase[item.caseId] ?? '';
     const reason = reasonByCase[item.caseId]?.trim() ?? '';
-    const signature = [item.caseId, item.version, action, remedy, coach, venue, reason].join(':');
+    const enforcementConfirmed = enforcementConfirmedByCase[item.caseId] === true;
+    const signature = [
+      item.caseId, item.version, action, remedy, coach, venue, reason, enforcementConfirmed,
+    ].join(':');
     const key = keys.current.get(signature) ?? `safety-case:${action}:${item.caseId}:${Date.now().toString(36)}`;
     keys.current.set(signature, key);
     setActingId(item.caseId);
     setError(null);
     setNotice(null);
     try {
-      const body = action === 'review' ? {} : {
+      const body = action === 'review' ? {} : remedy === 'FORFEIT_BY_ENFORCEMENT' ? {
+        remedyCode: remedy,
+        replacementCoachUserId: null,
+        replacementVenueId: null,
+        causalLinkConfirmed: enforcementConfirmed,
+        consequencesConfirmed: enforcementConfirmed,
+        reason,
+        expectedChallengeVersion: item.challengeVersion,
+        expectedHoldVersion: item.holdVersion,
+      } : {
         remedyCode: remedy,
         replacementCoachUserId: remedy === 'REPLACE_VENUE' ? null : coach || null,
         replacementVenueId: remedy === 'REPLACE_COACH' ? null : venue || null,
@@ -70,9 +84,11 @@ export function SafetyCaseReviewSection(props: {
       const result = (await response.json()) as SafetyCaseReviewCommandResponse;
       keys.current.delete(signature);
       props.onUpdated(item.caseId, result.data.state);
-      setNotice(result.data.state === 'CLOSED'
-        ? 'Hold освобождён. Тот же Challenge вернулся к выбору слота; новая Session не создана.'
-        : 'SafetyCase назначен вам для независимой проверки.');
+      setNotice(result.data.action === 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED'
+        ? 'Решение применено: Result записан, hold освобождён, открыт 48-часовой Appeal.'
+        : result.data.state === 'CLOSED'
+          ? 'Hold освобождён. Тот же Challenge вернулся к выбору слота; новая Session не создана.'
+          : 'SafetyCase назначен вам для независимой проверки.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось обработать SafetyCase');
     } finally {
@@ -98,10 +114,13 @@ export function SafetyCaseReviewSection(props: {
         const reason = reasonByCase[item.caseId] ?? '';
         const coach = coachByCase[item.caseId] ?? '';
         const venue = venueByCase[item.caseId] ?? '';
-        const needsCoach = remedy !== 'REPLACE_VENUE';
-        const needsVenue = remedy !== 'REPLACE_COACH';
+        const isEnforcement = remedy === 'FORFEIT_BY_ENFORCEMENT';
+        const needsCoach = !isEnforcement && remedy !== 'REPLACE_VENUE';
+        const needsVenue = !isEnforcement && remedy !== 'REPLACE_COACH';
+        const enforcementConfirmed = enforcementConfirmedByCase[item.caseId] === true;
         const canResolve = presentation.action === 'RESOLVE' && reason.trim().length >= 10
           && (!needsCoach || coach.length > 0) && (!needsVenue || venue.length > 0)
+          && (!isEnforcement || enforcementConfirmed)
           && item.challengeVersion !== null && item.holdVersion !== null;
         return (
           <View key={item.caseId} style={styles.card}>
@@ -145,9 +164,31 @@ export function SafetyCaseReviewSection(props: {
                     style={[styles.choice, coach === option.userId && styles.selected]}
                   ><Text>{option.displayName}</Text></Pressable>
                 )) : null}
+                {isEnforcement ? (
+                  <View style={styles.warning}>
+                    <Text style={styles.label}>Спортивные последствия</Text>
+                    <Text style={styles.hint}>
+                      Подтвердите прямую причинную связь. Athlete получит FORFEIT и поражение.
+                      Возможны статусный переход и Cooldown. Result можно обжаловать в течение 48 часов.
+                    </Text>
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: enforcementConfirmed }}
+                      onPress={() => setEnforcementConfirmedByCase((current) => ({
+                        ...current, [item.caseId]: !enforcementConfirmed,
+                      }))}
+                      style={[styles.choice, enforcementConfirmed && styles.selected]}
+                    >
+                      <Text>Причинная связь доказана, последствия подтверждены</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
                 <TextInput
                   accessibilityLabel="Закрытая причина решения SafetyCase"
-                  multiline maxLength={1000} placeholder="Почему эта замена безопасна"
+                  multiline maxLength={1000}
+                  placeholder={isEnforcement
+                    ? 'Почему поведение Athlete напрямую сорвало Session'
+                    : 'Почему эта замена безопасна'}
                   style={styles.input} value={reason}
                   onChangeText={(value) => setReasonByCase((current) => ({ ...current, [item.caseId]: value }))}
                 />
@@ -156,7 +197,9 @@ export function SafetyCaseReviewSection(props: {
                   disabled={!canResolve || actingId !== null}
                   onPress={() => void run(item, 'resolve')}
                   style={[styles.primaryButton, (!canResolve || actingId !== null) && styles.disabled]}
-                ><Text style={styles.primaryText}>Применить замену и освободить hold</Text></Pressable>
+                ><Text style={styles.primaryText}>{isEnforcement
+                  ? 'Записать Forfeit и освободить hold'
+                  : 'Применить замену и освободить hold'}</Text></Pressable>
               </View>
             ) : null}
           </View>
@@ -172,6 +215,7 @@ const styles = StyleSheet.create({
   form: { gap: 8 }, label: { fontWeight: '700' }, hint: { color: '#4B5563' },
   meta: { color: '#6B7280', fontSize: 12 }, choice: { borderColor: '#CBD5E1', borderRadius: 8, borderWidth: 1, padding: 10 },
   selected: { backgroundColor: '#E6F2FF', borderColor: '#2563EB' },
+  warning: { backgroundColor: '#FFF7ED', borderRadius: 8, gap: 8, padding: 10 },
   input: { borderColor: '#CBD5E1', borderRadius: 8, borderWidth: 1, minHeight: 72, padding: 10 },
   primaryButton: { alignItems: 'center', backgroundColor: '#16325C', borderRadius: 8, padding: 12 },
   primaryText: { color: '#FFFFFF', fontWeight: '700' }, disabled: { opacity: 0.45 },

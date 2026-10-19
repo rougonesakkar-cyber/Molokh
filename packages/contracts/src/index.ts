@@ -909,10 +909,17 @@ export const SafetyReplacementRemedySchema = Type.Union([
   Type.Literal('REPLACE_COACH_AND_VENUE'),
 ]);
 
+export const SafetyCaseRemedySchema = Type.Union([
+  SafetyReplacementRemedySchema,
+  Type.Literal('FORFEIT_BY_ENFORCEMENT'),
+]);
+
 export const ResolveSafetyCaseBodySchema = Type.Object({
-  remedyCode: SafetyReplacementRemedySchema,
+  remedyCode: SafetyCaseRemedySchema,
   replacementCoachUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
   replacementVenueId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  causalLinkConfirmed: Type.Optional(Type.Boolean()),
+  consequencesConfirmed: Type.Optional(Type.Boolean()),
   reason: Type.String({ minLength: 10, maxLength: 1000 }),
   expectedChallengeVersion: Type.Integer({ minimum: 1 }),
   expectedHoldVersion: Type.Integer({ minimum: 1 }),
@@ -951,10 +958,31 @@ const SafetyReplacementAppliedProjectionSchema = Type.Object({
   version: Type.Integer({ minimum: 3 }),
 }, { additionalProperties: false });
 
+const SafetyEnforcementForfeitAppliedProjectionSchema = Type.Object({
+  action: Type.Literal('SAFETY_ENFORCEMENT_FORFEIT_APPLIED'),
+  caseId: Type.String({ format: 'uuid' }),
+  state: Type.Literal('CLOSED'),
+  decisionId: Type.String({ format: 'uuid' }),
+  remedyCode: Type.Literal('FORFEIT_BY_ENFORCEMENT'),
+  resultId: Type.String({ format: 'uuid' }),
+  challengeId: Type.String({ format: 'uuid' }),
+  challengeState: Type.Literal('RESULT_RECORDED'),
+  challengeVersion: Type.Integer({ minimum: 1 }),
+  loserUserId: Type.String({ format: 'uuid' }),
+  winnerUserId: Type.String({ format: 'uuid' }),
+  appealDeadlineAt: Type.String({ format: 'date-time' }),
+  holdId: Type.String({ format: 'uuid' }),
+  holdState: Type.Literal('RELEASED'),
+  holdVersion: Type.Integer({ minimum: 2 }),
+  releasedAt: Type.String({ format: 'date-time' }),
+  version: Type.Integer({ minimum: 3 }),
+}, { additionalProperties: false });
+
 export const SafetyCaseReviewCommandResponseSchema = Type.Object({
   data: Type.Union([
     SafetyReviewStartedProjectionSchema,
     SafetyReplacementAppliedProjectionSchema,
+    SafetyEnforcementForfeitAppliedProjectionSchema,
   ]),
   meta: Type.Object({
     requestId: Type.String({ format: 'uuid' }),

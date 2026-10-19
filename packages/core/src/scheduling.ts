@@ -33,6 +33,9 @@ export type SchedulingConflictCode =
   | 'SAFETY_CASE_REVIEWER_CONFLICT'
   | 'SAFETY_CASE_REVIEWER_MISMATCH'
   | 'SAFETY_CASE_REPLACEMENT_UNAVAILABLE'
+  | 'SAFETY_CASE_CAUSAL_LINK_REQUIRED'
+  | 'SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED'
+  | 'SAFETY_CASE_SUBJECT_INVALID'
   | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
@@ -822,6 +825,8 @@ export type SafetyReplacementRemedy =
   | 'REPLACE_VENUE'
   | 'REPLACE_COACH_AND_VENUE';
 
+export type SafetyCaseRemedy = SafetyReplacementRemedy | 'FORFEIT_BY_ENFORCEMENT';
+
 export function assertSafetyCaseReviewCanStart(input: {
   readonly state: string;
   readonly actorIsCentral: boolean;
@@ -894,6 +899,58 @@ export function normalizeSafetyCaseReleaseDecision(input: {
     remedyCode,
     replacementCoachUserId: input.replacementCoachUserId,
     replacementVenueId: input.replacementVenueId,
+    reason,
+  };
+}
+
+export function normalizeSafetyEnforcementDecision(input: {
+  readonly state: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly caseReasonCode: string;
+  readonly causalLinkConfirmed: boolean;
+  readonly consequencesConfirmed: boolean;
+  readonly reason: string;
+}): {
+  readonly remedyCode: 'FORFEIT_BY_ENFORCEMENT';
+  readonly loserUserId: string;
+  readonly winnerUserId: string;
+  readonly enforcementReasonCode: SafetyCancellationReasonCode;
+  readonly causalLinkCode: 'SUBJECT_CAUSED_SESSION_FAILURE';
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_MISMATCH');
+  }
+  if (!input.athleteUserIds.includes(input.subjectUserId)) {
+    throw new SchedulingConflictError('SAFETY_CASE_SUBJECT_INVALID');
+  }
+  if (!safetyCancellationReasonCodes.has(input.caseReasonCode as SafetyCancellationReasonCode)) {
+    throw new SchedulingValidationError('caseReasonCode');
+  }
+  if (!input.causalLinkConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_CAUSAL_LINK_REQUIRED');
+  }
+  if (!input.consequencesConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 1000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return {
+    remedyCode: 'FORFEIT_BY_ENFORCEMENT',
+    loserUserId: input.subjectUserId,
+    winnerUserId: input.athleteUserIds[0] === input.subjectUserId
+      ? input.athleteUserIds[1]
+      : input.athleteUserIds[0],
+    enforcementReasonCode: input.caseReasonCode as SafetyCancellationReasonCode,
+    causalLinkCode: 'SUBJECT_CAUSED_SESSION_FAILURE',
     reason,
   };
 }
