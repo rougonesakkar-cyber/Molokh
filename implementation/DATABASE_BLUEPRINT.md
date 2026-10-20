@@ -427,6 +427,7 @@ Critical constraints:
 - `moderation_cases`
 - `safety_case_decisions` — one immutable Central remedy per reviewed SafetyCase; protected reason, replacement, causal-Forfeit or serious-category restriction lineage
 - `enforcements` — immutable `ACCOUNT_RESTRICTION` fact linked directly to one SafetyCase decision, subject and exact seven-day Appeal deadline
+- `enforcement_appeals` — one source-immutable protected statement per Enforcement; versioned EA-01/EA-02 state and independent reviewer assignment in strict server FIFO order
 - `enforcement_appeals`
 - `youth_challenge_consents`
 - `evidence_attachments`
@@ -438,6 +439,7 @@ Critical constraints:
 - reviewer conflict checks stored and enforced in command layer;
 - SafetyCase reviewer assignment is versioned; safe release updates the linked Challenge and hold atomically while the decision row remains append-only;
 - confirmed serious-category restriction atomically appends Enforcement, changes only account state to `RESTRICTED`, preserves Membership/obligations/history and adds `STATUS_REVIEW` only when the subject is the current Champion or Contender;
+- Enforcement Appeal submit/start-review never mutates the immutable Enforcement or releases `STATUS_REVIEW`; the statement remains protected while public event/outbox/notification payloads contain only neutral identity/state fields;
 - one consent per Challenge/Youth Athlete/policy version;
 - Youth consent persists only a token-keyed contact hash/mask plus consent audit hash; the raw delivery
   destination is transient outbox data and guardian accounts/documents remain absent;

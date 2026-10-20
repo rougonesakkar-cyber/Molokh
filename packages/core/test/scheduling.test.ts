@@ -14,6 +14,7 @@ import {
   assertCoachReplacementCanBeRejected,
   assertExternalSessionFailureCanBeCommitted,
   assertSafetyCaseReviewCanStart,
+  assertEnforcementAppealReviewCanStart,
   assertSafetyCancellationCanBeSubmitted,
   assertPublicationWindow,
   assertSessionCanEnd,
@@ -42,6 +43,7 @@ import {
   normalizeOptionalScheduleText,
   normalizeScheduleMutationReason,
   normalizeSafetyAccountRestrictionDecision,
+  normalizeEnforcementAppealSubmission,
   normalizeSafetyEnforcementDecision,
   normalizeSafetyCaseReleaseDecision,
   normalizeScheduleLabel,
@@ -469,6 +471,31 @@ describe('Scheduling publication policy', () => {
     expect(safetyRestrictionSubjectStatus({
       subjectUserId: 'ordinary', championUserId: 'athlete-a', contenderUserId: 'athlete-b',
     })).toBeNull();
+  });
+
+  it('[AC-129] keeps an appealed restriction active and requires an independent reviewer', () => {
+    const submission = {
+      actorUserId: 'athlete-a', subjectUserId: 'athlete-a', accountState: 'RESTRICTED',
+      enforcementType: 'ACCOUNT_RESTRICTION', enforcementState: 'ACTIVE',
+      appealDeadlineAt: new Date('2026-10-07T10:00:00.000Z'),
+      occurredAt: new Date('2026-10-06T10:00:00.000Z'), appealExists: false,
+      statement: ' Прошу независимо пересмотреть ограничение аккаунта ',
+    };
+    expect(normalizeEnforcementAppealSubmission(submission))
+      .toBe('Прошу независимо пересмотреть ограничение аккаунта');
+    expect(() => normalizeEnforcementAppealSubmission({
+      ...submission, occurredAt: new Date('2026-10-07T10:00:00.001Z'),
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_WINDOW_CLOSED' }));
+    expect(() => assertEnforcementAppealReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'original-central',
+      subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'original-central',
+      reporterUserId: 'coach',
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT' }));
+    expect(() => assertEnforcementAppealReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'independent-central',
+      subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'original-central',
+      reporterUserId: 'coach',
+    })).not.toThrow();
   });
 
   it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {

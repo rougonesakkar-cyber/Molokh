@@ -36,6 +36,7 @@ export * from './community-configuration.js';
 export * from './community-closure.js';
 export * from './community-lifecycle.js';
 export * from './discovery.js';
+export * from './enforcement-appeal.js';
 export * from './identity.js';
 export * from './integrity-case.js';
 export * from './missing-result.js';

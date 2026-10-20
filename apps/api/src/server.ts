@@ -46,6 +46,7 @@ import {
   listTechnicalCorrectionsForCentral,
   listTechnicalCorrectionsForViewer,
   listAppealsForCentral,
+  listEnforcementAppealsForCentral,
   listPendingVerifications,
   listModerationCasesForCentral,
   startSafetyCaseReview,
@@ -54,6 +55,7 @@ import {
   publishSlot,
   orderMissingResultRepeat,
   readAppealForViewer,
+  readActiveEnforcementAppealForSubject,
   readMissingResultReview,
   readIntegrityCase,
   updateGroupOffering,
@@ -112,6 +114,7 @@ import {
   sendChatMessage,
   startAccountVerification,
   startAppealReview,
+  startEnforcementAppealReview,
   startMissingResultReview,
   extendAppealSla,
   startSession,
@@ -126,6 +129,7 @@ import {
   declineOptionalChallenge,
   withdrawOptionalChallenge,
   submitResultAppeal,
+  submitEnforcementAppeal,
   submitMissingResultStatement,
   submitStatusQueueEntry,
   waiveResultAppeal,
@@ -1239,6 +1243,16 @@ const app = await buildApp({
     addResponse: (command, ids) => addAppealResponse(database, command, ids),
     withdraw: (command, ids) => withdrawAppeal(database, command, ids),
     extendSla: (command, ids) => extendAppealSla(database, command, ids),
+  },
+  enforcementAppeal: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    readForSubject: (subjectUserId) =>
+      readActiveEnforcementAppealForSubject(database, subjectUserId),
+    listForCentral: (centralUserId) =>
+      listEnforcementAppealsForCentral(database, centralUserId),
+    submit: (command, ids) => submitEnforcementAppeal(database, command, ids),
+    startReview: (command, ids) => startEnforcementAppealReview(database, command, ids),
   },
   missingResult: {
     auth: localAuth,

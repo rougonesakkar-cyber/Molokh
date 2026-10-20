@@ -38,6 +38,11 @@ export type SchedulingConflictCode =
   | 'SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED'
   | 'SAFETY_CASE_SUBJECT_INVALID'
   | 'SAFETY_CASE_SUBJECT_NOT_ACTIVE'
+  | 'ENFORCEMENT_APPEAL_NOT_ALLOWED'
+  | 'ENFORCEMENT_APPEAL_WINDOW_CLOSED'
+  | 'ENFORCEMENT_APPEAL_ALREADY_EXISTS'
+  | 'ENFORCEMENT_APPEAL_NOT_SUBMITTED'
+  | 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT'
   | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
@@ -1019,6 +1024,59 @@ export function normalizeSafetyAccountRestrictionDecision(input: {
     categoryCode: input.categoryCode as SafetyAccountRestrictionCategory,
     reason,
   };
+}
+
+export function normalizeEnforcementAppealSubmission(input: {
+  readonly actorUserId: string;
+  readonly subjectUserId: string;
+  readonly accountState: string;
+  readonly enforcementType: string;
+  readonly enforcementState: string;
+  readonly appealDeadlineAt: Date;
+  readonly occurredAt: Date;
+  readonly appealExists: boolean;
+  readonly statement: string;
+}): string {
+  if (
+    input.actorUserId !== input.subjectUserId
+    || input.accountState !== 'RESTRICTED'
+    || input.enforcementType !== 'ACCOUNT_RESTRICTION'
+    || input.enforcementState !== 'ACTIVE'
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_NOT_ALLOWED');
+  }
+  if (input.occurredAt > input.appealDeadlineAt) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_WINDOW_CLOSED');
+  }
+  if (input.appealExists) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_ALREADY_EXISTS');
+  }
+  const statement = input.statement.trim();
+  if (statement.length < 10 || statement.length > 2000) {
+    throw new SchedulingValidationError('statement');
+  }
+  return statement;
+}
+
+export function assertEnforcementAppealReviewCanStart(input: {
+  readonly state: string;
+  readonly actorIsCentral: boolean;
+  readonly reviewerUserId: string;
+  readonly subjectUserId: string;
+  readonly originalDecisionMakerUserId: string;
+  readonly reporterUserId: string;
+}): void {
+  if (!input.actorIsCentral) throw new SchedulingPermissionDeniedError();
+  if (input.state !== 'SUBMITTED') {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_NOT_SUBMITTED');
+  }
+  if (
+    input.reviewerUserId === input.subjectUserId
+    || input.reviewerUserId === input.originalDecisionMakerUserId
+    || input.reviewerUserId === input.reporterUserId
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_REVIEWER_CONFLICT');
+  }
 }
 
 export function safetyRestrictionSubjectStatus(input: {

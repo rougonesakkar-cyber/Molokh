@@ -105,6 +105,7 @@ import {
   listPendingMemberships,
   listModerationCasesForCentral,
   listAppealsForCentral,
+  listEnforcementAppealsForCentral,
   projectNotificationBatch,
   projectPendingMandatoryChallengeReminder,
   projectPendingMembershipNotification,
@@ -164,6 +165,9 @@ import {
   startAccountVerification,
   startSafetyCaseReview,
   startAppealReview,
+  startEnforcementAppealReview,
+  submitEnforcementAppeal,
+  readActiveEnforcementAppealForSubject,
   unblockUser,
   unmatchPair,
   expireLike,
@@ -2325,6 +2329,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         scheduling.bookings,
         scheduling.group_offerings,
         scheduling.slots,
+        governance.enforcement_appeals,
         governance.enforcements,
         governance.safety_case_decisions,
         governance.moderation_cases,
@@ -6640,6 +6645,181 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(counts.rows[0]).toEqual({
       decisions: '1', enforcements: '1', audits: '1', status_holds: '1',
     });
+  });
+
+  it('[AC-129] submits and independently reviews an Enforcement Appeal without suspending restriction', async () => {
+    const base = 237000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    await convertTrainingFixtureToOfficial(base + 100, fixture, 'ac-129-conversion');
+    const reviewer = testId(base + 300);
+    const reviewerGrant = testId(base + 301);
+    const caseId = testId(base + 302);
+    const decisionId = testId(base + 303);
+    const enforcementId = testId(base + 304);
+    const statusHoldId = testId(base + 305);
+    const appliedAt = '2026-10-01T10:00:00.000Z';
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${reviewer}::uuid, '+79992373000', ${appliedAt}::timestamptz,
+        '1985-01-01', 'ADULT', 'Independent Central', 'ACTIVE', 'ru-RU', 1,
+        ${appliedAt}::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${reviewerGrant}::uuid, ${reviewer}::uuid, 'CENTRAL_ADMIN', 'GLOBAL', null,
+        'ACTIVE', ${fixture.central}::uuid, ${appliedAt}::timestamptz, 1
+      )
+    `.execute(database);
+    const source = await sql<{ readonly challenge_id: string; readonly chat_id: string }>`
+      select challenge.challenge_id, challenge.service_chat_id as chat_id
+      from scheduling.sessions session
+      join competition.challenges challenge on challenge.challenge_id = session.challenge_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    await sql`
+      insert into governance.moderation_cases (
+        case_id, case_type, state, chat_id, reporter_user_id, subject_user_id,
+        reason_code, challenge_id, booking_id, session_id, initial_due_at, final_due_at,
+        assigned_reviewer_user_id, review_started_at, closed_at, submitted_at, version
+      ) values (
+        ${caseId}::uuid, 'SAFETY', 'CLOSED', ${source.rows[0]!.chat_id}::uuid,
+        ${fixture.coach}::uuid, ${fixture.athleteA}::uuid, 'THREAT',
+        ${source.rows[0]!.challenge_id}::uuid, ${fixture.booking}::uuid,
+        ${fixture.session}::uuid, '2026-09-30T10:00:00.000Z'::timestamptz,
+        '2026-10-01T10:00:00.000Z'::timestamptz, ${fixture.central}::uuid,
+        '2026-09-30T11:00:00.000Z'::timestamptz, ${appliedAt}::timestamptz,
+        '2026-09-30T10:00:00.000Z'::timestamptz, 3
+      )
+    `.execute(database);
+    await sql`
+      insert into governance.safety_case_decisions (
+        decision_id, case_id, reviewer_user_id, remedy_code, decision_reason,
+        decided_at, restriction_category_code
+      ) values (
+        ${decisionId}::uuid, ${caseId}::uuid, ${fixture.central}::uuid,
+        'ACCOUNT_RESTRICTION', 'Protected confirmed serious safety reason',
+        ${appliedAt}::timestamptz, 'VIOLENCE'
+      )
+    `.execute(database);
+    await sql`
+      insert into governance.enforcements (
+        enforcement_id, source_case_id, source_decision_id, subject_user_id,
+        enforcement_type, state, category_code, applied_by_user_id,
+        applied_at, appeal_deadline_at, version
+      ) values (
+        ${enforcementId}::uuid, ${caseId}::uuid, ${decisionId}::uuid,
+        ${fixture.athleteA}::uuid, 'ACCOUNT_RESTRICTION', 'ACTIVE', 'VIOLENCE',
+        ${fixture.central}::uuid, ${appliedAt}::timestamptz,
+        '2026-10-08T10:00:00.000Z'::timestamptz, 1
+      )
+    `.execute(database);
+    await sql`update identity.users set account_state = 'RESTRICTED', version = 2
+      where user_id = ${fixture.athleteA}::uuid`.execute(database);
+    await sql`
+      insert into competition.process_holds (
+        hold_id, aggregate_type, aggregate_id, reason, state, deadline_policy,
+        moderation_case_id, created_by, created_by_type, started_at, version,
+        created_at, updated_at
+      ) values (
+        ${statusHoldId}::uuid, 'COMPETITION', ${fixture.competition}::uuid,
+        'STATUS_REVIEW', 'ACTIVE', 'CONTINUE', ${caseId}::uuid,
+        ${fixture.central}::uuid, 'USER', ${appliedAt}::timestamptz, 1,
+        ${appliedAt}::timestamptz, ${appliedAt}::timestamptz
+      )
+    `.execute(database);
+
+    const appealId = testId(base + 310);
+    const submitIds = {
+      appealId, eventId: testId(base + 311), auditId: testId(base + 312),
+      outboxMessageId: testId(base + 313), notificationOutboxMessageId: testId(base + 314),
+      notificationId: testId(base + 315),
+    };
+    const submitCommand = {
+      commandId: testId(base + 316), commandType: 'APPEAL_ENFORCEMENT',
+      idempotencyKey: 'ac-129-submit',
+      actor: { type: 'USER' as const, id: fixture.athleteA,
+        roles: ['ATHLETE'] as const, scopeIds: [] as const },
+      aggregateType: 'EnforcementAppeal', aggregateId: appealId, expectedVersion: 0,
+      correlationId: testId(base + 317), causationId: null,
+      requestId: testId(base + 318), source: 'api' as const, payloadVersion: 1,
+      payload: { enforcementId, expectedEnforcementVersion: 1,
+        statement: 'Прошу независимо пересмотреть ограничение моего аккаунта.' },
+    };
+    const submitted = await submitEnforcementAppeal(
+      database, submitCommand, submitIds, () => new Date('2026-10-03T10:00:00.000Z'),
+    );
+    expect(submitted.response).toMatchObject({
+      appealId, enforcementId, subjectUserId: fixture.athleteA, state: 'SUBMITTED',
+      restrictionRemainsActive: true, viewerCanStartReview: false, version: 1,
+    });
+    expect((await submitEnforcementAppeal(
+      database, submitCommand, submitIds, () => new Date('2026-10-03T10:00:00.000Z'),
+    )).replayed).toBe(true);
+    const subjectContext = await readActiveEnforcementAppealForSubject(database, fixture.athleteA);
+    expect(subjectContext).toMatchObject({ enforcementState: 'ACTIVE',
+      restrictionRemainsActive: true, appeal: { state: 'SUBMITTED' } });
+    const queue = await listEnforcementAppealsForCentral(database, reviewer);
+    expect(queue.map((item) => item.appealId)).toEqual([appealId]);
+    expect(queue[0]).toMatchObject({ viewerCanStartReview: true, restrictionRemainsActive: true });
+
+    const reviewIds = { eventId: testId(base + 320), auditId: testId(base + 321),
+      outboxMessageId: testId(base + 322), notificationOutboxMessageId: testId(base + 323),
+      notificationId: testId(base + 324) };
+    const reviewCommand = (actorId: string, commandId: string, key: string) => ({
+      commandId, commandType: 'START_ENFORCEMENT_APPEAL_REVIEW', idempotencyKey: key,
+      actor: { type: 'USER' as const, id: actorId,
+        roles: ['CENTRAL_ADMIN'] as const, scopeIds: [] as const },
+      aggregateType: 'EnforcementAppeal', aggregateId: appealId, expectedVersion: 1,
+      correlationId: testId(base + 325), causationId: submitIds.eventId,
+      requestId: testId(base + 326), source: 'admin' as const, payloadVersion: 1,
+      payload: { appealId },
+    });
+    await expect(startEnforcementAppealReview(database,
+      reviewCommand(fixture.central, testId(base + 327), 'ac-129-conflicted-reviewer'),
+      { ...reviewIds, eventId: testId(base + 328) }))
+      .rejects.toMatchObject({ reason: 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT' });
+    const reviewed = await startEnforcementAppealReview(database,
+      reviewCommand(reviewer, testId(base + 329), 'ac-129-independent-reviewer'), reviewIds,
+      () => new Date('2026-10-03T11:00:00.000Z'));
+    expect(reviewed.response).toMatchObject({ state: 'UNDER_REVIEW',
+      assignedReviewerUserId: reviewer, restrictionRemainsActive: true, version: 2 });
+
+    const committed = await sql<{
+      readonly account_state: string; readonly enforcement_state: string;
+      readonly hold_state: string; readonly appeal_state: string;
+      readonly appeal_count: string; readonly result_count: string;
+    }>`select subject.account_state, enforcement.state as enforcement_state,
+      process_hold.state as hold_state, appeal.state as appeal_state,
+      (select count(*)::text from governance.enforcement_appeals) as appeal_count,
+      (select count(*)::text from competition.results) as result_count
+      from governance.enforcements enforcement
+      join identity.users subject on subject.user_id = enforcement.subject_user_id
+      join governance.enforcement_appeals appeal on appeal.enforcement_id = enforcement.enforcement_id
+      join competition.process_holds process_hold
+        on process_hold.moderation_case_id = enforcement.source_case_id
+        and process_hold.reason = 'STATUS_REVIEW'
+      where enforcement.enforcement_id = ${enforcementId}::uuid`.execute(database);
+    expect(committed.rows[0]).toEqual({ account_state: 'RESTRICTED', enforcement_state: 'ACTIVE',
+      hold_state: 'ACTIVE', appeal_state: 'UNDER_REVIEW', appeal_count: '1', result_count: '0' });
+    const publicPayload = await sql<{ readonly payload: unknown }>`
+      select payload from platform.domain_events where event_id in (
+        ${submitIds.eventId}::uuid, ${reviewIds.eventId}::uuid
+      ) union all select payload from platform.outbox_messages where message_id in (
+        ${submitIds.outboxMessageId}::uuid, ${submitIds.notificationOutboxMessageId}::uuid,
+        ${reviewIds.outboxMessageId}::uuid, ${reviewIds.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    const publicJson = JSON.stringify(publicPayload.rows);
+    expect(publicJson).not.toContain('Прошу независимо');
+    expect(publicJson).not.toContain('VIOLENCE');
+    expect(publicJson).not.toContain(fixture.coach);
   });
 
   it('[AC-214] deletes expired unreported Chat payloads while retaining checksums, evidence and audit', async () => {

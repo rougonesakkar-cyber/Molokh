@@ -66,10 +66,15 @@ import {
   type AccountAccessRouteDependencies,
 } from './account-access-routes.js';
 import { registerAuthRoutes, type AuthRouteDependencies } from './auth-routes.js';
+import {
+  registerEnforcementAppealRoutes,
+  type EnforcementAppealRouteDependencies,
+} from './enforcement-appeal-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
   readonly appeal?: AppealRouteDependencies;
+  readonly enforcementAppeal?: EnforcementAppealRouteDependencies;
   readonly community?: CommunityRouteDependencies;
   readonly chat?: ChatRouteDependencies;
   readonly challenge?: ChallengeRouteDependencies;
@@ -100,6 +105,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const {
     allowedOrigins = [],
     appeal,
+    enforcementAppeal,
     chat,
     challenge,
     community,
@@ -175,6 +181,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   if (membership) await registerMembershipRoutes(app, membership);
   if (youthConsent) await registerYouthConsentRoutes(app, youthConsent);
   if (appeal) await registerAppealRoutes(app, appeal);
+  if (enforcementAppeal) await registerEnforcementAppealRoutes(app, enforcementAppeal);
   if (missingResult) await registerMissingResultRoutes(app, missingResult);
   if (platformIncident) await registerPlatformIncidentRoutes(app, platformIncident);
   if (accountLifecycle) await registerAccountLifecycleRoutes(app, accountLifecycle);

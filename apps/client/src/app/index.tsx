@@ -26,6 +26,8 @@ import type {
   HomeVenueSettingsResponse,
   IdentityCommandResponse,
   IntegrityCaseListResponse,
+  EnforcementAppealListResponse,
+  MyEnforcementAppealResponse,
   TechnicalCorrectionListResponse,
   MeResponse,
   MatchesResponse,
@@ -112,6 +114,10 @@ import {
 import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
 import { coachSafetyRefusalPresentation } from '../features/safety/presentation';
 import { SafetyCaseReviewSection } from '../features/safety/SafetyCaseReviewSection';
+import {
+  CentralEnforcementAppealQueue,
+  EnforcementAppealSection,
+} from '../features/enforcement-appeal/EnforcementAppealSection';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -168,6 +174,8 @@ type MissingResultReview = MissingResultReviewListResponse['data'][number];
 type IntegrityCase = IntegrityCaseListResponse['data'][number];
 type TechnicalCorrection = TechnicalCorrectionListResponse['data'][number];
 type CentralModerationCase = CentralModerationCaseListResponse['data'][number];
+type EnforcementAppeal = EnforcementAppealListResponse['data'][number];
+type EnforcementAppealContext = Exclude<MyEnforcementAppealResponse['data'], null>;
 type VenueAdminDashboard = VenueAdminDashboardResponse['data'];
 type MainSection = 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
 type AdminPublicationKind = 'SLOT' | 'GROUP';
@@ -562,6 +570,9 @@ export default function IdentityScreen() {
   const [integrityCases, setIntegrityCases] = useState<IntegrityCase[]>([]);
   const [technicalCorrections, setTechnicalCorrections] = useState<TechnicalCorrection[]>([]);
   const [moderationCases, setModerationCases] = useState<CentralModerationCase[]>([]);
+  const [enforcementAppealContext, setEnforcementAppealContext] =
+    useState<EnforcementAppealContext | null>(null);
+  const [enforcementAppeals, setEnforcementAppeals] = useState<EnforcementAppeal[]>([]);
   const [actingCentralAppealId, setActingCentralAppealId] = useState<string | null>(null);
   const [centralDecisionAppealId, setCentralDecisionAppealId] = useState<string | null>(null);
   const [centralDecisionReason, setCentralDecisionReason] = useState('');
@@ -608,6 +619,15 @@ export default function IdentityScreen() {
       setDisplayName(result.data.displayName);
       setPrimarySport(result.data.primarySport);
       setSecondarySport(result.data.secondarySport);
+      const enforcementAppealResponse = await fetch(`${apiUrl}/api/v1/me/enforcement-appeal`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!enforcementAppealResponse.ok) {
+        throw new Error(await apiErrorMessage(enforcementAppealResponse));
+      }
+      const enforcementAppealResult =
+        (await enforcementAppealResponse.json()) as MyEnforcementAppealResponse;
+      setEnforcementAppealContext(enforcementAppealResult.data);
       const homeVenueResponse = await fetch(`${apiUrl}/api/v1/me/home-venue`, {
         headers: { Authorization: `Bearer ${localToken}` },
       });
@@ -709,8 +729,19 @@ export default function IdentityScreen() {
         const moderationQueue =
           (await moderationQueueResponse.json()) as CentralModerationCaseListResponse;
         setModerationCases(moderationQueue.data);
+        const enforcementAppealQueueResponse = await fetch(
+          `${apiUrl}/api/v1/central/enforcement-appeals`,
+          { headers: { Authorization: `Bearer ${localToken}` } },
+        );
+        if (!enforcementAppealQueueResponse.ok) {
+          throw new Error(await apiErrorMessage(enforcementAppealQueueResponse));
+        }
+        const enforcementAppealQueue =
+          (await enforcementAppealQueueResponse.json()) as EnforcementAppealListResponse;
+        setEnforcementAppeals(enforcementAppealQueue.data);
       } else {
         setModerationCases([]);
+        setEnforcementAppeals([]);
       }
       if (
         loadedCommunity?.access.capabilities.includes('MANAGE_MEMBERSHIPS')
@@ -3694,6 +3725,16 @@ export default function IdentityScreen() {
                   ))}
                 </View>
 
+                {enforcementAppealContext ? (
+                  <EnforcementAppealSection
+                    context={enforcementAppealContext}
+                    token={activeTestToken}
+                    onUpdated={(appeal) => setEnforcementAppealContext((current) => current
+                      ? { ...current, appeal }
+                      : current)}
+                  />
+                ) : null}
+
                 <AccountAccessSection token={activeTestToken} />
                 <AccountLifecycleSection token={activeTestToken} />
               </>
@@ -4509,6 +4550,16 @@ export default function IdentityScreen() {
                                 version: item.version + 1,
                               }
                             : item))}
+                  />
+                ) : null}
+
+                {activeTestAccount.role === 'Central' ? (
+                  <CentralEnforcementAppealQueue
+                    appeals={enforcementAppeals}
+                    token={activeTestToken}
+                    onUpdated={(updated) => setEnforcementAppeals((current) => current.map(
+                      (item) => item.appealId === updated.appealId ? updated : item,
+                    ))}
                   />
                 ) : null}
 

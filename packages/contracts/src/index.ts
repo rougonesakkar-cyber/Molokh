@@ -1871,6 +1871,64 @@ export const IntegrityCaseCommandResponseSchema = Type.Object({
 }, { $id: 'IntegrityCaseCommandResponse', additionalProperties: false });
 export type IntegrityCaseCommandResponse = Static<typeof IntegrityCaseCommandResponseSchema>;
 
+export const EnforcementAppealStateSchema = Type.Union([
+  Type.Literal('SUBMITTED'), Type.Literal('UNDER_REVIEW'),
+]);
+export const EnforcementAppealProjectionSchema = Type.Object({
+  appealId: Type.String({ format: 'uuid' }),
+  enforcementId: Type.String({ format: 'uuid' }),
+  subjectUserId: Type.String({ format: 'uuid' }),
+  state: EnforcementAppealStateSchema,
+  statement: Type.String({ minLength: 10, maxLength: 2000 }),
+  submittedAt: Type.String({ format: 'date-time' }),
+  appealDeadlineAt: Type.String({ format: 'date-time' }),
+  assignedReviewerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  reviewStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  restrictionRemainsActive: Type.Literal(true),
+  viewerCanStartReview: Type.Boolean(),
+  version: Type.Integer({ minimum: 1 }),
+}, { $id: 'EnforcementAppealProjection', additionalProperties: false });
+export type EnforcementAppealContract = Static<typeof EnforcementAppealProjectionSchema>;
+
+export const ActiveEnforcementAppealContextSchema = Type.Object({
+  enforcementId: Type.String({ format: 'uuid' }),
+  enforcementState: Type.Literal('ACTIVE'),
+  appealDeadlineAt: Type.String({ format: 'date-time' }),
+  enforcementVersion: Type.Integer({ minimum: 1 }),
+  restrictionRemainsActive: Type.Literal(true),
+  appeal: Type.Union([EnforcementAppealProjectionSchema, Type.Null()]),
+}, { $id: 'ActiveEnforcementAppealContext', additionalProperties: false });
+
+export const MyEnforcementAppealResponseSchema = Type.Object({
+  data: Type.Union([ActiveEnforcementAppealContextSchema, Type.Null()]),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+}, { $id: 'MyEnforcementAppealResponse', additionalProperties: false });
+export type MyEnforcementAppealResponse = Static<typeof MyEnforcementAppealResponseSchema>;
+
+export const EnforcementAppealListResponseSchema = Type.Object({
+  data: Type.Array(EnforcementAppealProjectionSchema),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+}, { $id: 'EnforcementAppealListResponse', additionalProperties: false });
+export type EnforcementAppealListResponse = Static<typeof EnforcementAppealListResponseSchema>;
+
+export const EnforcementAppealCommandResponseSchema = Type.Object({
+  data: EnforcementAppealProjectionSchema,
+  meta: Type.Object({
+    requestId: Type.String({ format: 'uuid' }), eventId: Type.String({ format: 'uuid' }),
+    replayed: Type.Boolean(),
+  }, { additionalProperties: false }),
+}, { $id: 'EnforcementAppealCommandResponse', additionalProperties: false });
+export type EnforcementAppealCommandResponse = Static<typeof EnforcementAppealCommandResponseSchema>;
+
+export const SubmitEnforcementAppealBodySchema = Type.Object({
+  statement: Type.String({ minLength: 10, maxLength: 2000 }),
+}, { $id: 'SubmitEnforcementAppealBody', additionalProperties: false });
+export type SubmitEnforcementAppealBody = Static<typeof SubmitEnforcementAppealBodySchema>;
+
+export const StartEnforcementAppealReviewBodySchema = Type.Object(
+  {}, { $id: 'StartEnforcementAppealReviewBody', additionalProperties: false },
+);
+
 export const TechnicalCorrectionCategorySchema = Type.Union([
   Type.Literal('OUTCOME_OR_WINNER_ERROR'), Type.Literal('LATE_RESULT_CORRECTION'),
 ]);
