@@ -6822,6 +6822,225 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(publicJson).not.toContain(fixture.coach);
   });
 
+  it('[AC-130] prevents a Gym Admin subject from reviewing or deciding their own SafetyCase', async () => {
+    const base = 238000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const replacementCoach = testId(base + 300);
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${replacementCoach}::uuid, '+79992383000', '2026-09-27T10:00:00.000Z'::timestamptz,
+        '1987-01-01', 'ADULT', 'Independent replacement Coach', 'ACTIVE', 'ru-RU', 1,
+        '2026-09-27T10:00:00.000Z'::timestamptz
+      )
+    `.execute(database);
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values
+        (${testId(base + 301)}::uuid, ${fixture.athleteA}::uuid, 'GYM_ADMIN', 'VENUE',
+          ${fixture.venue}::uuid, 'ACTIVE', ${fixture.central}::uuid,
+          '2026-09-27T10:00:00.000Z'::timestamptz, 1),
+        (${testId(base + 302)}::uuid, ${fixture.athleteA}::uuid, 'CENTRAL_ADMIN', 'GLOBAL',
+          null, 'ACTIVE', ${fixture.central}::uuid,
+          '2026-09-27T10:00:00.000Z'::timestamptz, 1),
+        (${testId(base + 303)}::uuid, ${replacementCoach}::uuid, 'COACH', 'COMMUNITY',
+          ${fixture.community}::uuid, 'ACTIVE', ${fixture.central}::uuid,
+          '2026-09-27T10:00:00.000Z'::timestamptz, 1)
+    `.execute(database);
+    await convertTrainingFixtureToOfficial(base + 100, fixture, 'ac-130-conversion');
+    const sourceResult = await sql<{
+      readonly booking_version: string; readonly challenge_version: string;
+      readonly session_version: string;
+    }>`
+      select booking.version::text as booking_version,
+        challenge.version::text as challenge_version,
+        session.version::text as session_version
+      from scheduling.sessions session
+      join scheduling.bookings booking on booking.booking_id = session.booking_id
+      join competition.challenges challenge on challenge.challenge_id = session.challenge_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    const source = sourceResult.rows[0]!;
+    const safetyIds = {
+      eventId: testId(base + 330), auditId: testId(base + 331),
+      outboxMessageId: testId(base + 332), bookingEventId: testId(base + 333),
+      slotEventId: testId(base + 334), challengeEventId: testId(base + 335),
+      caseId: testId(base + 336), caseEventId: testId(base + 337),
+      caseOutboxMessageId: testId(base + 338), holdId: testId(base + 339),
+      holdEventId: testId(base + 340), holdOutboxMessageId: testId(base + 341),
+      notificationOutboxMessageId: testId(base + 342),
+      notificationIds: [
+        testId(base + 343), testId(base + 344), testId(base + 345), testId(base + 346),
+      ] as const,
+    };
+    const submitted = await reportSafetyAndCancelSession(database, {
+      commandId: testId(base + 320), commandType: 'REFUSE_UNSAFE_SESSION',
+      idempotencyKey: 'ac-130-submit',
+      actor: { type: 'USER', id: fixture.coach, roles: ['COACH'], scopeIds: [fixture.community] },
+      aggregateType: 'Session', aggregateId: fixture.session,
+      expectedVersion: Number(source.session_version), correlationId: testId(base + 321),
+      causationId: null, requestId: testId(base + 322), source: 'api', payloadVersion: 1,
+      payload: {
+        sessionId: fixture.session, subjectUserId: fixture.athleteA,
+        reasonCode: 'THREAT', explicitConfirmation: true,
+        expectedBookingVersion: Number(source.booking_version),
+        expectedChallengeVersion: Number(source.challenge_version),
+      },
+    }, safetyIds, () => new Date('2026-09-27T10:20:00.000Z'));
+
+    await expect(listModerationCasesForCentral(database, fixture.athleteA)).resolves.toEqual([
+      expect.objectContaining({
+        caseId: safetyIds.caseId, subjectUserId: fixture.athleteA,
+        viewerCanStartReview: false, viewerCanResolve: false,
+        viewerHasReviewerConflict: true,
+      }),
+    ]);
+    await expect(listModerationCasesForCentral(database, fixture.central)).resolves.toEqual([
+      expect.objectContaining({
+        caseId: safetyIds.caseId, viewerCanStartReview: true,
+        viewerCanResolve: false, viewerHasReviewerConflict: false,
+      }),
+    ]);
+
+    const reviewCommand = (actorId: string, commandId: string, key: string) => ({
+      commandId, commandType: 'START_SAFETY_CASE_REVIEW', idempotencyKey: key,
+      actor: { type: 'USER' as const, id: actorId,
+        roles: ['GYM_ADMIN', 'CENTRAL_ADMIN'] as const,
+        scopeIds: [fixture.venue, fixture.community] as const },
+      aggregateType: 'ModerationCase', aggregateId: safetyIds.caseId, expectedVersion: 1,
+      correlationId: testId(base + 350), causationId: safetyIds.caseEventId,
+      requestId: testId(base + 351), source: 'admin' as const, payloadVersion: 1,
+      payload: { caseId: safetyIds.caseId },
+    });
+    const reviewIds = {
+      eventId: testId(base + 352), auditId: testId(base + 353),
+      outboxMessageId: testId(base + 354),
+    };
+    await expect(startSafetyCaseReview(database,
+      reviewCommand(fixture.athleteA, testId(base + 355), 'ac-130-subject-review'),
+      { ...reviewIds, eventId: testId(base + 356) }))
+      .rejects.toMatchObject({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' });
+    const afterDeniedReview = await sql<{
+      readonly state: string; readonly version: string;
+      readonly assigned_reviewer_user_id: string | null;
+      readonly audits: string; readonly events: string; readonly outbox: string;
+    }>`select moderation_case.state, moderation_case.version::text,
+      moderation_case.assigned_reviewer_user_id,
+      (select count(*)::text from platform.audit_events
+        where action = 'START_SAFETY_CASE_REVIEW') as audits,
+      (select count(*)::text from platform.domain_events
+        where event_name = 'CaseReviewStarted') as events,
+      (select count(*)::text from platform.outbox_messages
+        where topic = 'governance.safety-case.review-started.v1') as outbox
+      from governance.moderation_cases moderation_case
+      where moderation_case.case_id = ${safetyIds.caseId}::uuid`.execute(database);
+    expect(afterDeniedReview.rows[0]).toEqual({
+      state: 'SUBMITTED', version: '1', assigned_reviewer_user_id: null,
+      audits: '0', events: '0', outbox: '0',
+    });
+
+    const independentReviewCommand = {
+      ...reviewCommand(fixture.central, testId(base + 357), 'ac-130-independent-review'),
+      actor: { type: 'USER' as const, id: fixture.central,
+        roles: ['CENTRAL_ADMIN'] as const, scopeIds: [] as const },
+    };
+    const reviewed = await startSafetyCaseReview(
+      database, independentReviewCommand, reviewIds,
+      () => new Date('2026-09-27T11:20:00.000Z'),
+    );
+    expect(reviewed.response).toMatchObject({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: fixture.central, version: 2,
+    });
+    expect((await startSafetyCaseReview(
+      database, independentReviewCommand, reviewIds,
+      () => new Date('2026-09-27T11:20:00.000Z'),
+    )).replayed).toBe(true);
+
+    const resolutionIds = {
+      eventId: testId(base + 360), auditId: testId(base + 361),
+      outboxMessageId: testId(base + 362), decisionId: testId(base + 363),
+      decisionEventId: testId(base + 364), challengeEventId: testId(base + 365),
+      challengeOutboxMessageId: testId(base + 366), holdEventId: testId(base + 367),
+      holdOutboxMessageId: testId(base + 368),
+      notificationOutboxMessageId: testId(base + 369),
+      notificationIds: [testId(base + 370), testId(base + 371), testId(base + 372)] as const,
+    };
+    const resolveCommand = (actorId: string, commandId: string, key: string) => ({
+      commandId, commandType: 'RESOLVE_SAFETY_CASE', idempotencyKey: key,
+      actor: { type: 'USER' as const, id: actorId,
+        roles: ['GYM_ADMIN', 'CENTRAL_ADMIN'] as const,
+        scopeIds: [fixture.venue, fixture.community] as const },
+      aggregateType: 'ModerationCase', aggregateId: safetyIds.caseId, expectedVersion: 2,
+      correlationId: testId(base + 350), causationId: reviewIds.eventId,
+      requestId: testId(base + 373), source: 'admin' as const, payloadVersion: 1,
+      payload: {
+        caseId: safetyIds.caseId, remedyCode: 'REPLACE_COACH' as const,
+        replacementCoachUserId: replacementCoach, replacementVenueId: null,
+        reason: 'Независимо выбран безопасный Coach без конфликта интересов',
+        expectedChallengeVersion: submitted.response.challengeVersion, expectedHoldVersion: 1,
+      },
+    });
+    await expect(resolveSafetyCase(database,
+      resolveCommand(fixture.athleteA, testId(base + 374), 'ac-130-subject-decision'),
+      { ...resolutionIds, eventId: testId(base + 375) }))
+      .rejects.toMatchObject({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' });
+    const afterDeniedDecision = await sql<{
+      readonly state: string; readonly version: string;
+      readonly assigned_reviewer_user_id: string; readonly decisions: string;
+      readonly audits: string; readonly events: string; readonly outbox: string;
+    }>`select moderation_case.state, moderation_case.version::text,
+      moderation_case.assigned_reviewer_user_id,
+      (select count(*)::text from governance.safety_case_decisions) as decisions,
+      (select count(*)::text from platform.audit_events
+        where action = 'RESOLVE_SAFETY_CASE') as audits,
+      (select count(*)::text from platform.domain_events
+        where event_name = 'CaseClosed') as events,
+      (select count(*)::text from platform.outbox_messages
+        where topic = 'governance.safety-case.closed.v1') as outbox
+      from governance.moderation_cases moderation_case
+      where moderation_case.case_id = ${safetyIds.caseId}::uuid`.execute(database);
+    expect(afterDeniedDecision.rows[0]).toEqual({
+      state: 'UNDER_REVIEW', version: '2', assigned_reviewer_user_id: fixture.central,
+      decisions: '0', audits: '0', events: '0', outbox: '0',
+    });
+
+    const independentResolveCommand = {
+      ...resolveCommand(fixture.central, testId(base + 376), 'ac-130-independent-decision'),
+      actor: { type: 'USER' as const, id: fixture.central,
+        roles: ['CENTRAL_ADMIN'] as const, scopeIds: [] as const },
+    };
+    const resolved = await resolveSafetyCase(
+      database, independentResolveCommand, resolutionIds,
+      () => new Date('2026-09-27T13:20:00.000Z'),
+    );
+    expect(resolved.response).toMatchObject({
+      action: 'SAFETY_REPLACEMENT_APPLIED', state: 'CLOSED',
+      replacementCoachUserId: replacementCoach, challengeState: 'ACCEPTED_UNSCHEDULED',
+    });
+    expect((await resolveSafetyCase(
+      database, independentResolveCommand, resolutionIds,
+      () => new Date('2026-09-27T13:20:00.000Z'),
+    )).replayed).toBe(true);
+    const finalState = await sql<{
+      readonly decisions: string; readonly reviews: string; readonly resolutions: string;
+      readonly results: string; readonly cooldowns: string;
+    }>`select
+      (select count(*)::text from governance.safety_case_decisions) as decisions,
+      (select count(*)::text from platform.audit_events
+        where action = 'START_SAFETY_CASE_REVIEW') as reviews,
+      (select count(*)::text from platform.audit_events
+        where action = 'RESOLVE_SAFETY_CASE') as resolutions,
+      (select count(*)::text from competition.results) as results,
+      (select count(*)::text from competition.pair_cooldowns) as cooldowns`.execute(database);
+    expect(finalState.rows[0]).toEqual({
+      decisions: '1', reviews: '1', resolutions: '1', results: '0', cooldowns: '0',
+    });
+  });
+
   it('[AC-214] deletes expired unreported Chat payloads while retaining checksums, evidence and audit', async () => {
     const athleteA = testId(110000);
     const athleteB = testId(110001);

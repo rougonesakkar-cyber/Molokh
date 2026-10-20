@@ -1172,7 +1172,7 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/blocks');
   });
 
-  it('[AC-123][AC-126][AC-193][AC-194] exposes reporting plus protected Safety review commands', async () => {
+  it('[AC-123][AC-126][AC-130][AC-193][AC-194] exposes reporting plus protected Safety review commands', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000000501';
     const messageId = '0199a1b2-1234-7000-8000-000000000502';
     const reportId = '0199a1b2-1234-7000-8000-000000000506';
@@ -1287,6 +1287,7 @@ describe('runtime contract', () => {
       originalVenueId: null,
       viewerCanStartReview: false,
       viewerCanResolve: false,
+      viewerHasReviewerConflict: false,
       replacementCoachOptions: [],
       replacementVenueOptions: [],
       submittedAt: '2026-09-07T10:06:00.000Z',
@@ -1456,6 +1457,7 @@ describe('runtime contract', () => {
     expect(reviewStarted.json()).toMatchObject({ data: { state: 'UNDER_REVIEW', version: 2 } });
     expect(startSafetyCaseReview.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'START_SAFETY_CASE_REVIEW', aggregateId: caseId, expectedVersion: 1,
+      actor: { id: centralUserId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
     });
     const resolved = await app.inject({
       method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/resolve`,

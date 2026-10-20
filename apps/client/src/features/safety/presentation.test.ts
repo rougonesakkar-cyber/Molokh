@@ -50,4 +50,14 @@ describe('Coach safety refusal presentation', () => {
     expect(decision.explanation).toContain('не передаёт статус автоматически');
     expect(decision.explanation).toContain('Appeal 7 дней');
   });
+
+  it('[AC-130] hides review and decision actions from a conflicted Case subject', () => {
+    const presentation = safetyCaseResolutionPresentation({
+      state: 'SUBMITTED', viewerCanStartReview: false, viewerCanResolve: false,
+      viewerHasReviewerConflict: true,
+    });
+    expect(presentation).toMatchObject({ action: 'READ_ONLY', title: 'Конфликт интересов' });
+    expect(presentation.explanation).toContain('не можете брать его в review или принимать решение');
+    expect(presentation.explanation).toContain('другой независимый Central reviewer');
+  });
 });

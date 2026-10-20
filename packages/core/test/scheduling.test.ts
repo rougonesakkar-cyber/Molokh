@@ -14,6 +14,7 @@ import {
   assertCoachReplacementCanBeRejected,
   assertExternalSessionFailureCanBeCommitted,
   assertSafetyCaseReviewCanStart,
+  assertSafetyCaseReviewerIndependent,
   assertEnforcementAppealReviewCanStart,
   assertSafetyCancellationCanBeSubmitted,
   assertPublicationWindow,
@@ -496,6 +497,21 @@ describe('Scheduling publication policy', () => {
       subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'original-central',
       reporterUserId: 'coach',
     })).not.toThrow();
+  });
+
+  it('[AC-130] rejects a Safety reviewer who is the subject or interested Venue Admin', () => {
+    const independent = {
+      reviewerUserId: 'central-b', reporterUserId: 'coach-a', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      assignedCoachUserId: 'coach-a', reviewerIsInterestedVenueAdmin: false,
+    };
+    expect(() => assertSafetyCaseReviewerIndependent(independent)).not.toThrow();
+    expect(() => assertSafetyCaseReviewerIndependent({
+      ...independent, reviewerUserId: 'athlete-a',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' }));
+    expect(() => assertSafetyCaseReviewerIndependent({
+      ...independent, reviewerIsInterestedVenueAdmin: true,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' }));
   });
 
   it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {

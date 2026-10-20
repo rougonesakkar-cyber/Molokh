@@ -14,6 +14,7 @@ import {
   assertChallengeSessionWindowCanOpen,
   assertExternalSessionFailureCanBeCommitted,
   assertSafetyCaseReviewCanStart,
+  assertSafetyCaseReviewerIndependent,
   assertSessionCanEnd,
   assertSessionCanStart,
   assertSessionCoach,
@@ -1819,6 +1820,16 @@ export async function resolveSafetyCase(
       const row = await safetyCaseReviewRow(transaction, command.aggregateId);
       if (!row) throw new SchedulingPermissionDeniedError();
       assertExpectedVersion(Number(row.version), command.expectedVersion);
+      assertSafetyCaseReviewerIndependent({
+        reviewerUserId: command.actor.id,
+        reporterUserId: row.reporter_user_id,
+        subjectUserId: row.subject_user_id,
+        athleteUserIds: [row.pair_low_id, row.pair_high_id],
+        assignedCoachUserId: row.coach_user_id,
+        reviewerIsInterestedVenueAdmin: await reviewerIsInterestedVenueAdmin(
+          transaction, command.actor.id, row.venue_id,
+        ),
+      });
       assertExpectedVersion(Number(row.challenge_version), command.payload.expectedChallengeVersion);
       assertExpectedVersion(Number(row.hold_version), command.payload.expectedHoldVersion);
       if (

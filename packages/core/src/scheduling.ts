@@ -843,6 +843,25 @@ export type SafetyCaseRemedy =
   | 'FORFEIT_BY_ENFORCEMENT'
   | 'ACCOUNT_RESTRICTION';
 
+export function assertSafetyCaseReviewerIndependent(input: {
+  readonly reviewerUserId: string;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly assignedCoachUserId: string;
+  readonly reviewerIsInterestedVenueAdmin: boolean;
+}): void {
+  if (
+    input.reviewerUserId === input.reporterUserId
+    || input.reviewerUserId === input.subjectUserId
+    || input.athleteUserIds.includes(input.reviewerUserId)
+    || input.reviewerUserId === input.assignedCoachUserId
+    || input.reviewerIsInterestedVenueAdmin
+  ) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_CONFLICT');
+  }
+}
+
 export function assertSafetyCaseReviewCanStart(input: {
   readonly state: string;
   readonly actorIsCentral: boolean;
@@ -857,15 +876,7 @@ export function assertSafetyCaseReviewCanStart(input: {
   if (input.state !== 'SUBMITTED') {
     throw new SchedulingConflictError('SAFETY_CASE_NOT_SUBMITTED');
   }
-  if (
-    input.reviewerUserId === input.reporterUserId
-    || input.reviewerUserId === input.subjectUserId
-    || input.athleteUserIds.includes(input.reviewerUserId)
-    || input.reviewerUserId === input.assignedCoachUserId
-    || input.reviewerIsInterestedVenueAdmin
-  ) {
-    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_CONFLICT');
-  }
+  assertSafetyCaseReviewerIndependent(input);
 }
 
 export function normalizeSafetyCaseReleaseDecision(input: {

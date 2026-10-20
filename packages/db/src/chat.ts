@@ -166,6 +166,7 @@ export interface CentralModerationCaseProjection {
   readonly originalVenueId: string | null;
   readonly viewerCanStartReview: boolean;
   readonly viewerCanResolve: boolean;
+  readonly viewerHasReviewerConflict: boolean;
   readonly replacementCoachOptions: readonly {
     readonly userId: string;
     readonly displayName: string;
@@ -1050,52 +1051,59 @@ export async function listModerationCasesForCentral(
     where venue.state = 'ACTIVE' and community.state = 'ACTIVE'
     order by venue.display_name, venue.venue_id
   `.execute(database);
-  return result.rows.map((row) => ({
-    caseId: row.case_id,
-    caseType: row.case_type,
-    state: row.state,
-    reportId: row.report_id,
-    chatId: row.chat_id,
-    messageId: row.message_id,
-    reporterUserId: row.reporter_user_id,
-    subjectUserId: row.subject_user_id,
-    reasonCode: row.reason_code,
-    evidenceSnapshot: row.evidence_snapshot,
-    challengeId: row.challenge_id,
-    bookingId: row.booking_id,
-    sessionId: row.session_id,
-    initialDueAt: row.initial_due_at?.toISOString() ?? null,
-    finalDueAt: row.final_due_at?.toISOString() ?? null,
-    assignedReviewerUserId: row.assigned_reviewer_user_id,
-    reviewStartedAt: row.review_started_at?.toISOString() ?? null,
-    challengeVersion: row.challenge_version === null ? null : Number(row.challenge_version),
-    schedulingDeadlineAt: row.scheduling_deadline_at?.toISOString() ?? null,
-    holdId: row.hold_id,
-    holdState: row.hold_state,
-    holdStartedAt: row.hold_started_at?.toISOString() ?? null,
-    holdVersion: row.hold_version === null ? null : Number(row.hold_version),
-    originalCoachUserId: row.coach_user_id,
-    originalVenueId: row.venue_id,
-    viewerCanStartReview: row.case_type === 'SAFETY' && row.state === 'SUBMITTED'
-      && centralUserId !== row.reporter_user_id
-      && centralUserId !== row.subject_user_id
-      && centralUserId !== row.pair_low_id
-      && centralUserId !== row.pair_high_id
-      && centralUserId !== row.coach_user_id
-      && !row.reviewer_is_venue_admin,
-    viewerCanResolve: row.case_type === 'SAFETY' && row.state === 'UNDER_REVIEW'
-      && row.assigned_reviewer_user_id === centralUserId,
-    replacementCoachOptions: row.case_type === 'SAFETY'
-      ? coachOptions.rows.map((option) => ({
-          userId: option.user_id, displayName: option.display_name, venueId: option.venue_id,
-        }))
-      : [],
-    replacementVenueOptions: row.case_type === 'SAFETY'
-      ? venueOptions.rows.map((option) => ({
-          venueId: option.venue_id, displayName: option.display_name,
-        }))
-      : [],
-    submittedAt: row.submitted_at.toISOString(),
-    version: Number(row.version),
-  }));
+  return result.rows.map((row) => {
+    const viewerHasReviewerConflict = row.case_type === 'SAFETY' && (
+      centralUserId === row.reporter_user_id
+      || centralUserId === row.subject_user_id
+      || centralUserId === row.pair_low_id
+      || centralUserId === row.pair_high_id
+      || centralUserId === row.coach_user_id
+      || row.reviewer_is_venue_admin
+    );
+    return {
+      caseId: row.case_id,
+      caseType: row.case_type,
+      state: row.state,
+      reportId: row.report_id,
+      chatId: row.chat_id,
+      messageId: row.message_id,
+      reporterUserId: row.reporter_user_id,
+      subjectUserId: row.subject_user_id,
+      reasonCode: row.reason_code,
+      evidenceSnapshot: row.evidence_snapshot,
+      challengeId: row.challenge_id,
+      bookingId: row.booking_id,
+      sessionId: row.session_id,
+      initialDueAt: row.initial_due_at?.toISOString() ?? null,
+      finalDueAt: row.final_due_at?.toISOString() ?? null,
+      assignedReviewerUserId: row.assigned_reviewer_user_id,
+      reviewStartedAt: row.review_started_at?.toISOString() ?? null,
+      challengeVersion: row.challenge_version === null ? null : Number(row.challenge_version),
+      schedulingDeadlineAt: row.scheduling_deadline_at?.toISOString() ?? null,
+      holdId: row.hold_id,
+      holdState: row.hold_state,
+      holdStartedAt: row.hold_started_at?.toISOString() ?? null,
+      holdVersion: row.hold_version === null ? null : Number(row.hold_version),
+      originalCoachUserId: row.coach_user_id,
+      originalVenueId: row.venue_id,
+      viewerCanStartReview: row.case_type === 'SAFETY' && row.state === 'SUBMITTED'
+        && !viewerHasReviewerConflict,
+      viewerCanResolve: row.case_type === 'SAFETY' && row.state === 'UNDER_REVIEW'
+        && row.assigned_reviewer_user_id === centralUserId
+        && !viewerHasReviewerConflict,
+      viewerHasReviewerConflict,
+      replacementCoachOptions: row.case_type === 'SAFETY'
+        ? coachOptions.rows.map((option) => ({
+            userId: option.user_id, displayName: option.display_name, venueId: option.venue_id,
+          }))
+        : [],
+      replacementVenueOptions: row.case_type === 'SAFETY'
+        ? venueOptions.rows.map((option) => ({
+            venueId: option.venue_id, displayName: option.display_name,
+          }))
+        : [],
+      submittedAt: row.submitted_at.toISOString(),
+      version: Number(row.version),
+    };
+  });
 }

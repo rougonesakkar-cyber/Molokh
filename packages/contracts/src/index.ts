@@ -870,6 +870,7 @@ export const CentralModerationCaseProjectionSchema = Type.Object(
     originalVenueId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
     viewerCanStartReview: Type.Boolean(),
     viewerCanResolve: Type.Boolean(),
+    viewerHasReviewerConflict: Type.Boolean(),
     replacementCoachOptions: Type.Array(Type.Object({
       userId: Type.String({ format: 'uuid' }),
       displayName: Type.String({ minLength: 1 }),
