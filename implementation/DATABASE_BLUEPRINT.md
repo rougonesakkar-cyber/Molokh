@@ -429,7 +429,7 @@ Critical constraints:
 - `enforcements` — source-immutable `ACCOUNT_RESTRICTION` fact linked directly to one SafetyCase decision and exact seven-day Appeal deadline; only append-only EN-03 revocation metadata may terminally advance it
 - `enforcement_appeals` — one source-immutable protected statement per Enforcement; versioned EA-01/EA-02 assignment in strict server FIFO and protected terminal EA-04 revoke decision
 - `youth_challenge_consents`
-- `evidence_attachments`
+- `evidence_attachments` — source-immutable Appeal/SafetyCase media facts with protected object/checksum/encryption references and one guarded SYSTEM scan transition
 - `evidence_disclosures`
 - `membership_removal_decisions`
 
@@ -442,7 +442,9 @@ Critical constraints:
 - one consent per Challenge/Youth Athlete/policy version;
 - Youth consent persists only a token-keyed contact hash/mask plus consent audit hash; the raw delivery
   destination is transient outbox data and guardian accounts/documents remain absent;
-- evidence count/aggregate size enforced transactionally before upload intent;
+- evidence eligibility is preflighted before an upload intent and count/aggregate size is rechecked transactionally under the parent scope lock before canonical attachment creation;
+- at most five canonical attachments and 100 MB per scope; only allowlisted image/audio/video up to 60 seconds can enter `PENDING_SCAN`;
+- only SYSTEM can advance `PENDING_SCAN` to `AVAILABLE` or `QUARANTINED`; non-Central users can access only their own AVAILABLE originals and no public event/outbox contains storage secrets;
 - disclosure references exact safe derivative/version/recipient/expiry;
 - raw identity documents and Result attachments have no tables/endpoints.
 

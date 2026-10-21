@@ -3433,6 +3433,78 @@ export const AvatarUploadTicketResponseSchema = Type.Object({
 }, { $id: 'AvatarUploadTicketResponse', additionalProperties: false });
 export type AvatarUploadTicketResponse = Static<typeof AvatarUploadTicketResponseSchema>;
 
+export const EvidenceScopeTypeSchema = Type.Union([
+  Type.Literal('RESULT_APPEAL'), Type.Literal('SAFETY_CASE'),
+]);
+export const EvidenceAttachmentStateSchema = Type.Union([
+  Type.Literal('PENDING_SCAN'), Type.Literal('AVAILABLE'), Type.Literal('QUARANTINED'),
+]);
+export const EvidenceUploadIntentBodySchema = Type.Object({
+  fileName: Type.String({ minLength: 1, maxLength: 255 }),
+  declaredMimeType: Type.String({ minLength: 3, maxLength: 100 }),
+  sizeBytes: Type.Integer({ minimum: 1, maximum: 100 * 1024 * 1024 }),
+  durationSeconds: Type.Union([Type.Number({ exclusiveMinimum: 0, maximum: 60 }), Type.Null()]),
+  sha256: Type.String({ pattern: '^[0-9a-f]{64}$' }),
+}, { $id: 'EvidenceUploadIntentBody', additionalProperties: false });
+export type EvidenceUploadIntentBody = Static<typeof EvidenceUploadIntentBodySchema>;
+
+export const CompleteEvidenceUploadBodySchema = Type.Object({
+  uploadReceiptId: Type.String({ minLength: 1, maxLength: 300 }),
+}, { $id: 'CompleteEvidenceUploadBody', additionalProperties: false });
+export type CompleteEvidenceUploadBody = Static<typeof CompleteEvidenceUploadBodySchema>;
+
+export const EvidenceUploadTicketSchema = Type.Object({
+  attachmentId: Type.String({ format: 'uuid' }),
+  uploadReceiptId: Type.String({ minLength: 1 }),
+  uploadUrl: Type.String({ format: 'uri' }),
+  expiresAt: Type.String({ format: 'date-time' }),
+  requiredHeaders: Type.Record(Type.String(), Type.String()),
+  scanPolicyVersion: Type.Literal('evidence-scan-v1'),
+  scopeVersion: Type.Integer({ minimum: 1 }),
+}, { $id: 'EvidenceUploadTicket', additionalProperties: false });
+export type EvidenceUploadTicket = Static<typeof EvidenceUploadTicketSchema>;
+
+export const EvidenceAttachmentSchema = Type.Object({
+  attachmentId: Type.String({ format: 'uuid' }), scopeType: EvidenceScopeTypeSchema,
+  scopeId: Type.String({ format: 'uuid' }), submitterUserId: Type.String({ format: 'uuid' }),
+  state: EvidenceAttachmentStateSchema, fileName: Type.String({ minLength: 1, maxLength: 255 }),
+  mediaKind: Type.Union([Type.Literal('IMAGE'), Type.Literal('AUDIO'), Type.Literal('VIDEO')]),
+  mimeType: Type.String(), sizeBytes: Type.Integer({ minimum: 1 }),
+  durationSeconds: Type.Union([Type.Number({ exclusiveMinimum: 0 }), Type.Null()]),
+  submittedAt: Type.String({ format: 'date-time' }),
+  scannedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  canAccessOriginal: Type.Boolean(), version: Type.Integer({ minimum: 1 }),
+}, { $id: 'EvidenceAttachment', additionalProperties: false });
+export type EvidenceAttachment = Static<typeof EvidenceAttachmentSchema>;
+
+export const EvidenceUploadTicketResponseSchema = Type.Object({
+  data: EvidenceUploadTicketSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+}, { $id: 'EvidenceUploadTicketResponse', additionalProperties: false });
+export type EvidenceUploadTicketResponse = Static<typeof EvidenceUploadTicketResponseSchema>;
+
+export const EvidenceAttachmentCommandResponseSchema = Type.Object({
+  data: EvidenceAttachmentSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }),
+    eventId: Type.String({ format: 'uuid' }), replayed: Type.Boolean() },
+  { additionalProperties: false }),
+}, { $id: 'EvidenceAttachmentCommandResponse', additionalProperties: false });
+export type EvidenceAttachmentCommandResponse = Static<typeof EvidenceAttachmentCommandResponseSchema>;
+
+export const EvidenceAttachmentListResponseSchema = Type.Object({
+  data: Type.Array(EvidenceAttachmentSchema),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+}, { $id: 'EvidenceAttachmentListResponse', additionalProperties: false });
+export type EvidenceAttachmentListResponse = Static<typeof EvidenceAttachmentListResponseSchema>;
+
+export const EvidenceOriginalAccessResponseSchema = Type.Object({
+  data: Type.Object({ downloadUrl: Type.String({ format: 'uri' }),
+    expiresAt: Type.String({ format: 'date-time' }), fileName: Type.String(), mimeType: Type.String() },
+  { additionalProperties: false }),
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+}, { $id: 'EvidenceOriginalAccessResponse', additionalProperties: false });
+export type EvidenceOriginalAccessResponse = Static<typeof EvidenceOriginalAccessResponseSchema>;
+
 export const IdentityCommandResponseSchema = Type.Object(
   {
     data: IdentityProjectionSchema,

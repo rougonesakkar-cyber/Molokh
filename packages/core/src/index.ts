@@ -6,6 +6,7 @@ export * from './chat.js';
 export * from './challenge.js';
 export * from './community.js';
 export * from './discovery.js';
+export * from './evidence.js';
 export * from './identity.js';
 export * from './missing-result.js';
 export * from './membership-exit.js';

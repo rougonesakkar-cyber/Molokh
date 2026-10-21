@@ -4,6 +4,9 @@ import {
   AccountAccessConflictError,
   AccountLifecycleConflictError,
   CommunityConfigurationConflictError,
+  EvidenceConflictError,
+  EvidencePermissionDeniedError,
+  EvidenceValidationError,
   IdempotencyKeyReusedError,
   PlatformIncidentConflictError,
   IdentityPermissionDeniedError,
@@ -106,6 +109,7 @@ import {
   listModerationCasesForCentral,
   listAppealsForCentral,
   listEnforcementAppealsForCentral,
+  listEvidenceAttachmentsForViewer,
   projectNotificationBatch,
   projectPendingMandatoryChallengeReminder,
   projectPendingMembershipNotification,
@@ -146,6 +150,7 @@ import {
   readMatchTimerSnapshot,
   readMatches,
   readResult,
+  readEvidenceOriginalAccess,
   readResultTimerSnapshot,
   readChatMessages,
   readVenueRoleSummary,
@@ -158,6 +163,7 @@ import {
   releaseOutboxFailure,
   reportChatMessage,
   reportSafetyAndCancelSession,
+  recordEvidenceScan,
   resolveSafetyCase,
   runMigrations,
   skipDiscoveryCandidate,
@@ -168,6 +174,8 @@ import {
   startEnforcementAppealReview,
   revokeEnforcementAppeal,
   submitEnforcementAppeal,
+  submitEvidenceAttachment,
+  prepareEvidenceUpload,
   readActiveEnforcementAppealForSubject,
   unblockUser,
   unmatchPair,
@@ -2302,6 +2310,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         competition.appeal_responses,
         competition.appeal_decisions,
         competition.appeal_waivers,
+        governance.evidence_attachments,
         competition.appeals,
         competition.missing_result_venue_confirmations,
         competition.missing_result_statements,
@@ -22827,5 +22836,161 @@ describePostgres('PostgreSQL critical command transaction', () => {
     }, { eventId: testId(base + 46), auditId: testId(base + 47),
       outboxMessageId: testId(base + 48), notificationIds: [testId(base + 49)] }))
       .rejects.toEqual(expect.objectContaining({ code: 'MEMBERSHIP_INVITE_INVALID' }));
+  });
+
+  it('[AC-181][AC-182] enforces private Evidence limits and SYSTEM scan states atomically', async () => {
+    const base = 270000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const converted = await convertTrainingFixtureToOfficial(base + 100, fixture, 'ac-181-conversion');
+    const challengeId = converted.response.challengeId!;
+    const caseId = testId(base + 500);
+    await sql`
+      insert into governance.moderation_cases (
+        case_id, case_type, state, report_id, chat_id, message_id,
+        reporter_user_id, subject_user_id, reason_code, submitted_at, version,
+        challenge_id, booking_id, session_id, initial_due_at, final_due_at
+      ) values (
+        ${caseId}::uuid, 'SAFETY', 'SUBMITTED', null, ${fixture.chat}::uuid, null,
+        ${fixture.athleteA}::uuid, ${fixture.athleteB}::uuid, 'THREAT',
+        '2026-10-21T10:00:00.000Z', 1, ${challengeId}::uuid,
+        ${fixture.booking}::uuid, ${fixture.session}::uuid,
+        '2026-10-22T10:00:00.000Z', '2026-10-23T10:00:00.000Z'
+      )
+    `.execute(database);
+    await expect(prepareEvidenceUpload(database, 'SAFETY_CASE', caseId, fixture.athleteA))
+      .resolves.toMatchObject({ scopeVersion: 1, attachmentCount: 0,
+        aggregateSizeBytes: 0, maximumAttachments: 5,
+        maximumAggregateBytes: 100 * 1024 * 1024 });
+
+    const attempt = (index: number, input: {
+      readonly mimeType?: string; readonly sizeBytes?: number;
+    } = {}) => {
+      const attachmentId = testId(base + 510 + index * 10);
+      const command = {
+        commandId: testId(base + 511 + index * 10),
+        commandType: 'SUBMIT_EVIDENCE_ATTACHMENT',
+        idempotencyKey: `ac-181-evidence-${index}`,
+        actor: { type: 'USER' as const, id: fixture.athleteA,
+          roles: ['ATHLETE'] as const, scopeIds: [] as const },
+        aggregateType: 'EvidenceAttachment', aggregateId: attachmentId,
+        expectedVersion: 0, correlationId: testId(base + 512 + index * 10),
+        causationId: null, requestId: testId(base + 513 + index * 10),
+        source: 'api' as const, payloadVersion: 1,
+        payload: { scopeType: 'SAFETY_CASE' as const, scopeId: caseId,
+          expectedScopeVersion: 1, object: {
+            storageReceiptId: `private-receipt-${index}`,
+            originalFileName: `private-evidence-${index}.jpg`,
+            declaredMimeType: input.mimeType ?? 'image/jpeg',
+            detectedMimeType: input.mimeType ?? 'image/jpeg',
+            sizeBytes: input.sizeBytes ?? 20 * 1024 * 1024,
+            durationSeconds: null, objectReference: `private/object/${index}`,
+            checksumSha256: index.toString(16).padStart(64, '0'),
+            encryptionKeyReference: `private/key/${index}`,
+          } },
+      };
+      const ids = { eventId: testId(base + 514 + index * 10),
+        auditId: testId(base + 515 + index * 10),
+        outboxMessageId: testId(base + 516 + index * 10) };
+      return { attachmentId, command, ids };
+    };
+
+    const rejectedType = attempt(20, { mimeType: 'application/pdf', sizeBytes: 1000 });
+    await expect(submitEvidenceAttachment(database, rejectedType.command, rejectedType.ids))
+      .rejects.toBeInstanceOf(EvidenceValidationError);
+
+    const competing = Array.from({ length: 6 }, (_, index) => attempt(index));
+    const outcomes = await Promise.allSettled(competing.map((item) =>
+      submitEvidenceAttachment(database, item.command, item.ids,
+        () => new Date(`2026-10-21T10:0${item.command.idempotencyKey.at(-1)}:00.000Z`))));
+    const committed = outcomes.flatMap((outcome, index) => outcome.status === 'fulfilled'
+      ? [{ outcome, item: competing[index]! }] : []);
+    const rejected = outcomes.filter((outcome) => outcome.status === 'rejected');
+    expect(committed).toHaveLength(5);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason)
+      .toBeInstanceOf(EvidenceConflictError);
+    const first = committed[0]!;
+    await expect(submitEvidenceAttachment(database, first.item.command, first.item.ids))
+      .resolves.toMatchObject({ replayed: true, eventId: first.item.ids.eventId });
+    const sixth = attempt(30, { sizeBytes: 1 });
+    await expect(submitEvidenceAttachment(database, sixth.command, sixth.ids))
+      .rejects.toMatchObject({ code: 'EVIDENCE_LIMIT_EXCEEDED' });
+
+    const availableItem = committed[0]!.item;
+    const quarantinedItem = committed[1]!.item;
+    const scan = (item: typeof availableItem, outcome: 'CLEAN' | 'UNCERTAIN', offset: number) => ({
+      command: { commandId: testId(base + 900 + offset), commandType: 'RECORD_EVIDENCE_SCAN',
+        idempotencyKey: `ac-182-scan-${item.attachmentId}`, actor: {
+          type: 'SYSTEM' as const, id: null, roles: [] as const, scopeIds: [] as const,
+        }, aggregateType: 'EvidenceAttachment', aggregateId: item.attachmentId,
+        expectedVersion: 1, correlationId: testId(base + 901 + offset), causationId: null,
+        requestId: testId(base + 902 + offset), source: 'scheduler' as const,
+        payloadVersion: 1, payload: { attachmentId: item.attachmentId, outcome,
+          reasonCode: outcome === 'CLEAN' ? null : 'SCAN_UNCERTAIN',
+          scanProviderReference: `private-scanner-${offset}` } },
+      ids: { eventId: testId(base + 903 + offset), auditId: testId(base + 904 + offset),
+        outboxMessageId: testId(base + 905 + offset) },
+    });
+    const availableScan = scan(availableItem, 'CLEAN', 0);
+    const quarantineScan = scan(quarantinedItem, 'UNCERTAIN', 10);
+    await expect(recordEvidenceScan(database, availableScan.command, availableScan.ids,
+      () => new Date('2026-10-21T11:00:00.000Z')))
+      .resolves.toMatchObject({ response: { state: 'AVAILABLE', version: 2 } });
+    await expect(recordEvidenceScan(database, quarantineScan.command, quarantineScan.ids,
+      () => new Date('2026-10-21T11:01:00.000Z')))
+      .resolves.toMatchObject({ response: { state: 'QUARANTINED', version: 2 } });
+    await expect(recordEvidenceScan(database, quarantineScan.command, quarantineScan.ids))
+      .resolves.toMatchObject({ replayed: true });
+
+    const submitterView = await listEvidenceAttachmentsForViewer(
+      database, 'SAFETY_CASE', caseId, fixture.athleteA,
+    );
+    expect(submitterView).toHaveLength(5);
+    expect(submitterView.find((item) => item.attachmentId === availableItem.attachmentId))
+      .toMatchObject({ state: 'AVAILABLE', canAccessOriginal: true });
+    expect(submitterView.find((item) => item.attachmentId === quarantinedItem.attachmentId))
+      .toMatchObject({ state: 'QUARANTINED', canAccessOriginal: false });
+    await expect(listEvidenceAttachmentsForViewer(
+      database, 'SAFETY_CASE', caseId, fixture.athleteB,
+    )).resolves.toEqual([]);
+    await expect(listEvidenceAttachmentsForViewer(
+      database, 'SAFETY_CASE', caseId, fixture.coach,
+    )).resolves.toEqual([]);
+    await expect(readEvidenceOriginalAccess(
+      database, 'SAFETY_CASE', caseId, quarantinedItem.attachmentId, fixture.athleteA,
+    )).rejects.toBeInstanceOf(EvidencePermissionDeniedError);
+    await expect(readEvidenceOriginalAccess(
+      database, 'SAFETY_CASE', caseId, availableItem.attachmentId, fixture.athleteB,
+    )).rejects.toBeInstanceOf(EvidencePermissionDeniedError);
+    await expect(readEvidenceOriginalAccess(
+      database, 'SAFETY_CASE', caseId, quarantinedItem.attachmentId, fixture.central,
+    )).resolves.toMatchObject({ objectReference: expect.stringContaining('private/object/') });
+
+    const facts = await sql<{
+      readonly attachment_count: string; readonly aggregate_bytes: string;
+      readonly audit_count: string; readonly event_count: string; readonly outbox_count: string;
+    }>`
+      select count(*)::text as attachment_count, sum(size_bytes)::text as aggregate_bytes,
+        (select count(*)::text from platform.audit_events
+          where aggregate_type = 'EvidenceAttachment') as audit_count,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'EvidenceAttachment') as event_count,
+        (select count(*)::text from platform.outbox_messages
+          where topic like 'governance.evidence.%') as outbox_count
+      from governance.evidence_attachments where scope_id = ${caseId}::uuid
+    `.execute(database);
+    expect(facts.rows[0]).toEqual({ attachment_count: '5',
+      aggregate_bytes: String(100 * 1024 * 1024), audit_count: '7',
+      event_count: '7', outbox_count: '7' });
+    const publicDocuments = await sql<{ readonly payload: unknown }>`
+      select payload from platform.domain_events where aggregate_type = 'EvidenceAttachment'
+      union all select payload from platform.outbox_messages
+      where topic like 'governance.evidence.%'
+    `.execute(database);
+    const serialized = JSON.stringify(publicDocuments.rows);
+    expect(serialized).not.toContain('private/object');
+    expect(serialized).not.toContain('private/key');
+    expect(serialized).not.toContain('private-receipt');
+    expect(serialized).not.toContain('private-scanner');
   });
 });

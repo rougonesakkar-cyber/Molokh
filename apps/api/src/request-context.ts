@@ -6,6 +6,9 @@ import {
   AccountLifecycleConflictError,
   AuthSessionConflictError,
   ChallengeConflictError,
+  EvidenceConflictError,
+  EvidencePermissionDeniedError,
+  EvidenceValidationError,
   CommunityConfigurationConflictError,
   CommunityLifecycleConflictError,
   IdempotencyKeyReusedError,
@@ -69,6 +72,20 @@ export interface HttpErrorMapping {
 }
 
 export function mapApiError(error: unknown, requestId: string): HttpErrorMapping {
+  if (error instanceof EvidenceValidationError) {
+    return { statusCode: 422, body: { code: error.code,
+      message: 'Evidence media does not satisfy the upload policy', requestId } };
+  }
+  if (error instanceof EvidencePermissionDeniedError) {
+    return { statusCode: 403, body: { code: error.code,
+      message: 'Evidence is outside your Appeal or SafetyCase scope', requestId } };
+  }
+  if (error instanceof EvidenceConflictError) {
+    return { statusCode: error.code === 'EVIDENCE_NOT_FOUND' ? 404 : 409,
+      body: { code: error.code,
+        message: error.code === 'EVIDENCE_LIMIT_EXCEEDED'
+          ? 'Evidence limit is exceeded' : 'Evidence action is no longer available', requestId } };
+  }
   if (error instanceof AuthSessionConflictError) {
     const unauthenticated = error.code === 'AUTH_SESSION_INVALID_STATE'
       || error.code === 'AUTH_REFRESH_EXPIRED';

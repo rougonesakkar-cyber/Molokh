@@ -47,6 +47,7 @@ import {
   listTechnicalCorrectionsForViewer,
   listAppealsForCentral,
   listEnforcementAppealsForCentral,
+  listEvidenceAttachmentsForViewer,
   listPendingVerifications,
   listModerationCasesForCentral,
   startSafetyCaseReview,
@@ -56,6 +57,7 @@ import {
   orderMissingResultRepeat,
   readAppealForViewer,
   readActiveEnforcementAppealForSubject,
+  readEvidenceOriginalAccess,
   revokeEnforcementAppeal,
   readMissingResultReview,
   readIntegrityCase,
@@ -131,6 +133,8 @@ import {
   withdrawOptionalChallenge,
   submitResultAppeal,
   submitEnforcementAppeal,
+  submitEvidenceAttachment,
+  prepareEvidenceUpload,
   submitMissingResultStatement,
   submitStatusQueueEntry,
   waiveResultAppeal,
@@ -186,6 +190,7 @@ import {
 
 import { buildApp } from './app.js';
 import { DisabledAvatarMediaAdapter } from './avatar-media.js';
+import { DisabledEvidenceMediaAdapter } from './evidence-media.js';
 import {
   AuthorizedAuthAdapter,
   CompositeAuthAdapter,
@@ -1255,6 +1260,17 @@ const app = await buildApp({
     submit: (command, ids) => submitEnforcementAppeal(database, command, ids),
     startReview: (command, ids) => startEnforcementAppealReview(database, command, ids),
     revoke: (command, ids) => revokeEnforcementAppeal(database, command, ids),
+  },
+  evidence: {
+    auth: localAuth,
+    media: new DisabledEvidenceMediaAdapter(),
+    prepare: (scopeType, scopeId, actorUserId) =>
+      prepareEvidenceUpload(database, scopeType, scopeId, actorUserId),
+    submit: (command, ids) => submitEvidenceAttachment(database, command, ids),
+    list: (scopeType, scopeId, viewerUserId) =>
+      listEvidenceAttachmentsForViewer(database, scopeType, scopeId, viewerUserId),
+    readOriginalAccess: (scopeType, scopeId, attachmentId, viewerUserId) =>
+      readEvidenceOriginalAccess(database, scopeType, scopeId, attachmentId, viewerUserId),
   },
   missingResult: {
     auth: localAuth,

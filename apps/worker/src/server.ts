@@ -35,6 +35,7 @@ import {
   expireGenesisChallenge,
   expireLike,
   finalizeResult,
+  recordEvidenceScan,
   expireGuestCoachGrant,
   expireSlot,
   expireStatusQueueReconfirmation,
@@ -1210,6 +1211,18 @@ const reconcileResolvedPlatformIncident = async (
 
 const taskList = createTaskList({
   onRuntimeProbe: (message) => logger.info({ message }, 'runtime probe'),
+  onEvidenceScan: async (payload) => {
+    await recordEvidenceScan(database, {
+      commandId: randomUUID(), commandType: 'RECORD_EVIDENCE_SCAN',
+      idempotencyKey: `evidence-scan:${payload.attachmentId}:v${payload.expectedVersion}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'EvidenceAttachment', aggregateId: payload.attachmentId,
+      expectedVersion: payload.expectedVersion, correlationId: randomUUID(),
+      causationId: null, requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+      payload: { attachmentId: payload.attachmentId, outcome: payload.outcome,
+        reasonCode: payload.reasonCode, scanProviderReference: payload.scanProviderReference },
+    }, { eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID() });
+  },
   onChatRetentionCleanup: async () => {
     for (const recordClass of ['PERSONAL_CHAT', 'SERVICE_CHAT'] as const) {
       const result = await cleanupExpiredChatPayloads(database, recordClass, {

@@ -70,11 +70,13 @@ import {
   registerEnforcementAppealRoutes,
   type EnforcementAppealRouteDependencies,
 } from './enforcement-appeal-routes.js';
+import { registerEvidenceRoutes, type EvidenceRouteDependencies } from './evidence-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
   readonly appeal?: AppealRouteDependencies;
   readonly enforcementAppeal?: EnforcementAppealRouteDependencies;
+  readonly evidence?: EvidenceRouteDependencies;
   readonly community?: CommunityRouteDependencies;
   readonly chat?: ChatRouteDependencies;
   readonly challenge?: ChallengeRouteDependencies;
@@ -106,6 +108,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     allowedOrigins = [],
     appeal,
     enforcementAppeal,
+    evidence,
     chat,
     challenge,
     community,
@@ -182,6 +185,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   if (youthConsent) await registerYouthConsentRoutes(app, youthConsent);
   if (appeal) await registerAppealRoutes(app, appeal);
   if (enforcementAppeal) await registerEnforcementAppealRoutes(app, enforcementAppeal);
+  if (evidence) await registerEvidenceRoutes(app, evidence);
   if (missingResult) await registerMissingResultRoutes(app, missingResult);
   if (platformIncident) await registerPlatformIncidentRoutes(app, platformIncident);
   if (accountLifecycle) await registerAccountLifecycleRoutes(app, accountLifecycle);

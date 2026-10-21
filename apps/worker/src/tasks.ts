@@ -8,12 +8,38 @@ export interface OutboxJobPayload {
   readonly payload: unknown;
 }
 
+export interface EvidenceScanJobPayload {
+  readonly attachmentId: string;
+  readonly expectedVersion: number;
+  readonly outcome: 'CLEAN' | 'MALWARE' | 'CONTENT_REJECTED' | 'TYPE_REJECTED' | 'UNCERTAIN';
+  readonly reasonCode: string | null;
+  readonly scanProviderReference: string;
+}
+
 export interface TaskDependencies {
   readonly onRuntimeProbe: (message: string) => void;
   readonly onOutboxEvent: (message: OutboxJobPayload) => Promise<void> | void;
   readonly onTimer: (payload: TimerCommandPayload) => Promise<void> | void;
   readonly onChatRetentionCleanup: () => Promise<void> | void;
   readonly onGuestCoachExpirySweep: () => Promise<void> | void;
+  readonly onEvidenceScan: (payload: EvidenceScanJobPayload) => Promise<void> | void;
+}
+
+function parseEvidenceScanJobPayload(payload: unknown): EvidenceScanJobPayload {
+  if (typeof payload !== 'object' || payload === null) throw new TypeError('Evidence scan payload must be an object');
+  const value = payload as Record<string, unknown>;
+  const outcomes = ['CLEAN', 'MALWARE', 'CONTENT_REJECTED', 'TYPE_REJECTED', 'UNCERTAIN'];
+  if (typeof value.attachmentId !== 'string' || value.attachmentId.length === 0
+    || !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1
+    || typeof value.outcome !== 'string' || !outcomes.includes(value.outcome)
+    || (value.reasonCode !== null && typeof value.reasonCode !== 'string')
+    || typeof value.scanProviderReference !== 'string' || value.scanProviderReference.length === 0) {
+    throw new TypeError('Evidence scan payload is invalid');
+  }
+  return { attachmentId: value.attachmentId, expectedVersion: Number(value.expectedVersion),
+    outcome: value.outcome as EvidenceScanJobPayload['outcome'],
+    reasonCode: value.reasonCode as string | null,
+    scanProviderReference: value.scanProviderReference };
 }
 
 function parseOutboxJobPayload(payload: unknown): OutboxJobPayload {
@@ -48,5 +74,7 @@ export function createTaskList(dependencies: TaskDependencies): TaskList {
     process_timer: async (payload) => dependencies.onTimer(parseTimerCommandPayload(payload)),
     cleanup_chat_payloads: async () => dependencies.onChatRetentionCleanup(),
     expire_guest_coach_grants: async () => dependencies.onGuestCoachExpirySweep(),
+    process_evidence_scan: async (payload) =>
+      dependencies.onEvidenceScan(parseEvidenceScanJobPayload(payload)),
   };
 }
