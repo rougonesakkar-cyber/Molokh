@@ -235,6 +235,7 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
         code: error.code,
         message: 'This Official Challenge action is no longer available',
         requestId,
+        ...(error.retryAt ? { retryAt: error.retryAt } : {}),
       },
     };
   }

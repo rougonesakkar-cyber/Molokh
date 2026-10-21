@@ -44,7 +44,7 @@ export type ChallengeConflictCode =
   | 'PAIR_CHALLENGE_EXISTS'
   | 'PAIR_BLOCKED'
   | 'PAIR_COOLDOWN_ACTIVE'
-  | 'OPTIONAL_INVITATION_LIMIT'
+  | 'OPTIONAL_INVITE_LIMIT'
   | 'OPTIONAL_PAIR_QUIET'
   | 'OFFICIAL_OBLIGATION_LIMIT'
   | 'YOUTH_OFFICIAL_DISABLED'
@@ -74,7 +74,10 @@ export type ChallengeConflictCode =
 export class ChallengeConflictError extends Error {
   readonly code: ChallengeConflictCode;
 
-  constructor(readonly reason: ChallengeConflictCode) {
+  constructor(
+    readonly reason: ChallengeConflictCode,
+    readonly retryAt: string | null = null,
+  ) {
     super(`Official Challenge action is not allowed: ${reason}`);
     this.name = 'ChallengeConflictError';
     this.code = reason;
@@ -411,6 +414,7 @@ export interface DirectOpenChallengeEligibility {
   readonly pairBlocked: boolean;
   readonly pairCooldownActive: boolean;
   readonly pairQuietActive: boolean;
+  readonly pairQuietUntil?: Date | null;
   readonly livePairChallengeExists: boolean;
   readonly outgoingAwaitingResponseCount: number;
   readonly initiatorStatus: 'ORDINARY' | 'CHAMPION' | 'CONTENDER';
@@ -435,12 +439,17 @@ export function assertDirectOpenChallengeCanBeCreated(
   if (!eligibility.activeMatch) throw new ChallengeConflictError('MATCH_REQUIRED');
   if (eligibility.pairBlocked) throw new ChallengeConflictError('PAIR_BLOCKED');
   if (eligibility.pairCooldownActive) throw new ChallengeConflictError('PAIR_COOLDOWN_ACTIVE');
-  if (eligibility.pairQuietActive) throw new ChallengeConflictError('OPTIONAL_PAIR_QUIET');
+  if (eligibility.pairQuietActive) {
+    throw new ChallengeConflictError(
+      'OPTIONAL_PAIR_QUIET',
+      eligibility.pairQuietUntil?.toISOString() ?? null,
+    );
+  }
   if (eligibility.livePairChallengeExists) {
     throw new ChallengeConflictError('PAIR_CHALLENGE_EXISTS');
   }
   if (eligibility.outgoingAwaitingResponseCount >= OPTIONAL_CHALLENGE_OUTGOING_LIMIT) {
-    throw new ChallengeConflictError('OPTIONAL_INVITATION_LIMIT');
+    throw new ChallengeConflictError('OPTIONAL_INVITE_LIMIT');
   }
   if (
     eligibility.recipientStatus !== 'ORDINARY'

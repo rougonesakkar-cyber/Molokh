@@ -19,6 +19,25 @@ export function genesisSchedulingExplanation(
     : null;
 }
 
+export function challengeCreateDenialCopy(
+  code: string | null,
+  retryAt: string | null,
+): string {
+  if (code === 'OPTIONAL_INVITE_LIMIT') {
+    return 'У вас уже три optional-приглашения без ответа. Новый вызов станет доступен после ответа, отзыва или истечения одного из них.';
+  }
+  if (code === 'OPTIONAL_PAIR_QUIET') {
+    const retryCopy = retryAt
+      ? ` Новый вызов доступен после ${new Date(retryAt).toLocaleString('ru-RU')}.`
+      : '';
+    return `После отказа действует нейтральная пауза пары 48 часов.${retryCopy}`;
+  }
+  if (code === 'YOUTH_OFFICIAL_DISABLED') {
+    return 'Youth Challenge пока выключен до утверждения пилотного процесса согласия.';
+  }
+  return 'Официальный вызов сейчас недоступен для этой пары.';
+}
+
 export function statusQueueActionCopy(input: {
   readonly phase: 'FOUNDING_OPEN' | 'FOUNDING_CHALLENGE' | 'RUNNING'
     | 'CONTENDER_VACANT_OPEN' | 'CONTENDER_GENESIS' | 'CLOSED';

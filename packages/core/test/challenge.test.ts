@@ -121,10 +121,16 @@ describe('Official Challenge policy', () => {
     })).toThrowError(new ChallengeConflictError('PAIR_COOLDOWN_ACTIVE'));
   });
 
-  it('caps unanswered optional invitations without treating them as accepted obligations', () => {
+  it('[AC-187] caps unanswered optional invitations and exposes pair-quiet retry time', () => {
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, outgoingAwaitingResponseCount: 3 })).toThrowError(
-      new ChallengeConflictError('OPTIONAL_INVITATION_LIMIT'),
+      new ChallengeConflictError('OPTIONAL_INVITE_LIMIT'),
     );
+    const retryAt = new Date('2026-09-10T10:00:00.000Z');
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      pairQuietActive: true,
+      pairQuietUntil: retryAt,
+    })).toThrowError(new ChallengeConflictError('OPTIONAL_PAIR_QUIET', retryAt.toISOString()));
   });
 
   it('accepts only a timely recipient response with required acknowledgement and no active obligation', () => {

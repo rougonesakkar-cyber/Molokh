@@ -79,7 +79,7 @@ const localizedApiErrors: Readonly<Record<string, string>> = {
   QUEUE_RECONFIRMATION_EXPIRED: '24-часовой срок подтверждения уже истёк.',
   QUEUE_RECONFIRMATION_NOT_DUE: 'Срок подтверждения ещё не истёк.',
   QUEUE_ENTRY_NOT_WAITING: 'Эта заявка уже активирована или закрыта.',
-  OPTIONAL_INVITATION_LIMIT: 'У вас уже три приглашения без ответа.',
+  OPTIONAL_INVITE_LIMIT: 'У вас уже три приглашения без ответа.',
   OPTIONAL_PAIR_QUIET: 'После отказа действует пауза 48 часов.',
   OFFICIAL_OBLIGATION_LIMIT: 'Один из участников уже связан другим принятым Challenge.',
   RULESET_ACK_REQUIRED: 'Подтвердите правила перед принятием Challenge.',
@@ -258,7 +258,12 @@ export async function apiErrorMessage(response: Response): Promise<string> {
   try {
     const error = (await response.json()) as ApiError;
     const localized = localizedApiErrors[error.code];
-    if (localized) return localized;
+    if (localized) {
+      if (error.code === 'OPTIONAL_PAIR_QUIET' && error.retryAt) {
+        return `${localized} Новый вызов доступен после ${new Date(error.retryAt).toLocaleString('ru-RU')}.`;
+      }
+      return localized;
+    }
     if (response.status === 401) return 'Сессия истекла. Войдите снова.';
     if (response.status === 403) return 'Это действие сейчас недоступно.';
     if (response.status === 404) return 'Нужные данные не найдены.';

@@ -1,4 +1,5 @@
 import {
+  ChallengeConflictError,
   CommunityConfigurationConflictError,
   IdempotencyKeyReusedError,
   SchedulingConflictError,
@@ -287,6 +288,17 @@ describe('runtime contract', () => {
     )).toMatchObject({
       statusCode: 422,
       body: { code: 'PAIR_COOLDOWN_OUT_OF_RANGE', requestId },
+    });
+    expect(mapApiError(
+      new ChallengeConflictError('OPTIONAL_PAIR_QUIET', '2026-10-24T10:00:00.000Z'),
+      requestId,
+    )).toMatchObject({
+      statusCode: 409,
+      body: {
+        code: 'OPTIONAL_PAIR_QUIET',
+        retryAt: '2026-10-24T10:00:00.000Z',
+        requestId,
+      },
     });
   });
 
@@ -3485,6 +3497,7 @@ describe('runtime contract', () => {
       mutualRescheduleRequest: null,
       canCreate: true,
       createDenialCode: null,
+      createRetryAt: null,
       policyVersion: 'challenge-mvp-v1',
     };
     const created = vi.fn().mockResolvedValue({

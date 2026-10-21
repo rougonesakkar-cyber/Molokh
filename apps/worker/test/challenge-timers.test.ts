@@ -23,7 +23,7 @@ describe('Challenge timer projection', () => {
     })).toThrow('does not match');
   });
 
-  it('[AC-172] routes both stale-safe optional response reminders', () => {
+  it('[AC-172][AC-187] routes both stale-safe optional response reminders', () => {
     const reminder12h = {
       ...timer,
       commandType: 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H',

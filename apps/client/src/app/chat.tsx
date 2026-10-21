@@ -38,6 +38,7 @@ import {
   SAFETY_CANCEL_CONFIRMATION_COPY,
 } from '../lib/chat-report-presentation';
 import {
+  challengeCreateDenialCopy,
   challengeStakeLabel,
   genesisSchedulingExplanation,
 } from '../lib/challenge-presentation';
@@ -945,9 +946,10 @@ export default function ChatScreen() {
               ) : null}
               {!challengeLoading && !chatChallenge?.challenge && chatChallenge?.canCreate === false ? (
                 <Text style={styles.trainingTerms}>
-                  {chatChallenge.createDenialCode === 'YOUTH_OFFICIAL_DISABLED'
-                    ? 'Youth Challenge пока выключен до утверждения пилотного процесса согласия.'
-                    : 'Официальный вызов сейчас недоступен для этой пары.'}
+                  {challengeCreateDenialCopy(
+                    chatChallenge.createDenialCode,
+                    chatChallenge.createRetryAt,
+                  )}
                 </Text>
               ) : null}
               {chatChallenge?.challenge ? (
@@ -1269,7 +1271,10 @@ export default function ChatScreen() {
               ) : null}
               {!challengeLoading && !chatChallenge?.challenge && chatChallenge && !chatChallenge.canCreate ? (
                 <Text style={styles.challengeUnavailable}>
-                  Официальный вызов сейчас недоступен. Обычная совместная тренировка остаётся доступной.
+                  {challengeCreateDenialCopy(
+                    chatChallenge.createDenialCode,
+                    chatChallenge.createRetryAt,
+                  )} Обычная совместная тренировка остаётся доступной.
                 </Text>
               ) : null}
             </View>

@@ -181,6 +181,7 @@ export interface ChatChallengeProjection {
   readonly mutualRescheduleRequest: MutualChallengeRescheduleRequestProjection | null;
   readonly canCreate: boolean;
   readonly createDenialCode: ChallengeConflictCode | null;
+  readonly createRetryAt: string | null;
   readonly policyVersion: typeof CHALLENGE_POLICY_VERSION;
 }
 
@@ -294,6 +295,7 @@ interface CreationContext {
   readonly pairBlocked: boolean;
   readonly pairCooldownActive: boolean;
   readonly pairQuietActive: boolean;
+  readonly pairQuietUntil: Date | null;
   readonly livePairChallengeExists: boolean;
 }
 
@@ -350,6 +352,17 @@ async function lockSocialPair(
 ): Promise<void> {
   await sql`
     select pg_advisory_xact_lock(hashtextextended(${`SocialPair:${pairLowId}:${pairHighId}`}, 0))
+  `.execute(transaction);
+}
+
+async function lockOptionalChallengeInitiator(
+  transaction: Transaction<Database>,
+  initiatorUserId: string,
+): Promise<void> {
+  await sql`
+    select pg_advisory_xact_lock(hashtextextended(
+      ${`OptionalChallengeInitiator:${initiatorUserId}`}, 0
+    ))
   `.execute(transaction);
 }
 
@@ -498,6 +511,7 @@ async function creationContext(
   database: Kysely<Database> | Transaction<Database>,
   sourceChatId: string,
   actorUserId: string,
+  occurredAt?: Date,
 ): Promise<CreationContext> {
   const match = await matchContext(database, sourceChatId, actorUserId);
   const recipientUserId = otherParticipant(match, actorUserId);
@@ -510,11 +524,14 @@ async function creationContext(
       readonly pair_blocked: boolean;
       readonly pair_cooldown_active: boolean;
       readonly pair_quiet_active: boolean;
+      readonly pair_quiet_until: Date | null;
       readonly live_pair_challenge_exists: boolean;
     }>`
       select
         (select count(*)::text from competition.challenges
-          where initiator_user_id = ${actorUserId}::uuid and state = 'AWAITING_RESPONSE') as outgoing_count,
+          where initiator_user_id = ${actorUserId}::uuid
+            and response_policy = 'OPTIONAL'
+            and state = 'AWAITING_RESPONSE') as outgoing_count,
         exists (select 1 from social.blocks
           where state = 'ACTIVE' and (
             (blocker_user_id = ${match.pair_low_id}::uuid and blocked_user_id = ${match.pair_high_id}::uuid)
@@ -527,7 +544,13 @@ async function creationContext(
         exists (select 1 from competition.optional_pair_quiet_periods
           where competition_id = ${competition.competition_id}::uuid
             and pair_low_id = ${match.pair_low_id}::uuid and pair_high_id = ${match.pair_high_id}::uuid
-            and ends_at > clock_timestamp()) as pair_quiet_active,
+            and ends_at > coalesce(${occurredAt?.toISOString() ?? null}::timestamptz,
+              clock_timestamp())) as pair_quiet_active,
+        (select max(ends_at) from competition.optional_pair_quiet_periods
+          where competition_id = ${competition.competition_id}::uuid
+            and pair_low_id = ${match.pair_low_id}::uuid and pair_high_id = ${match.pair_high_id}::uuid
+            and ends_at > coalesce(${occurredAt?.toISOString() ?? null}::timestamptz,
+              clock_timestamp())) as pair_quiet_until,
         exists (select 1 from competition.challenges
           where competition_id = ${competition.competition_id}::uuid
             and pair_low_id = ${match.pair_low_id}::uuid and pair_high_id = ${match.pair_high_id}::uuid
@@ -546,6 +569,7 @@ async function creationContext(
     pairBlocked: count.pair_blocked,
     pairCooldownActive: count.pair_cooldown_active,
     pairQuietActive: count.pair_quiet_active,
+    pairQuietUntil: count.pair_quiet_until,
     livePairChallengeExists: count.live_pair_challenge_exists,
   };
 }
@@ -565,6 +589,7 @@ function assertCreationContext(context: CreationContext): void {
     pairBlocked: context.pairBlocked,
     pairCooldownActive: context.pairCooldownActive,
     pairQuietActive: context.pairQuietActive,
+    pairQuietUntil: context.pairQuietUntil,
     livePairChallengeExists: context.livePairChallengeExists,
     outgoingAwaitingResponseCount: context.outgoingAwaitingResponseCount,
     initiatorStatus: participantStatus(context.competition, context.initiator.user_id),
@@ -772,6 +797,7 @@ export async function readChatChallenge(
     ? await currentMutualRescheduleRequest(database, latest.challengeId, latest.version)
     : null;
   let createDenialCode: ChallengeConflictCode | null = null;
+  let createRetryAt: string | null = null;
   if (access.scope === 'CHALLENGE_SERVICE') {
     createDenialCode = 'PAIR_CHALLENGE_EXISTS';
   } else {
@@ -782,6 +808,7 @@ export async function readChatChallenge(
     } catch (error) {
       if (!(error instanceof ChallengeConflictError)) throw error;
       createDenialCode = error.code;
+      createRetryAt = error.retryAt;
     }
   }
   return {
@@ -791,6 +818,7 @@ export async function readChatChallenge(
       : null,
     canCreate: createDenialCode === null,
     createDenialCode,
+    createRetryAt,
     policyVersion: CHALLENGE_POLICY_VERSION,
   };
 }
@@ -809,8 +837,14 @@ export async function createDirectOpenChallenge(
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const preliminaryMatch = await matchContext(transaction, command.payload.sourceChatId, command.actor.id!);
+      await lockOptionalChallengeInitiator(transaction, command.actor.id!);
       await lockSocialPair(transaction, preliminaryMatch.pair_low_id, preliminaryMatch.pair_high_id);
-      const creation = await creationContext(transaction, command.payload.sourceChatId, command.actor.id!);
+      const creation = await creationContext(
+        transaction,
+        command.payload.sourceChatId,
+        command.actor.id!,
+        context.occurredAt,
+      );
       assertCreationContext(creation);
       await assertCreationYouthPolicy(transaction, creation);
       const responseDeadline = optionalChallengeResponseDeadline(context.occurredAt);

@@ -22993,4 +22993,225 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(serialized).not.toContain('private-receipt');
     expect(serialized).not.toContain('private-scanner');
   });
+
+  it('[AC-187] serializes the optional invite limit and preserves the 48-hour pair quiet', async () => {
+    const base = 280000;
+    const initiator = testId(base);
+    const recipients = Array.from({ length: 5 }, (_, index) => testId(base + index + 1));
+    const central = testId(base + 10);
+    const venue = testId(base + 11);
+    const community = testId(base + 12);
+    const competition = testId(base + 13);
+    const sourceChats = recipients.map((_, index) => testId(base + 20 + index));
+    const matches = recipients.map((_, index) => testId(base + 30 + index));
+    const occurredAt = new Date('2026-10-22T10:00:00.000Z');
+
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${initiator}::uuid, '+79992800000', ${occurredAt.toISOString()}::timestamptz,
+          '1995-01-01', 'ADULT', 'Optional Initiator', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${recipients[0]}::uuid, '+79992800001', ${occurredAt.toISOString()}::timestamptz,
+          '1995-01-01', 'ADULT', 'Optional Recipient 1', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${recipients[1]}::uuid, '+79992800002', ${occurredAt.toISOString()}::timestamptz,
+          '1995-01-01', 'ADULT', 'Optional Recipient 2', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${recipients[2]}::uuid, '+79992800003', ${occurredAt.toISOString()}::timestamptz,
+          '1995-01-01', 'ADULT', 'Optional Recipient 3', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${recipients[3]}::uuid, '+79992800004', ${occurredAt.toISOString()}::timestamptz,
+          '1995-01-01', 'ADULT', 'Optional Recipient 4', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${recipients[4]}::uuid, '+79992800005', ${occurredAt.toISOString()}::timestamptz,
+          '1995-01-01', 'ADULT', 'Optional Recipient 5', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${central}::uuid, '+79992800010', ${occurredAt.toISOString()}::timestamptz,
+          '1985-01-01', 'ADULT', 'Optional Central', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz)
+    `.execute(database);
+    for (const [index, userId] of [initiator, ...recipients].entries()) {
+      await sql`
+        insert into identity.account_verifications (
+          verification_id, user_id, state, method, moderation_checklist_version,
+          is_current, verified_at, decided_by, decision_reason, version
+        ) values (
+          ${testId(base + 40 + index)}::uuid, ${userId}::uuid, 'VERIFIED',
+          'CENTRAL_MODERATION', 'identity-mvp-v1', true,
+          ${occurredAt.toISOString()}::timestamptz, ${central}::uuid, 'TEST_APPROVED', 1
+        )
+      `.execute(database);
+    }
+    await ensureLocalPilotCommunity(database, {
+      venueId: venue, venueConfigurationId: testId(base + 50), communityId: community,
+      communityConfigurationId: testId(base + 51), membershipId: testId(base + 52),
+      centralGrantId: testId(base + 53), athleteUserId: initiator,
+      centralActorId: central, legalName: 'Optional Throttle Pilot Gym LLC',
+      venueDisplayName: 'Optional Throttle Pilot Gym',
+      communityName: 'Optional Throttle Community', address: 'Москва',
+      cityCode: 'MOSCOW', timezone: 'Europe/Moscow', contactPayload: {},
+      occurredAt: occurredAt.toISOString(),
+    });
+    await ensureLocalPilotCompetition(database, {
+      competitionId: competition, communityId: community, centralActorId: central,
+      occurredAt: occurredAt.toISOString(), memberships: [
+        { membershipId: testId(base + 52), userId: initiator },
+        ...recipients.map((userId, index) => ({
+          membershipId: testId(base + 54 + index), userId,
+        })),
+      ],
+    });
+    await database.transaction().execute(async (transaction) => {
+      for (const [index, recipient] of recipients.entries()) {
+        await sql`
+          insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
+          values (${sourceChats[index]}::uuid, 'PERSONAL_MATCH', 'OPEN', 1,
+            ${occurredAt.toISOString()}::timestamptz,
+            ${occurredAt.toISOString()}::timestamptz)
+        `.execute(transaction);
+        await sql`
+          insert into social.chat_participants (chat_id, user_id, joined_at) values
+            (${sourceChats[index]}::uuid, ${initiator}::uuid,
+              ${occurredAt.toISOString()}::timestamptz),
+            (${sourceChats[index]}::uuid, ${recipient}::uuid,
+              ${occurredAt.toISOString()}::timestamptz)
+        `.execute(transaction);
+        await sql`
+          insert into social.matches (
+            match_id, pair_low_id, pair_high_id, state, chat_id, last_activity_at,
+            version, created_at, updated_at
+          ) values (
+            ${matches[index]}::uuid, least(${initiator}::uuid, ${recipient}::uuid),
+            greatest(${initiator}::uuid, ${recipient}::uuid), 'ACTIVE',
+            ${sourceChats[index]}::uuid, ${occurredAt.toISOString()}::timestamptz, 1,
+            ${occurredAt.toISOString()}::timestamptz,
+            ${occurredAt.toISOString()}::timestamptz
+          )
+        `.execute(transaction);
+      }
+    });
+
+    const createSpec = (recipientIndex: number, offset: number,
+      idempotencyKey: string, at: Date) => {
+      const challengeId = testId(base + 100 + offset);
+      const command = {
+        commandId: testId(base + 101 + offset),
+        commandType: 'CREATE_DIRECT_OPEN_CHALLENGE', idempotencyKey,
+        actor: { type: 'USER' as const, id: initiator,
+          roles: ['ATHLETE'] as const, scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 0,
+        correlationId: testId(base + 102 + offset), causationId: null,
+        requestId: testId(base + 103 + offset), source: 'api' as const,
+        payloadVersion: 1, payload: { sourceChatId: sourceChats[recipientIndex]! },
+      };
+      const ids = {
+        eventId: testId(base + 104 + offset), auditId: testId(base + 105 + offset),
+        outboxMessageId: testId(base + 106 + offset),
+        notificationId: testId(base + 107 + offset),
+        notificationOutboxMessageId: testId(base + 108 + offset),
+        serviceChatId: testId(base + 109 + offset),
+        serviceChatEventId: testId(base + 110 + offset),
+        rulesetSnapshotId: testId(base + 111 + offset),
+        acknowledgmentId: testId(base + 112 + offset),
+        reminderTimerOutboxMessageIds: [testId(base + 113 + offset),
+          testId(base + 114 + offset)] as const,
+      };
+      return { challengeId, command, ids,
+        run: () => createDirectOpenChallenge(database, command, ids, () => at) };
+    };
+    const decline = async (challengeId: string, actorUserId: string,
+      offset: number, at: Date) => declineOptionalChallenge(database, {
+      commandId: testId(base + 500 + offset), commandType: 'DECLINE_OPTIONAL_CHALLENGE',
+      idempotencyKey: `ac187-decline-${offset}`,
+      actor: { type: 'USER', id: actorUserId, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'Challenge', aggregateId: challengeId, expectedVersion: 1,
+      correlationId: testId(base + 501 + offset), causationId: null,
+      requestId: testId(base + 502 + offset), source: 'api', payloadVersion: 1,
+      payload: { challengeId },
+    } satisfies CommandEnvelope<RespondToChallengePayload>, {
+      eventId: testId(base + 503 + offset), auditId: testId(base + 504 + offset),
+      outboxMessageId: testId(base + 505 + offset),
+      notificationId: testId(base + 506 + offset),
+      notificationOutboxMessageId: testId(base + 507 + offset),
+      quietPeriodId: testId(base + 508 + offset),
+    }, () => at);
+
+    const firstThree = [
+      createSpec(0, 0, 'ac187-create-1', occurredAt),
+      createSpec(1, 20, 'ac187-create-2', occurredAt),
+      createSpec(2, 40, 'ac187-create-3', occurredAt),
+    ];
+    for (const spec of firstThree) {
+      await expect(spec.run()).resolves.toMatchObject({
+        response: { state: 'AWAITING_RESPONSE', responsePolicy: 'OPTIONAL' },
+      });
+    }
+    const fourth = createSpec(3, 60, 'ac187-create-4-blocked', occurredAt);
+    await expect(fourth.run()).rejects.toMatchObject({ code: 'OPTIONAL_INVITE_LIMIT' });
+
+    await decline(firstThree[0]!.challengeId, recipients[0]!, 0, occurredAt);
+    const pairRetry24h = createSpec(0, 80, 'ac187-pair-retry-24h',
+      new Date(occurredAt.getTime() + 24 * 60 * 60 * 1_000));
+    await expect(pairRetry24h.run()).rejects.toMatchObject({
+      code: 'OPTIONAL_PAIR_QUIET', retryAt: '2026-10-24T10:00:00.000Z',
+    });
+    await expect(readChatChallenge(database, sourceChats[0]!, initiator)).resolves.toMatchObject({
+      canCreate: false, createDenialCode: 'OPTIONAL_PAIR_QUIET',
+      createRetryAt: '2026-10-24T10:00:00.000Z',
+    });
+
+    const competing = [
+      createSpec(3, 100, 'ac187-competing-4', new Date('2026-10-23T10:01:00.000Z')),
+      createSpec(4, 120, 'ac187-competing-5', new Date('2026-10-23T10:01:00.000Z')),
+    ];
+    const competingResults = await Promise.allSettled(competing.map((spec) => spec.run()));
+    const winningIndex = competingResults.findIndex((result) => result.status === 'fulfilled');
+    const losingIndex = competingResults.findIndex((result) => result.status === 'rejected');
+    expect(winningIndex).toBeGreaterThanOrEqual(0);
+    expect(losingIndex).toBeGreaterThanOrEqual(0);
+    expect(competingResults[losingIndex]).toMatchObject({
+      status: 'rejected', reason: { code: 'OPTIONAL_INVITE_LIMIT' },
+    });
+    const winner = competing[winningIndex]!;
+    const loser = competing[losingIndex]!;
+    await expect(winner.run()).resolves.toMatchObject({ replayed: true });
+
+    await decline(firstThree[1]!.challengeId, recipients[1]!, 20,
+      new Date('2026-10-23T11:00:00.000Z'));
+    const pairRetry48h = createSpec(0, 140, 'ac187-pair-retry-48h',
+      new Date('2026-10-24T10:00:00.000Z'));
+    await expect(pairRetry48h.run()).resolves.toMatchObject({
+      response: { state: 'AWAITING_RESPONSE', responsePolicy: 'OPTIONAL' },
+    });
+
+    const facts = await sql<{
+      readonly unanswered_optional: string; readonly results: string;
+      readonly cooldowns: string; readonly obligations: string;
+      readonly queue_entries: string; readonly losing_events: string;
+      readonly losing_audits: string; readonly losing_outbox: string;
+    }>`select
+        (select count(*)::text from competition.challenges
+          where initiator_user_id = ${initiator}::uuid
+            and response_policy = 'OPTIONAL' and state = 'AWAITING_RESPONSE')
+          as unanswered_optional,
+        (select count(*)::text from competition.results) as results,
+        (select count(*)::text from competition.pair_cooldowns) as cooldowns,
+        (select count(*)::text from competition.challenge_participant_obligations)
+          as obligations,
+        (select count(*)::text from competition.challenge_queue_entries) as queue_entries,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${loser.ids.eventId}::uuid) as losing_events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${loser.ids.auditId}::uuid) as losing_audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${loser.ids.outboxMessageId}::uuid) as losing_outbox
+    `.execute(database);
+    expect(facts.rows[0]).toEqual({
+      unanswered_optional: '3', results: '0', cooldowns: '0', obligations: '0',
+      queue_entries: '0', losing_events: '0', losing_audits: '0', losing_outbox: '0',
+    });
+  });
 });
