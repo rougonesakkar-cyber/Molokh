@@ -3729,9 +3729,15 @@ export default function IdentityScreen() {
                   <EnforcementAppealSection
                     context={enforcementAppealContext}
                     token={activeTestToken}
-                    onUpdated={(appeal) => setEnforcementAppealContext((current) => current
-                      ? { ...current, appeal }
-                      : current)}
+                    onUpdated={(appeal) => {
+                      setEnforcementAppealContext((current) => current
+                        ? { ...current, appeal, enforcementState: appeal.enforcementState,
+                            enforcementVersion: appeal.enforcementVersion,
+                            accountState: appeal.accountState,
+                            restrictionRemainsActive: appeal.restrictionRemainsActive }
+                        : current);
+                      if (appeal.state === 'DECIDED_REVOKED') void loadIdentity();
+                    }}
                   />
                 ) : null}
 
@@ -4557,9 +4563,10 @@ export default function IdentityScreen() {
                   <CentralEnforcementAppealQueue
                     appeals={enforcementAppeals}
                     token={activeTestToken}
-                    onUpdated={(updated) => setEnforcementAppeals((current) => current.map(
-                      (item) => item.appealId === updated.appealId ? updated : item,
-                    ))}
+                    onUpdated={(updated) => setEnforcementAppeals((current) =>
+                      updated.state === 'DECIDED_REVOKED'
+                        ? current.filter((item) => item.appealId !== updated.appealId)
+                        : current.map((item) => item.appealId === updated.appealId ? updated : item))}
                   />
                 ) : null}
 

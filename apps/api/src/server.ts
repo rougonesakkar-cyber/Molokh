@@ -56,6 +56,7 @@ import {
   orderMissingResultRepeat,
   readAppealForViewer,
   readActiveEnforcementAppealForSubject,
+  revokeEnforcementAppeal,
   readMissingResultReview,
   readIntegrityCase,
   updateGroupOffering,
@@ -1253,6 +1254,7 @@ const app = await buildApp({
       listEnforcementAppealsForCentral(database, centralUserId),
     submit: (command, ids) => submitEnforcementAppeal(database, command, ids),
     startReview: (command, ids) => startEnforcementAppealReview(database, command, ids),
+    revoke: (command, ids) => revokeEnforcementAppeal(database, command, ids),
   },
   missingResult: {
     auth: localAuth,

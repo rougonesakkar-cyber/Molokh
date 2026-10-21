@@ -43,6 +43,7 @@ export type SchedulingConflictCode =
   | 'ENFORCEMENT_APPEAL_ALREADY_EXISTS'
   | 'ENFORCEMENT_APPEAL_NOT_SUBMITTED'
   | 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT'
+  | 'ENFORCEMENT_APPEAL_CANNOT_BE_REVOKED'
   | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
@@ -1088,6 +1089,43 @@ export function assertEnforcementAppealReviewCanStart(input: {
   ) {
     throw new SchedulingConflictError('ENFORCEMENT_APPEAL_REVIEWER_CONFLICT');
   }
+}
+
+export function normalizeEnforcementAppealRevocation(input: {
+  readonly state: string;
+  readonly enforcementType: string;
+  readonly enforcementState: string;
+  readonly accountState: string;
+  readonly actorIsCentral: boolean;
+  readonly reviewerUserId: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly subjectUserId: string;
+  readonly originalDecisionMakerUserId: string;
+  readonly reporterUserId: string;
+  readonly reason: string;
+}): string {
+  if (!input.actorIsCentral) throw new SchedulingPermissionDeniedError();
+  if (
+    input.state !== 'UNDER_REVIEW'
+    || input.enforcementType !== 'ACCOUNT_RESTRICTION'
+    || input.enforcementState !== 'ACTIVE'
+    || input.accountState !== 'RESTRICTED'
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_CANNOT_BE_REVOKED');
+  }
+  if (
+    input.assignedReviewerUserId !== input.reviewerUserId
+    || input.reviewerUserId === input.subjectUserId
+    || input.reviewerUserId === input.originalDecisionMakerUserId
+    || input.reviewerUserId === input.reporterUserId
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_REVIEWER_CONFLICT');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 2000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return reason;
 }
 
 export function safetyRestrictionSubjectStatus(input: {

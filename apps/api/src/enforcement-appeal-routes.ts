@@ -3,11 +3,13 @@ import {
   EnforcementAppealCommandResponseSchema,
   EnforcementAppealListResponseSchema,
   MyEnforcementAppealResponseSchema,
+  RevokeEnforcementAppealBodySchema,
   StartEnforcementAppealReviewBodySchema,
   SubmitEnforcementAppealBodySchema,
   type EnforcementAppealCommandResponse,
   type EnforcementAppealListResponse,
   type MyEnforcementAppealResponse,
+  type RevokeEnforcementAppealBody,
   type SubmitEnforcementAppealBody,
 } from '@molokh/contracts';
 import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core';
@@ -16,7 +18,9 @@ import type {
   EnforcementAppealEffectIds,
   EnforcementAppealProjection,
   EnforcementAppealReviewEffectIds,
+  EnforcementAppealRevocationEffectIds,
   ExecutedCommand,
+  RevokeEnforcementAppealPayload,
   StartEnforcementAppealReviewPayload,
   SubmitEnforcementAppealPayload,
 } from '@molokh/db';
@@ -46,6 +50,10 @@ export interface EnforcementAppealRouteDependencies {
   readonly startReview: (
     command: CommandEnvelope<StartEnforcementAppealReviewPayload>,
     ids: EnforcementAppealReviewEffectIds,
+  ) => Promise<ExecutedCommand<EnforcementAppealProjection>>;
+  readonly revoke: (
+    command: CommandEnvelope<RevokeEnforcementAppealPayload>,
+    ids: EnforcementAppealRevocationEffectIds,
   ) => Promise<ExecutedCommand<EnforcementAppealProjection>>;
 }
 
@@ -84,6 +92,15 @@ function submitIds(appealId: string): EnforcementAppealEffectIds {
 function reviewIds(): EnforcementAppealReviewEffectIds {
   return { eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(), notificationId: newUuidV7() };
+}
+
+function revocationIds(): EnforcementAppealRevocationEffectIds {
+  return {
+    eventId: newUuidV7(), enforcementEventId: newUuidV7(), holdEventId: newUuidV7(),
+    auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    enforcementOutboxMessageId: newUuidV7(), holdOutboxMessageId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(), notificationId: newUuidV7(),
+  };
 }
 
 export async function registerEnforcementAppealRoutes(
@@ -158,6 +175,30 @@ export async function registerEnforcementAppealRoutes(
         requestId: context.requestId, source: 'admin', payloadVersion: 1,
         payload: { appealId: request.params.appealId },
       }, reviewIds());
+      await reply.status(executed.responseStatus).send(response(executed, context.requestId));
+    });
+
+  app.post<{ Headers: Headers; Params: AppealParams; Body: RevokeEnforcementAppealBody }>(
+    '/api/v1/central/enforcement-appeals/:appealId/revoke', {
+      schema: { operationId: 'revokeEnforcementAppeal',
+        params: Type.Object({ appealId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+        body: RevokeEnforcementAppealBodySchema,
+        response: { 200: EnforcementAppealCommandResponseSchema, 400: ApiErrorSchema,
+          401: ApiErrorSchema, 403: ApiErrorSchema, 409: ApiErrorSchema, 422: ApiErrorSchema } },
+    }, async (request, reply) => {
+      const authenticated = await dependencies.centralAuth.authenticate(request.headers.authorization);
+      if (!authenticated) { await reply.status(401).send(unauthorized(request)); return; }
+      const context = requestContext(request);
+      const executed = await dependencies.revoke({
+        commandId: newUuidV7(), commandType: 'REVOKE_ENFORCEMENT_APPEAL',
+        idempotencyKey: operationKey(request.headers['idempotency-key']),
+        actor: { type: 'USER', id: authenticated.userId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'EnforcementAppeal', aggregateId: request.params.appealId,
+        expectedVersion: version(request.headers['if-match'], 1),
+        correlationId: context.correlationId, causationId: context.causationId,
+        requestId: context.requestId, source: 'admin', payloadVersion: 1,
+        payload: { appealId: request.params.appealId, reason: request.body.reason },
+      }, revocationIds());
       await reply.status(executed.responseStatus).send(response(executed, context.requestId));
     });
 }

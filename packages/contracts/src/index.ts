@@ -1873,7 +1873,7 @@ export const IntegrityCaseCommandResponseSchema = Type.Object({
 export type IntegrityCaseCommandResponse = Static<typeof IntegrityCaseCommandResponseSchema>;
 
 export const EnforcementAppealStateSchema = Type.Union([
-  Type.Literal('SUBMITTED'), Type.Literal('UNDER_REVIEW'),
+  Type.Literal('SUBMITTED'), Type.Literal('UNDER_REVIEW'), Type.Literal('DECIDED_REVOKED'),
 ]);
 export const EnforcementAppealProjectionSchema = Type.Object({
   appealId: Type.String({ format: 'uuid' }),
@@ -1885,18 +1885,25 @@ export const EnforcementAppealProjectionSchema = Type.Object({
   appealDeadlineAt: Type.String({ format: 'date-time' }),
   assignedReviewerUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
   reviewStartedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
-  restrictionRemainsActive: Type.Literal(true),
+  decisionReason: Type.Union([Type.String({ minLength: 10, maxLength: 2000 }), Type.Null()]),
+  decidedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  enforcementState: Type.Union([Type.Literal('ACTIVE'), Type.Literal('REVOKED')]),
+  enforcementVersion: Type.Integer({ minimum: 1 }),
+  accountState: Type.Union([Type.Literal('ACTIVE'), Type.Literal('RESTRICTED'), Type.Literal('CLOSED')]),
+  restrictionRemainsActive: Type.Boolean(),
   viewerCanStartReview: Type.Boolean(),
+  viewerCanDecide: Type.Boolean(),
   version: Type.Integer({ minimum: 1 }),
 }, { $id: 'EnforcementAppealProjection', additionalProperties: false });
 export type EnforcementAppealContract = Static<typeof EnforcementAppealProjectionSchema>;
 
 export const ActiveEnforcementAppealContextSchema = Type.Object({
   enforcementId: Type.String({ format: 'uuid' }),
-  enforcementState: Type.Literal('ACTIVE'),
+  enforcementState: Type.Union([Type.Literal('ACTIVE'), Type.Literal('REVOKED')]),
   appealDeadlineAt: Type.String({ format: 'date-time' }),
   enforcementVersion: Type.Integer({ minimum: 1 }),
-  restrictionRemainsActive: Type.Literal(true),
+  accountState: Type.Union([Type.Literal('ACTIVE'), Type.Literal('RESTRICTED'), Type.Literal('CLOSED')]),
+  restrictionRemainsActive: Type.Boolean(),
   appeal: Type.Union([EnforcementAppealProjectionSchema, Type.Null()]),
 }, { $id: 'ActiveEnforcementAppealContext', additionalProperties: false });
 
@@ -1929,6 +1936,11 @@ export type SubmitEnforcementAppealBody = Static<typeof SubmitEnforcementAppealB
 export const StartEnforcementAppealReviewBodySchema = Type.Object(
   {}, { $id: 'StartEnforcementAppealReviewBody', additionalProperties: false },
 );
+
+export const RevokeEnforcementAppealBodySchema = Type.Object({
+  reason: Type.String({ minLength: 10, maxLength: 2000 }),
+}, { $id: 'RevokeEnforcementAppealBody', additionalProperties: false });
+export type RevokeEnforcementAppealBody = Static<typeof RevokeEnforcementAppealBodySchema>;
 
 export const TechnicalCorrectionCategorySchema = Type.Union([
   Type.Literal('OUTCOME_OR_WINNER_ERROR'), Type.Literal('LATE_RESULT_CORRECTION'),

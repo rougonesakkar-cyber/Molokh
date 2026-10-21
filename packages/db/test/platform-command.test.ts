@@ -166,6 +166,7 @@ import {
   startSafetyCaseReview,
   startAppealReview,
   startEnforcementAppealReview,
+  revokeEnforcementAppeal,
   submitEnforcementAppeal,
   readActiveEnforcementAppealForSubject,
   unblockUser,
@@ -6647,7 +6648,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('[AC-129] submits and independently reviews an Enforcement Appeal without suspending restriction', async () => {
+  it('[AC-129][AC-152] reviews and revokes an Enforcement Appeal without rewriting history', async () => {
     const base = 237000;
     const fixture = await seedConfirmedTrainingForConversion(base);
     await convertTrainingFixtureToOfficial(base + 100, fixture, 'ac-129-conversion');
@@ -6657,6 +6658,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const decisionId = testId(base + 303);
     const enforcementId = testId(base + 304);
     const statusHoldId = testId(base + 305);
+    const safetyHoldId = testId(base + 306);
     const appliedAt = '2026-10-01T10:00:00.000Z';
     await sql`
       insert into identity.users (
@@ -6730,6 +6732,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
       ) values (
         ${statusHoldId}::uuid, 'COMPETITION', ${fixture.competition}::uuid,
         'STATUS_REVIEW', 'ACTIVE', 'CONTINUE', ${caseId}::uuid,
+        ${fixture.central}::uuid, 'USER', ${appliedAt}::timestamptz, 1,
+        ${appliedAt}::timestamptz, ${appliedAt}::timestamptz
+      ), (
+        ${safetyHoldId}::uuid, 'CHALLENGE', ${source.rows[0]!.challenge_id}::uuid,
+        'SAFETY', 'ACTIVE', 'PAUSE', ${caseId}::uuid,
         ${fixture.central}::uuid, 'USER', ${appliedAt}::timestamptz, 1,
         ${appliedAt}::timestamptz, ${appliedAt}::timestamptz
       )
@@ -6820,6 +6827,119 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(publicJson).not.toContain('Прошу независимо');
     expect(publicJson).not.toContain('VIOLENCE');
     expect(publicJson).not.toContain(fixture.coach);
+
+    const before = await sql<{
+      readonly competition_state: string; readonly status_version: string;
+      readonly champion_user_id: string | null; readonly contender_user_id: string | null;
+      readonly challenge_state: string; readonly booking_state: string; readonly session_state: string;
+    }>`select competition.phase as competition_state,
+        competition.status_version::text as status_version,
+        competition.champion_user_id, competition.contender_user_id,
+        challenge.state as challenge_state, booking.state as booking_state,
+        session.state as session_state
+      from competition.competitions competition
+      join competition.challenges challenge on challenge.competition_id = competition.competition_id
+      join scheduling.bookings booking on booking.challenge_id = challenge.challenge_id
+      join scheduling.sessions session on session.booking_id = booking.booking_id
+      where competition.competition_id = ${fixture.competition}::uuid
+        and challenge.challenge_id = ${source.rows[0]!.challenge_id}::uuid`.execute(database);
+    const revokeIds = {
+      eventId: testId(base + 330), enforcementEventId: testId(base + 331),
+      holdEventId: testId(base + 332), auditId: testId(base + 333),
+      outboxMessageId: testId(base + 334), enforcementOutboxMessageId: testId(base + 335),
+      holdOutboxMessageId: testId(base + 336), notificationOutboxMessageId: testId(base + 337),
+      notificationId: testId(base + 338),
+    };
+    const revokeCommand = (actorId: string, commandId: string, key: string) => ({
+      commandId, commandType: 'REVOKE_ENFORCEMENT_APPEAL', idempotencyKey: key,
+      actor: { type: 'USER' as const, id: actorId,
+        roles: ['CENTRAL_ADMIN'] as const, scopeIds: [] as const },
+      aggregateType: 'EnforcementAppeal', aggregateId: appealId, expectedVersion: 2,
+      correlationId: testId(base + 339), causationId: reviewIds.eventId,
+      requestId: testId(base + 340), source: 'admin' as const, payloadVersion: 1,
+      payload: { appealId, reason: 'Ограничение отозвано после независимой проверки.' },
+    });
+    await expect(revokeEnforcementAppeal(database,
+      revokeCommand(fixture.central, testId(base + 341), 'ac-152-conflicted-reviewer'),
+      { ...revokeIds, eventId: testId(base + 342) }))
+      .rejects.toMatchObject({ reason: 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT' });
+    const revoked = await revokeEnforcementAppeal(database,
+      revokeCommand(reviewer, testId(base + 343), 'ac-152-revoke'), revokeIds,
+      () => new Date('2026-10-03T12:00:00.000Z'));
+    expect(revoked.response).toMatchObject({ state: 'DECIDED_REVOKED',
+      enforcementState: 'REVOKED', enforcementVersion: 2, accountState: 'ACTIVE',
+      restrictionRemainsActive: false, viewerCanDecide: false, version: 3 });
+    expect((await revokeEnforcementAppeal(database,
+      revokeCommand(reviewer, testId(base + 343), 'ac-152-revoke'), revokeIds,
+      () => new Date('2026-10-03T12:00:00.000Z'))).replayed).toBe(true);
+    await expect(revokeEnforcementAppeal(database,
+      revokeCommand(reviewer, testId(base + 344), 'ac-152-stale'),
+      { ...revokeIds, eventId: testId(base + 345) }))
+      .rejects.toMatchObject({ expectedVersion: 2, actualVersion: 3 });
+
+    const after = await sql<{
+      readonly account_state: string; readonly enforcement_state: string;
+      readonly enforcement_version: string; readonly appeal_state: string;
+      readonly appeal_version: string; readonly status_hold_state: string;
+      readonly safety_hold_state: string; readonly result_count: string;
+      readonly cooldown_count: string; readonly status_transition_count: string;
+      readonly source_case_id: string; readonly source_decision_id: string;
+      readonly category_code: string; readonly competition_state: string;
+      readonly status_version: string; readonly champion_user_id: string | null;
+      readonly contender_user_id: string | null; readonly challenge_state: string;
+      readonly booking_state: string; readonly session_state: string;
+    }>`select subject.account_state, enforcement.state as enforcement_state,
+        enforcement.version::text as enforcement_version, appeal.state as appeal_state,
+        appeal.version::text as appeal_version, status_hold.state as status_hold_state,
+        safety_hold.state as safety_hold_state,
+        (select count(*)::text from competition.results) as result_count,
+        (select count(*)::text from competition.pair_cooldowns) as cooldown_count,
+        (select count(*)::text from competition.status_transitions) as status_transition_count,
+        enforcement.source_case_id, enforcement.source_decision_id, enforcement.category_code,
+        competition.phase as competition_state, competition.status_version::text as status_version,
+        competition.champion_user_id, competition.contender_user_id,
+        challenge.state as challenge_state, booking.state as booking_state,
+        session.state as session_state
+      from governance.enforcements enforcement
+      join governance.enforcement_appeals appeal on appeal.enforcement_id = enforcement.enforcement_id
+      join identity.users subject on subject.user_id = enforcement.subject_user_id
+      join competition.process_holds status_hold on status_hold.hold_id = ${statusHoldId}::uuid
+      join competition.process_holds safety_hold on safety_hold.hold_id = ${safetyHoldId}::uuid
+      join competition.competitions competition on competition.competition_id = ${fixture.competition}::uuid
+      join competition.challenges challenge on challenge.challenge_id = ${source.rows[0]!.challenge_id}::uuid
+      join scheduling.bookings booking on booking.booking_id = ${fixture.booking}::uuid
+      join scheduling.sessions session on session.session_id = ${fixture.session}::uuid
+      where enforcement.enforcement_id = ${enforcementId}::uuid`.execute(database);
+    expect(after.rows[0]).toMatchObject({
+      account_state: 'ACTIVE', enforcement_state: 'REVOKED', enforcement_version: '2',
+      appeal_state: 'DECIDED_REVOKED', appeal_version: '3',
+      status_hold_state: 'RELEASED', safety_hold_state: 'ACTIVE', result_count: '0',
+      cooldown_count: '0', status_transition_count: '0',
+      source_case_id: caseId, source_decision_id: decisionId, category_code: 'VIOLENCE',
+      competition_state: before.rows[0]!.competition_state,
+      status_version: before.rows[0]!.status_version,
+      champion_user_id: before.rows[0]!.champion_user_id,
+      contender_user_id: before.rows[0]!.contender_user_id,
+      challenge_state: before.rows[0]!.challenge_state,
+      booking_state: before.rows[0]!.booking_state, session_state: before.rows[0]!.session_state,
+    });
+    expect(await listEnforcementAppealsForCentral(database, reviewer)).toEqual([]);
+    expect(await readActiveEnforcementAppealForSubject(database, fixture.athleteA))
+      .toMatchObject({ enforcementState: 'REVOKED', accountState: 'ACTIVE',
+        restrictionRemainsActive: false, appeal: { state: 'DECIDED_REVOKED' } });
+    const revokePayloads = await sql<{ readonly payload: unknown }>`
+      select payload from platform.domain_events where event_id in (
+        ${revokeIds.eventId}::uuid, ${revokeIds.enforcementEventId}::uuid,
+        ${revokeIds.holdEventId}::uuid
+      ) union all select payload from platform.outbox_messages where message_id in (
+        ${revokeIds.outboxMessageId}::uuid, ${revokeIds.enforcementOutboxMessageId}::uuid,
+        ${revokeIds.holdOutboxMessageId}::uuid, ${revokeIds.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    const revokePublicJson = JSON.stringify(revokePayloads.rows);
+    expect(revokePublicJson).not.toContain('Ограничение отозвано');
+    expect(revokePublicJson).not.toContain('VIOLENCE');
+    expect(revokePublicJson).not.toContain(fixture.coach);
   });
 
   it('[AC-130] prevents a Gym Admin subject from reviewing or deciding their own SafetyCase', async () => {

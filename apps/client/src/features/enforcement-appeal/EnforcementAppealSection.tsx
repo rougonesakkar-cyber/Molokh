@@ -23,7 +23,8 @@ export function EnforcementAppealSection(props: {
   const key = useRef<string | null>(null);
   const state = props.context.appeal?.state ?? 'NOT_SUBMITTED';
   const copy = enforcementAppealPresentation({
-    state, restrictionRemainsActive: true, viewerCanStartReview: false,
+    state, restrictionRemainsActive: props.context.restrictionRemainsActive,
+    viewerCanStartReview: false, viewerCanDecide: false,
   });
   const submit = async () => {
     if (statement.trim().length < 10 || acting || props.context.appeal) return;
@@ -70,12 +71,14 @@ export function CentralEnforcementAppealQueue(props: {
 }) {
   const [acting, setActing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [decisionReasons, setDecisionReasons] = useState<Record<string, string>>({});
   const keys = useRef(new Map<string, string>());
   const start = async (appeal: Appeal) => {
     setActing(appeal.appealId); setError(null);
-    const key = keys.current.get(appeal.appealId)
+    const keyId = `start:${appeal.appealId}`;
+    const key = keys.current.get(keyId)
       ?? `enforcement-appeal-review:${appeal.appealId}:${Date.now().toString(36)}`;
-    keys.current.set(appeal.appealId, key);
+    keys.current.set(keyId, key);
     try {
       const response = await fetch(
         `${apiUrl}/api/v1/central/enforcement-appeals/${appeal.appealId}/start-review`, {
@@ -89,13 +92,35 @@ export function CentralEnforcementAppealQueue(props: {
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Не удалось начать review.'); }
     finally { setActing(null); }
   };
+  const revoke = async (appeal: Appeal) => {
+    const reason = decisionReasons[appeal.appealId]?.trim() ?? '';
+    if (reason.length < 10) return;
+    setActing(appeal.appealId); setError(null);
+    const keyId = `revoke:${appeal.appealId}`;
+    const key = keys.current.get(keyId)
+      ?? `enforcement-appeal-revoke:${appeal.appealId}:${Date.now().toString(36)}`;
+    keys.current.set(keyId, key);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/central/enforcement-appeals/${appeal.appealId}/revoke`, {
+          method: 'POST', headers: { Authorization: `Bearer ${props.token}`,
+            'Content-Type': 'application/json', 'Idempotency-Key': key,
+            'If-Match': String(appeal.version) }, body: JSON.stringify({ reason }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      props.onUpdated(((await response.json()) as EnforcementAppealCommandResponse).data);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Не удалось отозвать ограничение.'); }
+    finally { setActing(null); }
+  };
   if (props.appeals.length === 0) return null;
   return <View style={styles.card}>
     <Text accessibilityRole="header" aria-level={2} style={styles.title}>Enforcement Appeals · FIFO</Text>
     {props.appeals.map((appeal) => {
       const copy = enforcementAppealPresentation({ state: appeal.state,
         restrictionRemainsActive: appeal.restrictionRemainsActive,
-        viewerCanStartReview: appeal.viewerCanStartReview });
+        viewerCanStartReview: appeal.viewerCanStartReview,
+        viewerCanDecide: appeal.viewerCanDecide });
       return <View key={appeal.appealId} style={styles.item}>
         <Text style={styles.state}>{copy.title}</Text><Text style={styles.hint}>{copy.explanation}</Text>
         <Text style={styles.hint}>{new Date(appeal.submittedAt).toLocaleString('ru-RU')}</Text>
@@ -104,6 +129,22 @@ export function CentralEnforcementAppealQueue(props: {
           onPress={() => void start(appeal)} style={styles.button}>
           <Text style={styles.buttonText}>{acting === appeal.appealId ? 'Назначаем…' : 'Взять в review'}</Text>
         </Pressable> : null}
+        {copy.action === 'REVOKE' ? <>
+          <TextInput accessibilityLabel="Причина отзыва ограничения" multiline
+            value={decisionReasons[appeal.appealId] ?? ''}
+            onChangeText={(value) => setDecisionReasons((current) => ({
+              ...current, [appeal.appealId]: value,
+            }))}
+            placeholder="Укажите защищённую причину решения" style={styles.input} maxLength={2000} />
+          <Pressable accessibilityRole="button"
+            accessibilityState={{ disabled: acting !== null
+              || (decisionReasons[appeal.appealId]?.trim().length ?? 0) < 10 }}
+            disabled={acting !== null || (decisionReasons[appeal.appealId]?.trim().length ?? 0) < 10}
+            onPress={() => void revoke(appeal)} style={styles.button}>
+            <Text style={styles.buttonText}>{acting === appeal.appealId
+              ? 'Отзываем…' : 'Отозвать ограничение'}</Text>
+          </Pressable>
+        </> : null}
       </View>;
     })}
     {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}

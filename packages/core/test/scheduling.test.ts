@@ -45,6 +45,7 @@ import {
   normalizeScheduleMutationReason,
   normalizeSafetyAccountRestrictionDecision,
   normalizeEnforcementAppealSubmission,
+  normalizeEnforcementAppealRevocation,
   normalizeSafetyEnforcementDecision,
   normalizeSafetyCaseReleaseDecision,
   normalizeScheduleLabel,
@@ -497,6 +498,24 @@ describe('Scheduling publication policy', () => {
       subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'original-central',
       reporterUserId: 'coach',
     })).not.toThrow();
+  });
+
+  it('[AC-152] permits only the assigned independent Central to revoke a restriction', () => {
+    const decision = {
+      state: 'UNDER_REVIEW', enforcementType: 'ACCOUNT_RESTRICTION',
+      enforcementState: 'ACTIVE', accountState: 'RESTRICTED', actorIsCentral: true,
+      reviewerUserId: 'central-b', assignedReviewerUserId: 'central-b',
+      subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'central-a',
+      reporterUserId: 'coach-a', reason: ' Ограничение отзывается после независимой проверки ',
+    };
+    expect(normalizeEnforcementAppealRevocation(decision))
+      .toBe('Ограничение отзывается после независимой проверки');
+    expect(() => normalizeEnforcementAppealRevocation({
+      ...decision, reviewerUserId: 'central-c',
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT' }));
+    expect(() => normalizeEnforcementAppealRevocation({
+      ...decision, accountState: 'ACTIVE',
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_CANNOT_BE_REVOKED' }));
   });
 
   it('[AC-130] rejects a Safety reviewer who is the subject or interested Venue Admin', () => {

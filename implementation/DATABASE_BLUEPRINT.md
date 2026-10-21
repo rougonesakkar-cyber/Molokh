@@ -426,9 +426,8 @@ Critical constraints:
 
 - `moderation_cases`
 - `safety_case_decisions` — one immutable Central remedy per reviewed SafetyCase; protected reason, replacement, causal-Forfeit or serious-category restriction lineage
-- `enforcements` — immutable `ACCOUNT_RESTRICTION` fact linked directly to one SafetyCase decision, subject and exact seven-day Appeal deadline
-- `enforcement_appeals` — one source-immutable protected statement per Enforcement; versioned EA-01/EA-02 state and independent reviewer assignment in strict server FIFO order
-- `enforcement_appeals`
+- `enforcements` — source-immutable `ACCOUNT_RESTRICTION` fact linked directly to one SafetyCase decision and exact seven-day Appeal deadline; only append-only EN-03 revocation metadata may terminally advance it
+- `enforcement_appeals` — one source-immutable protected statement per Enforcement; versioned EA-01/EA-02 assignment in strict server FIFO and protected terminal EA-04 revoke decision
 - `youth_challenge_consents`
 - `evidence_attachments`
 - `evidence_disclosures`
