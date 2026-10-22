@@ -21,6 +21,7 @@ import {
   ResultValidationError,
   SchedulingConflictError,
   SchedulingPermissionDeniedError,
+  SchedulingValidationError,
   VersionConflictError,
   ChatActionDeniedError,
   YouthConsentConflictError,
@@ -18000,7 +18001,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     );
   });
 
-  it('[AC-067][AC-068][AC-177] governs Community pause and permanent closure without hidden status migration', async () => {
+  it('[AC-067][AC-068][AC-151][AC-177] governs planned Community closure without hidden status migration', async () => {
     const athlete = testId(16000);
     const secondAthlete = testId(16001);
     const central = testId(16002);
@@ -18057,6 +18058,16 @@ describePostgres('PostgreSQL critical command transaction', () => {
         { membershipId: testId(16011), userId: secondAthlete },
       ],
     });
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${testId(16045)}::uuid, ${coach}::uuid, 'COACH', 'COMMUNITY',
+        ${community}::uuid, 'ACTIVE', ${central}::uuid,
+        ${occurredAt}::timestamptz, 1
+      )
+    `.execute(database);
     const challenge = testId(16036);
     await sql`
       insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
@@ -18364,6 +18375,93 @@ describePostgres('PostgreSQL critical command transaction', () => {
       where competition_id = ${competition}::uuid
     `.execute(database);
 
+    const immutableHistoryBefore = await sql<{
+      readonly snapshot_payload: string;
+      readonly results: string;
+      readonly cooldowns: string;
+    }>`
+      select
+        (select row_to_json(snapshot)::text
+          from scheduling.session_competitive_snapshots as snapshot
+          where snapshot.session_id = ${session}::uuid) as snapshot_payload,
+        (select count(*)::text from competition.results
+          where challenge_id = ${challenge}::uuid) as results,
+        (select count(*)::text from competition.pair_cooldowns
+          where competition_id = ${competition}::uuid) as cooldowns
+    `.execute(database);
+
+    const missingPlanId = testId(16200);
+    const missingPlanEffects = {
+      eventId: testId(16204), auditId: testId(16205), outboxMessageId: testId(16206),
+      competitionEventIds: [], membershipEventIds: [], statusDispositionIds: [],
+      statusEventIds: [], challengeEventIds: [],
+    };
+    await expect(finalizeCommunityClosure(
+      database,
+      {
+        commandId: testId(16201), commandType: 'FINALIZE_COMMUNITY_CLOSURE',
+        idempotencyKey: `finalize-community-without-plan-${community}`,
+        actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'Community', aggregateId: community, expectedVersion: 3,
+        correlationId: testId(16202), causationId: null, requestId: testId(16203),
+        source: 'admin', payloadVersion: 1,
+        payload: {
+          communityId: community, planId: missingPlanId,
+          reason: 'Closure must not proceed without an approved plan',
+        },
+      } satisfies CommandEnvelope<FinalizeCommunityClosurePayload>,
+      missingPlanEffects,
+      () => new Date('2026-10-01T09:00:00.000Z'),
+    )).rejects.toMatchObject({ code: 'COMMUNITY_LIFECYCLE_INVALID_STATE' });
+    const missingPlanRollback = await sql<{
+      readonly events: string;
+      readonly audits: string;
+      readonly outbox: string;
+      readonly plans: string;
+    }>`
+      select
+        (select count(*)::text from platform.domain_events
+          where event_id = ${missingPlanEffects.eventId}::uuid) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${missingPlanEffects.auditId}::uuid) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${missingPlanEffects.outboxMessageId}::uuid) as outbox,
+        (select count(*)::text from community.community_closure_plans
+          where plan_id = ${missingPlanId}::uuid) as plans
+    `.execute(database);
+    expect(missingPlanRollback.rows[0]).toEqual({
+      events: '0', audits: '0', outbox: '0', plans: '0',
+    });
+
+    const closureSchedulePayload = {
+      communityId: community, category: 'VENUE_EXIT',
+      reason: 'Пилотный зал прекращает работу', emergency: false,
+      effectiveAt: '2026-10-03T10:00:00.000Z',
+      sessionDispositions: [{ sessionId: session, disposition: 'RETAIN_TO_COMPLETION' }],
+    } satisfies ScheduleCommunityClosurePayload;
+    const deniedPlan = testId(16230);
+    const deniedScheduleEffects = {
+      planId: deniedPlan, eventId: testId(16234), auditId: testId(16235),
+      outboxMessageId: testId(16236), notificationOutboxMessageId: testId(16237),
+      notificationIds: [testId(16238), testId(16239)],
+      competitionEventIds: [testId(16240)], challengeEventIds: [testId(16241)],
+      sessionEventIds: [],
+    };
+    await expect(scheduleCommunityClosure(
+      database,
+      {
+        commandId: testId(16231), commandType: 'SCHEDULE_COMMUNITY_CLOSURE',
+        idempotencyKey: `schedule-community-closure-denied-${community}`,
+        actor: { type: 'USER', id: athlete, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'Community', aggregateId: community, expectedVersion: 3,
+        correlationId: testId(16232), causationId: testId(16032),
+        requestId: testId(16233), source: 'admin', payloadVersion: 1,
+        payload: closureSchedulePayload,
+      },
+      deniedScheduleEffects,
+      () => new Date('2026-10-01T09:30:00.000Z'),
+    )).rejects.toMatchObject({ code: 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED' });
+
     const closurePlan = testId(16105);
     const scheduled = await scheduleCommunityClosure(
       database,
@@ -18374,12 +18472,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         aggregateType: 'Community', aggregateId: community, expectedVersion: 3,
         correlationId: testId(16107), causationId: testId(16032), requestId: testId(16108),
         source: 'admin', payloadVersion: 1,
-        payload: {
-          communityId: community, category: 'VENUE_EXIT',
-          reason: 'Пилотный зал прекращает работу', emergency: false,
-          effectiveAt: '2026-10-03T10:00:00.000Z',
-          sessionDispositions: [{ sessionId: session, disposition: 'RETAIN_TO_COMPLETION' }],
-        },
+        payload: closureSchedulePayload,
       } satisfies CommandEnvelope<ScheduleCommunityClosurePayload>,
       {
         planId: closurePlan, eventId: testId(16109), auditId: testId(16110),
@@ -18391,7 +18484,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-10-01T10:00:00.000Z'),
     );
     expect(scheduled.response).toMatchObject({
-      planId: closurePlan, communityState: 'CLOSING', planState: 'SCHEDULED',
+      planId: closurePlan, planVersion: 1,
+      communityState: 'CLOSING', planState: 'SCHEDULED',
       retainedSessionCount: 1, cancelledSessionCount: 0, communityVersion: 4,
     });
     expect(await readCommunityClosure(database, community)).toEqual(scheduled.response);
@@ -18419,6 +18513,27 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const finalizePayload = {
       communityId: community, planId: closurePlan, reason: 'Closure Plan completed',
     } satisfies FinalizeCommunityClosurePayload;
+    const earlyFinalizeEffects = {
+      eventId: testId(16254), auditId: testId(16255), outboxMessageId: testId(16256),
+      competitionEventIds: [testId(16257)],
+      membershipEventIds: [testId(16258), testId(16259)],
+      statusDispositionIds: [testId(16260)], statusEventIds: [testId(16261)],
+      challengeEventIds: [testId(16262)],
+    };
+    await expect(finalizeCommunityClosure(
+      database,
+      {
+        commandId: testId(16251), commandType: 'FINALIZE_COMMUNITY_CLOSURE',
+        idempotencyKey: `finalize-community-closure-early-${community}`,
+        actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'Community', aggregateId: community, expectedVersion: 4,
+        correlationId: testId(16252), causationId: testId(16109),
+        requestId: testId(16253), source: 'admin', payloadVersion: 1,
+        payload: finalizePayload,
+      },
+      earlyFinalizeEffects,
+      () => new Date('2026-10-03T09:59:59.999Z'),
+    )).rejects.toMatchObject({ code: 'COMMUNITY_CLOSURE_NOT_DUE' });
     await expect(finalizeCommunityClosure(
       database,
       {
@@ -18459,27 +18574,72 @@ describePostgres('PostgreSQL critical command transaction', () => {
       where slot_id = ${slot}::uuid
     `.execute(database);
 
+    const finalizeCommand = {
+      commandId: testId(16128), commandType: 'FINALIZE_COMMUNITY_CLOSURE',
+      idempotencyKey: `finalize-community-closure-${community}`,
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'Community', aggregateId: community, expectedVersion: 4,
+      correlationId: testId(16129), causationId: testId(16109), requestId: testId(16130),
+      source: 'admin', payloadVersion: 1, payload: finalizePayload,
+    } satisfies CommandEnvelope<FinalizeCommunityClosurePayload>;
+    const finalizeEffects = {
+      eventId: testId(16131), auditId: testId(16132), outboxMessageId: testId(16133),
+      competitionEventIds: [testId(16134)], membershipEventIds: [testId(16135), testId(16136)],
+      statusDispositionIds: [testId(16137)], statusEventIds: [testId(16138)],
+      challengeEventIds: [testId(16139)],
+    };
     const finalized = await finalizeCommunityClosure(
-      database,
-      {
-        commandId: testId(16128), commandType: 'FINALIZE_COMMUNITY_CLOSURE',
-        idempotencyKey: `finalize-community-closure-${community}`,
-        actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
-        aggregateType: 'Community', aggregateId: community, expectedVersion: 4,
-        correlationId: testId(16129), causationId: testId(16109), requestId: testId(16130),
-        source: 'admin', payloadVersion: 1, payload: finalizePayload,
-      },
-      {
-        eventId: testId(16131), auditId: testId(16132), outboxMessageId: testId(16133),
-        competitionEventIds: [testId(16134)], membershipEventIds: [testId(16135), testId(16136)],
-        statusDispositionIds: [testId(16137)], statusEventIds: [testId(16138)],
-        challengeEventIds: [testId(16139)],
-      },
+      database, finalizeCommand, finalizeEffects,
       () => new Date('2026-10-03T12:00:00.000Z'),
+    );
+    const replayedFinalization = await finalizeCommunityClosure(
+      database, finalizeCommand, finalizeEffects,
+      () => new Date('2026-10-03T12:05:00.000Z'),
     );
     expect(finalized.response).toMatchObject({
       planState: 'FINALIZED', communityState: 'CLOSED', communityVersion: 5,
     });
+    expect(replayedFinalization).toMatchObject({
+      replayed: true, eventId: finalizeEffects.eventId, response: finalized.response,
+    });
+    const staleEffects = {
+      eventId: testId(16213), auditId: testId(16214), outboxMessageId: testId(16215),
+      competitionEventIds: [], membershipEventIds: [], statusDispositionIds: [],
+      statusEventIds: [], challengeEventIds: [],
+    };
+    await expect(finalizeCommunityClosure(
+      database,
+      {
+        ...finalizeCommand,
+        commandId: testId(16210), idempotencyKey: `finalize-community-stale-${community}`,
+        correlationId: testId(16211), requestId: testId(16212),
+      },
+      staleEffects,
+      () => new Date('2026-10-03T12:10:00.000Z'),
+    )).rejects.toBeInstanceOf(VersionConflictError);
+    const blockedSlot = testId(16220);
+    const blockedSlotEffects = {
+      eventId: testId(16224), auditId: testId(16225), outboxMessageId: testId(16226),
+    };
+    await expect(publishSlot(
+      database,
+      {
+        commandId: testId(16221), commandType: 'PUBLISH_SLOT',
+        idempotencyKey: `publish-slot-after-community-closure-${blockedSlot}`,
+        actor: { type: 'USER', id: coach, roles: ['COACH'], scopeIds: [community] },
+        aggregateType: 'Slot', aggregateId: blockedSlot, expectedVersion: 0,
+        correlationId: testId(16222), causationId: finalizeEffects.eventId,
+        requestId: testId(16223), source: 'api', payloadVersion: 1,
+        payload: {
+          venueId: venue, coachUserId: coach,
+          startAt: '2026-10-10T10:00:00.000Z', endAt: '2026-10-10T11:00:00.000Z',
+          priceAmount: '1500.00', priceCurrency: 'RUB', priceText: null,
+          cancellationTermsText: null,
+        },
+      },
+      blockedSlotEffects,
+      () => new Date('2026-10-03T12:15:00.000Z'),
+    )).rejects.toBeInstanceOf(SchedulingValidationError);
     const finalEvidence = await sql<{
       readonly community_state: string;
       readonly competition_phase: string;
@@ -18488,6 +18648,17 @@ describePostgres('PostgreSQL critical command transaction', () => {
       readonly archived_memberships: string;
       readonly closure_reason: string;
       readonly status_migration_events: string;
+      readonly status_close_payload: Record<string, unknown>;
+      readonly snapshot_payload: string;
+      readonly results: string;
+      readonly cooldowns: string;
+      readonly final_events: string;
+      readonly final_audits: string;
+      readonly final_outbox: string;
+      readonly stale_effects: string;
+      readonly blocked_slots: string;
+      readonly blocked_slot_effects: string;
+      readonly rejected_effects: string;
     }>`
       select
         (select state from community.communities where community_id = ${community}::uuid)
@@ -18504,13 +18675,69 @@ describePostgres('PostgreSQL critical command transaction', () => {
           where plan_id = ${closurePlan}::uuid) as closure_reason,
         (select count(*)::text from platform.domain_events
           where aggregate_type = 'StatusTenure' and payload ->> 'successorUserId' is not null)
-          as status_migration_events
+          as status_migration_events,
+        (select payload from platform.domain_events
+          where event_id = ${testId(16138)}::uuid) as status_close_payload,
+        (select row_to_json(snapshot)::text
+          from scheduling.session_competitive_snapshots as snapshot
+          where snapshot.session_id = ${session}::uuid) as snapshot_payload,
+        (select count(*)::text from competition.results
+          where challenge_id = ${challenge}::uuid) as results,
+        (select count(*)::text from competition.pair_cooldowns
+          where competition_id = ${competition}::uuid) as cooldowns,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${finalizeEffects.eventId}::uuid) as final_events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${finalizeEffects.auditId}::uuid) as final_audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${finalizeEffects.outboxMessageId}::uuid) as final_outbox,
+        ((select count(*) from platform.domain_events where event_id = ${staleEffects.eventId}::uuid)
+          + (select count(*) from platform.audit_events where audit_id = ${staleEffects.auditId}::uuid)
+          + (select count(*) from platform.outbox_messages
+            where message_id = ${staleEffects.outboxMessageId}::uuid))::text as stale_effects,
+        (select count(*)::text from scheduling.slots
+          where slot_id = ${blockedSlot}::uuid) as blocked_slots,
+        ((select count(*) from platform.domain_events
+            where event_id = ${blockedSlotEffects.eventId}::uuid)
+          + (select count(*) from platform.audit_events
+            where audit_id = ${blockedSlotEffects.auditId}::uuid)
+          + (select count(*) from platform.outbox_messages
+            where message_id = ${blockedSlotEffects.outboxMessageId}::uuid))::text
+          as blocked_slot_effects,
+        ((select count(*) from platform.domain_events where event_id in (
+            ${deniedScheduleEffects.eventId}::uuid, ${earlyFinalizeEffects.eventId}::uuid,
+            ${testId(16120)}::uuid
+          ))
+          + (select count(*) from platform.audit_events where audit_id in (
+            ${deniedScheduleEffects.auditId}::uuid, ${earlyFinalizeEffects.auditId}::uuid,
+            ${testId(16121)}::uuid
+          ))
+          + (select count(*) from platform.outbox_messages where message_id in (
+            ${deniedScheduleEffects.outboxMessageId}::uuid,
+            ${deniedScheduleEffects.notificationOutboxMessageId}::uuid,
+            ${earlyFinalizeEffects.outboxMessageId}::uuid, ${testId(16122)}::uuid
+          )))::text as rejected_effects
     `.execute(database);
-    expect(finalEvidence.rows[0]).toEqual({
+    expect(finalEvidence.rows[0]).toMatchObject({
       community_state: 'CLOSED', competition_phase: 'CLOSED', champion_user_id: null,
       retained_challenge_state: 'CANCELLED_NO_FAULT', archived_memberships: '2',
       closure_reason: 'COMMUNITY_CLOSED', status_migration_events: '0',
+      status_close_payload: expect.objectContaining({
+        successorUserId: null, winLossApplied: false, reason: 'COMMUNITY_CLOSED',
+      }),
+      snapshot_payload: immutableHistoryBefore.rows[0]?.snapshot_payload,
+      results: immutableHistoryBefore.rows[0]?.results,
+      cooldowns: immutableHistoryBefore.rows[0]?.cooldowns,
+      final_events: '1', final_audits: '1', final_outbox: '1', stale_effects: '0',
+      blocked_slots: '0', blocked_slot_effects: '0',
+      rejected_effects: '0',
     });
+    const closedAccess = await readCommunityContext(database, athlete, community);
+    expect(closedAccess?.access.capabilities).not.toContain('CREATE_OFFICIAL_CHALLENGE');
+    expect(closedAccess?.access.capabilities).not.toContain('REQUEST_MEMBERSHIP');
+    expect(closedAccess?.access.denials).toContainEqual(expect.objectContaining({
+      capability: 'CREATE_OFFICIAL_CHALLENGE', code: 'COMMUNITY_NOT_ACTIVE',
+    }));
   });
 
   it('[AC-106][AC-108][AC-109] confirms no-obligation Membership exit without loss', async () => {

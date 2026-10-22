@@ -172,7 +172,7 @@ describe('community lifecycle guard', () => {
     }));
   });
 
-  it('[CO-04][CO-05][AC-177] validates a versioned closure plan and blocks early finalization', () => {
+  it('[CO-04][CO-05][AC-151][AC-177] validates a versioned closure plan and blocks early finalization', () => {
     const now = new Date('2026-10-01T10:00:00.000Z');
     const effectiveAt = new Date('2026-10-02T10:00:00.000Z');
     expect(() => assertCommunityClosureTransition({
@@ -206,5 +206,11 @@ describe('community lifecycle guard', () => {
     })).toThrowError(expect.objectContaining({
       code: 'COMMUNITY_CLOSURE_RETAINED_SESSION_UNRESOLVED',
     }));
+    expect(() => assertCommunityClosureTransition({
+      action: 'FINALIZE_CLOSURE', actorIsCentral: false, actorIsSystem: true,
+      currentState: 'CLOSING', reason: 'System completed approved plan', effectiveAt,
+      now: new Date('2026-10-03T10:00:00.000Z'), emergency: false,
+      unresolvedRetainedSessionCount: 0,
+    })).not.toThrow();
   });
 });

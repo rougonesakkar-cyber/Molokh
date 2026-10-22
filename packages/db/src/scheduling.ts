@@ -292,12 +292,23 @@ async function venueForPublication(
 ): Promise<VenuePublicationRow> {
   const result = await sql<VenuePublicationRow>`
     select venue_id, display_name, state, slot_publish_horizon_days, contact_payload
-    from community.venues
-    where venue_id = ${venueId}::uuid
+    from community.venues as venue
+    where venue.venue_id = ${venueId}::uuid
     for share
   `.execute(transaction);
   const venue = result.rows[0];
-  if (!venue || venue.state !== 'ACTIVE') throw new SchedulingValidationError('venueId');
+  if (!venue || venue.state !== 'ACTIVE') {
+    throw new SchedulingValidationError('venueId');
+  }
+  const communities = await sql<{ readonly state: string }>`
+    select state
+    from community.communities
+    where venue_id = ${venueId}::uuid
+    for share
+  `.execute(transaction);
+  if (communities.rows.length > 0 && !communities.rows.some((row) => row.state === 'ACTIVE')) {
+    throw new SchedulingValidationError('venueId');
+  }
   return venue;
 }
 

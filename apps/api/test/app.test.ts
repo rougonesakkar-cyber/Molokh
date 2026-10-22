@@ -690,7 +690,7 @@ describe('runtime contract', () => {
     );
   });
 
-  it('[CO-02][CO-03] exposes versioned Central Community lifecycle commands', async () => {
+  it('[CO-02][CO-03][CO-04][CO-05][AC-151] exposes versioned Central Community lifecycle commands', async () => {
     const communityId = '0199a1b2-1234-7000-8000-000000000402';
     const active: CommunityLifecycleProjection = {
       communityId,

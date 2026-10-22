@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 206/214 (`196/196 P0`, `10/17 P1`).
+  Acceptance traceability is 207/214 (`196/196 P0`, `11/17 P1`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -450,6 +450,12 @@ This sprint produces a demonstrable Training slice while establishing the same f
   one critical transaction; the unique active-Primary constraint, version guard and exact replay
   preserve one active Primary plus immutable revoked lineage. Denied commands leave no success
   audit, event, outbox, notification, grant or closure plan, and Central-only controls remain hidden.
+- M7 Community closure hardening: complete through AC-151. Finalization requires the scheduled
+  versioned Closure Plan, its server effective time and resolution of every retained Session. The
+  atomic terminal transition closes Community/Competition, archives Membership and closes status
+  tenure as `COMMUNITY_CLOSED` without W/L/Succession or history rewrites. Closed-Community guards
+  deny new Challenge, Membership and Slot work; missing/stale/denied commands leave no success
+  audit, event or outbox, while exact replay returns the stored result.
 - M5 Champion-to-Contender optional TITLE increment: complete. AC-047 stores an immutable
   `OPTIONAL_TITLE` queue intent, preserves the shared `(submitted_at, entry_id)` order without a
   Champion privilege, and creates the TITLE Challenge, service Chat, ruleset snapshot and
