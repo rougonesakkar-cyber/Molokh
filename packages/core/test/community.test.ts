@@ -78,7 +78,7 @@ describe('community access projection', () => {
     );
   });
 
-  it('gives Primary and ordinary Gym Admin the same everyday Venue operations', () => {
+  it('[AC-204] gives Primary and ordinary Gym Admin the same everyday Venue operations', () => {
     for (const role of ['PRIMARY_ADMIN', 'GYM_ADMIN'] as const) {
       const access = projectCommunityAccess({
         ...base,
@@ -91,7 +91,7 @@ describe('community access projection', () => {
     }
   });
 
-  it('[AC-016] keeps Primary transfer Central-only and blocks a second competitive Community request', () => {
+  it('[AC-016][AC-204] keeps Primary transfer Central-only and blocks a second competitive Community request', () => {
     const central = projectCommunityAccess({
       ...base,
       activeRoleGrants: [{ role: 'CENTRAL_ADMIN', scopeType: 'GLOBAL', scopeId: null }],

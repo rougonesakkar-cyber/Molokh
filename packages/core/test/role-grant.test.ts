@@ -75,7 +75,7 @@ describe('Coach role grant policy', () => {
     ).toThrow(InvalidRoleGrantTransitionError);
   });
 
-  it('keeps Admin appointment and Primary transfer Central-only', () => {
+  it('[AC-204] keeps Admin appointment and Primary transfer Central-only', () => {
     const admin = {
       actorIsCentral: true,
       venueState: 'ACTIVE' as const,

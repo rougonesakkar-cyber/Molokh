@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 205/214 (`196/196 P0`, `9/17 P1`).
+  Acceptance traceability is 206/214 (`196/196 P0`, `10/17 P1`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -444,6 +444,12 @@ This sprint produces a demonstrable Training slice while establishing the same f
   changes, and confirmation is allowed only strictly before that boundary. At or after the deadline
   `HOST_CONFIRMATION_EXPIRED` leaves the Booking pending, Slot `PUBLISHED` and unclaimed, and creates
   no Session, success audit, event, outbox or notification.
+- M2 Venue authority hardening: complete through AC-204. Ordinary active `GYM_ADMIN` grants retain
+  scoped Slot mutation, while forged command-envelope roles cannot authorize Primary succession or
+  Community/Venue closure. Central transfer revokes the previous grant and inserts the successor in
+  one critical transaction; the unique active-Primary constraint, version guard and exact replay
+  preserve one active Primary plus immutable revoked lineage. Denied commands leave no success
+  audit, event, outbox, notification, grant or closure plan, and Central-only controls remain hidden.
 - M5 Champion-to-Contender optional TITLE increment: complete. AC-047 stores an immutable
   `OPTIONAL_TITLE` queue intent, preserves the shared `(submitted_at, entry_id)` order without a
   Champion privilege, and creates the TITLE Challenge, service Chat, ruleset snapshot and

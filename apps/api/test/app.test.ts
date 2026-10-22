@@ -1676,7 +1676,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('executes scoped Coach and Central Venue role commands', async () => {
+  it('[AC-204] exposes Primary transfer only through the Central route', async () => {
     const centralUserId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const communityId = '0199a1b2-1234-7000-8000-000000000703';
@@ -1951,6 +1951,7 @@ describe('runtime contract', () => {
       aggregateType: 'VenuePrimaryAdmin',
       aggregateId: venueId,
       expectedVersion: 0,
+      actor: { id: centralUserId, roles: [], scopeIds: [] },
       payload: { userId: coachUserId, venueId, reasonCode: 'PILOT_PRIMARY' },
     });
   });

@@ -860,6 +860,35 @@ async function verifySchedulingPublication(
       commercialVersion: 2,
       version: 2,
     });
+    const slotUpdateEffects = await sql<{
+      readonly actor_id: string;
+      readonly actor_roles: string[];
+      readonly actor_scope_ids: string[];
+      readonly action: string;
+      readonly before_state: string | null;
+      readonly after_state: string | null;
+      readonly events: string;
+      readonly outbox: string;
+    }>`
+      select audit.actor_id::text, audit.actor_roles, audit.actor_scope_ids::text[],
+        audit.action, audit.before_state, audit.after_state,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${testId(2510)}::uuid) as events,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${testId(2512)}::uuid) as outbox
+      from platform.audit_events as audit
+      where audit.audit_id = ${testId(2511)}::uuid
+    `.execute(database);
+    expect(slotUpdateEffects.rows[0]).toEqual({
+      actor_id: admin,
+      actor_roles: ['GYM_ADMIN'],
+      actor_scope_ids: [venue],
+      action: 'UPDATE_SLOT',
+      before_state: 'PUBLISHED',
+      after_state: 'PUBLISHED',
+      events: '1',
+      outbox: '1',
+    });
     const withdrawnSlot = await withdrawSlot(
       database,
       {
@@ -4017,7 +4046,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('[AC-018] invites and authorizes a verified Community Coach with database-backed scope checks', async () => {
+  it('[AC-018][AC-204] governs Venue Admin scope and atomic Primary succession', async () => {
+    const thirdAdmin = testId(354);
     await sql`
       insert into identity.users (
         user_id, phone_e164, phone_verified_at, birth_date, age_division,
@@ -4028,7 +4058,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
         (${ids.roleCoach}::uuid, '+79990000240', '2026-09-05T08:00:00Z',
           '1991-01-01', 'ADULT', 'Coach', 'ACTIVE', 'ru-RU', 1, '2026-09-05T08:00:00Z'),
         (${ids.roleUnverified}::uuid, '+79990000241', '2026-09-05T08:00:00Z',
-          '1992-01-01', 'ADULT', 'Unverified', 'ACTIVE', 'ru-RU', 1, '2026-09-05T08:00:00Z')
+          '1992-01-01', 'ADULT', 'Unverified', 'ACTIVE', 'ru-RU', 1, '2026-09-05T08:00:00Z'),
+        (${thirdAdmin}::uuid, '+79990000354', '2026-09-05T08:00:00Z',
+          '1993-01-01', 'ADULT', 'Third Admin', 'ACTIVE', 'ru-RU', 1, '2026-09-05T08:00:00Z')
     `.execute(database);
     await sql`
       insert into identity.athlete_profiles (
@@ -4036,7 +4068,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       ) values
         (${ids.centralActor}::uuid, 'BOXING', null, 15),
         (${ids.roleCoach}::uuid, 'BOXING', null, 15),
-        (${ids.roleUnverified}::uuid, 'BOXING', null, 15)
+        (${ids.roleUnverified}::uuid, 'BOXING', null, 15),
+        (${thirdAdmin}::uuid, 'BOXING', null, 15)
     `.execute(database);
     await sql`
       insert into identity.account_verifications (
@@ -4047,6 +4080,16 @@ describePostgres('PostgreSQL critical command transaction', () => {
         ${ids.roleCoach}::uuid, 'VERIFIED', 'CENTRAL_MODERATION', 'identity-mvp-v1',
         '2026-09-05T08:30:00Z', ${ids.centralActor}::uuid,
         'PROFILE_PHONE_DUPLICATE_CHECKS_PASSED', true, 2
+      )
+    `.execute(database);
+    await sql`
+      insert into identity.account_verifications (
+        verification_id, user_id, state, method, moderation_checklist_version,
+        verified_at, decided_by, decision_reason, is_current, version
+      ) values (
+        ${testId(355)}::uuid, ${thirdAdmin}::uuid, 'VERIFIED',
+        'CENTRAL_MODERATION', 'identity-mvp-v1', '2026-09-05T08:30:00Z',
+        ${ids.centralActor}::uuid, 'PROFILE_PHONE_DUPLICATE_CHECKS_PASSED', true, 2
       )
     `.execute(database);
     await ensureLocalPilotCommunity(database, {
@@ -4349,6 +4392,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
       ),
       roleEffects(321),
     );
+    const thirdAdminGrantId = testId(356);
+    const thirdAdminResult = await appointGymAdmin(
+      database,
+      adminCommand(thirdAdmin, thirdAdminGrantId, testId(357), 'admin-appoint-third'),
+      roleEffects(358),
+    );
     expect(firstAdmin.response).toMatchObject({
       role: 'GYM_ADMIN',
       state: 'ACTIVE',
@@ -4359,12 +4408,20 @@ describePostgres('PostgreSQL critical command transaction', () => {
       state: 'ACTIVE',
       userId: ids.roleUnverified,
     });
+    expect(thirdAdminResult.response).toMatchObject({
+      role: 'GYM_ADMIN',
+      state: 'ACTIVE',
+      userId: thirdAdmin,
+    });
 
     const primaryCommand = (
       userId: string,
       expectedVersion: number,
       commandId: string,
       idempotencyKey: string,
+      actorId: string = ids.centralActor,
+      actorRoles: readonly string[] = ['CENTRAL_ADMIN'],
+      actorScopeIds: readonly string[] = [],
     ): CommandEnvelope<{
       readonly userId: string;
       readonly venueId: string;
@@ -4375,9 +4432,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
       idempotencyKey,
       actor: {
         type: 'USER',
-        id: ids.centralActor,
-        roles: ['CENTRAL_ADMIN'],
-        scopeIds: [],
+        id: actorId,
+        roles: actorRoles,
+        scopeIds: actorScopeIds,
       },
       aggregateType: 'VenuePrimaryAdmin',
       aggregateId: ids.venue,
@@ -4409,16 +4466,103 @@ describePostgres('PostgreSQL critical command transaction', () => {
       previousPrimaryAdminUserId: null,
       version: 1,
     });
+    const deniedPrimaryEffects = primaryEffects(363);
+    await expect(changePrimaryAdmin(
+      database,
+      primaryCommand(
+        ids.roleUnverified,
+        1,
+        testId(362),
+        'primary-transfer-forged-central',
+        thirdAdmin,
+        ['CENTRAL_ADMIN'],
+        [ids.venue],
+      ),
+      deniedPrimaryEffects,
+    )).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+
+    const deniedClosureIds = {
+      planId: testId(372), eventId: testId(373), auditId: testId(374),
+      outboxMessageId: testId(375), notificationOutboxMessageId: testId(376),
+      notificationIds: [testId(377)], competitionEventIds: [],
+      challengeEventIds: [], sessionEventIds: [],
+    };
+    await expect(scheduleCommunityClosure(
+      database,
+      {
+        commandId: testId(369), commandType: 'SCHEDULE_COMMUNITY_CLOSURE',
+        idempotencyKey: 'ordinary-admin-forged-central-closure',
+        actor: {
+          type: 'USER', id: thirdAdmin, roles: ['CENTRAL_ADMIN'], scopeIds: [ids.venue],
+        },
+        aggregateType: 'Community', aggregateId: ids.community, expectedVersion: 1,
+        correlationId: testId(370), causationId: null, requestId: testId(371),
+        source: 'admin', payloadVersion: 1,
+        payload: {
+          communityId: ids.community, category: 'VENUE_EXIT',
+          reason: 'private ordinary admin closure reason', emergency: false,
+          effectiveAt: '2026-09-20T10:00:00.000Z', sessionDispositions: [],
+        },
+      } satisfies CommandEnvelope<ScheduleCommunityClosurePayload>,
+      deniedClosureIds,
+      () => new Date('2026-09-07T10:00:00.000Z'),
+    )).rejects.toMatchObject({ code: 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED' });
+
+    const deniedEffects = await sql<{
+      readonly events: string;
+      readonly audits: string;
+      readonly outbox: string;
+      readonly notifications: string;
+      readonly grants: string;
+      readonly closure_plans: string;
+    }>`
+      select
+        (select count(*)::text from platform.domain_events
+          where event_id in (${deniedPrimaryEffects.eventId}::uuid, ${deniedClosureIds.eventId}::uuid)) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id in (${deniedPrimaryEffects.auditId}::uuid, ${deniedClosureIds.auditId}::uuid)) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (
+            ${deniedPrimaryEffects.outboxMessageId}::uuid,
+            ${deniedClosureIds.outboxMessageId}::uuid,
+            ${deniedClosureIds.notificationOutboxMessageId}::uuid
+          )) as outbox,
+        (select count(*)::text from platform.notifications
+          where notification_id in (
+            ${deniedPrimaryEffects.targetNotificationId}::uuid,
+            ${deniedPrimaryEffects.previousNotificationId}::uuid,
+            ${deniedClosureIds.notificationIds[0]}::uuid
+          )) as notifications,
+        (select count(*)::text from community.role_grants
+          where grant_id = ${deniedPrimaryEffects.primaryGrantId}::uuid) as grants,
+        (select count(*)::text from community.community_closure_plans
+          where plan_id = ${deniedClosureIds.planId}::uuid) as closure_plans
+    `.execute(database);
+    expect(deniedEffects.rows[0]).toEqual({
+      events: '0', audits: '0', outbox: '0', notifications: '0',
+      grants: '0', closure_plans: '0',
+    });
+
+    const transferCommand = primaryCommand(
+      ids.roleUnverified, 1, testId(332), 'primary-transfer-second',
+    );
+    const transferEffects = primaryEffects(333);
     const transferredPrimary = await changePrimaryAdmin(
       database,
-      primaryCommand(ids.roleUnverified, 1, testId(332), 'primary-transfer-second'),
-      primaryEffects(333),
+      transferCommand,
+      transferEffects,
     );
+    const replayedTransfer = await changePrimaryAdmin(database, transferCommand, transferEffects);
     expect(transferredPrimary.response).toMatchObject({
       change: 'TRANSFERRED',
       primaryAdminUserId: ids.roleUnverified,
       previousPrimaryAdminUserId: ids.roleCoach,
       version: 2,
+    });
+    expect(replayedTransfer).toMatchObject({
+      replayed: true,
+      eventId: transferEffects.eventId,
+      response: transferredPrimary.response,
     });
 
     const racingTransfers = await Promise.allSettled([
@@ -4448,6 +4592,37 @@ describePostgres('PostgreSQL critical command transaction', () => {
         and state = 'ACTIVE'
     `.execute(database);
     expect(activePrimary.rows[0]).toEqual({ user_id: ids.roleCoach, count: '1' });
+    const primaryHistory = await sql<{
+      readonly active_count: string;
+      readonly revoked_count: string;
+      readonly total_count: string;
+      readonly audit_reason: string | null;
+      readonly public_payloads: unknown[];
+    }>`
+      select
+        count(*) filter (where state = 'ACTIVE')::text as active_count,
+        count(*) filter (where state = 'REVOKED')::text as revoked_count,
+        count(*)::text as total_count,
+        (select reason_code from platform.audit_events
+          where audit_id = ${transferEffects.auditId}::uuid) as audit_reason,
+        array[
+          (select payload from platform.domain_events
+            where event_id = ${transferEffects.eventId}::uuid),
+          (select payload from platform.outbox_messages
+            where message_id = ${transferEffects.outboxMessageId}::uuid)
+        ] as public_payloads
+      from community.role_grants
+      where role = 'PRIMARY_ADMIN'
+        and scope_type = 'VENUE'
+        and scope_id = ${ids.venue}::uuid
+    `.execute(database);
+    expect(primaryHistory.rows[0]).toMatchObject({
+      active_count: '1', revoked_count: '2', total_count: '3',
+      audit_reason: 'PRIMARY_SUCCESSION',
+    });
+    expect(JSON.stringify(primaryHistory.rows[0]?.public_payloads)).not.toContain(
+      'PRIMARY_SUCCESSION',
+    );
     const roleSummary = await readVenueRoleSummary(
       database,
       ids.centralActor,
@@ -4459,6 +4634,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       activeGrants: expect.arrayContaining([
         expect.objectContaining({ userId: ids.roleCoach, role: 'GYM_ADMIN' }),
         expect.objectContaining({ userId: ids.roleUnverified, role: 'GYM_ADMIN' }),
+        expect.objectContaining({ userId: thirdAdmin, role: 'GYM_ADMIN' }),
         expect.objectContaining({ userId: ids.roleCoach, role: 'PRIMARY_ADMIN' }),
       ]),
     });
@@ -7446,7 +7622,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(audits.rows[0]?.count).toBe('2');
   });
 
-  it('[AC-023][AC-024][AC-025][AC-026][AC-027][AC-028][AC-033][AC-034][AC-038][AC-039][AC-040][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan conversion, NO_SHOW, Coach replacement and external no-fault cancellation', async () => {
+  it('[AC-023][AC-024][AC-025][AC-026][AC-027][AC-028][AC-033][AC-034][AC-038][AC-039][AC-040][AC-173][AC-174][AC-200][AC-201][AC-204][AC-207][AC-208] completes ordinary scheduling, Group Plan conversion, NO_SHOW, Coach replacement and external no-fault cancellation', async () => {
     await verifySchedulingPublication(database);
   });
 
