@@ -33,7 +33,7 @@ export type MembershipConflictCode =
   | 'MEMBERSHIP_ACCOUNT_NOT_ACTIVE'
   | 'MEMBERSHIP_COMMUNITY_NOT_ACTIVE'
   | 'MEMBERSHIP_RELATIONSHIP_EXISTS'
-  | 'MEMBERSHIP_REAPPLY_NOT_DUE'
+  | 'MEMBERSHIP_REAPPLY_WAIT'
   | 'MVP_ACTIVE_COMMUNITY_LIMIT'
   | 'MEMBERSHIP_INVITE_INVALID'
   | 'MEMBERSHIP_AGE_CONTOUR_MISMATCH'
@@ -46,7 +46,10 @@ export type MembershipConflictCode =
 export class MembershipConflictError extends Error {
   readonly code: MembershipConflictCode;
 
-  constructor(readonly reason: MembershipConflictCode) {
+  constructor(
+    readonly reason: MembershipConflictCode,
+    readonly retryAt: string | null = null,
+  ) {
     super(`Membership transition is not allowed: ${reason}`);
     this.name = 'MembershipConflictError';
     this.code = reason;
@@ -129,7 +132,7 @@ export function assertMembershipTransition(input: MembershipTransitionInput): vo
       && input.reapplyNotBeforeAt
       && Date.parse(input.reapplyNotBeforeAt) > input.now.getTime()
     ) {
-      throw new MembershipConflictError('MEMBERSHIP_REAPPLY_NOT_DUE');
+      throw new MembershipConflictError('MEMBERSHIP_REAPPLY_WAIT', input.reapplyNotBeforeAt);
     }
   }
 

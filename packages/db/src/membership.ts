@@ -274,6 +274,7 @@ export async function requestMembership(
   database: Kysely<Database>,
   command: CommandEnvelope<RequestMembershipPayload>,
   ids: MembershipEffectIds,
+  now?: () => Date,
 ): Promise<ExecutedCommand<MembershipProjection>> {
   const userId = command.actor.id;
   if (!userId) throw new MembershipConflictError('MEMBERSHIP_ACCOUNT_NOT_ACTIVE');
@@ -284,6 +285,7 @@ export async function requestMembership(
   const escalationTimerOutboxMessageId = ids.escalationTimerOutboxMessageId;
   return executeCriticalCommand(database, {
     command,
+    ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       await lockRelationship(transaction, command.payload.communityId, userId);
       const current = await creationContext(transaction, userId, command.payload.communityId);
@@ -356,11 +358,13 @@ export async function activateMembershipByInvite(
   database: Kysely<Database>,
   command: CommandEnvelope<ActivateMembershipPayload>,
   ids: MembershipEffectIds,
+  now?: () => Date,
 ): Promise<ExecutedCommand<MembershipProjection>> {
   const userId = command.actor.id;
   if (!userId) throw new MembershipConflictError('MEMBERSHIP_ACCOUNT_NOT_ACTIVE');
   return executeCriticalCommand(database, {
     command,
+    ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const tokenHash = createHash('sha256').update(command.payload.token, 'utf8').digest('hex');
       const inviteResult = await sql<InviteRow>`
@@ -511,11 +515,13 @@ export async function rejectMembership(
   database: Kysely<Database>,
   command: CommandEnvelope<RejectMembershipPayload>,
   ids: MembershipEffectIds,
+  now?: () => Date,
 ): Promise<ExecutedCommand<MembershipProjection>> {
   const actorId = command.actor.id;
   if (!actorId) throw new MembershipConflictError('MEMBERSHIP_ADMIN_REQUIRED');
   return executeCriticalCommand(database, {
     command,
+    ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const current = await selectMembership(transaction, command.payload.membershipId, true);
       if (!current) throw new MembershipNotFoundError();

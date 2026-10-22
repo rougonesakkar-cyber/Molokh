@@ -3573,7 +3573,7 @@ const CommunityDenialCodeSchema = Type.Union([
   Type.Literal('ACCOUNT_NOT_VERIFIED'),
   Type.Literal('COMMUNITY_NOT_ACTIVE'),
   Type.Literal('MEMBERSHIP_ALREADY_EXISTS'),
-  Type.Literal('MEMBERSHIP_REAPPLY_NOT_DUE'),
+  Type.Literal('MEMBERSHIP_REAPPLY_WAIT'),
   Type.Literal('MEMBERSHIP_NOT_ACTIVE'),
   Type.Literal('AGE_CONTOUR_MISMATCH'),
   Type.Literal('MVP_ACTIVE_COMMUNITY_LIMIT'),

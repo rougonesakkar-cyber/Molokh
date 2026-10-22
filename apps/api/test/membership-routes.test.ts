@@ -7,7 +7,7 @@ import type {
   RequestMembershipPayload,
   WithdrawMembershipRequestPayload,
 } from '@molokh/db';
-import type { CommandEnvelope } from '@molokh/core';
+import { MembershipConflictError, type CommandEnvelope } from '@molokh/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
@@ -114,6 +114,30 @@ describe('Membership routes', () => {
     expect(JSON.stringify(accepted.json())).not.toContain(inviteToken);
     expect(activateMembershipByInvite.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'JOIN_BY_QR_OR_INVITE', payload: { token: inviteToken },
+    });
+  });
+
+  it('[AC-176] returns the canonical reapply conflict with the server retry time', async () => {
+    const retryAt = '2026-10-11T10:00:00.000Z';
+    const requestMembership = vi.fn(async () => {
+      throw new MembershipConflictError('MEMBERSHIP_REAPPLY_WAIT', retryAt);
+    });
+    const app = await buildApp({ membership: {
+      auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership,
+      activateMembershipByInvite: vi.fn(), approveMembership: vi.fn(),
+      rejectMembership: vi.fn(), withdrawMembershipRequest: vi.fn(),
+      listPendingMemberships: async () => [],
+    } });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'POST', url: `/api/v1/communities/${communityId}/memberships`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-reapply-1' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      code: 'MEMBERSHIP_REAPPLY_WAIT', retryAt,
     });
   });
 

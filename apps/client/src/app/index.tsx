@@ -445,7 +445,7 @@ const officialDenialLabels: Record<CommunityDenialCode, string> = {
   ACCOUNT_NOT_VERIFIED: 'Official Challenge откроется после верификации аккаунта Central.',
   COMMUNITY_NOT_ACTIVE: 'Новые Challenge недоступны, пока Community не активна.',
   MEMBERSHIP_ALREADY_EXISTS: 'Membership в этой Community уже существует.',
-  MEMBERSHIP_REAPPLY_NOT_DUE: 'Повторная заявка станет доступна после семидневной паузы.',
+  MEMBERSHIP_REAPPLY_WAIT: 'Повторная заявка станет доступна после семидневной паузы.',
   MEMBERSHIP_NOT_ACTIVE: 'Для Official Challenge нужен активный competitive Membership.',
   AGE_CONTOUR_MISMATCH: 'Возрастной контур Membership должен совпадать с профилем.',
   MVP_ACTIVE_COMMUNITY_LIMIT: 'В MVP доступна одна активная competitive Community.',
@@ -6547,7 +6547,7 @@ export default function IdentityScreen() {
                       && communityContext.membershipReapplyNotBeforeAt
                       && communityContext.access.denials.some((denial) =>
                         denial.capability === 'REQUEST_MEMBERSHIP'
-                        && denial.code === 'MEMBERSHIP_REAPPLY_NOT_DUE') ? (
+                        && denial.code === 'MEMBERSHIP_REAPPLY_WAIT') ? (
                       <Text style={styles.hint}>
                         {communityContext.membershipLatestRejectionReasonCode
                           ? `${membershipRejectionLabels[

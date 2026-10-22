@@ -206,7 +206,7 @@ const localizedApiErrors: Readonly<Record<string, string>> = {
   MEMBERSHIP_ACCOUNT_NOT_ACTIVE: 'Вступление недоступно, пока аккаунт не активен.',
   MEMBERSHIP_COMMUNITY_NOT_ACTIVE: 'Community сейчас не принимает новые заявки.',
   MEMBERSHIP_RELATIONSHIP_EXISTS: 'У вас уже есть заявка или Membership в этой Community.',
-  MEMBERSHIP_REAPPLY_NOT_DUE: 'Повторную заявку можно отправить после указанного срока.',
+  MEMBERSHIP_REAPPLY_WAIT: 'Повторную заявку можно отправить после указанного срока.',
   MEMBERSHIP_INVITE_INVALID: 'QR или приглашение недействительно либо уже использовано.',
   MEMBERSHIP_AGE_CONTOUR_MISMATCH: 'Приглашение предназначено для другого возрастного контура.',
   MEMBERSHIP_NOT_PENDING: 'Эта заявка уже рассмотрена. Обновите список.',
@@ -261,6 +261,9 @@ export async function apiErrorMessage(response: Response): Promise<string> {
     if (localized) {
       if (error.code === 'OPTIONAL_PAIR_QUIET' && error.retryAt) {
         return `${localized} Новый вызов доступен после ${new Date(error.retryAt).toLocaleString('ru-RU')}.`;
+      }
+      if (error.code === 'MEMBERSHIP_REAPPLY_WAIT' && error.retryAt) {
+        return `${localized} Срок: ${new Date(error.retryAt).toLocaleString('ru-RU')}.`;
       }
       return localized;
     }

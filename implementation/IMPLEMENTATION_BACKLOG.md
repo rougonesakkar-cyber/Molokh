@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 203/214 (`196/196 P0`).
+  Acceptance traceability is 204/214 (`196/196 P0`, `8/17 P1`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -433,6 +433,12 @@ This sprint produces a demonstrable Training slice while establishing the same f
   remains an immutable official Result with the normal Appeal and pair-rematch Cooldown, while the
   Champion/Contender projection, status lock and status-tenure history remain unchanged. The Chat
   explicitly says that the title is not at stake. Core/API/client and real PostgreSQL proofs pass.
+- M7 Membership reapply hardening: complete through AC-176. A rejected self-request preserves its
+  immutable decision and private reason, while the server-owned `reapply_not_before_at` blocks only
+  another self-request with canonical `MEMBERSHIP_REAPPLY_WAIT` and exact `retryAt`. The boundary is
+  inclusive at seven full days. A valid scoped QR/invite keeps the existing M-01 early-entry path;
+  expired, consumed or mismatched tokens cannot bypass DB eligibility. Failed early attempts leave
+  no Membership, timer, success audit, event, outbox or notification.
 - M5 Champion-to-Contender optional TITLE increment: complete. AC-047 stores an immutable
   `OPTIONAL_TITLE` queue intent, preserves the shared `(submitted_at, entry_id)` order without a
   Champion privilege, and creates the TITLE Challenge, service Chat, ruleset snapshot and

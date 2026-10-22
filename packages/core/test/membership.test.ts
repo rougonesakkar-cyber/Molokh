@@ -26,13 +26,30 @@ describe('Membership lifecycle policy', () => {
     })).toThrowError(expect.objectContaining({ code: 'MEMBERSHIP_AGE_CONTOUR_MISMATCH' }));
   });
 
-  it('[AC-014] permits a fresh self-request and fixes reminder deadlines at 12h and 24h', () => {
+  it('[AC-014][AC-176] uses a server seven-day reapply deadline without blocking invite entry', () => {
     expect(() => assertMembershipTransition({ ...base, transition: 'REQUEST' })).not.toThrow();
     expect(membershipRequestDeadline(now, 12)).toBe('2026-10-04T22:00:00.000Z');
     expect(membershipRequestDeadline(now, 24)).toBe('2026-10-05T10:00:00.000Z');
+    let conflict: unknown;
+    try {
+      assertMembershipTransition({
+        ...base, transition: 'REQUEST', reapplyNotBeforeAt: '2026-10-11T10:00:00.000Z',
+        now: new Date('2026-10-07T10:00:00.000Z'),
+      });
+    } catch (caught) {
+      conflict = caught;
+    }
+    expect(conflict).toMatchObject({
+      code: 'MEMBERSHIP_REAPPLY_WAIT', retryAt: '2026-10-11T10:00:00.000Z',
+    });
     expect(() => assertMembershipTransition({
       ...base, transition: 'REQUEST', reapplyNotBeforeAt: '2026-10-05T10:00:00.000Z',
-    })).toThrowError(expect.objectContaining({ code: 'MEMBERSHIP_REAPPLY_NOT_DUE' }));
+      now: new Date('2026-10-05T10:00:00.000Z'),
+    })).not.toThrow();
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'ACTIVATE', inviteValid: true, inviteAgeDivision: 'ADULT',
+      reapplyNotBeforeAt: '2026-10-11T10:00:00.000Z',
+    })).not.toThrow();
   });
 
   it('[AC-015][AC-016] requires a scoped Admin and an eligible pending request', () => {

@@ -22551,7 +22551,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       family_state: 'REVOKED', trusted_state: 'REVOKED' });
   });
 
-  it('[AC-013][AC-014][AC-015][M-04][M-05] governs Membership entry and request decisions', async () => {
+  it('[AC-013][AC-014][AC-015][AC-176][M-04][M-05] governs Membership entry and reapply', async () => {
     const base = 29000;
     const seedUser = testId(base + 1);
     const applicant = testId(base + 2);
@@ -22687,7 +22687,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       expectedVersion: 0, correlationId: testId(base + 59), causationId: null,
       requestId: testId(base + 60), source: 'api', payloadVersion: 1,
       payload: { communityId: community },
-    }, rejectedRequestIds);
+    }, rejectedRequestIds, () => new Date('2098-10-01T10:00:00.000Z'));
     const rejected = await rejectMembership(database, {
       commandId: testId(base + 61), commandType: 'REJECT_MEMBERSHIP',
       idempotencyKey: 'membership-reject-29000',
@@ -22701,17 +22701,18 @@ describePostgres('PostgreSQL critical command transaction', () => {
         internalRejectionReasonCode: 'CAPACITY_LIMIT',
       },
     }, { eventId: testId(base + 63), auditId: testId(base + 64),
-      outboxMessageId: testId(base + 65), notificationIds: [testId(base + 66)] });
+      outboxMessageId: testId(base + 65), notificationIds: [testId(base + 66)] },
+    () => new Date('2098-10-02T10:00:00.000Z'));
     expect(rejected.response).toMatchObject({
       state: 'REJECTED', publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE', version: 2,
     });
-    expect(Date.parse(rejected.response.reapplyNotBeforeAt!)).toBeGreaterThan(Date.now());
+    expect(rejected.response.reapplyNotBeforeAt).toBe('2098-10-09T10:00:00.000Z');
     const rejectedContext = await readCommunityContext(database, lifecycleApplicant, community);
     expect(rejectedContext).toMatchObject({ membership: null,
       membershipReapplyNotBeforeAt: rejected.response.reapplyNotBeforeAt,
       membershipLatestRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
       access: { denials: expect.arrayContaining([expect.objectContaining({
-        capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_NOT_DUE',
+        capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_WAIT',
       })]) } });
     const rejectionPrivacy = await sql<{
       readonly reason_code: string; readonly audit_reason_code: string;
@@ -22761,14 +22762,37 @@ describePostgres('PostgreSQL critical command transaction', () => {
       reminderTimerOutboxMessageId: testId(base + 75),
       escalationTimerOutboxMessageId: testId(base + 76),
     };
-    await expect(requestMembership(database, replacementRequest, replacementIds))
-      .rejects.toEqual(expect.objectContaining({ code: 'MEMBERSHIP_REAPPLY_NOT_DUE' }));
-    await sql`
-      update community.community_memberships set reapply_not_before_at = now() - interval '1 minute'
-      where membership_id = ${rejectedMembership}::uuid
+    await expect(requestMembership(database, replacementRequest, replacementIds,
+      () => new Date('2098-10-05T10:00:00.000Z'))).rejects.toEqual(expect.objectContaining({
+      code: 'MEMBERSHIP_REAPPLY_WAIT', retryAt: '2098-10-09T10:00:00.000Z',
+    }));
+    const rejectedAttemptEffects = await sql<{
+      readonly memberships: string; readonly events: string; readonly audits: string;
+      readonly outbox: string;
+    }>`
+      select
+        (select count(*)::text from community.community_memberships
+          where membership_id = ${replacementMembership}::uuid) as memberships,
+        (select count(*)::text from platform.domain_events
+          where aggregate_id = ${replacementMembership}::uuid) as events,
+        (select count(*)::text from platform.audit_events
+          where aggregate_id = ${replacementMembership}::uuid) as audits,
+        (select count(*)::text from platform.outbox_messages where message_id in (
+          ${replacementIds.outboxMessageId}::uuid,
+          ${replacementIds.reminderTimerOutboxMessageId}::uuid,
+          ${replacementIds.escalationTimerOutboxMessageId}::uuid
+        )) as outbox
     `.execute(database);
-    const replacement = await requestMembership(database, replacementRequest, replacementIds);
+    expect(rejectedAttemptEffects.rows[0]).toEqual({
+      memberships: '0', events: '0', audits: '0', outbox: '0',
+    });
+    const replacement = await requestMembership(database, replacementRequest, replacementIds,
+      () => new Date('2098-10-09T10:00:00.000Z'));
+    const replacementReplay = await requestMembership(database, replacementRequest, replacementIds,
+      () => new Date('2098-10-10T10:00:00.000Z'));
     expect(replacement.response.state).toBe('PENDING');
+    expect(replacement.response.requestedAt).toBe('2098-10-09T10:00:00.000Z');
+    expect(replacementReplay).toMatchObject({ replayed: true, response: replacement.response });
     await expect(withdrawMembershipRequest(database, {
       commandId: testId(base + 77), commandType: 'WITHDRAW_MEMBERSHIP_REQUEST',
       idempotencyKey: 'membership-withdraw-wrong-user-29000',
@@ -22796,6 +22820,37 @@ describePostgres('PostgreSQL critical command transaction', () => {
       state: 'LEFT', version: 2,
     });
 
+    const qrRejectedMembership = testId(base + 89);
+    const qrRequestEventId = testId(base + 93);
+    await requestMembership(database, {
+      commandId: testId(base + 90), commandType: 'REQUEST_MEMBERSHIP',
+      idempotencyKey: 'membership-request-before-qr-29000',
+      actor: { type: 'USER', id: qrApplicant, roles: ['ATHLETE'], scopeIds: [] },
+      aggregateType: 'CommunityMembership', aggregateId: qrRejectedMembership,
+      expectedVersion: 0, correlationId: testId(base + 91), causationId: null,
+      requestId: testId(base + 92), source: 'api', payloadVersion: 1,
+      payload: { communityId: community },
+    }, {
+      eventId: qrRequestEventId, auditId: testId(base + 94),
+      outboxMessageId: testId(base + 95), notificationIds: [testId(base + 96)],
+      reminderTimerOutboxMessageId: testId(base + 97),
+      escalationTimerOutboxMessageId: testId(base + 98),
+    }, () => new Date('2098-10-01T10:00:00.000Z'));
+    const qrRejection = await rejectMembership(database, {
+      commandId: testId(base + 99), commandType: 'REJECT_MEMBERSHIP',
+      idempotencyKey: 'membership-reject-before-qr-29000',
+      actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+      aggregateType: 'CommunityMembership', aggregateId: qrRejectedMembership,
+      expectedVersion: 1, correlationId: testId(base + 91), causationId: qrRequestEventId,
+      requestId: testId(base + 100), source: 'admin', payloadVersion: 1,
+      payload: { membershipId: qrRejectedMembership,
+        publicRejectionReasonCode: 'REQUEST_NOT_APPROVED',
+        internalRejectionReasonCode: 'ELIGIBILITY_REVIEW' },
+    }, { eventId: testId(base + 101), auditId: testId(base + 102),
+      outboxMessageId: testId(base + 103), notificationIds: [testId(base + 104)] },
+    () => new Date('2098-10-02T10:00:00.000Z'));
+    expect(qrRejection.response.reapplyNotBeforeAt).toBe('2098-10-09T10:00:00.000Z');
+
     const inviteToken = 'membership-pilot-qr-token-29000';
     const tokenHash = createHash('sha256').update(inviteToken, 'utf8').digest('hex');
     await sql`
@@ -22817,7 +22872,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       requestId: testId(base + 37), source: 'api', payloadVersion: 1,
       payload: { token: inviteToken },
     }, { eventId: testId(base + 38), auditId: testId(base + 39),
-      outboxMessageId: testId(base + 40), notificationIds: [testId(base + 41)] });
+      outboxMessageId: testId(base + 40), notificationIds: [testId(base + 41)] },
+    () => new Date('2098-10-05T10:00:00.000Z'));
     expect(activated.response).toMatchObject({ membershipId: qrMembership, state: 'ACTIVE',
       competitionEnabled: true, joinPath: 'QR', userId: qrApplicant });
     const invite = await sql<{ readonly state: string; readonly used_count: number }>`

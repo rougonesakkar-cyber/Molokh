@@ -373,7 +373,8 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
     return {
       statusCode,
       body: { code: error.code,
-        message: 'This Membership action is not available in the current state', requestId },
+        message: 'This Membership action is not available in the current state', requestId,
+        ...(error.retryAt ? { retryAt: error.retryAt } : {}) },
     };
   }
   if (error instanceof MembershipRemovalConflictError) {

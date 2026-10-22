@@ -111,13 +111,13 @@ describe('community access projection', () => {
     );
   });
 
-  it('[M-04] keeps a rejected self-request closed until its seven-day wait ends', () => {
+  it('[AC-176][M-04] keeps a rejected self-request closed until its seven-day wait ends', () => {
     const waiting = projectCommunityAccess({
       ...base, membership: null, membershipReapplyBlocked: true,
     });
     expect(waiting.capabilities).not.toContain('REQUEST_MEMBERSHIP');
     expect(waiting.denials).toContainEqual(expect.objectContaining({
-      capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_NOT_DUE', retryable: true,
+      capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_WAIT', retryable: true,
     }));
   });
 });

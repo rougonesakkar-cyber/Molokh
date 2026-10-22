@@ -189,7 +189,7 @@ export type CommunityDenialCode =
   | 'ACCOUNT_NOT_VERIFIED'
   | 'COMMUNITY_NOT_ACTIVE'
   | 'MEMBERSHIP_ALREADY_EXISTS'
-  | 'MEMBERSHIP_REAPPLY_NOT_DUE'
+  | 'MEMBERSHIP_REAPPLY_WAIT'
   | 'MEMBERSHIP_NOT_ACTIVE'
   | 'AGE_CONTOUR_MISMATCH'
   | 'MVP_ACTIVE_COMMUNITY_LIMIT'
@@ -292,7 +292,7 @@ export function projectCommunityAccess(
         : input.hasOtherActiveCompetitiveMembership
           ? 'MVP_ACTIVE_COMMUNITY_LIMIT'
           : input.membershipReapplyBlocked
-            ? 'MEMBERSHIP_REAPPLY_NOT_DUE'
+            ? 'MEMBERSHIP_REAPPLY_WAIT'
           : 'MEMBERSHIP_ALREADY_EXISTS';
     denials.push(denial('REQUEST_MEMBERSHIP', code, code !== 'MEMBERSHIP_ALREADY_EXISTS'));
   }
