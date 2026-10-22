@@ -2233,6 +2233,151 @@ async function verifySchedulingPublication(
       session_state: 'SCHEDULED', slot_state: 'BOOKED', capacity_reserved: false,
       obligations: '2',
     });
+
+    const deadlineSlotId = testId(35000);
+    const deadlineBookingId = testId(35001);
+    await publishSlot(
+      database,
+      {
+        ...slotCommand,
+        commandId: testId(35002),
+        idempotencyKey: 'scheduling-minimum-notice-slot',
+        aggregateId: deadlineSlotId,
+        correlationId: testId(35003),
+        requestId: testId(35004),
+        payload: {
+          ...slotPayload,
+          startAt: '2026-09-15T14:00:00.000Z',
+          endAt: '2026-09-15T15:00:00.000Z',
+        },
+      },
+      { eventId: testId(35005), auditId: testId(35006), outboxMessageId: testId(35007) },
+      () => occurredAt,
+    );
+    await selectSlot(
+      database,
+      {
+        commandId: testId(35008), commandType: 'SELECT_SLOT',
+        idempotencyKey: 'scheduling-minimum-notice-select',
+        actor: { type: 'USER', id: athleteE, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: deadlineBookingId, expectedVersion: 0,
+        correlationId: testId(35009), causationId: null, requestId: testId(35010),
+        source: 'api', payloadVersion: 1,
+        payload: { chatId: thirdChat, slotId: deadlineSlotId, commercialVersion: 1 },
+      },
+      {
+        eventId: testId(35011), auditId: testId(35012), outboxMessageId: testId(35013),
+        notificationId: testId(35014), notificationOutboxMessageId: testId(35015),
+      },
+      () => new Date('2026-09-07T09:45:00.000Z'),
+    );
+    const selectedAtOriginalNotice = await selectSameSlot(
+      database,
+      {
+        commandId: testId(35016), commandType: 'SELECT_SAME_SLOT',
+        idempotencyKey: 'scheduling-minimum-notice-select-same',
+        actor: { type: 'USER', id: athleteF, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'Booking', aggregateId: deadlineBookingId, expectedVersion: 1,
+        correlationId: testId(35017), causationId: testId(35011), requestId: testId(35018),
+        source: 'api', payloadVersion: 1,
+        payload: { bookingId: deadlineBookingId, commercialVersion: 1 },
+      },
+      {
+        eventId: testId(35019), auditId: testId(35020), outboxMessageId: testId(35021),
+        notificationId: testId(35022), notificationOutboxMessageId: testId(35023),
+      },
+      () => new Date('2026-09-07T09:50:00.000Z'),
+    );
+    expect(selectedAtOriginalNotice.response).toMatchObject({
+      state: 'HOST_CONFIRMATION_PENDING',
+      hostConfirmationDeadlineAt: '2026-09-15T06:00:00.000Z',
+      version: 2,
+    });
+    const beforeConfirmation = await sql<{
+      readonly booking_state: string; readonly booking_id: string | null;
+      readonly slot_state: string; readonly sessions: string;
+    }>`
+      select booking.state as booking_state, slot.booking_id, slot.state as slot_state,
+        (select count(*)::text from scheduling.sessions as session
+          where session.booking_id = booking.booking_id) as sessions
+      from scheduling.bookings as booking
+      join scheduling.slots as slot on slot.slot_id = booking.slot_id
+      where booking.booking_id = ${deadlineBookingId}::uuid
+    `.execute(database);
+    expect(beforeConfirmation.rows[0]).toEqual({
+      booking_state: 'HOST_CONFIRMATION_PENDING', booking_id: null,
+      slot_state: 'PUBLISHED', sessions: '0',
+    });
+
+    const changedVenueConfigurationId = testId(35024);
+    await database.transaction().execute(async (transaction) => {
+      await sql`
+        insert into community.venue_configuration_versions (
+          configuration_id, venue_id, configuration_version,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          created_by, effective_at
+        ) select
+          ${changedVenueConfigurationId}::uuid, venue_id, 2, 48,
+          slot_publish_horizon_days, contact_payload, ${admin}::uuid,
+          '2026-09-08T09:00:00.000Z'::timestamptz
+        from community.venues where venue_id = ${venue}::uuid
+      `.execute(transaction);
+      await sql`
+        update community.venues
+        set minimum_booking_notice_hours = 48,
+          configuration_version_id = ${changedVenueConfigurationId}::uuid,
+          version = version + 1,
+          updated_at = '2026-09-08T09:00:00.000Z'::timestamptz
+        where venue_id = ${venue}::uuid
+      `.execute(transaction);
+    });
+
+    const expiredEffects = hostEffects(35040);
+    await expect(confirmBookingHost(
+      database,
+      hostCommand(deadlineBookingId, 35030),
+      expiredEffects,
+      () => new Date('2026-09-15T06:00:00.000Z'),
+    )).rejects.toMatchObject<Partial<SchedulingConflictError>>({
+      reason: 'HOST_CONFIRMATION_EXPIRED',
+    });
+    const afterExpiredConfirmation = await sql<{
+      readonly booking_state: string; readonly booking_version: string;
+      readonly deadline_at: Date; readonly booking_id: string | null;
+      readonly slot_state: string; readonly sessions: string;
+      readonly events: string; readonly audits: string; readonly outbox: string;
+      readonly notifications: string;
+    }>`
+      select booking.state as booking_state, booking.version::text as booking_version,
+        booking.host_confirmation_deadline_at as deadline_at,
+        slot.booking_id, slot.state as slot_state,
+        (select count(*)::text from scheduling.sessions as session
+          where session.booking_id = booking.booking_id) as sessions,
+        (select count(*)::text from platform.domain_events
+          where event_id = ${expiredEffects.eventId}::uuid) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${expiredEffects.auditId}::uuid) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (
+            ${expiredEffects.outboxMessageId}::uuid,
+            ${expiredEffects.sessionTimerOutboxMessageId}::uuid,
+            ${expiredEffects.notificationOutboxMessageId}::uuid
+          )) as outbox,
+        (select count(*)::text from platform.notifications
+          where notification_id in (
+            ${expiredEffects.notificationIds[0]}::uuid,
+            ${expiredEffects.notificationIds[1]}::uuid
+          )) as notifications
+      from scheduling.bookings as booking
+      join scheduling.slots as slot on slot.slot_id = booking.slot_id
+      where booking.booking_id = ${deadlineBookingId}::uuid
+    `.execute(database);
+    expect(afterExpiredConfirmation.rows[0]).toEqual({
+      booking_state: 'HOST_CONFIRMATION_PENDING', booking_version: '2',
+      deadline_at: new Date('2026-09-15T06:00:00.000Z'), booking_id: null,
+      slot_state: 'PUBLISHED', sessions: '0', events: '0', audits: '0',
+      outbox: '0', notifications: '0',
+    });
 }
 
 const testConnectionString = process.env.DATABASE_TEST_URL;
@@ -7301,7 +7446,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(audits.rows[0]?.count).toBe('2');
   });
 
-  it('[AC-023][AC-024][AC-025][AC-026][AC-027][AC-028][AC-033][AC-034][AC-038][AC-039][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan conversion, NO_SHOW, Coach replacement and external no-fault cancellation', async () => {
+  it('[AC-023][AC-024][AC-025][AC-026][AC-027][AC-028][AC-033][AC-034][AC-038][AC-039][AC-040][AC-173][AC-174][AC-200][AC-201][AC-207][AC-208] completes ordinary scheduling, Group Plan conversion, NO_SHOW, Coach replacement and external no-fault cancellation', async () => {
     await verifySchedulingPublication(database);
   });
 

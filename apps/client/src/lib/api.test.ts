@@ -18,4 +18,17 @@ describe('API error presentation', () => {
     expect(message).toContain('2026');
     expect(message).not.toContain('conflict');
   });
+
+  it('[AC-040] explains that an expired host window did not reserve the Slot', async () => {
+    const response = {
+      status: 409,
+      json: async () => ({ code: 'HOST_CONFIRMATION_EXPIRED', message: 'conflict' }),
+    } as Response;
+
+    const message = await apiErrorMessage(response);
+
+    expect(message).toContain('Срок подтверждения истёк');
+    expect(message).toContain('не был забронирован');
+    expect(message).not.toContain('conflict');
+  });
 });

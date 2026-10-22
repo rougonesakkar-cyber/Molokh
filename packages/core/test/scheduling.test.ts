@@ -149,7 +149,7 @@ describe('Scheduling publication policy', () => {
     );
   });
 
-  it('derives the host boundary from the Venue notice and rejects a late choice', () => {
+  it('[AC-040] derives the host boundary from the Venue 8–48h notice and rejects a late choice', () => {
     expect(
       hostConfirmationDeadline({
         startAt: '2026-09-08T17:00:00.000Z',
@@ -164,9 +164,21 @@ describe('Scheduling publication policy', () => {
         occurredAt,
       }),
     ).toThrow(SchedulingConflictError);
+    for (const minimumBookingNoticeHours of [7, 49]) {
+      expect(() => hostConfirmationDeadline({
+        startAt: '2026-09-10T17:00:00.000Z',
+        minimumBookingNoticeHours,
+        occurredAt,
+      })).toThrowError(SchedulingValidationError);
+    }
+    expect(hostConfirmationDeadline({
+      startAt: '2026-09-09T10:00:00.000Z',
+      minimumBookingNoticeHours: 48,
+      occurredAt,
+    }).toISOString()).toBe('2026-09-07T10:00:00.000Z');
   });
 
-  it('allows host confirmation only for a mutually selected Slot before the deadline', () => {
+  it('[AC-040] allows host confirmation only for a mutually selected Slot strictly before the deadline', () => {
     expect(() =>
       assertHostConfirmationWindow({
         state: 'HOST_CONFIRMATION_PENDING',

@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 204/214 (`196/196 P0`, `8/17 P1`).
+  Acceptance traceability is 205/214 (`196/196 P0`, `9/17 P1`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -439,6 +439,11 @@ This sprint produces a demonstrable Training slice while establishing the same f
   inclusive at seven full days. A valid scoped QR/invite keeps the existing M-01 early-entry path;
   expired, consumed or mismatched tokens cannot bypass DB eligibility. Failed early attempts leave
   no Membership, timer, success audit, event, outbox or notification.
+- M4 host-confirmation notice hardening: complete through AC-040. Venue notice is constrained to
+  8–48 hours, the Booking keeps its original server deadline when the current Venue configuration
+  changes, and confirmation is allowed only strictly before that boundary. At or after the deadline
+  `HOST_CONFIRMATION_EXPIRED` leaves the Booking pending, Slot `PUBLISHED` and unclaimed, and creates
+  no Session, success audit, event, outbox or notification.
 - M5 Champion-to-Contender optional TITLE increment: complete. AC-047 stores an immutable
   `OPTIONAL_TITLE` queue intent, preserves the shared `(submitted_at, entry_id)` order without a
   Champion privilege, and creates the TITLE Challenge, service Chat, ruleset snapshot and

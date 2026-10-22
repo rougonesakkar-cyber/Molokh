@@ -1955,7 +1955,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-063][AC-065][AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
+  it('[AC-040][AC-063][AC-065][AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
     const venueId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const chatId = '0199a1b2-1234-7000-8000-000000000703';
@@ -2989,6 +2989,22 @@ describe('runtime contract', () => {
     });
     expect(athleteConflict.statusCode).toBe(409);
     expect(athleteConflict.json()).toMatchObject({ code: 'ATHLETE_SCHEDULE_CONFLICT' });
+
+    confirmedByHost.mockRejectedValueOnce(
+      new SchedulingConflictError('HOST_CONFIRMATION_EXPIRED'),
+    );
+    const expiredConfirmation = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/host-confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'host-confirm-api-expired',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(expiredConfirmation.statusCode).toBe(409);
+    expect(expiredConfirmation.json()).toMatchObject({ code: 'HOST_CONFIRMATION_EXPIRED' });
 
     const hostRejected = await app.inject({
       method: 'POST',

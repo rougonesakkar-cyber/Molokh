@@ -234,7 +234,8 @@ export function hostConfirmationDeadline(input: {
   }
   if (
     !Number.isSafeInteger(input.minimumBookingNoticeHours) ||
-    input.minimumBookingNoticeHours < 1
+    input.minimumBookingNoticeHours < 8 ||
+    input.minimumBookingNoticeHours > 48
   ) {
     throw new SchedulingValidationError('minimumBookingNoticeHours');
   }

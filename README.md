@@ -8,10 +8,10 @@ Molokh — mobile-first продукт для поиска партнёров п
 - state transitions: **309**;
 - registered events: **310**;
 - acceptance scenarios: **214** (`196 P0`, `17 P1`, `1 P2`);
-- executable acceptance traceability: **204/214** (`196/196 P0`, `8/17 P1`);
+- executable acceptance traceability: **205/214** (`196/196 P0`, `9/17 P1`);
 - open blocking product questions: **0**;
 - implementation code: M0/M1, the local Identity/Community/role slices, M3 and the ordinary Training slice M4 are complete; Home Venue is an editable Discovery/Slot preference with no Membership/status/FIFO/Challenge side effect; M5 runs optional, GENESIS and strict-FIFO mandatory Official Challenges through Booking/Result, provisional status movement, Cooldown and finalization; M6 includes Appeal submission/waiver, opponent/Coach responses, appellant withdrawal, transparent SLA extension, Central decisions and the complete MissingResultReview path with an independent reviewer-Coach; M7 now includes QR/self-request/Admin decision/withdrawal Membership entry, Community pause/closure, voluntary Membership exit, governed Membership removal, the disabled-by-default Youth consent foundation, the deterministic age-18 transition, full PlatformIncident reconciliation, recoverable account closure/self-export, account-access governance and persistent OTP/rotating sessions;
-- database gate: PostgreSQL migrations `0001`–`0077` and **76/76** integration scenarios pass locally. AC-176 enforces the immutable seven-day server reapply wait with canonical `MEMBERSHIP_REAPPLY_WAIT`/`retryAt`, permits the exact deadline and preserves the existing DB-validated invite path for earlier entry without exposing the rejection reason. AC-187 serializes optional Challenge creation per initiator, counts only unanswered OPTIONAL invitations and leaves FIFO/mandatory/status paths untouched. AC-181/182 provide the private provider-independent Appeal/SafetyCase evidence and scan lifecycle; AC-123–152 retain the audited SafetyCase, Enforcement and independent Appeal contours.
+- database gate: PostgreSQL migrations `0001`–`0077` and **76/76** integration scenarios pass locally. AC-040 preserves the Booking's original 8–48-hour Venue notice snapshot and rejects host confirmation exactly at its server deadline without reserving the Slot or creating a Session. AC-176 enforces the immutable seven-day server reapply wait with canonical `MEMBERSHIP_REAPPLY_WAIT`/`retryAt`, permits the exact deadline and preserves the existing DB-validated invite path for earlier entry without exposing the rejection reason. AC-187 serializes optional Challenge creation per initiator, counts only unanswered OPTIONAL invitations and leaves FIFO/mandatory/status paths untouched. AC-181/182 provide the private provider-independent Appeal/SafetyCase evidence and scan lifecycle; AC-123–152 retain the audited SafetyCase, Enforcement and independent Appeal contours.
 - critical-command audit gate: Coach Result, scoped Gym Admin evidence and assigned Central Appeal
   decisions preserve the DB-authorized actor context, normalized reason, before/after state,
   request/correlation/causation lineage and server time in one append-only transaction;
@@ -303,6 +303,10 @@ confirms the same Slot, while the Slot remains unreserved. One Venue/Coach confi
 atomically claims the Slot, creates one `OFFICIAL_CHALLENGE` Session and moves the Challenge to
 `BOOKED`. Selection expiry or a resource race returns the Challenge to scheduling with its
 original deadline and obligations intact.
+The Booking snapshots the Venue's 8–48-hour minimum-notice deadline when the Slot is selected.
+Host confirmation is valid only strictly before that server deadline; at or after it, the command
+returns `HOST_CONFIRMATION_EXPIRED`, creates no Session and leaves the Slot `PUBLISHED` and
+unclaimed even if the current Venue configuration has since changed.
 
 At the scheduled boundary, the Worker opens the Coach window and freezes one immutable
 competitive snapshot with roles, planned/effective stake, rules/config, Venue, Coach and
