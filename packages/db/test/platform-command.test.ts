@@ -4820,7 +4820,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('[AC-012] projects only eligible Discovery cards with visible deterministic rank reasons', async () => {
+  it('[AC-012][AC-154] projects only eligible Discovery cards with visible deterministic rank reasons', async () => {
     const viewerId = testId(400);
     const eligibleId = testId(401);
     const youthId = testId(402);
@@ -4830,6 +4830,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const pausedId = testId(406);
     const centralId = testId(407);
     const venueId = testId(408);
+    const insidePlainId = testId(419);
+    const outsideInboundId = testId(420);
+    const tieFirstId = testId(421);
+    const tieSecondId = testId(422);
+    const outsideVenueId = testId(423);
+    const outsideVenueConfigurationId = testId(424);
     const userValues = [
       [viewerId, '+79991000400', '1994-01-01', 'ADULT', 'Viewer', false],
       [eligibleId, '+79991000401', '1995-01-01', 'ADULT', 'Visible Candidate', false],
@@ -4839,6 +4845,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
       [matchedId, '+79991000405', '1991-01-01', 'ADULT', 'Matched Candidate', false],
       [pausedId, '+79991000406', '1990-01-01', 'ADULT', 'Paused Candidate', true],
       [centralId, '+79991000407', '1989-01-01', 'ADULT', 'Central', false],
+      [insidePlainId, '+79991000419', '1996-01-01', 'ADULT', 'Inside Plain', false],
+      [outsideInboundId, '+79991000420', '1996-02-01', 'ADULT', 'Outside Inbound', false],
+      [tieFirstId, '+79991000421', '1996-03-01', 'ADULT', 'Tie First', false],
+      [tieSecondId, '+79991000422', '1996-04-01', 'ADULT', 'Tie Second', false],
     ] as const;
     for (const [userId, phone, birthDate, ageDivision, displayName, paused] of userValues) {
       await sql`
@@ -4860,6 +4870,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
       [suppressedId, 'RUNNING', null],
       [matchedId, 'BOXING', null],
       [pausedId, 'BOXING', null],
+      [insidePlainId, 'BOXING', null],
+      [outsideInboundId, 'BOXING', null],
+      [tieFirstId, 'RUNNING', null],
+      [tieSecondId, 'RUNNING', null],
     ] as const) {
       await sql`
         insert into identity.athlete_profiles (
@@ -4889,15 +4903,56 @@ describePostgres('PostgreSQL critical command transaction', () => {
       contactPayload: {},
       occurredAt: '2026-09-01T09:00:00.000Z',
     });
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into community.venues (
+          venue_id, legal_name, display_name, address, city_code, latitude, longitude,
+          timezone, state, minimum_booking_notice_hours, slot_publish_horizon_days,
+          contact_payload, configuration_version_id, version
+        ) values (
+          ${outsideVenueId}::uuid, 'Discovery Far Venue LLC', 'Discovery Far Gym',
+          'Moscow outer district', 'MOSCOW', 56.051244, 37.618423,
+          'Europe/Moscow', 'ACTIVE', 8, 30, '{}'::jsonb,
+          ${outsideVenueConfigurationId}::uuid, 1
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.venue_configuration_versions (
+          configuration_id, venue_id, configuration_version,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          created_by, effective_at
+        ) values (
+          ${outsideVenueConfigurationId}::uuid, ${outsideVenueId}::uuid, 1,
+          8, 30, '{}'::jsonb, ${centralId}::uuid, '2026-09-01T09:00:00Z'
+        )
+      `.execute(transaction);
+      await sql`
+        update community.venues
+        set latitude = 55.751244, longitude = 37.618423
+        where venue_id = ${venueId}::uuid
+      `.execute(transaction);
+      await sql`
+        update identity.athlete_profiles
+        set home_venue_id = ${outsideVenueId}::uuid
+        where user_id = ${outsideInboundId}::uuid
+      `.execute(transaction);
+    });
     await sql`
       insert into social.likes (
         like_id, from_user_id, to_user_id, state, source,
         created_at, expires_at, version
-      ) values (
-        ${testId(414)}::uuid, ${eligibleId}::uuid, ${viewerId}::uuid,
-        'ACTIVE', 'DISCOVERY', '2026-09-01T09:00:00Z',
-        '2026-10-01T09:00:00Z', 1
-      )
+      ) values
+        (
+          ${testId(414)}::uuid, ${eligibleId}::uuid, ${viewerId}::uuid,
+          'ACTIVE', 'DISCOVERY', '2026-09-01T09:00:00Z',
+          '2026-10-01T09:00:00Z', 1
+        ),
+        (
+          ${testId(425)}::uuid, ${outsideInboundId}::uuid, ${viewerId}::uuid,
+          'ACTIVE', 'DISCOVERY', '2026-09-01T09:00:00Z',
+          '2026-10-01T09:00:00Z', 1
+        )
     `.execute(database);
     await sql`
       insert into social.blocks (
@@ -4941,7 +4996,22 @@ describePostgres('PostgreSQL critical command transaction', () => {
       20,
       new Date('2026-09-06T09:00:00.000Z'),
     );
-    expect(cards).toHaveLength(1);
+    const repeatedCards = await readDiscoveryCards(
+      database,
+      viewerId,
+      20,
+      new Date('2026-09-06T09:05:00.000Z'),
+    );
+    expect(cards).toHaveLength(5);
+    expect(cards.map((card) => card.candidateUserId)).toEqual([
+      eligibleId,
+      insidePlainId,
+      tieFirstId,
+      tieSecondId,
+      outsideInboundId,
+    ]);
+    expect(repeatedCards.map((card) => card.candidateUserId))
+      .toEqual(cards.map((card) => card.candidateUserId));
     expect(cards[0]).toMatchObject({
       candidateUserId: eligibleId,
       displayName: 'Visible Candidate',
@@ -4952,6 +5022,24 @@ describePostgres('PostgreSQL critical command transaction', () => {
       rankingConfigVersion: 'discovery-mvp-v1',
       rankingReasons: [
         'WITHIN_RADIUS',
+        'INBOUND_INTEREST',
+        'PRIMARY_SPORT_OVERLAP',
+      ],
+    });
+    expect(cards[1]).toMatchObject({
+      candidateUserId: insidePlainId,
+      geographyTier: 'WITHIN_RADIUS',
+      inboundLike: false,
+      rankingConfigVersion: 'discovery-mvp-v1',
+    });
+    expect(cards[2]?.candidateUserId.localeCompare(cards[3]!.candidateUserId)).toBeLessThan(0);
+    expect(cards[4]).toMatchObject({
+      candidateUserId: outsideInboundId,
+      geographyTier: 'CITY_EXPANSION',
+      inboundLike: true,
+      rankingConfigVersion: 'discovery-mvp-v1',
+      rankingReasons: [
+        'CITY_EXPANSION',
         'INBOUND_INTEREST',
         'PRIMARY_SPORT_OVERLAP',
       ],

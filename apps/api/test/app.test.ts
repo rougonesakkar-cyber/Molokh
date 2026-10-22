@@ -872,7 +872,7 @@ describe('runtime contract', () => {
     );
   });
 
-  it('returns transparent Discovery cards without exposing private rank buckets', async () => {
+  it('[AC-154] returns transparent Discovery cards without exposing private rank buckets', async () => {
     const cards: DiscoveryCardProjection[] = [
       {
         candidateUserId: '0199a1b2-1234-7000-8000-000000000404',
@@ -1066,6 +1066,11 @@ describe('runtime contract', () => {
     });
     expect(response.json().data[0]).not.toHaveProperty('recentActivityBucket');
     expect(response.json().data[0]).not.toHaveProperty('responseSpeedBucket');
+    expect(response.json().data[0].rankingConfigVersion)
+      .toBe(response.json().meta.rankingConfigVersion);
+    expect(response.json().data[0]).not.toHaveProperty('reliabilityScore');
+    expect(response.json().data[0]).not.toHaveProperty('safetyReason');
+    expect(response.json().data[0]).not.toHaveProperty('moderationReason');
 
     const invalidLike = await app.inject({
       method: 'POST',

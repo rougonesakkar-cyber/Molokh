@@ -34,6 +34,12 @@ export interface DiscoverySectionProps {
   readonly onUnmatch: (match: Match) => void;
 }
 
+export const DISCOVERY_PRESENTATION_COPY = {
+  orderHint: 'Сначала показываем людей внутри вашего радиуса, затем расширяем поиск в пределах города.',
+  inboundInterest: 'Хочет тренироваться с вами',
+  cityExpansion: 'Расширение поиска в пределах города',
+} as const;
+
 export function DiscoverySection({
   actingAction,
   actingCandidateId,
@@ -163,7 +169,7 @@ export function DiscoverySection({
       <View style={styles.section}>
         <Text accessibilityRole="header" aria-level={2} style={styles.title}>Люди для тренировки</Text>
         <Text style={styles.muted}>
-          Сначала показываем людей внутри вашего радиуса, затем расширяем поиск в пределах города.
+          {DISCOVERY_PRESENTATION_COPY.orderHint}
         </Text>
         {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
         {cards.length === 0 ? (
@@ -204,7 +210,7 @@ export function DiscoverySection({
                 </View>
                 {candidate.inboundLike ? (
                   <View style={styles.interestBadge}>
-                    <Text style={styles.interestText}>Хочет тренироваться с вами</Text>
+                    <Text style={styles.interestText}>{DISCOVERY_PRESENTATION_COPY.inboundInterest}</Text>
                   </View>
                 ) : null}
                 <Text style={styles.muted}>{candidate.homeVenue.displayName}</Text>
@@ -213,7 +219,7 @@ export function DiscoverySection({
                     ? candidate.distanceKm === 0
                       ? 'Ваш домашний зал'
                       : `${candidate.distanceKm ?? '—'} км · внутри радиуса`
-                    : 'Расширение поиска в пределах города'}
+                    : DISCOVERY_PRESENTATION_COPY.cityExpansion}
                 </Text>
                 {candidate.experienceText ? (
                   <Text style={styles.experience}>{candidate.experienceText}</Text>
