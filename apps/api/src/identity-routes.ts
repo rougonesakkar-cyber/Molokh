@@ -1,4 +1,5 @@
 import {
+  IdentityPermissionDeniedError,
   InvalidCommandEnvelopeError,
   type CommandEnvelope,
   type IdentityProjection,
@@ -13,6 +14,7 @@ import {
   HomeVenueSettingsResponseSchema,
   IdentityCommandResponseSchema,
   MeResponseSchema,
+  PublicAthleteProfileResponseSchema,
   RequestAvatarUploadBodySchema,
   type AvatarUploadTicketResponse,
   type ChangeDisplayNameBody,
@@ -23,6 +25,7 @@ import {
   type IdentityCommandResponse,
   type IdentityProjectionContract,
   type MeResponse,
+  type PublicAthleteProfileResponse,
   type RequestAvatarUploadBody,
 } from '@molokh/contracts';
 import type {
@@ -33,6 +36,7 @@ import type {
   HomeVenueSelectionProjection,
   HomeVenueSettingsProjection,
   IdentityEffectIds,
+  PublicAthleteProfileProjection,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
@@ -48,6 +52,10 @@ import { newUuidV7 } from './uuid-v7.js';
 export interface IdentityRouteDependencies {
   readonly auth: AuthAdapter;
   readonly readMe: (userId: string) => Promise<IdentityProjection | null>;
+  readonly readPublicProfile?: (
+    viewerUserId: string,
+    subjectUserId: string,
+  ) => Promise<PublicAthleteProfileProjection | null>;
   readonly changeDisplayName: (
     command: CommandEnvelope<ChangeDisplayNamePayload>,
     ids: IdentityEffectIds,
@@ -104,6 +112,18 @@ export function contractIdentity(identity: IdentityProjection): IdentityProjecti
   };
 }
 
+function contractPublicAthleteProfile(
+  profile: PublicAthleteProfileProjection,
+): PublicAthleteProfileResponse['data'] {
+  return {
+    ...profile,
+    currentStatuses: profile.currentStatuses.map((status) => ({ ...status })),
+    statusHistory: profile.statusHistory.map((tenure) => ({ ...tenure })),
+    officialRecord: { ...profile.officialRecord },
+    recentOfficialResults: profile.recentOfficialResults.map((result) => ({ ...result })),
+  };
+}
+
 export async function registerIdentityRoutes(
   app: FastifyInstance,
   dependencies: IdentityRouteDependencies,
@@ -134,6 +154,64 @@ export async function registerIdentityRoutes(
       }
       return {
         data: contractIdentity(identity),
+        meta: { requestId: requestContext(request).requestId },
+      };
+    },
+  );
+
+  if (dependencies.readPublicProfile) app.get<{
+    Params: { readonly userId: string };
+    Headers: IdentityHeaders;
+  }>(
+    '/api/v1/athletes/:userId/profile',
+    {
+      schema: {
+        operationId: 'readPublicAthleteProfile',
+        params: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['userId'],
+          properties: { userId: { type: 'string', format: 'uuid' } },
+        },
+        response: {
+          200: PublicAthleteProfileResponseSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<PublicAthleteProfileResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      let profile: PublicAthleteProfileProjection | null;
+      try {
+        profile = await dependencies.readPublicProfile!(
+          authenticated.userId,
+          request.params.userId,
+        );
+      } catch (error) {
+        if (!(error instanceof IdentityPermissionDeniedError)) throw error;
+        await reply.status(403).send({
+          code: 'PROFILE_NOT_VISIBLE',
+          message: 'This public profile is not available in the current context',
+          requestId: requestContext(request).requestId,
+        });
+        return;
+      }
+      if (!profile) {
+        await reply.status(404).send({
+          code: 'IDENTITY_NOT_FOUND',
+          message: 'Identity was not found',
+          requestId: requestContext(request).requestId,
+        });
+        return;
+      }
+      return {
+        data: contractPublicAthleteProfile(profile),
         meta: { requestId: requestContext(request).requestId },
       };
     },

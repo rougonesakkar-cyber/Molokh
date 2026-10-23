@@ -144,6 +144,7 @@ import {
   readActiveBlocks,
   readDiscoveryCards,
   readIdentityProjection,
+  readPublicAthleteProfile,
   readHomeVenueSettings,
   readAgeDivisionTransitionTimerSnapshot,
   readDiscoverySuppressionTimerSnapshot,
@@ -5044,6 +5045,313 @@ describePostgres('PostgreSQL critical command transaction', () => {
         'PRIMARY_SPORT_OVERLAP',
       ],
     });
+  });
+
+  it('[AC-165] projects effective public Athlete statistics without private history', async () => {
+    const base = 130000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const subjectUserId = fixture.athleteA;
+    const viewerUserId = fixture.athleteB;
+    const configurationId = testId(base + 15);
+    const rulesetSnapshotId = testId(base + 30);
+
+    await sql`
+      insert into identity.athlete_profiles (
+        user_id, primary_sport, secondary_sport, home_venue_id,
+        discovery_radius_km, experience_text
+      ) values
+        (${subjectUserId}::uuid, 'BOXING', 'RUNNING', ${fixture.venue}::uuid,
+          15, 'Private subject experience'),
+        (${viewerUserId}::uuid, 'BOXING', null, ${fixture.venue}::uuid,
+          15, 'Private viewer experience')
+    `.execute(database);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        update competition.competitions
+        set phase = 'RUNNING', champion_user_id = ${subjectUserId}::uuid,
+          contender_user_id = null, status_version = 2, version = 3
+        where competition_id = ${fixture.competition}::uuid
+      `.execute(transaction);
+      await sql`
+        insert into platform.domain_events (
+          event_id, event_name, event_version, aggregate_type, aggregate_id,
+          aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+          occurred_at, payload, idempotency_key_hash
+        ) values
+          (
+            ${testId(base + 31)}::uuid, 'StatusFixtureEstablished', 1, 'Competition',
+            ${fixture.competition}::uuid, 2, 'ST-04', ${testId(base + 33)}::uuid,
+            null, ${fixture.central}::uuid, '2026-10-01T08:00:00.000Z',
+            ${JSON.stringify({ championUserId: viewerUserId,
+              contenderUserId: subjectUserId, statusVersion: 1, provisional: false })}::jsonb,
+            'fixture:ac-165:status:one'
+          ),
+          (
+            ${testId(base + 32)}::uuid, 'StatusFixtureTransferred', 1, 'Competition',
+            ${fixture.competition}::uuid, 3, 'ST-08', ${testId(base + 34)}::uuid,
+            ${testId(base + 31)}::uuid, ${fixture.central}::uuid,
+            '2026-10-02T08:00:00.000Z',
+            ${JSON.stringify({ championUserId: subjectUserId,
+              contenderUserId: null, statusVersion: 2, provisional: false })}::jsonb,
+            'fixture:ac-165:status:two'
+          )
+      `.execute(transaction);
+      await sql`
+        update scheduling.sessions
+        set state = 'ENDED', window_opened_at = scheduled_start_at,
+          actual_start_at = scheduled_start_at,
+          actual_end_at = scheduled_end_at, version = 4
+        where session_id = ${fixture.session}::uuid
+      `.execute(transaction);
+      await sql`
+        insert into scheduling.attendance (
+          attendance_id, session_id, athlete_user_id, status, arrival_at,
+          recorded_by, recorded_at, version
+        ) values (
+          ${testId(base + 35)}::uuid, ${fixture.session}::uuid,
+          ${subjectUserId}::uuid, 'PRESENT', ${fixture.scheduledStartAt}::timestamptz,
+          ${fixture.coach}::uuid, ${fixture.scheduledStartAt}::timestamptz, 1
+        )
+      `.execute(transaction);
+      await sql`
+        insert into competition.ruleset_snapshots (
+          ruleset_snapshot_id, competition_id, community_configuration_id,
+          ruleset_ref, ruleset_ack_mode, policy_version, created_at
+        ) values (
+          ${rulesetSnapshotId}::uuid, ${fixture.competition}::uuid,
+          ${configurationId}::uuid, 'pilot-boxing-v1', 'IMPLICIT_ON_ACCEPT',
+          'profile-stats-v1', '2026-10-01T08:00:00.000Z'
+        )
+      `.execute(transaction);
+    });
+
+    const resultCases = [
+      { outcome: 'DRAW', subjectWins: null, state: 'FINAL', day: 1 },
+      { outcome: 'WIN_A', subjectWins: true, state: 'FINAL', day: 2 },
+      { outcome: 'WIN_B', subjectWins: false, state: 'FINAL', day: 3 },
+      { outcome: 'WIN_A', subjectWins: true, state: 'FINAL', day: 4 },
+      { outcome: 'WIN_A', subjectWins: true, state: 'REVERSED', day: 5 },
+      { outcome: 'FORFEIT', subjectWins: true, state: 'FINAL', day: 6 },
+      { outcome: 'WIN_A', subjectWins: true, state: 'ANNULLED', day: 7 },
+    ] as const;
+    const resultIds: string[] = [];
+    for (const [index, resultCase] of resultCases.entries()) {
+      const itemBase = base + 100 + index * 20;
+      const challengeId = testId(itemBase);
+      const slotId = testId(itemBase + 1);
+      const bookingId = testId(itemBase + 2);
+      const sessionId = testId(itemBase + 3);
+      const snapshotId = testId(itemBase + 4);
+      const resultId = testId(itemBase + 5);
+      const appealId = testId(itemBase + 6);
+      const actualTime = `2026-10-${String(resultCase.day).padStart(2, '0')}T10:30:00.000Z`;
+      const startAt = `2026-10-${String(resultCase.day).padStart(2, '0')}T10:00:00.000Z`;
+      const endAt = `2026-10-${String(resultCase.day).padStart(2, '0')}T11:00:00.000Z`;
+      const recordedAt = `2026-10-${String(resultCase.day).padStart(2, '0')}T11:05:00.000Z`;
+      const finalizedAt = `2026-10-${String(resultCase.day).padStart(2, '0')}T12:00:00.000Z`;
+      const winnerUserId = resultCase.subjectWins === null
+        ? null : resultCase.subjectWins ? subjectUserId : viewerUserId;
+      const loserUserId = resultCase.subjectWins === null
+        ? null : resultCase.subjectWins ? viewerUserId : subjectUserId;
+      resultIds.push(resultId);
+
+      await database.transaction().execute(async (transaction) => {
+        await sql`set constraints all deferred`.execute(transaction);
+        await sql`
+          insert into competition.challenges (
+            challenge_id, competition_id, source_match_id, source_chat_id, service_chat_id,
+            initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+            response_policy, stake, state, ruleset_snapshot_id, response_deadline_at,
+            accepted_at, scheduling_deadline_at, decided_at, version, created_at, updated_at
+          ) values (
+            ${challengeId}::uuid, ${fixture.competition}::uuid, ${fixture.match}::uuid,
+            ${fixture.chat}::uuid, ${fixture.chat}::uuid, ${subjectUserId}::uuid,
+            ${viewerUserId}::uuid, least(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+            greatest(${subjectUserId}::uuid, ${viewerUserId}::uuid), 'OPTIONAL', 'NONE',
+            'COMPLETED', ${rulesetSnapshotId}::uuid, ${startAt}::timestamptz,
+            ${startAt}::timestamptz, ${endAt}::timestamptz, ${finalizedAt}::timestamptz,
+            6, ${startAt}::timestamptz, ${finalizedAt}::timestamptz
+          )
+        `.execute(transaction);
+        await sql`
+          insert into scheduling.slots (
+            slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+            price_amount, price_currency, commercial_version, booking_id,
+            published_by, version
+          ) values (
+            ${slotId}::uuid, ${fixture.venue}::uuid, ${fixture.coach}::uuid,
+            ${startAt}::timestamptz, ${endAt}::timestamptz, 'PERSONAL', 'COMPLETED',
+            1000, 'RUB', 1, ${bookingId}::uuid, ${fixture.coach}::uuid, 3
+          )
+        `.execute(transaction);
+        await sql`
+          insert into scheduling.bookings (
+            booking_id, chat_id, match_id, slot_id, pair_low_id, pair_high_id,
+            purpose, state, initiated_by, selected_by_low_at, selected_by_high_at,
+            selection_expires_at, host_confirmation_deadline_at,
+            commercial_terms_snapshot, host_confirmed_by, host_confirmed_at,
+            challenge_id, version, created_at, updated_at
+          ) values (
+            ${bookingId}::uuid, ${fixture.chat}::uuid, ${fixture.match}::uuid,
+            ${slotId}::uuid, least(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+            greatest(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+            'OFFICIAL_CHALLENGE', 'COMPLETED', ${subjectUserId}::uuid,
+            ${startAt}::timestamptz, ${startAt}::timestamptz, ${startAt}::timestamptz,
+            ${startAt}::timestamptz, '{}'::jsonb, ${fixture.coach}::uuid,
+            ${startAt}::timestamptz, ${challengeId}::uuid, 4,
+            ${startAt}::timestamptz, ${finalizedAt}::timestamptz
+          )
+        `.execute(transaction);
+        await sql`
+          insert into scheduling.sessions (
+            session_id, booking_id, venue_id, coach_user_id, pair_low_id, pair_high_id,
+            purpose, state, scheduled_start_at, scheduled_end_at,
+            commercial_terms_snapshot, challenge_id, window_opened_at,
+            actual_start_at, actual_end_at, version, created_at, updated_at
+          ) values (
+            ${sessionId}::uuid, ${bookingId}::uuid, ${fixture.venue}::uuid,
+            ${fixture.coach}::uuid, least(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+            greatest(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+            'OFFICIAL_CHALLENGE', 'ENDED', ${startAt}::timestamptz,
+            ${endAt}::timestamptz, '{}'::jsonb, ${challengeId}::uuid,
+            ${startAt}::timestamptz, ${startAt}::timestamptz,
+            ${endAt}::timestamptz, 5, ${startAt}::timestamptz,
+            ${finalizedAt}::timestamptz
+          )
+        `.execute(transaction);
+        await sql`
+          insert into scheduling.session_competitive_snapshots (
+            snapshot_id, session_id, challenge_id, competition_id, ruleset_snapshot_id,
+            community_configuration_id, planned_stake, effective_stake,
+            champion_user_id, contender_user_id, competition_status_version,
+            venue_id, coach_user_id, pair_low_id, pair_high_id,
+            scheduled_start_at, scheduled_end_at, created_at
+          ) values (
+            ${snapshotId}::uuid, ${sessionId}::uuid, ${challengeId}::uuid,
+            ${fixture.competition}::uuid, ${rulesetSnapshotId}::uuid,
+            ${configurationId}::uuid, 'NONE', 'NONE', ${subjectUserId}::uuid,
+            null, 2, ${fixture.venue}::uuid, ${fixture.coach}::uuid,
+            least(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+            greatest(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+            ${startAt}::timestamptz, ${endAt}::timestamptz, ${startAt}::timestamptz
+          )
+        `.execute(transaction);
+        await sql`
+          insert into competition.results (
+            result_id, challenge_id, session_id, competitive_snapshot_id, cycle_no,
+            origin, state, recorded_outcome_code, winner_user_id, loser_user_id,
+            reason_code, comment, actual_time, venue_id, coach_user_id, recorded_by,
+            recorded_at, appeal_deadline_at, pre_status_snapshot, finalized_at,
+            version, updated_at
+          ) values (
+            ${resultId}::uuid, ${challengeId}::uuid, ${sessionId}::uuid,
+            ${snapshotId}::uuid, 1, 'SESSION', ${resultCase.state},
+            ${resultCase.outcome}, ${winnerUserId}::uuid, ${loserUserId}::uuid,
+            ${resultCase.outcome === 'FORFEIT' ? 'ATHLETE_WITHDRAWAL' : null},
+            ${resultCase.outcome === 'FORFEIT' ? 'private-result-comment' : null},
+            ${actualTime}::timestamptz, ${fixture.venue}::uuid,
+            ${fixture.coach}::uuid, ${fixture.coach}::uuid,
+            ${recordedAt}::timestamptz, (${recordedAt}::timestamptz + interval '48 hours'),
+            '{}'::jsonb, ${finalizedAt}::timestamptz, 2, ${finalizedAt}::timestamptz
+          )
+        `.execute(transaction);
+        if (resultCase.state === 'REVERSED' || resultCase.state === 'ANNULLED') {
+          const decision = resultCase.state === 'REVERSED' ? 'REVERSE' : 'ANNUL';
+          await sql`
+            insert into competition.appeals (
+              appeal_id, result_id, challenge_id, appellant_user_id, state,
+              reason_code, statement, submitted_at, response_deadline_at, sla_due_at,
+              assigned_reviewer_id, decision, decision_reason, decided_at,
+              review_started_at, version
+            ) values (
+              ${appealId}::uuid, ${resultId}::uuid, ${challengeId}::uuid,
+              ${viewerUserId}::uuid, ${`DECIDED_${resultCase.state}`} ,
+              'OUTCOME_DISPUTED', 'private appeal statement',
+              ${recordedAt}::timestamptz, (${recordedAt}::timestamptz + interval '24 hours'),
+              (${recordedAt}::timestamptz + interval '72 hours'), ${fixture.central}::uuid,
+              ${decision}, 'private appeal decision', ${finalizedAt}::timestamptz,
+              ${recordedAt}::timestamptz, 3
+            )
+          `.execute(transaction);
+          await sql`
+            insert into competition.appeal_decisions (
+              decision_id, appeal_id, result_id, reviewer_user_id, decision, reason,
+              original_outcome_code, original_winner_user_id, original_loser_user_id,
+              effective_outcome_code, effective_winner_user_id, effective_loser_user_id,
+              compensation_mode, decided_at
+            ) values (
+              ${testId(itemBase + 7)}::uuid, ${appealId}::uuid, ${resultId}::uuid,
+              ${fixture.central}::uuid, ${decision}, 'private independent decision',
+              'WIN_A', ${subjectUserId}::uuid, ${viewerUserId}::uuid,
+              ${resultCase.state === 'REVERSED' ? 'WIN_B' : null},
+              ${resultCase.state === 'REVERSED' ? viewerUserId : null}::uuid,
+              ${resultCase.state === 'REVERSED' ? subjectUserId : null}::uuid,
+              ${resultCase.state === 'REVERSED'
+                ? 'REAPPLY_CORRECTED' : 'RESTORE_PRE_RESULT'},
+              ${finalizedAt}::timestamptz
+            )
+          `.execute(transaction);
+        }
+      });
+    }
+
+    const profile = await readPublicAthleteProfile(database, viewerUserId, subjectUserId);
+    const repeated = await readPublicAthleteProfile(database, viewerUserId, subjectUserId);
+    expect(profile).toMatchObject({
+      userId: subjectUserId,
+      displayName: 'Conversion Athlete A',
+      currentStatuses: [{
+        competitionId: fixture.competition, communityId: fixture.community,
+        status: 'CHAMPION', provisional: false,
+      }],
+      officialRecord: { wins: 3, losses: 2, draws: 1 },
+      completedTrainingCount: 1,
+    });
+    expect(profile?.statusHistory).toEqual([
+      expect.objectContaining({ status: 'CHAMPION', endedAt: null }),
+      expect.objectContaining({ status: 'CONTENDER',
+        endedAt: '2026-10-02T08:00:00.000Z' }),
+    ]);
+    expect(profile?.recentOfficialResults).toEqual([
+      expect.objectContaining({ resultId: resultIds[5], outcome: 'WIN',
+        publicMethod: 'FORFEIT' }),
+      expect.objectContaining({ resultId: resultIds[4], outcome: 'LOSS' }),
+      expect.objectContaining({ resultId: resultIds[3], outcome: 'WIN' }),
+      expect.objectContaining({ resultId: resultIds[2], outcome: 'LOSS' }),
+      expect.objectContaining({ resultId: resultIds[1], outcome: 'WIN' }),
+    ]);
+    expect(profile?.recentOfficialResults.map((result) => result.resultId))
+      .not.toContain(resultIds[6]);
+    expect(repeated).toEqual(profile);
+    expect(JSON.stringify(profile)).not.toMatch(
+      /winRate|reliability|safety|private|partner|comment|reason|evidence/i,
+    );
+
+    const outsiderUserId = testId(base + 37);
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values (
+        ${outsiderUserId}::uuid, '+79990130037', '2026-09-01T09:00:00.000Z',
+        '1990-01-01', 'ADULT', 'Unrelated viewer', 'ACTIVE', 'ru-RU', 1,
+        '2026-09-01T09:00:00.000Z'
+      )
+    `.execute(database);
+    await expect(readPublicAthleteProfile(database, outsiderUserId, subjectUserId))
+      .rejects.toBeInstanceOf(IdentityPermissionDeniedError);
+
+    await sql`
+      insert into social.blocks (
+        block_id, blocker_user_id, blocked_user_id, state, created_at, version
+      ) values (
+        ${testId(base + 36)}::uuid, ${viewerUserId}::uuid,
+        ${subjectUserId}::uuid, 'ACTIVE', '2026-10-08T10:00:00.000Z', 1
+      )
+    `.execute(database);
+    await expect(readPublicAthleteProfile(database, viewerUserId, subjectUserId))
+      .rejects.toBeInstanceOf(IdentityPermissionDeniedError);
   });
 
   it('[AC-005][AC-006][AC-007][AC-008][AC-009] keeps Like, mutual Match, inactivity archive/reactivation, Skip and expiry atomic', async () => {

@@ -19,6 +19,7 @@ import type {
   CommunityLifecycleProjection,
   DiscoveryCardProjection,
   IdentityEffectIds,
+  PublicAthleteProfileProjection,
   HomeVenueSelectionProjection,
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
@@ -328,6 +329,64 @@ describe('runtime contract', () => {
     expect(response.json()).toMatchObject({ data: identity });
     expect(response.json().data).not.toHaveProperty('phoneE164');
     expect(response.json().data).not.toHaveProperty('birthDate');
+  });
+
+  it('[AC-165] exposes only the neutral public Athlete profile contract', async () => {
+    const subjectUserId = '0199a1b2-1234-7000-8000-000000000341';
+    const competitionId = '0199a1b2-1234-7000-8000-000000000342';
+    const communityId = '0199a1b2-1234-7000-8000-000000000343';
+    const profile: PublicAthleteProfileProjection & Record<string, unknown> = {
+      userId: subjectUserId,
+      displayName: 'Публичный атлет',
+      ageDivision: 'ADULT',
+      primarySport: 'BOXING',
+      secondarySport: null,
+      currentStatuses: [{
+        competitionId, communityId, status: 'CHAMPION', provisional: false,
+      }],
+      statusHistory: [{
+        tenureId: '0199a1b2-1234-7000-8000-000000000344',
+        competitionId, communityId, status: 'CHAMPION',
+        startedAt: '2026-10-01T10:00:00.000Z', endedAt: null, provisional: false,
+      }],
+      officialRecord: { wins: 3, losses: 2, draws: 1 },
+      recentOfficialResults: [{
+        resultId: '0199a1b2-1234-7000-8000-000000000345', competitionId,
+        outcome: 'WIN', publicMethod: 'FORFEIT', occurredAt: '2026-10-20T10:00:00.000Z',
+      }],
+      completedTrainingCount: 7,
+      winRate: 0.6,
+      reliabilityScore: 'HIDDEN',
+      safetyReason: 'PRIVATE',
+      trainingPartnerUserIds: ['0199a1b2-1234-7000-8000-000000000346'],
+    };
+    const readPublicProfile = vi.fn(async () => profile);
+    const app = await buildApp({ identity: {
+      auth: new StaticBearerAuthAdapter(token, userId),
+      readMe: async () => identity,
+      readPublicProfile,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(),
+      readHomeVenueSettings: vi.fn(), changeHomeVenue: vi.fn(),
+    } });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'GET', url: `/api/v1/athletes/${subjectUserId}/profile`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ data: {
+      userId: subjectUserId,
+      currentStatuses: [{ status: 'CHAMPION' }],
+      officialRecord: { wins: 3, losses: 2, draws: 1 },
+      completedTrainingCount: 7,
+    } });
+    expect(readPublicProfile).toHaveBeenCalledWith(userId, subjectUserId);
+    expect(response.json().data).not.toHaveProperty('winRate');
+    expect(response.json().data).not.toHaveProperty('reliabilityScore');
+    expect(response.json().data).not.toHaveProperty('safetyReason');
+    expect(response.json().data).not.toHaveProperty('trainingPartnerUserIds');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/athletes/{userId}/profile');
   });
 
   it('passes an idempotent, versioned display-name command to the identity module', async () => {

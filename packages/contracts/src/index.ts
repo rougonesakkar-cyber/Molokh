@@ -202,6 +202,69 @@ export const MeResponseSchema = Type.Object(
 
 export type MeResponse = Static<typeof MeResponseSchema>;
 
+const PublicProfileStatusSchema = Type.Union([
+  Type.Literal('CHAMPION'), Type.Literal('CONTENDER'),
+]);
+
+const PublicProfileCurrentStatusSchema = Type.Object({
+  competitionId: Type.String({ format: 'uuid' }),
+  communityId: Type.String({ format: 'uuid' }),
+  status: PublicProfileStatusSchema,
+  provisional: Type.Boolean(),
+}, { additionalProperties: false });
+
+const PublicProfileStatusHistorySchema = Type.Object({
+  tenureId: Type.String({ format: 'uuid' }),
+  competitionId: Type.String({ format: 'uuid' }),
+  communityId: Type.String({ format: 'uuid' }),
+  status: PublicProfileStatusSchema,
+  startedAt: Type.String({ format: 'date-time' }),
+  endedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+  provisional: Type.Boolean(),
+}, { additionalProperties: false });
+
+const PublicProfileResultSchema = Type.Object({
+  resultId: Type.String({ format: 'uuid' }),
+  competitionId: Type.String({ format: 'uuid' }),
+  outcome: Type.Union([
+    Type.Literal('WIN'), Type.Literal('LOSS'), Type.Literal('DRAW'),
+    Type.Literal('NO_CONTEST'),
+  ]),
+  publicMethod: Type.Union([
+    Type.Literal('FORFEIT'), Type.Literal('NO_SHOW'), Type.Null(),
+  ]),
+  occurredAt: Type.String({ format: 'date-time' }),
+}, { additionalProperties: false });
+
+export const PublicAthleteProfileSchema = Type.Object({
+  userId: Type.String({ format: 'uuid' }),
+  displayName: Type.String({ minLength: 1, maxLength: 80 }),
+  ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+  primarySport: Type.String(),
+  secondarySport: Type.Union([Type.String(), Type.Null()]),
+  currentStatuses: Type.Array(PublicProfileCurrentStatusSchema),
+  statusHistory: Type.Array(PublicProfileStatusHistorySchema),
+  officialRecord: Type.Object({
+    wins: Type.Integer({ minimum: 0 }),
+    losses: Type.Integer({ minimum: 0 }),
+    draws: Type.Integer({ minimum: 0 }),
+  }, { additionalProperties: false }),
+  recentOfficialResults: Type.Array(PublicProfileResultSchema, { maxItems: 5 }),
+  completedTrainingCount: Type.Integer({ minimum: 0 }),
+}, { $id: 'PublicAthleteProfile', additionalProperties: false });
+
+export type PublicAthleteProfile = Static<typeof PublicAthleteProfileSchema>;
+
+export const PublicAthleteProfileResponseSchema = Type.Object({
+  data: PublicAthleteProfileSchema,
+  meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) },
+    { additionalProperties: false }),
+}, { $id: 'PublicAthleteProfileResponse', additionalProperties: false });
+
+export type PublicAthleteProfileResponse = Static<
+  typeof PublicAthleteProfileResponseSchema
+>;
+
 export const AccountClosureProjectionSchema = Type.Object({
   closureId: Type.String({ format: 'uuid' }),
   userId: Type.String({ format: 'uuid' }),

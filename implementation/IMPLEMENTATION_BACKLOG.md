@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 208/214 (`196/196 P0`, `12/17 P1`).
+  Acceptance traceability is 209/214 (`196/196 P0`, `13/17 P1`).
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
@@ -462,6 +462,10 @@ This sprint produces a demonstrable Training slice while establishing the same f
   inside a geography tier and uses candidate UUID as the final deterministic tie-break. API/client
   expose neutral reasons and interest/radius copy without private activity buckets, Safety data or
   a reliability score.
+- M3 public Athlete profile hardening: complete through AC-165. A DB-authoritative Community/Match
+  context and bilateral Block guard protect the read. Current/history status comes from canonical
+  replay, W/L/D and last-five use effective Result decisions, and attended completed Training is
+  counted without publishing win rate, ordinary partner identity, Safety or administrative data.
 - M5 Champion-to-Contender optional TITLE increment: complete. AC-047 stores an immutable
   `OPTIONAL_TITLE` queue intent, preserves the shared `(submitted_at, entry_id)` order without a
   Champion privilege, and creates the TITLE Challenge, service Chat, ruleset snapshot and
