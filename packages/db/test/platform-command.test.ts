@@ -8367,6 +8367,230 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await verifySchedulingPublication(database);
   });
 
+  it('[AC-069] closes a pre-start Session at a closed Venue and offers only eligible alternatives', async () => {
+    const base = 300000;
+    const fixture = await seedConfirmedTrainingForConversion(base);
+    const converted = await convertTrainingFixtureToOfficial(
+      base + 100, fixture, 'ac-069-conversion',
+    );
+    const challengeId = converted.response.challengeId!;
+    const source = await sql<{
+      readonly session_version: string;
+      readonly challenge_version: string;
+    }>`
+      select session.version::text as session_version,
+        challenge.version::text as challenge_version
+      from scheduling.sessions session
+      join competition.challenges challenge on challenge.challenge_id = session.challenge_id
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    const opened = await openSessionWindow(database, {
+      commandId: testId(base + 200), commandType: 'OPEN_SESSION_WINDOW',
+      idempotencyKey: `session:${fixture.session}:open-session-window:ac-069`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Session', aggregateId: fixture.session,
+      expectedVersion: Number(source.rows[0]!.session_version),
+      correlationId: testId(base + 201), causationId: null,
+      requestId: testId(base + 202), source: 'scheduler', payloadVersion: 1,
+      payload: { sessionId: fixture.session },
+    } satisfies CommandEnvelope<OpenSessionWindowPayload>, {
+      eventId: testId(base + 203), auditId: testId(base + 204),
+      outboxMessageId: testId(base + 205), competitiveSnapshotId: testId(base + 206),
+    }, () => new Date(fixture.scheduledStartAt));
+
+    const eligibleCoach = testId(base + 210);
+    const unscopedCoach = testId(base + 211);
+    const alternativeCentral = testId(base + 212);
+    const alternativeVenue = testId(base + 213);
+    const alternativeCommunity = testId(base + 214);
+    const eligibleSlot = testId(base + 215);
+    const unscopedSlot = testId(base + 216);
+    const closedVenueSlot = testId(base + 217);
+    const createdAt = '2026-10-01T10:00:00.000Z';
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${eligibleCoach}::uuid, '+79993000210', ${createdAt}::timestamptz,
+          '1985-01-01', 'ADULT', 'Eligible replacement Coach', 'ACTIVE', 'ru-RU', 1,
+          ${createdAt}::timestamptz),
+        (${unscopedCoach}::uuid, '+79993000211', ${createdAt}::timestamptz,
+          '1985-01-01', 'ADULT', 'Unscoped replacement Coach', 'ACTIVE', 'ru-RU', 1,
+          ${createdAt}::timestamptz),
+        (${alternativeCentral}::uuid, '+79993000212', ${createdAt}::timestamptz,
+          '1985-01-01', 'ADULT', 'Alternative Central', 'ACTIVE', 'ru-RU', 1,
+          ${createdAt}::timestamptz)
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, {
+      venueId: alternativeVenue,
+      venueConfigurationId: testId(base + 218),
+      communityId: alternativeCommunity,
+      communityConfigurationId: testId(base + 219),
+      membershipId: testId(base + 220),
+      centralGrantId: testId(base + 221),
+      athleteUserId: alternativeCentral,
+      centralActorId: alternativeCentral,
+      legalName: 'Alternative Venue LLC',
+      venueDisplayName: 'Eligible alternative Venue',
+      communityName: 'Alternative Community',
+      address: 'Москва', cityCode: 'MOSCOW', timezone: 'Europe/Moscow',
+      contactPayload: { phone: '+79993000213' }, occurredAt: createdAt,
+    });
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values (
+        ${testId(base + 222)}::uuid, ${eligibleCoach}::uuid, 'COACH', 'COMMUNITY',
+        ${alternativeCommunity}::uuid, 'ACTIVE', ${alternativeCentral}::uuid,
+        ${createdAt}::timestamptz, 1
+      )
+    `.execute(database);
+    await sql`
+      insert into scheduling.slots (
+        slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+        price_amount, price_currency, price_text, cancellation_terms_text,
+        commercial_version, booking_id, published_by, version, created_at, updated_at
+      ) values
+        (${eligibleSlot}::uuid, ${alternativeVenue}::uuid, ${eligibleCoach}::uuid,
+          '2026-10-03T10:00:00.000Z'::timestamptz,
+          '2026-10-03T11:00:00.000Z'::timestamptz, 'PERSONAL', 'PUBLISHED',
+          1500, 'RUB', 'Оплата напрямую залу', 'Уточните условия у зала',
+          1, null, ${eligibleCoach}::uuid, 1, ${createdAt}::timestamptz,
+          ${createdAt}::timestamptz),
+        (${unscopedSlot}::uuid, ${alternativeVenue}::uuid, ${unscopedCoach}::uuid,
+          '2026-10-03T12:00:00.000Z'::timestamptz,
+          '2026-10-03T13:00:00.000Z'::timestamptz, 'PERSONAL', 'PUBLISHED',
+          1500, 'RUB', 'Оплата напрямую залу', 'Уточните условия у зала',
+          1, null, ${unscopedCoach}::uuid, 1, ${createdAt}::timestamptz,
+          ${createdAt}::timestamptz),
+        (${closedVenueSlot}::uuid, ${fixture.venue}::uuid, ${fixture.coach}::uuid,
+          '2026-10-03T14:00:00.000Z'::timestamptz,
+          '2026-10-03T15:00:00.000Z'::timestamptz, 'PERSONAL', 'PUBLISHED',
+          1500, 'RUB', 'Оплата напрямую залу', 'Уточните условия у зала',
+          1, null, ${fixture.coach}::uuid, 1, ${createdAt}::timestamptz,
+          ${createdAt}::timestamptz)
+    `.execute(database);
+    await expect(sql`
+      insert into scheduling.slots (
+        slot_id, venue_id, coach_user_id, start_at, end_at, slot_type, state,
+        commercial_version, published_by, version
+      ) values (
+        ${testId(base + 223)}::uuid, ${alternativeVenue}::uuid, ${eligibleCoach}::uuid,
+        '2026-10-03T10:30:00.000Z'::timestamptz,
+        '2026-10-03T11:30:00.000Z'::timestamptz, 'PERSONAL', 'PUBLISHED',
+        1, ${eligibleCoach}::uuid, 1
+      )
+    `.execute(database)).rejects.toMatchObject({ code: '23P01' });
+
+    const snapshotBefore = await sql<{ readonly snapshot: unknown }>`
+      select to_jsonb(snapshot) as snapshot
+      from scheduling.session_competitive_snapshots snapshot
+      where snapshot.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    await sql`
+      update community.venues
+      set state = 'CLOSED', version = version + 1,
+        updated_at = '2026-10-01T10:00:30.000Z'::timestamptz
+      where venue_id = ${fixture.venue}::uuid and state = 'ACTIVE'
+    `.execute(database);
+
+    const command = {
+      commandId: testId(base + 230), commandType: 'FAIL_SESSION_EXTERNAL',
+      idempotencyKey: 'ac-069-closed-venue-no-fault',
+      actor: { type: 'USER' as const, id: fixture.central,
+        roles: ['CENTRAL_ADMIN'] as const, scopeIds: [] as const },
+      aggregateType: 'Session', aggregateId: fixture.session,
+      expectedVersion: opened.response.version,
+      correlationId: testId(base + 231), causationId: null,
+      requestId: testId(base + 232), source: 'api' as const, payloadVersion: 1,
+      payload: { sessionId: fixture.session, reasonCode: 'VENUE_UNAVAILABLE' as const },
+    } satisfies CommandEnvelope<FailSessionExternalPayload>;
+    const effects = {
+      eventId: testId(base + 233), auditId: testId(base + 234),
+      outboxMessageId: testId(base + 235), bookingEventId: testId(base + 236),
+      slotEventId: testId(base + 237), notificationOutboxMessageId: testId(base + 238),
+      notificationIds: [testId(base + 239), testId(base + 240)],
+      challengeEventId: testId(base + 241), challengeOutboxMessageId: testId(base + 242),
+      rescheduleId: testId(base + 243),
+    } satisfies SessionEffectIds;
+    const failed = await failSessionExternal(
+      database, command, effects, () => new Date('2026-10-01T10:01:00.000Z'),
+    );
+    expect(failed.response).toMatchObject({
+      sessionId: fixture.session, state: 'CANCELLED',
+      cancellationReasonCode: 'VENUE_UNAVAILABLE', challengeId,
+      challengeState: 'ACCEPTED_UNSCHEDULED',
+    });
+    await expect(failSessionExternal(
+      database, command, effects, () => new Date('2026-10-01T10:02:00.000Z'),
+    )).resolves.toMatchObject({ replayed: true, response: failed.response });
+    await expect(failSessionExternal(database, {
+      ...command, commandId: testId(base + 244), idempotencyKey: 'ac-069-stale',
+    }, { ...effects, eventId: testId(base + 245), auditId: testId(base + 246) },
+    () => new Date('2026-10-01T10:02:00.000Z'))).rejects.toBeInstanceOf(VersionConflictError);
+
+    const alternatives = await readTrainingOptions(
+      database, fixture.chat, fixture.athleteA, new Date('2026-10-01T10:02:00.000Z'),
+    );
+    expect(alternatives.slots.map((slot) => slot.slotId)).toContain(eligibleSlot);
+    expect(alternatives.slots.map((slot) => slot.slotId)).not.toContain(unscopedSlot);
+    expect(alternatives.slots.map((slot) => slot.slotId)).not.toContain(closedVenueSlot);
+    expect(alternatives.reservationPolicy).toBe('NO_RESERVATION_BEFORE_HOST_CONFIRMATION');
+
+    const committed = await sql<{
+      readonly venue_state: string; readonly session_state: string;
+      readonly booking_state: string; readonly slot_state: string;
+      readonly challenge_state: string; readonly user_reschedule_count: number;
+      readonly actual_start_at: Date | null; readonly result_id: string | null;
+      readonly results: string; readonly cooldowns: string; readonly transitions: string;
+      readonly snapshot: unknown; readonly fault_attribution: string;
+      readonly reason_note: string | null;
+    }>`
+      select venue.state as venue_state, session.state as session_state,
+        booking.state as booking_state, slot.state as slot_state,
+        challenge.state as challenge_state, challenge.user_reschedule_count,
+        session.actual_start_at, result.result_id,
+        (select count(*)::text from competition.results) as results,
+        (select count(*)::text from competition.pair_cooldowns) as cooldowns,
+        (select count(*)::text from competition.status_transitions) as transitions,
+        to_jsonb(snapshot) as snapshot, reschedule.fault_attribution,
+        reschedule.reason_note
+      from scheduling.sessions session
+      join scheduling.bookings booking on booking.booking_id = session.booking_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      join community.venues venue on venue.venue_id = session.venue_id
+      join competition.challenges challenge on challenge.challenge_id = session.challenge_id
+      join scheduling.session_competitive_snapshots snapshot
+        on snapshot.session_id = session.session_id
+      join competition.challenge_reschedules reschedule
+        on reschedule.reschedule_id = ${effects.rescheduleId}::uuid
+      left join competition.results result
+        on result.challenge_id = challenge.challenge_id and result.cycle_no = challenge.cycle_no
+      where session.session_id = ${fixture.session}::uuid
+    `.execute(database);
+    expect(committed.rows[0]).toMatchObject({
+      venue_state: 'CLOSED', session_state: 'CANCELLED', booking_state: 'CANCELLED',
+      slot_state: 'CANCELLED', challenge_state: 'ACCEPTED_UNSCHEDULED',
+      user_reschedule_count: 0, actual_start_at: null, result_id: null,
+      results: '0', cooldowns: '0', transitions: '0',
+      fault_attribution: 'EXTERNAL', reason_note: null,
+    });
+    expect(committed.rows[0]?.snapshot).toEqual(snapshotBefore.rows[0]?.snapshot);
+    const publicEffects = await sql<{ readonly payload: unknown }>`
+      select payload from platform.domain_events
+      where event_id in (${effects.eventId}::uuid, ${effects.challengeEventId}::uuid)
+      union all
+      select payload from platform.outbox_messages
+      where message_id in (
+        ${effects.outboxMessageId}::uuid, ${effects.challengeOutboxMessageId}::uuid,
+        ${effects.notificationOutboxMessageId}::uuid
+      )
+    `.execute(database);
+    expect(JSON.stringify(publicEffects.rows)).not.toMatch(/reasonNote|private/i);
+  });
+
   it('[AC-153] serializes overlapping host confirmations around the shared Athlete', async () => {
     const occurredAt = '2026-10-05T08:00:00.000Z';
     const sharedAthlete = testId(120000);

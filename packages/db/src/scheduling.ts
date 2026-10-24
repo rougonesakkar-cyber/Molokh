@@ -1174,6 +1174,23 @@ export async function readTrainingOptions(
       join identity.users as coach on coach.user_id = slot.coach_user_id
       where slot.state = 'PUBLISHED'
         and venue.state = 'ACTIVE'
+        and coach.account_state = 'ACTIVE'
+        and exists (
+          select 1
+          from community.communities as community
+          join community.role_grants as coach_grant
+            on coach_grant.role = 'COACH'
+            and coach_grant.scope_type = 'COMMUNITY'
+            and coach_grant.scope_id = community.community_id
+            and coach_grant.user_id = slot.coach_user_id
+            and coach_grant.state = 'ACTIVE'
+            and (
+              coach_grant.expires_at is null
+              or coach_grant.expires_at > ${now.toISOString()}::timestamptz
+            )
+          where community.venue_id = slot.venue_id
+            and community.state = 'ACTIVE'
+        )
         and slot.start_at >= ${now.toISOString()}::timestamptz
           + (venue.minimum_booking_notice_hours * interval '1 hour')
       order by slot.start_at, slot.slot_id

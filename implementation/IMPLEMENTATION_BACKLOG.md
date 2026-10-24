@@ -422,7 +422,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 211/214 (`196/196 P0`, `15/17 P1`).
+  Acceptance traceability is 212/214 (`196/196 P0`, `16/17 P1`).
+- M4 Venue-closure hardening: complete through AC-069. Training-option reads recheck active
+  Venue/Community, active Coach account and current Community-scoped Coach grant before exposing
+  a published Slot; coach overlap remains excluded by the canonical Slot constraint. A confirmed
+  pre-start Official Session at a closed Venue uses the existing external no-fault transaction:
+  Booking/Session/Slot close, the frozen competitive snapshot stays unchanged and the Challenge
+  returns to scheduling without Result, status effects, Cooldown or user reschedule count.
 - M7 Venue verification hardening: complete through AC-145. An active global Central grant is
   rechecked in PostgreSQL before VE-02 can move a versioned Venue from `PENDING_VERIFICATION` to
   `ACTIVE`. The command emits exactly one append-only `VenueVerified`; checklist/evidence stay in
