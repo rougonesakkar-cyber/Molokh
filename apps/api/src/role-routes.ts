@@ -13,6 +13,8 @@ import {
   RoleGrantCommandResponseSchema,
   PrimaryAdminCommandResponseSchema,
   VenueRoleSummaryResponseSchema,
+  VerifyVenueBodySchema,
+  VenueVerificationCommandResponseSchema,
   type AppointGymAdminBody,
   type AuthorizeGuestCoachBody,
   type ChangePrimaryAdminBody,
@@ -21,6 +23,8 @@ import {
   type RoleGrantCommandResponse,
   type PrimaryAdminCommandResponse,
   type VenueRoleSummaryResponse,
+  type VerifyVenueBody,
+  type VenueVerificationCommandResponse,
 } from '@molokh/contracts';
 import type {
   AcceptCoachInvitePayload,
@@ -33,6 +37,9 @@ import type {
   PrimaryAdminEffectIds,
   PrimaryAdminProjection,
   VenueRoleSummaryProjection,
+  VerifyVenuePayload,
+  VenueVerificationEffectIds,
+  VenueVerificationProjection,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -91,6 +98,10 @@ export interface RoleRouteDependencies {
     centralUserId: string,
     venueId: string,
   ) => Promise<VenueRoleSummaryProjection | null>;
+  readonly verifyVenue: (
+    command: CommandEnvelope<VerifyVenuePayload>,
+    ids: VenueVerificationEffectIds,
+  ) => Promise<ExecutedCommand<VenueVerificationProjection>>;
 }
 
 function unauthorized(request: FastifyRequest) {
@@ -143,6 +154,14 @@ function effectIds(): RoleGrantEffectIds {
   };
 }
 
+function venueVerificationEffectIds(): VenueVerificationEffectIds {
+  return {
+    eventId: newUuidV7(),
+    auditId: newUuidV7(),
+    outboxMessageId: newUuidV7(),
+  };
+}
+
 function commandResponse(
   executed: ExecutedCommand<RoleGrantProjection>,
   requestId: string,
@@ -161,6 +180,77 @@ export async function registerRoleRoutes(
   app: FastifyInstance,
   dependencies: RoleRouteDependencies,
 ): Promise<void> {
+  app.post<{
+    Body: VerifyVenueBody;
+    Headers: RoleHeaders;
+    Params: { readonly venueId: string };
+  }>(
+    '/api/v1/central/venues/:venueId/verify',
+    {
+      schema: {
+        operationId: 'verifyVenue',
+        params: Type.Object({ venueId: Type.String({ format: 'uuid' }) }),
+        body: VerifyVenueBodySchema,
+        response: {
+          200: VenueVerificationCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<VenueVerificationCommandResponse | undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const command: CommandEnvelope<VerifyVenuePayload> = {
+        commandId: newUuidV7(),
+        commandType: 'VERIFY_VENUE',
+        idempotencyKey: requiredIdempotencyKey(request.headers['idempotency-key']),
+        actor: {
+          type: 'USER',
+          id: authenticated.userId,
+          roles: ['CENTRAL_ADMIN'],
+          scopeIds: [],
+        },
+        aggregateType: 'Venue',
+        aggregateId: request.params.venueId,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'admin',
+        payloadVersion: 1,
+        payload: {
+          venueId: request.params.venueId,
+          checklistVersion: request.body.checklistVersion,
+          evidenceReference: request.body.evidenceReference,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.verifyVenue(
+        command,
+        venueVerificationEffectIds(),
+      );
+      return {
+        data: { ...executed.response },
+        meta: {
+          requestId: context.requestId,
+          eventId: executed.eventId,
+          replayed: executed.replayed,
+        },
+      };
+    },
+  );
+
   app.post<{
     Body: AuthorizeGuestCoachBody;
     Headers: RoleHeaders;

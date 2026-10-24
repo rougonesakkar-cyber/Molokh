@@ -11,6 +11,7 @@ import {
   expireGuestCoachState,
   inviteCoachState,
   normalizeRoleReasonCode,
+  verifyVenueState,
 } from '../src/role-grant.js';
 
 const now = new Date('2026-09-06T12:00:00.000Z');
@@ -102,6 +103,31 @@ describe('Coach role grant policy', () => {
         targetUserId: 'admin-2',
       }),
     ).toBe('TRANSFERRED');
+  });
+
+  it('[AC-145] verifies a pending Venue only with Central authority and protected evidence', () => {
+    expect(verifyVenueState({
+      actorIsCentral: true,
+      currentState: 'PENDING_VERIFICATION',
+      checklistVersion: ' venue-safety-v1 ',
+      evidenceReference: ' protected://venue/inspection-145 ',
+    })).toEqual({
+      state: 'ACTIVE',
+      checklistVersion: 'venue-safety-v1',
+      evidenceReference: 'protected://venue/inspection-145',
+    });
+    expect(() => verifyVenueState({
+      actorIsCentral: false,
+      currentState: 'PENDING_VERIFICATION',
+      checklistVersion: 'venue-safety-v1',
+      evidenceReference: 'protected://venue/inspection-145',
+    })).toThrow(RoleGrantPermissionDeniedError);
+    expect(() => verifyVenueState({
+      actorIsCentral: true,
+      currentState: 'ACTIVE',
+      checklistVersion: 'venue-safety-v1',
+      evidenceReference: 'protected://venue/inspection-145',
+    })).toThrow(InvalidRoleGrantTransitionError);
   });
 
   it('requires an existing ordinary Admin grant before Primary appointment', () => {

@@ -4667,3 +4667,42 @@ export const VenueRoleSummaryResponseSchema = Type.Object(
 export type VenueRoleSummaryResponse = Static<
   typeof VenueRoleSummaryResponseSchema
 >;
+
+export const VerifyVenueBodySchema = Type.Object(
+  {
+    checklistVersion: Type.String({ minLength: 3, maxLength: 80 }),
+    evidenceReference: Type.String({ minLength: 3, maxLength: 500 }),
+    reasonCode: Type.String({ minLength: 3, maxLength: 80 }),
+  },
+  { $id: 'VerifyVenueBody', additionalProperties: false },
+);
+
+export type VerifyVenueBody = Static<typeof VerifyVenueBodySchema>;
+
+export const VenueVerificationProjectionSchema = Type.Object(
+  {
+    venueId: Type.String({ format: 'uuid' }),
+    displayName: Type.String(),
+    state: Type.Literal('ACTIVE'),
+    version: Type.Integer({ minimum: 2 }),
+    communityCreationAllowed: Type.Literal(true),
+    slotPublicationAllowed: Type.Literal(true),
+  },
+  { $id: 'VenueVerificationProjection', additionalProperties: false },
+);
+
+export const VenueVerificationCommandResponseSchema = Type.Object(
+  {
+    data: VenueVerificationProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }),
+  },
+  { $id: 'VenueVerificationCommandResponse', additionalProperties: false },
+);
+
+export type VenueVerificationCommandResponse = Static<
+  typeof VenueVerificationCommandResponseSchema
+>;

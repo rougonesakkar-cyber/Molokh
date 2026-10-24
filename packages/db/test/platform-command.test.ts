@@ -128,6 +128,8 @@ import {
   previewStatusRelease,
   confirmStatusRelease,
   hasActiveCentralRole,
+  verifyVenue,
+  rejectVenue,
   previewMembershipExit,
   confirmMembershipExit,
   appealMembershipRemoval,
@@ -395,6 +397,9 @@ import {
   type ScheduleCommunityClosurePayload,
   type FinalizeCommunityClosurePayload,
   type TransitionToAdultPayload,
+  type VerifyVenuePayload,
+  type VenueVerificationEffectIds,
+  type RejectVenuePayload,
 } from '../src/index.js';
 
 const ids = {
@@ -4046,6 +4051,301 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(sideEffects.rows[0]).toEqual({
       events: '1', audits: '1', outbox: '1', cooldowns: '1',
     });
+  });
+
+  it('[AC-145] verifies a Venue atomically before operational publication', async () => {
+    const central = testId(145000);
+    const ordinaryAdmin = testId(145001);
+    const coach = testId(145002);
+    const venue = testId(145003);
+    const venueConfiguration = testId(145004);
+    const centralGrant = testId(145005);
+    const adminGrant = testId(145006);
+    const coachGrant = testId(145007);
+    const venueRegistrationEvent = testId(145008);
+    const raceVenue = testId(145040);
+    const raceVenueConfiguration = testId(145041);
+    const raceRegistrationEvent = testId(145042);
+    const occurredAt = new Date('2026-10-24T10:00:00.000Z');
+    await sql`
+      insert into identity.users (
+        user_id, phone_e164, phone_verified_at, birth_date, age_division,
+        display_name, account_state, locale, version, activated_at
+      ) values
+        (${central}::uuid, '+79990145000', ${occurredAt.toISOString()}::timestamptz,
+          '1990-01-01', 'ADULT', 'Venue Central', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${ordinaryAdmin}::uuid, '+79990145001', ${occurredAt.toISOString()}::timestamptz,
+          '1991-01-01', 'ADULT', 'Venue Admin', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz),
+        (${coach}::uuid, '+79990145002', ${occurredAt.toISOString()}::timestamptz,
+          '1992-01-01', 'ADULT', 'Venue Coach', 'ACTIVE', 'ru-RU', 1,
+          ${occurredAt.toISOString()}::timestamptz)
+    `.execute(database);
+    await database.transaction().execute(async (transaction) => {
+      await sql`set constraints all deferred`.execute(transaction);
+      await sql`
+        insert into community.venues (
+          venue_id, legal_name, display_name, address, city_code, timezone, state,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          configuration_version_id, version
+        ) values (
+          ${venue}::uuid, 'Private Legal Venue 145', 'Pending Venue', 'Private address',
+          'MOSCOW', 'Europe/Moscow', 'PENDING_VERIFICATION', 8, 30,
+          '{"phone":"+79990000000"}'::jsonb, ${venueConfiguration}::uuid, 1
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.venues (
+          venue_id, legal_name, display_name, address, city_code, timezone, state,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          configuration_version_id, version
+        ) values (
+          ${raceVenue}::uuid, 'Private Race Venue', 'Pending Race Venue', 'Private address',
+          'MOSCOW', 'Europe/Moscow', 'PENDING_VERIFICATION', 8, 30, '{}'::jsonb,
+          ${raceVenueConfiguration}::uuid, 1
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.venue_configuration_versions (
+          configuration_id, venue_id, configuration_version,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          created_by, effective_at
+        ) values (
+          ${raceVenueConfiguration}::uuid, ${raceVenue}::uuid, 1, 8, 30, '{}'::jsonb,
+          ${central}::uuid, ${occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        insert into community.venue_configuration_versions (
+          configuration_id, venue_id, configuration_version,
+          minimum_booking_notice_hours, slot_publish_horizon_days, contact_payload,
+          created_by, effective_at
+        ) values (
+          ${venueConfiguration}::uuid, ${venue}::uuid, 1, 8, 30,
+          '{"phone":"+79990000000"}'::jsonb, ${central}::uuid,
+          ${occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+    });
+    await sql`
+      insert into community.role_grants (
+        grant_id, user_id, role, scope_type, scope_id, state,
+        authorized_by, authorized_at, version
+      ) values
+        (${centralGrant}::uuid, ${central}::uuid, 'CENTRAL_ADMIN', 'GLOBAL', null,
+          'ACTIVE', ${central}::uuid, ${occurredAt.toISOString()}::timestamptz, 1),
+        (${adminGrant}::uuid, ${ordinaryAdmin}::uuid, 'GYM_ADMIN', 'VENUE', ${venue}::uuid,
+          'ACTIVE', ${central}::uuid, ${occurredAt.toISOString()}::timestamptz, 1),
+        (${coachGrant}::uuid, ${coach}::uuid, 'COACH', 'COMMUNITY', ${testId(145009)}::uuid,
+          'ACTIVE', ${central}::uuid, ${occurredAt.toISOString()}::timestamptz, 1)
+    `.execute(database);
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, actor_id, actor_type,
+        actor_roles, actor_scope_ids, occurred_at, idempotency_key_hash, payload, metadata
+      ) values (
+        ${venueRegistrationEvent}::uuid, 'VenueRegistered', 1, 'Venue', ${venue}::uuid,
+        1, 'VE-01', ${testId(145010)}::uuid, ${central}::uuid, 'USER',
+        '["CENTRAL_ADMIN"]'::jsonb, '{}'::uuid[], ${occurredAt.toISOString()}::timestamptz,
+        'fixture:venue-registered-145', ${JSON.stringify({ venueId: venue, state: 'PENDING_VERIFICATION' })}::jsonb,
+        '{"policyVersion":"venue-verification-mvp-v1"}'::jsonb
+      ), (
+        ${raceRegistrationEvent}::uuid, 'VenueRegistered', 1, 'Venue', ${raceVenue}::uuid,
+        1, 'VE-01', ${testId(145043)}::uuid, ${central}::uuid, 'USER',
+        '["CENTRAL_ADMIN"]'::jsonb, '{}'::uuid[], ${occurredAt.toISOString()}::timestamptz,
+        'fixture:venue-race-registered-145',
+        ${JSON.stringify({ venueId: raceVenue, state: 'PENDING_VERIFICATION' })}::jsonb,
+        '{"policyVersion":"venue-verification-mvp-v1"}'::jsonb
+      )
+    `.execute(database);
+
+    const slotCommand: CommandEnvelope<PublishSlotPayload> = {
+      commandId: testId(145011), commandType: 'PUBLISH_SLOT',
+      idempotencyKey: 'ac145-slot-publication',
+      actor: { type: 'USER', id: ordinaryAdmin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
+      aggregateType: 'Slot', aggregateId: testId(145012), expectedVersion: 0,
+      correlationId: testId(145013), causationId: null, requestId: testId(145014),
+      source: 'admin', payloadVersion: 1,
+      payload: {
+        venueId: venue, coachUserId: coach,
+        startAt: '2026-10-25T12:00:00.000Z', endAt: '2026-10-25T13:00:00.000Z',
+        priceAmount: null, priceCurrency: null, priceText: null,
+        cancellationTermsText: null,
+      },
+    };
+    const slotEffects = {
+      eventId: testId(145015), auditId: testId(145016), outboxMessageId: testId(145017),
+    };
+    await expect(publishSlot(database, slotCommand, slotEffects, () => occurredAt))
+      .rejects.toBeInstanceOf(SchedulingValidationError);
+
+    const deniedEffects: VenueVerificationEffectIds = {
+      eventId: testId(145018), auditId: testId(145019), outboxMessageId: testId(145020),
+    };
+    const verificationCommand: CommandEnvelope<VerifyVenuePayload> = {
+      commandId: testId(145021), commandType: 'VERIFY_VENUE',
+      idempotencyKey: 'ac145-verify-venue',
+      actor: { type: 'USER', id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'Venue', aggregateId: venue, expectedVersion: 1,
+      correlationId: testId(145022), causationId: venueRegistrationEvent,
+      requestId: testId(145023), source: 'admin', payloadVersion: 1,
+      payload: {
+        venueId: venue, checklistVersion: 'venue-safety-v1',
+        evidenceReference: 'protected://venue/ac145-inspection',
+        reasonCode: 'VENUE_DUE_DILIGENCE_PASSED',
+      },
+    };
+    await expect(verifyVenue(database, {
+      ...verificationCommand,
+      commandId: testId(145024), idempotencyKey: 'ac145-forged-central',
+      actor: {
+        type: 'USER', id: ordinaryAdmin, roles: ['CENTRAL_ADMIN'], scopeIds: [venue],
+      },
+    }, deniedEffects)).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+
+    const effects: VenueVerificationEffectIds = {
+      eventId: testId(145025), auditId: testId(145026), outboxMessageId: testId(145027),
+    };
+    const verified = await verifyVenue(database, verificationCommand, effects);
+    const replayed = await verifyVenue(database, verificationCommand, effects);
+    expect(verified).toMatchObject({
+      replayed: false,
+      response: {
+        venueId: venue, state: 'ACTIVE', version: 2,
+        communityCreationAllowed: true, slotPublicationAllowed: true,
+      },
+    });
+    expect(replayed).toMatchObject({ replayed: true, eventId: effects.eventId });
+    await publishSlot(database, slotCommand, slotEffects, () => occurredAt);
+
+    const persisted = await sql<{
+      readonly venue_state: string;
+      readonly venue_version: string;
+      readonly verification_events: string;
+      readonly communities: string;
+      readonly slots: string;
+      readonly grants: string;
+    }>`
+      select
+        (select state from community.venues where venue_id = ${venue}::uuid) as venue_state,
+        (select version::text from community.venues where venue_id = ${venue}::uuid) as venue_version,
+        (select count(*)::text from platform.domain_events
+          where aggregate_type = 'Venue' and aggregate_id = ${venue}::uuid
+            and event_name = 'VenueVerified') as verification_events,
+        (select count(*)::text from community.communities where venue_id = ${venue}::uuid) as communities,
+        (select count(*)::text from scheduling.slots where venue_id = ${venue}::uuid) as slots,
+        (select count(*)::text from community.role_grants
+          where grant_id in (
+            ${centralGrant}::uuid, ${adminGrant}::uuid, ${coachGrant}::uuid
+          )) as grants
+    `.execute(database);
+    expect(persisted.rows[0]).toEqual({
+      venue_state: 'ACTIVE', venue_version: '2', verification_events: '1',
+      communities: '0', slots: '1', grants: '3',
+    });
+
+    const protectedEffects = await sql<{
+      readonly actor_id: string | null;
+      readonly actor_roles: readonly string[];
+      readonly actor_scope_ids: readonly string[];
+      readonly reason_code: string | null;
+      readonly before_state: string | null;
+      readonly after_state: string | null;
+      readonly metadata_text: string;
+      readonly event_text: string;
+      readonly outbox_text: string;
+      readonly denied_events: string;
+      readonly denied_audits: string;
+      readonly denied_outbox: string;
+    }>`
+      select audit.actor_id::text, audit.actor_roles, audit.actor_scope_ids,
+        audit.reason_code, audit.before_state, audit.after_state,
+        audit.metadata::text as metadata_text,
+        event.payload::text || event.metadata::text as event_text,
+        outbox.payload::text as outbox_text,
+        (select count(*)::text from platform.domain_events where event_id = ${deniedEffects.eventId}::uuid) as denied_events,
+        (select count(*)::text from platform.audit_events where audit_id = ${deniedEffects.auditId}::uuid) as denied_audits,
+        (select count(*)::text from platform.outbox_messages where message_id = ${deniedEffects.outboxMessageId}::uuid) as denied_outbox
+      from platform.audit_events as audit
+      join platform.domain_events as event on event.event_id = ${effects.eventId}::uuid
+      join platform.outbox_messages as outbox on outbox.message_id = ${effects.outboxMessageId}::uuid
+      where audit.audit_id = ${effects.auditId}::uuid
+    `.execute(database);
+    expect(protectedEffects.rows[0]).toMatchObject({
+      actor_id: central, actor_roles: ['CENTRAL_ADMIN'], actor_scope_ids: [],
+      reason_code: 'VENUE_DUE_DILIGENCE_PASSED',
+      before_state: 'PENDING_VERIFICATION', after_state: 'ACTIVE',
+      denied_events: '0', denied_audits: '0', denied_outbox: '0',
+    });
+    expect(protectedEffects.rows[0]?.metadata_text).toContain('protected://venue/ac145-inspection');
+    expect(protectedEffects.rows[0]?.event_text).not.toMatch(/Private|phone|evidence|inspection/i);
+    expect(protectedEffects.rows[0]?.outbox_text).not.toMatch(/Private|phone|evidence|inspection/i);
+
+    await expect(verifyVenue(database, {
+      ...verificationCommand,
+      commandId: testId(145028), idempotencyKey: 'ac145-stale-verify',
+    }, {
+      eventId: testId(145029), auditId: testId(145030), outboxMessageId: testId(145031),
+    })).rejects.toBeInstanceOf(VersionConflictError);
+
+    const raceVerifyEffects: VenueVerificationEffectIds = {
+      eventId: testId(145044), auditId: testId(145045), outboxMessageId: testId(145046),
+    };
+    const raceRejectEffects: VenueVerificationEffectIds = {
+      eventId: testId(145047), auditId: testId(145048), outboxMessageId: testId(145049),
+    };
+    const raceBase = {
+      actor: { type: 'USER' as const, id: central, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      aggregateType: 'Venue', aggregateId: raceVenue, expectedVersion: 1,
+      correlationId: testId(145050), causationId: raceRegistrationEvent,
+      requestId: testId(145051), source: 'admin' as const, payloadVersion: 1,
+    };
+    const raceVerify: CommandEnvelope<VerifyVenuePayload> = {
+      ...raceBase, commandId: testId(145052), commandType: 'VERIFY_VENUE',
+      idempotencyKey: 'ac145-race-verify',
+      payload: {
+        venueId: raceVenue, checklistVersion: 'venue-safety-v1',
+        evidenceReference: 'protected://venue/ac145-race',
+        reasonCode: 'VENUE_DUE_DILIGENCE_PASSED',
+      },
+    };
+    const raceReject: CommandEnvelope<RejectVenuePayload> = {
+      ...raceBase, commandId: testId(145053), commandType: 'REJECT_VENUE',
+      idempotencyKey: 'ac145-race-reject',
+      payload: {
+        venueId: raceVenue, reason: 'Protected verification failure details',
+        reasonCode: 'VENUE_VERIFICATION_FAILED',
+      },
+    };
+    const raced = await Promise.allSettled([
+      verifyVenue(database, raceVerify, raceVerifyEffects),
+      rejectVenue(database, raceReject, raceRejectEffects),
+    ]);
+    expect(raced.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(raced.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(raced.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: expect.any(VersionConflictError),
+    });
+    const raceState = await sql<{
+      readonly state: string;
+      readonly version: string;
+      readonly events: string;
+      readonly audits: string;
+      readonly outbox: string;
+    }>`
+      select venue.state, venue.version::text,
+        (select count(*)::text from platform.domain_events
+          where event_id in (${raceVerifyEffects.eventId}::uuid, ${raceRejectEffects.eventId}::uuid)) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id in (${raceVerifyEffects.auditId}::uuid, ${raceRejectEffects.auditId}::uuid)) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id in (${raceVerifyEffects.outboxMessageId}::uuid, ${raceRejectEffects.outboxMessageId}::uuid)) as outbox
+      from community.venues as venue where venue.venue_id = ${raceVenue}::uuid
+    `.execute(database);
+    expect(raceState.rows[0]).toMatchObject({ version: '2', events: '1', audits: '1', outbox: '1' });
+    expect(['ACTIVE', 'CLOSED']).toContain(raceState.rows[0]?.state);
   });
 
   it('[AC-018][AC-204] governs Venue Admin scope and atomic Primary succession', async () => {
@@ -24048,7 +24348,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const competition = testId(base + 13);
     const sourceChats = recipients.map((_, index) => testId(base + 20 + index));
     const matches = recipients.map((_, index) => testId(base + 30 + index));
-    const occurredAt = new Date('2026-10-22T10:00:00.000Z');
+    const occurredAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000);
+    occurredAt.setMilliseconds(0);
+    const pairQuietUntil = new Date(occurredAt.getTime() + 48 * 60 * 60 * 1_000);
 
     await sql`
       insert into identity.users (
@@ -24200,16 +24502,18 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const pairRetry24h = createSpec(0, 80, 'ac187-pair-retry-24h',
       new Date(occurredAt.getTime() + 24 * 60 * 60 * 1_000));
     await expect(pairRetry24h.run()).rejects.toMatchObject({
-      code: 'OPTIONAL_PAIR_QUIET', retryAt: '2026-10-24T10:00:00.000Z',
+      code: 'OPTIONAL_PAIR_QUIET', retryAt: pairQuietUntil.toISOString(),
     });
     await expect(readChatChallenge(database, sourceChats[0]!, initiator)).resolves.toMatchObject({
       canCreate: false, createDenialCode: 'OPTIONAL_PAIR_QUIET',
-      createRetryAt: '2026-10-24T10:00:00.000Z',
+      createRetryAt: pairQuietUntil.toISOString(),
     });
 
     const competing = [
-      createSpec(3, 100, 'ac187-competing-4', new Date('2026-10-23T10:01:00.000Z')),
-      createSpec(4, 120, 'ac187-competing-5', new Date('2026-10-23T10:01:00.000Z')),
+      createSpec(3, 100, 'ac187-competing-4',
+        new Date(occurredAt.getTime() + 24 * 60 * 60 * 1_000 + 60 * 1_000)),
+      createSpec(4, 120, 'ac187-competing-5',
+        new Date(occurredAt.getTime() + 24 * 60 * 60 * 1_000 + 60 * 1_000)),
     ];
     const competingResults = await Promise.allSettled(competing.map((spec) => spec.run()));
     const winningIndex = competingResults.findIndex((result) => result.status === 'fulfilled');
@@ -24224,9 +24528,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(winner.run()).resolves.toMatchObject({ replayed: true });
 
     await decline(firstThree[1]!.challengeId, recipients[1]!, 20,
-      new Date('2026-10-23T11:00:00.000Z'));
+      new Date(occurredAt.getTime() + 25 * 60 * 60 * 1_000));
     const pairRetry48h = createSpec(0, 140, 'ac187-pair-retry-48h',
-      new Date('2026-10-24T10:00:00.000Z'));
+      pairQuietUntil);
     await expect(pairRetry48h.run()).resolves.toMatchObject({
       response: { state: 'AWAITING_RESPONSE', responsePolicy: 'OPTIONAL' },
     });

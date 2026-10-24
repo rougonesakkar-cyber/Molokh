@@ -10,6 +10,8 @@ import {
   expireGuestCoachState,
   inviteCoachState,
   normalizeRoleReasonCode,
+  rejectVenueState,
+  verifyVenueState,
   type CommandEnvelope,
   type RoleGrantProjection,
   type RoleGrantState,
@@ -92,6 +94,34 @@ export interface VenueRoleSummaryProjection {
   readonly venueId: string;
   readonly primaryAdminVersion: number;
   readonly activeGrants: readonly RoleGrantProjection[];
+}
+
+export interface VerifyVenuePayload {
+  readonly venueId: string;
+  readonly checklistVersion: string;
+  readonly evidenceReference: string;
+  readonly reasonCode: string;
+}
+
+export interface VenueVerificationEffectIds {
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
+}
+
+export interface VenueVerificationProjection {
+  readonly venueId: string;
+  readonly displayName: string;
+  readonly state: 'ACTIVE';
+  readonly version: number;
+  readonly communityCreationAllowed: true;
+  readonly slotPublicationAllowed: true;
+}
+
+export interface RejectVenuePayload {
+  readonly venueId: string;
+  readonly reason: string;
+  readonly reasonCode: string;
 }
 
 export class RoleGrantNotFoundError extends Error {
@@ -271,6 +301,7 @@ async function actorIsCentral(
       and scope_type = 'GLOBAL'
       and scope_id is null
       and state = 'ACTIVE'
+      and (expires_at is null or expires_at > clock_timestamp())
     limit 1
     for share
   `.execute(transaction);
@@ -289,9 +320,167 @@ export async function hasActiveCentralRole(
       and scope_type = 'GLOBAL'
       and scope_id is null
       and state = 'ACTIVE'
+      and (expires_at is null or expires_at > clock_timestamp())
     limit 1
   `.execute(database);
   return result.rows.length === 1;
+}
+
+export async function verifyVenue(
+  database: Kysely<Database>,
+  command: CommandEnvelope<VerifyVenuePayload>,
+  ids: VenueVerificationEffectIds,
+): Promise<ExecutedCommand<VenueVerificationProjection>> {
+  if (
+    command.actor.type !== 'USER'
+    || !command.actor.id
+    || command.commandType !== 'VERIFY_VENUE'
+    || command.aggregateType !== 'Venue'
+    || command.aggregateId !== command.payload.venueId
+  ) {
+    throw new RoleGrantPermissionDeniedError();
+  }
+  const reasonCode = normalizeRoleReasonCode(command.payload.reasonCode);
+
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const venueResult = await sql<{
+        readonly venue_id: string;
+        readonly display_name: string;
+        readonly state: 'PENDING_VERIFICATION' | 'ACTIVE' | 'PAUSED' | 'CLOSED';
+        readonly version: string;
+      }>`
+        select venue_id, display_name, state, version::text
+        from community.venues
+        where venue_id = ${command.payload.venueId}::uuid
+        for update
+      `.execute(transaction);
+      const venue = venueResult.rows[0];
+      if (!venue) throw new RoleGrantNotFoundError();
+      assertExpectedVersion(Number(venue.version), command.expectedVersion);
+      const decision = verifyVenueState({
+        actorIsCentral: await actorIsCentral(transaction, command.actor.id!),
+        currentState: venue.state,
+        checklistVersion: command.payload.checklistVersion,
+        evidenceReference: command.payload.evidenceReference,
+      });
+      await sql`
+        update community.venues
+        set state = ${decision.state}, version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where venue_id = ${venue.venue_id}::uuid
+          and state = 'PENDING_VERIFICATION'
+          and version = ${command.expectedVersion}
+      `.execute(transaction);
+      const response: VenueVerificationProjection = {
+        venueId: venue.venue_id,
+        displayName: venue.display_name,
+        state: 'ACTIVE',
+        version: context.nextVersion,
+        communityCreationAllowed: true,
+        slotPublicationAllowed: true,
+      };
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'VenueVerified',
+          schemaVersion: 1,
+          transitionId: 'VE-02',
+          payload: {
+            venueId: venue.venue_id,
+            state: 'ACTIVE',
+            version: context.nextVersion,
+          },
+          metadata: { policyVersion: 'venue-verification-mvp-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'VERIFY_VENUE',
+          transitionId: 'VE-02',
+          reasonCode,
+          beforeState: venue.state,
+          afterState: 'ACTIVE',
+          metadata: {
+            venueId: venue.venue_id,
+            checklistVersion: decision.checklistVersion,
+            evidenceReference: decision.evidenceReference,
+          },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'community.venue.verified.v1',
+          payload: { venueId: venue.venue_id, state: 'ACTIVE', version: context.nextVersion },
+        }],
+      };
+    },
+  });
+}
+
+export async function rejectVenue(
+  database: Kysely<Database>,
+  command: CommandEnvelope<RejectVenuePayload>,
+  ids: VenueVerificationEffectIds,
+): Promise<ExecutedCommand<{ readonly venueId: string; readonly state: 'CLOSED'; readonly version: number }>> {
+  if (
+    command.actor.type !== 'USER'
+    || !command.actor.id
+    || command.commandType !== 'REJECT_VENUE'
+    || command.aggregateType !== 'Venue'
+    || command.aggregateId !== command.payload.venueId
+  ) {
+    throw new RoleGrantPermissionDeniedError();
+  }
+  const reasonCode = normalizeRoleReasonCode(command.payload.reasonCode);
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const venueResult = await sql<{
+        readonly venue_id: string;
+        readonly state: 'PENDING_VERIFICATION' | 'ACTIVE' | 'PAUSED' | 'CLOSED';
+        readonly version: string;
+      }>`
+        select venue_id, state, version::text from community.venues
+        where venue_id = ${command.payload.venueId}::uuid for update
+      `.execute(transaction);
+      const venue = venueResult.rows[0];
+      if (!venue) throw new RoleGrantNotFoundError();
+      assertExpectedVersion(Number(venue.version), command.expectedVersion);
+      const decision = rejectVenueState({
+        actorIsCentral: await actorIsCentral(transaction, command.actor.id!),
+        currentState: venue.state,
+        reason: command.payload.reason,
+      });
+      await sql`
+        update community.venues
+        set state = 'CLOSED', version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where venue_id = ${venue.venue_id}::uuid and state = 'PENDING_VERIFICATION'
+          and version = ${command.expectedVersion}
+      `.execute(transaction);
+      return {
+        responseStatus: 200,
+        response: { venueId: venue.venue_id, state: 'CLOSED', version: context.nextVersion },
+        event: {
+          eventId: ids.eventId, eventName: 'VenueVerificationRejected', schemaVersion: 1,
+          transitionId: 'VE-03', payload: {
+            venueId: venue.venue_id, state: 'CLOSED', version: context.nextVersion,
+          }, metadata: { policyVersion: 'venue-verification-mvp-v1' },
+        },
+        audit: {
+          auditId: ids.auditId, action: 'REJECT_VENUE', transitionId: 'VE-03',
+          reasonCode, beforeState: venue.state, afterState: 'CLOSED',
+          metadata: { venueId: venue.venue_id, reason: decision.reason },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId, topic: 'community.venue.verification-rejected.v1',
+          payload: { venueId: venue.venue_id, state: 'CLOSED', version: context.nextVersion },
+        }],
+      };
+    },
+  });
 }
 
 async function venueTargetContext(

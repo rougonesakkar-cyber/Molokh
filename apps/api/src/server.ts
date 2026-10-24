@@ -88,6 +88,7 @@ import {
   readRoleGrant,
   readLatestDirectedBlock,
   readVenueRoleSummary,
+  verifyVenue,
   readTrainingOptions,
   readCompetitionStatus,
   reconfirmStatusQueueEntry,
@@ -1479,6 +1480,7 @@ const app = await buildApp({
       changePrimaryAdmin(database, command, ids),
     readVenueRoleSummary: (centralUserId, venueId) =>
       readVenueRoleSummary(database, centralUserId, venueId),
+    verifyVenue: (command, ids) => verifyVenue(database, command, ids),
   },
   result: {
     auth: localAuth,

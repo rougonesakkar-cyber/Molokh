@@ -53,7 +53,7 @@ export class RoleGrantPermissionDeniedError extends Error {
 export class InvalidRoleGrantTransitionError extends Error {
   readonly code = 'INVALID_STATE_TRANSITION';
 
-  constructor(readonly state: RoleGrantState | 'NONE') {
+  constructor(readonly state: RoleGrantState | VenueState | 'NONE') {
     super(`Role grant transition is not allowed from ${state}`);
     this.name = 'InvalidRoleGrantTransitionError';
   }
@@ -223,6 +223,51 @@ export function expireGuestCoachState(
 }
 
 export type VenueState = 'PENDING_VERIFICATION' | 'ACTIVE' | 'PAUSED' | 'CLOSED';
+
+export interface VerifyVenuePolicyInput {
+  readonly actorIsCentral: boolean;
+  readonly currentState: VenueState;
+  readonly checklistVersion: string;
+  readonly evidenceReference: string;
+}
+
+export interface VerifiedVenueState {
+  readonly state: 'ACTIVE';
+  readonly checklistVersion: string;
+  readonly evidenceReference: string;
+}
+
+export function verifyVenueState(input: VerifyVenuePolicyInput): VerifiedVenueState {
+  if (!input.actorIsCentral) throw new RoleGrantPermissionDeniedError();
+  if (input.currentState !== 'PENDING_VERIFICATION') {
+    throw new InvalidRoleGrantTransitionError(input.currentState);
+  }
+  const checklistVersion = input.checklistVersion.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/.test(checklistVersion)) {
+    throw new RoleGrantValidationError('checklistVersion');
+  }
+  const evidenceReference = input.evidenceReference.trim();
+  if (evidenceReference.length < 3 || evidenceReference.length > 500) {
+    throw new RoleGrantValidationError('evidenceReference');
+  }
+  return { state: 'ACTIVE', checklistVersion, evidenceReference };
+}
+
+export function rejectVenueState(input: {
+  readonly actorIsCentral: boolean;
+  readonly currentState: VenueState;
+  readonly reason: string;
+}): { readonly state: 'CLOSED'; readonly reason: string } {
+  if (!input.actorIsCentral) throw new RoleGrantPermissionDeniedError();
+  if (input.currentState !== 'PENDING_VERIFICATION') {
+    throw new InvalidRoleGrantTransitionError(input.currentState);
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 3 || reason.length > 500) {
+    throw new RoleGrantValidationError('reason');
+  }
+  return { state: 'CLOSED', reason };
+}
 
 export interface AppointGymAdminPolicyInput {
   readonly actorIsCentral: boolean;

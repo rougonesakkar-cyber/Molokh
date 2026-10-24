@@ -40,6 +40,9 @@ import type {
   RoleGrantEffectIds,
   PrimaryAdminEffectIds,
   PrimaryAdminProjection,
+  VerifyVenuePayload,
+  VenueVerificationEffectIds,
+  VenueVerificationProjection,
   MatchProjection,
   LikeEffectIds,
   SkipDiscoveryPayload,
@@ -1780,7 +1783,7 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-204] exposes Primary transfer only through the Central route', async () => {
+  it('[AC-145][AC-204] exposes Venue verification and Primary transfer only through Central routes', async () => {
     const centralUserId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const communityId = '0199a1b2-1234-7000-8000-000000000703';
@@ -1841,6 +1844,14 @@ describe('runtime contract', () => {
       change: 'APPOINTED',
       version: 1,
     };
+    const venueVerification: VenueVerificationProjection = {
+      venueId,
+      displayName: 'Pilot Gym',
+      state: 'ACTIVE',
+      version: 2,
+      communityCreationAllowed: true,
+      slotPublicationAllowed: true,
+    };
     const inviteCoach = vi.fn(async (
       _command: CommandEnvelope<InviteCoachPayload>,
       _ids: RoleGrantEffectIds,
@@ -1891,6 +1902,16 @@ describe('runtime contract', () => {
       aggregateVersion: 1,
       replayed: false,
     }));
+    const verifyVenue = vi.fn(async (
+      _command: CommandEnvelope<VerifyVenuePayload>,
+      _ids: VenueVerificationEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: venueVerification,
+      eventId: '0199a1b2-1234-7000-8000-000000000715',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
     const app = await buildApp({
       roles: {
         operatorAuth: new StaticBearerAuthAdapter(centralToken, centralUserId),
@@ -1901,6 +1922,7 @@ describe('runtime contract', () => {
         listPendingCoachInvites: async () => [pending],
         appointGymAdmin,
         changePrimaryAdmin,
+        verifyVenue,
         readVenueRoleSummary: async () => ({
           venueId,
           primaryAdminVersion: 0,
@@ -1909,6 +1931,40 @@ describe('runtime contract', () => {
       },
     });
     apps.push(app);
+
+    const verifiedVenue = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/venues/${venueId}/verify`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'venue-verify-test-1',
+        'if-match': '1',
+      },
+      payload: {
+        checklistVersion: 'venue-safety-v1',
+        evidenceReference: 'protected://venue/inspection-145',
+        reasonCode: 'VENUE_DUE_DILIGENCE_PASSED',
+      },
+    });
+    expect(verifiedVenue.statusCode).toBe(200);
+    expect(verifiedVenue.json()).toMatchObject({
+      data: {
+        venueId,
+        state: 'ACTIVE',
+        communityCreationAllowed: true,
+        slotPublicationAllowed: true,
+      },
+    });
+    expect(verifyVenue.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'VERIFY_VENUE', aggregateType: 'Venue', aggregateId: venueId,
+      expectedVersion: 1,
+      actor: { id: centralUserId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      payload: {
+        venueId, checklistVersion: 'venue-safety-v1',
+        evidenceReference: 'protected://venue/inspection-145',
+        reasonCode: 'VENUE_DUE_DILIGENCE_PASSED',
+      },
+    });
 
     const guestAuthorized = await app.inject({
       method: 'POST',

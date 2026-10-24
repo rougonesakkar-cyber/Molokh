@@ -422,7 +422,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 210/214 (`196/196 P0`, `14/17 P1`).
+  Acceptance traceability is 211/214 (`196/196 P0`, `15/17 P1`).
+- M7 Venue verification hardening: complete through AC-145. An active global Central grant is
+  rechecked in PostgreSQL before VE-02 can move a versioned Venue from `PENDING_VERIFICATION` to
+  `ACTIVE`. The command emits exactly one append-only `VenueVerified`; checklist/evidence stay in
+  protected audit metadata, public event/outbox remain neutral, exact replay is idempotent and
+  competing VE-02/VE-03 decisions commit only one outcome. Existing Slot publication rejects the
+  pending Venue and succeeds after verification; verification itself creates no operational data.
 - M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
   +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
   reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
