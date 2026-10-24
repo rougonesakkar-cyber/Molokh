@@ -206,11 +206,16 @@ const PublicProfileStatusSchema = Type.Union([
   Type.Literal('CHAMPION'), Type.Literal('CONTENDER'),
 ]);
 
+const PublicProfileReviewStateSchema = Type.Union([
+  Type.Literal('PENDING'), Type.Literal('REVIEWED'), Type.Null(),
+]);
+
 const PublicProfileCurrentStatusSchema = Type.Object({
   competitionId: Type.String({ format: 'uuid' }),
   communityId: Type.String({ format: 'uuid' }),
   status: PublicProfileStatusSchema,
   provisional: Type.Boolean(),
+  reviewState: PublicProfileReviewStateSchema,
 }, { additionalProperties: false });
 
 const PublicProfileStatusHistorySchema = Type.Object({
@@ -221,6 +226,7 @@ const PublicProfileStatusHistorySchema = Type.Object({
   startedAt: Type.String({ format: 'date-time' }),
   endedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
   provisional: Type.Boolean(),
+  reviewState: PublicProfileReviewStateSchema,
 }, { additionalProperties: false });
 
 const PublicProfileResultSchema = Type.Object({
@@ -233,6 +239,7 @@ const PublicProfileResultSchema = Type.Object({
   publicMethod: Type.Union([
     Type.Literal('FORFEIT'), Type.Literal('NO_SHOW'), Type.Null(),
   ]),
+  reviewState: PublicProfileReviewStateSchema,
   occurredAt: Type.String({ format: 'date-time' }),
 }, { additionalProperties: false });
 

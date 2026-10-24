@@ -82,12 +82,14 @@ export interface HomeVenueSelectionProjection {
 
 export type PublicProfileStatus = 'CHAMPION' | 'CONTENDER';
 export type PublicProfileResultOutcome = 'WIN' | 'LOSS' | 'DRAW' | 'NO_CONTEST';
+export type PublicProfileReviewState = 'PENDING' | 'REVIEWED' | null;
 
 export interface PublicProfileCurrentStatus {
   readonly competitionId: string;
   readonly communityId: string;
   readonly status: PublicProfileStatus;
   readonly provisional: boolean;
+  readonly reviewState: PublicProfileReviewState;
 }
 
 export interface PublicProfileStatusHistoryEntry extends PublicProfileCurrentStatus {
@@ -101,6 +103,7 @@ export interface PublicProfileResultEntry {
   readonly competitionId: string;
   readonly outcome: PublicProfileResultOutcome;
   readonly publicMethod: 'FORFEIT' | 'NO_SHOW' | null;
+  readonly reviewState: PublicProfileReviewState;
   readonly occurredAt: string;
 }
 
@@ -356,6 +359,11 @@ export async function readPublicAthleteProfile(
         startedAt: tenure.startedAt,
         endedAt: tenure.endedAt,
         provisional: tenure.provisional,
+        reviewState: tenure.provisional && tenure.endedAt === null
+          ? 'PENDING'
+          : tenure.provisional || tenure.compensatesTenureId !== null
+            ? 'REVIEWED'
+            : null,
       });
     }
   }
@@ -367,6 +375,7 @@ export async function readPublicAthleteProfile(
     .filter((tenure) => tenure.endedAt === null)
     .map(({ competitionId, communityId, status, provisional }) => ({
       competitionId, communityId, status, provisional,
+      reviewState: provisional ? 'PENDING' as const : null,
     }));
 
   const effectiveResults = await sql<PublicProfileResultRow>`
@@ -439,6 +448,11 @@ export async function readPublicAthleteProfile(
         ? 'FORFEIT'
         : result.effective_outcome_code === 'NO_SHOW'
           ? 'NO_SHOW'
+          : null,
+      reviewState: result.state === 'RECORDED' || result.state === 'UNDER_APPEAL'
+        ? 'PENDING'
+        : result.state === 'REVERSED'
+          ? 'REVIEWED'
           : null,
       occurredAt: result.actual_time.toISOString(),
     };

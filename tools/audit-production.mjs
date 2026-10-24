@@ -26,6 +26,17 @@ const EXCEPTIONS = Object.freeze([
   }),
 ]);
 
+const NON_RUNTIME_TOOLING_EXCLUSIONS = Object.freeze([
+  Object.freeze({
+    advisoryId: "GHSA-mrhx-c7xc-m3w5",
+    moduleName: "zod",
+    installedVersion: "3.25.76",
+    expiresOn: "2026-11-24",
+    pathAllowed: (path) =>
+      path.startsWith("apps__client>") && path.includes(">@expo/cli>zod"),
+  }),
+]);
+
 const pnpmCli = process.env.npm_execpath;
 
 if (!pnpmCli) {
@@ -87,7 +98,24 @@ if (blocking.length === 0) {
   process.exit(0);
 }
 
-const unexpected = blocking.filter((advisory) => {
+const toolingOnly = blocking.filter((advisory) => {
+  const exception = NON_RUNTIME_TOOLING_EXCLUSIONS.find(
+    (candidate) =>
+      candidate.advisoryId === advisory.github_advisory_id &&
+      candidate.moduleName === advisory.module_name,
+  );
+  if (!exception) return false;
+  const findings = advisory.findings ?? [];
+  return findings.length > 0 && findings.every(
+    (finding) =>
+      finding.version === exception.installedVersion &&
+      (finding.paths ?? []).length > 0 &&
+      finding.paths.every((path) => exception.pathAllowed(path)),
+  );
+});
+const runtimeBlocking = blocking.filter((advisory) => !toolingOnly.includes(advisory));
+
+const unexpected = runtimeBlocking.filter((advisory) => {
   const exception = EXCEPTIONS.find(
     (candidate) =>
       candidate.advisoryId === advisory.github_advisory_id &&
@@ -115,8 +143,16 @@ if (unexpected.length > 0) {
 }
 
 const today = new Date().toISOString().slice(0, 10);
+for (const advisory of toolingOnly) {
+  const exception = NON_RUNTIME_TOOLING_EXCLUSIONS.find(
+    (candidate) => candidate.advisoryId === advisory.github_advisory_id,
+  );
+  if (!exception || today > exception.expiresOn) {
+    fail(`the ${advisory.github_advisory_id} tooling-only review expired.`);
+  }
+}
 const activeExceptions = EXCEPTIONS.filter((exception) =>
-  blocking.some((advisory) => advisory.github_advisory_id === exception.advisoryId),
+  runtimeBlocking.some((advisory) => advisory.github_advisory_id === exception.advisoryId),
 );
 for (const exception of activeExceptions) {
   if (today > exception.expiresOn) {
@@ -139,5 +175,5 @@ for (const exception of activeExceptions) {
 }
 
 console.warn(
-  `Production dependency gate passed with ${activeExceptions.length} narrow, tested, time-bounded local backport exception(s); no other high or critical advisories are allowed.`,
+  `Production dependency gate passed with ${activeExceptions.length} narrow, tested, time-bounded local backport exception(s) and ${toolingOnly.length} time-bounded non-runtime Expo CLI finding(s); no other high or critical advisories are allowed.`,
 );

@@ -343,16 +343,19 @@ describe('runtime contract', () => {
       secondarySport: null,
       currentStatuses: [{
         competitionId, communityId, status: 'CHAMPION', provisional: false,
+        reviewState: null,
       }],
       statusHistory: [{
         tenureId: '0199a1b2-1234-7000-8000-000000000344',
         competitionId, communityId, status: 'CHAMPION',
         startedAt: '2026-10-01T10:00:00.000Z', endedAt: null, provisional: false,
+        reviewState: null,
       }],
       officialRecord: { wins: 3, losses: 2, draws: 1 },
       recentOfficialResults: [{
         resultId: '0199a1b2-1234-7000-8000-000000000345', competitionId,
         outcome: 'WIN', publicMethod: 'FORFEIT', occurredAt: '2026-10-20T10:00:00.000Z',
+        reviewState: 'REVIEWED',
       }],
       completedTrainingCount: 7,
       winRate: 0.6,
@@ -387,6 +390,43 @@ describe('runtime contract', () => {
     expect(response.json().data).not.toHaveProperty('safetyReason');
     expect(response.json().data).not.toHaveProperty('trainingPartnerUserIds');
     expect(app.swagger().paths).toHaveProperty('/api/v1/athletes/{userId}/profile');
+  });
+
+  it('[AC-213] keeps public Result review data neutral and contract-limited', async () => {
+    const subjectUserId = '0199a1b2-1234-7000-8000-000000000351';
+    const competitionId = '0199a1b2-1234-7000-8000-000000000352';
+    const profile: PublicAthleteProfileProjection & Record<string, unknown> = {
+      userId: subjectUserId, displayName: 'Атлет на проверке', ageDivision: 'ADULT',
+      primarySport: 'BOXING', secondarySport: null,
+      currentStatuses: [{ competitionId,
+        communityId: '0199a1b2-1234-7000-8000-000000000353',
+        status: 'CONTENDER', provisional: true, reviewState: 'PENDING' }],
+      statusHistory: [], officialRecord: { wins: 1, losses: 0, draws: 0 },
+      recentOfficialResults: [{
+        resultId: '0199a1b2-1234-7000-8000-000000000354', competitionId,
+        outcome: 'WIN', publicMethod: null, reviewState: 'PENDING',
+        occurredAt: '2026-10-21T10:00:00.000Z',
+      }],
+      completedTrainingCount: 0,
+      appealStatement: 'private', evidenceReference: 'private', decisionReason: 'private',
+    };
+    const app = await buildApp({ identity: {
+      auth: new StaticBearerAuthAdapter(token, userId), readMe: async () => identity,
+      readPublicProfile: async () => profile,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(),
+      readHomeVenueSettings: vi.fn(), changeHomeVenue: vi.fn(),
+    } });
+    apps.push(app);
+
+    const response = await app.inject({ method: 'GET',
+      url: `/api/v1/athletes/${subjectUserId}/profile`,
+      headers: { authorization: `Bearer ${token}` } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.currentStatuses[0].reviewState).toBe('PENDING');
+    expect(response.json().data.recentOfficialResults[0].reviewState).toBe('PENDING');
+    expect(response.json().data).not.toHaveProperty('appealStatement');
+    expect(response.json().data).not.toHaveProperty('evidenceReference');
+    expect(response.json().data).not.toHaveProperty('decisionReason');
   });
 
   it('passes an idempotent, versioned display-name command to the identity module', async () => {

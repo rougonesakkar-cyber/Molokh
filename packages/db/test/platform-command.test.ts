@@ -5047,13 +5047,14 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('[AC-165] projects effective public Athlete statistics without private history', async () => {
+  it('[AC-165] [AC-213] projects effective public Athlete statistics and neutral review history', async () => {
     const base = 130000;
     const fixture = await seedConfirmedTrainingForConversion(base);
     const subjectUserId = fixture.athleteA;
     const viewerUserId = fixture.athleteB;
     const configurationId = testId(base + 15);
     const rulesetSnapshotId = testId(base + 30);
+    const provisionalResultId = testId(base + 165);
 
     await sql`
       insert into identity.athlete_profiles (
@@ -5093,7 +5094,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
             ${testId(base + 31)}::uuid, ${fixture.central}::uuid,
             '2026-10-02T08:00:00.000Z',
             ${JSON.stringify({ championUserId: subjectUserId,
-              contenderUserId: null, statusVersion: 2, provisional: false })}::jsonb,
+              contenderUserId: null, statusVersion: 2, provisional: true,
+              sourceResultId: provisionalResultId })}::jsonb,
             'fixture:ac-165:status:two'
           )
       `.execute(transaction);
@@ -5130,7 +5132,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       { outcome: 'DRAW', subjectWins: null, state: 'FINAL', day: 1 },
       { outcome: 'WIN_A', subjectWins: true, state: 'FINAL', day: 2 },
       { outcome: 'WIN_B', subjectWins: false, state: 'FINAL', day: 3 },
-      { outcome: 'WIN_A', subjectWins: true, state: 'FINAL', day: 4 },
+      { outcome: 'WIN_A', subjectWins: true, state: 'RECORDED', day: 4 },
       { outcome: 'WIN_A', subjectWins: true, state: 'REVERSED', day: 5 },
       { outcome: 'FORFEIT', subjectWins: true, state: 'FINAL', day: 6 },
       { outcome: 'WIN_A', subjectWins: true, state: 'ANNULLED', day: 7 },
@@ -5253,7 +5255,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
             ${actualTime}::timestamptz, ${fixture.venue}::uuid,
             ${fixture.coach}::uuid, ${fixture.coach}::uuid,
             ${recordedAt}::timestamptz, (${recordedAt}::timestamptz + interval '48 hours'),
-            '{}'::jsonb, ${finalizedAt}::timestamptz, 2, ${finalizedAt}::timestamptz
+            '{}'::jsonb,
+            ${resultCase.state === 'RECORDED' ? null : finalizedAt}::timestamptz,
+            ${resultCase.state === 'RECORDED' ? 1 : 2}, ${finalizedAt}::timestamptz
           )
         `.execute(transaction);
         if (resultCase.state === 'REVERSED' || resultCase.state === 'ANNULLED') {
@@ -5296,6 +5300,44 @@ describePostgres('PostgreSQL critical command transaction', () => {
       });
     }
 
+    const provisionalProfile = await readPublicAthleteProfile(
+      database, viewerUserId, subjectUserId,
+    );
+    expect(provisionalProfile?.currentStatuses).toEqual([
+      expect.objectContaining({ status: 'CHAMPION', provisional: true,
+        reviewState: 'PENDING' }),
+    ]);
+    expect(provisionalProfile?.recentOfficialResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resultId: provisionalResultId, outcome: 'WIN',
+        reviewState: 'PENDING' }),
+      expect.objectContaining({ resultId: resultIds[4], outcome: 'LOSS',
+        reviewState: 'REVIEWED' }),
+    ]));
+
+    await database.transaction().execute(async (transaction) => {
+      await sql`
+        update competition.results
+        set state = 'FINAL', finalized_at = '2026-10-04T12:00:00.000Z',
+          version = 2, updated_at = '2026-10-04T12:00:00.000Z'
+        where result_id = ${provisionalResultId}::uuid and state = 'RECORDED'
+      `.execute(transaction);
+      await sql`
+        insert into platform.domain_events (
+          event_id, event_name, event_version, aggregate_type, aggregate_id,
+          aggregate_version, transition_id, correlation_id, causation_id, actor_id,
+          occurred_at, payload, idempotency_key_hash
+        ) values (
+          ${testId(base + 38)}::uuid, 'StatusTransitionFinalized', 1, 'Competition',
+          ${fixture.competition}::uuid, 4, 'ST-13', ${testId(base + 39)}::uuid,
+          ${testId(base + 32)}::uuid, ${fixture.central}::uuid,
+          '2026-10-04T12:00:00.000Z',
+          ${JSON.stringify({ resultId: provisionalResultId, statusVersion: 2,
+            championUserId: subjectUserId, contenderUserId: null })}::jsonb,
+          'fixture:ac-213:status-finalized'
+        )
+      `.execute(transaction);
+    });
+
     const profile = await readPublicAthleteProfile(database, viewerUserId, subjectUserId);
     const repeated = await readPublicAthleteProfile(database, viewerUserId, subjectUserId);
     expect(profile).toMatchObject({
@@ -5303,7 +5345,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
       displayName: 'Conversion Athlete A',
       currentStatuses: [{
         competitionId: fixture.competition, communityId: fixture.community,
-        status: 'CHAMPION', provisional: false,
+        status: 'CHAMPION', provisional: false, reviewState: null,
       }],
       officialRecord: { wins: 3, losses: 2, draws: 1 },
       completedTrainingCount: 1,
@@ -5315,9 +5357,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
     ]);
     expect(profile?.recentOfficialResults).toEqual([
       expect.objectContaining({ resultId: resultIds[5], outcome: 'WIN',
-        publicMethod: 'FORFEIT' }),
-      expect.objectContaining({ resultId: resultIds[4], outcome: 'LOSS' }),
-      expect.objectContaining({ resultId: resultIds[3], outcome: 'WIN' }),
+        publicMethod: 'FORFEIT', reviewState: null }),
+      expect.objectContaining({ resultId: resultIds[4], outcome: 'LOSS',
+        reviewState: 'REVIEWED' }),
+      expect.objectContaining({ resultId: resultIds[3], outcome: 'WIN',
+        reviewState: null }),
       expect.objectContaining({ resultId: resultIds[2], outcome: 'LOSS' }),
       expect.objectContaining({ resultId: resultIds[1], outcome: 'WIN' }),
     ]);

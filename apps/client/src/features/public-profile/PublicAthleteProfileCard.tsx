@@ -2,6 +2,7 @@ import type { PublicAthleteProfile } from '@molokh/contracts';
 import { StyleSheet, Text, View } from 'react-native';
 
 type PublicResult = PublicAthleteProfile['recentOfficialResults'][number];
+type PublicReviewState = PublicResult['reviewState'];
 
 export const PUBLIC_PROFILE_COPY = {
   officialRecord: 'Официальные результаты',
@@ -9,7 +10,15 @@ export const PUBLIC_PROFILE_COPY = {
   recentResults: 'Последние официальные результаты',
   statusHistory: 'История статусов',
   privacy: 'Обычные партнёры по тренировкам и внутренние причины не публикуются.',
+  reviewPending: 'на проверке',
+  reviewed: 'пересмотрено',
 } as const;
+
+export function publicReviewLabel(reviewState: PublicReviewState): string {
+  if (reviewState === 'PENDING') return PUBLIC_PROFILE_COPY.reviewPending;
+  if (reviewState === 'REVIEWED') return PUBLIC_PROFILE_COPY.reviewed;
+  return '';
+}
 
 export function publicResultLabel(result: PublicResult): string {
   const outcome = {
@@ -18,9 +27,12 @@ export function publicResultLabel(result: PublicResult): string {
     DRAW: 'Ничья',
     NO_CONTEST: 'Без результата',
   }[result.outcome];
-  if (result.publicMethod === 'FORFEIT') return `${outcome} · административное завершение`;
-  if (result.publicMethod === 'NO_SHOW') return `${outcome} · неявка`;
-  return outcome;
+  const method = result.publicMethod === 'FORFEIT'
+    ? 'административное завершение'
+    : result.publicMethod === 'NO_SHOW'
+      ? 'неявка'
+      : null;
+  return [outcome, method, publicReviewLabel(result.reviewState)].filter(Boolean).join(' · ');
 }
 
 export interface PublicAthleteProfileCardProps {
@@ -44,7 +56,7 @@ export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardPr
         ) : profile.currentStatuses.map((status) => (
           <Text key={`${status.competitionId}:${status.status}`} style={styles.value}>
             {status.status === 'CHAMPION' ? 'Чемпион' : 'Претендент'}
-            {status.provisional ? ' · предварительно' : ''}
+            {status.reviewState ? ` · ${publicReviewLabel(status.reviewState)}` : ''}
           </Text>
         ))}
       </View>
@@ -77,6 +89,7 @@ export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardPr
           <Text key={tenure.tenureId} style={styles.value}>
             {tenure.status === 'CHAMPION' ? 'Чемпион' : 'Претендент'}
             {tenure.endedAt === null ? ' · сейчас' : ' · завершён'}
+            {tenure.reviewState ? ` · ${publicReviewLabel(tenure.reviewState)}` : ''}
           </Text>
         ))}
       </View>
