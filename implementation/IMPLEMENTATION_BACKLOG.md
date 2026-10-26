@@ -422,7 +422,13 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 213/214 (`196/196 P0`, `17/17 P1`).
+  Acceptance traceability is 214/214 (`196/196 P0`, `17/17 P1`, `1/1 P2`).
+- P2 AC-183 seam: complete. `MULTI_COMMUNITY_DISCIPLINE` remains disabled by default. When
+  explicitly enabled, active competitive Memberships and non-null discipline keys may span
+  Community-scoped Competitions; existing Competition foreign keys isolate status/FIFO/Cooldown,
+  public W/L/D is selected per Competition, one Primary Community anchors Home/Discovery, and the
+  global accepted-Official obligation still rejects a second concurrent commitment. No global rank
+  or universal multi-tenant engine was added.
 - M4 Venue-closure hardening: complete through AC-069. Training-option reads recheck active
   Venue/Community, active Coach account and current Community-scoped Coach grant before exposing
   a published Slot; coach overlap remains excluded by the canonical Slot constraint. A confirmed

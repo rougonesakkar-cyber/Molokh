@@ -339,7 +339,7 @@ describe('runtime contract', () => {
     expect(response.json().data).not.toHaveProperty('birthDate');
   });
 
-  it('[AC-165] exposes only the neutral public Athlete profile contract', async () => {
+  it('[AC-165][AC-183] exposes only the selected Competition public profile contract', async () => {
     const subjectUserId = '0199a1b2-1234-7000-8000-000000000341';
     const competitionId = '0199a1b2-1234-7000-8000-000000000342';
     const communityId = '0199a1b2-1234-7000-8000-000000000343';
@@ -349,6 +349,14 @@ describe('runtime contract', () => {
       ageDivision: 'ADULT',
       primarySport: 'BOXING',
       secondarySport: null,
+      selectedCompetitionScope: {
+        competitionId, communityId, communityName: 'Community One',
+        ageDivision: 'ADULT', disciplineKey: null, primaryForHomeDiscovery: true,
+      },
+      competitionScopes: [{
+        competitionId, communityId, communityName: 'Community One',
+        ageDivision: 'ADULT', disciplineKey: null, primaryForHomeDiscovery: true,
+      }],
       currentStatuses: [{
         competitionId, communityId, status: 'CHAMPION', provisional: false,
         reviewState: null,
@@ -392,7 +400,14 @@ describe('runtime contract', () => {
       officialRecord: { wins: 3, losses: 2, draws: 1 },
       completedTrainingCount: 7,
     } });
-    expect(readPublicProfile).toHaveBeenCalledWith(userId, subjectUserId);
+    expect(readPublicProfile).toHaveBeenCalledWith(userId, subjectUserId, undefined);
+    const scopedResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/athletes/${subjectUserId}/profile?competitionId=${competitionId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(scopedResponse.statusCode).toBe(200);
+    expect(readPublicProfile).toHaveBeenLastCalledWith(userId, subjectUserId, competitionId);
     expect(response.json().data).not.toHaveProperty('winRate');
     expect(response.json().data).not.toHaveProperty('reliabilityScore');
     expect(response.json().data).not.toHaveProperty('safetyReason');
@@ -406,6 +421,16 @@ describe('runtime contract', () => {
     const profile: PublicAthleteProfileProjection & Record<string, unknown> = {
       userId: subjectUserId, displayName: 'Атлет на проверке', ageDivision: 'ADULT',
       primarySport: 'BOXING', secondarySport: null,
+      selectedCompetitionScope: {
+        competitionId, communityId: '0199a1b2-1234-7000-8000-000000000353',
+        communityName: 'Community Two', ageDivision: 'ADULT', disciplineKey: null,
+        primaryForHomeDiscovery: true,
+      },
+      competitionScopes: [{
+        competitionId, communityId: '0199a1b2-1234-7000-8000-000000000353',
+        communityName: 'Community Two', ageDivision: 'ADULT', disciplineKey: null,
+        primaryForHomeDiscovery: true,
+      }],
       currentStatuses: [{ competitionId,
         communityId: '0199a1b2-1234-7000-8000-000000000353',
         status: 'CONTENDER', provisional: true, reviewState: 'PENDING' }],

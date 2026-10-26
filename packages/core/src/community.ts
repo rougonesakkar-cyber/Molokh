@@ -214,6 +214,7 @@ export interface CommunityAccessInput {
   readonly membership: CommunityMembershipAccess | null;
   readonly membershipReapplyBlocked: boolean;
   readonly hasOtherActiveCompetitiveMembership: boolean;
+  readonly multiCommunityDisciplineEnabled?: boolean;
   readonly activeRoleGrants: readonly ActiveRoleGrant[];
 }
 
@@ -281,7 +282,7 @@ export function projectCommunityAccess(
     communityActive &&
     membershipCanBeRequested &&
     !input.membershipReapplyBlocked &&
-    !input.hasOtherActiveCompetitiveMembership
+    (!input.hasOtherActiveCompetitiveMembership || input.multiCommunityDisciplineEnabled)
   ) {
     capabilities.push('REQUEST_MEMBERSHIP');
   } else {
@@ -289,7 +290,7 @@ export function projectCommunityAccess(
       ? 'ACCOUNT_NOT_ACTIVE'
       : !communityActive
         ? 'COMMUNITY_NOT_ACTIVE'
-        : input.hasOtherActiveCompetitiveMembership
+        : input.hasOtherActiveCompetitiveMembership && !input.multiCommunityDisciplineEnabled
           ? 'MVP_ACTIVE_COMMUNITY_LIMIT'
           : input.membershipReapplyBlocked
             ? 'MEMBERSHIP_REAPPLY_WAIT'

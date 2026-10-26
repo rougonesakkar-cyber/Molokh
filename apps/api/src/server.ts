@@ -1461,8 +1461,8 @@ const app = await buildApp({
     auth: localAuth,
     avatarMedia: new DisabledAvatarMediaAdapter(),
     readMe: (userId) => readIdentityProjection(database, userId),
-    readPublicProfile: (viewerUserId, subjectUserId) =>
-      readPublicAthleteProfile(database, viewerUserId, subjectUserId),
+    readPublicProfile: (viewerUserId, subjectUserId, competitionId) =>
+      readPublicAthleteProfile(database, viewerUserId, subjectUserId, competitionId),
     changeDisplayName: (command, ids) => changeDisplayName(database, command, ids),
     changeSports: (command, ids) => changeSports(database, command, ids),
     readHomeVenueSettings: (userId) => readHomeVenueSettings(database, userId),

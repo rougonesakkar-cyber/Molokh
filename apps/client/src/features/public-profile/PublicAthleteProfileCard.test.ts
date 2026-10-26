@@ -36,4 +36,9 @@ describe('public Athlete profile presentation', () => {
     expect(`${PUBLIC_PROFILE_COPY.reviewPending} ${PUBLIC_PROFILE_COPY.reviewed}`)
       .not.toMatch(/statement|evidence|причин/i);
   });
+
+  it('[AC-183] labels statistics as Competition-scoped without a global rank', () => {
+    expect(PUBLIC_PROFILE_COPY.selectedScope).toContain('контур');
+    expect(PUBLIC_PROFILE_COPY.scopedStatistics).toContain('Глобального рейтинга нет');
+  });
 });

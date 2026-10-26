@@ -243,12 +243,23 @@ const PublicProfileResultSchema = Type.Object({
   occurredAt: Type.String({ format: 'date-time' }),
 }, { additionalProperties: false });
 
+const PublicProfileCompetitionScopeSchema = Type.Object({
+  competitionId: Type.String({ format: 'uuid' }),
+  communityId: Type.String({ format: 'uuid' }),
+  communityName: Type.String({ minLength: 1, maxLength: 120 }),
+  ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
+  disciplineKey: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+  primaryForHomeDiscovery: Type.Boolean(),
+}, { additionalProperties: false });
+
 export const PublicAthleteProfileSchema = Type.Object({
   userId: Type.String({ format: 'uuid' }),
   displayName: Type.String({ minLength: 1, maxLength: 80 }),
   ageDivision: Type.Union([Type.Literal('YOUTH'), Type.Literal('ADULT')]),
   primarySport: Type.String(),
   secondarySport: Type.Union([Type.String(), Type.Null()]),
+  selectedCompetitionScope: Type.Union([PublicProfileCompetitionScopeSchema, Type.Null()]),
+  competitionScopes: Type.Array(PublicProfileCompetitionScopeSchema),
   currentStatuses: Type.Array(PublicProfileCurrentStatusSchema),
   statusHistory: Type.Array(PublicProfileStatusHistorySchema),
   officialRecord: Type.Object({

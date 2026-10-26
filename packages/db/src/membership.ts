@@ -85,6 +85,7 @@ interface CreationContextRow {
   readonly current_membership_state: MembershipState | null;
   readonly reapply_not_before_at: Date | null;
   readonly has_other_active_competitive_membership: boolean;
+  readonly multi_community_discipline_enabled: boolean;
 }
 
 interface InviteRow {
@@ -185,7 +186,11 @@ async function creationContext(
           and active_membership.state = 'ACTIVE'
           and active_membership.competition_enabled
           and active_membership.community_id <> target_community.community_id
-      ) as has_other_active_competitive_membership
+      ) as has_other_active_competitive_membership,
+      coalesce((
+        select flag.enabled from platform.feature_flags as flag
+        where flag.feature_key = 'MULTI_COMMUNITY_DISCIPLINE'
+      ), false) as multi_community_discipline_enabled
     from identity.users as users
     cross join community.communities as target_community
     where users.user_id = ${userId}::uuid
@@ -296,6 +301,7 @@ export async function requestMembership(
         currentMembershipState: current.current_membership_state,
         hasCurrentRelationship: current.current_membership_state !== null,
         hasOtherActiveCompetitiveMembership: current.has_other_active_competitive_membership,
+        multiCommunityDisciplineEnabled: current.multi_community_discipline_enabled,
         reapplyNotBeforeAt: current.reapply_not_before_at?.toISOString() ?? null,
         now: context.occurredAt,
       });
@@ -389,6 +395,7 @@ export async function activateMembershipByInvite(
         currentMembershipState: current.current_membership_state,
         hasCurrentRelationship: current.current_membership_state !== null,
         hasOtherActiveCompetitiveMembership: current.has_other_active_competitive_membership,
+        multiCommunityDisciplineEnabled: current.multi_community_discipline_enabled,
         now: context.occurredAt,
       });
       const decidedAt = context.occurredAt.toISOString();
@@ -455,6 +462,7 @@ export async function approveMembership(
         readonly venue_id: string;
         readonly age_division: AgeDivision;
         readonly has_other_active_competitive_membership: boolean;
+        readonly multi_community_discipline_enabled: boolean;
       }>`
         select users.account_state, target_community.state as community_state,
           target_community.venue_id, users.age_division,
@@ -464,7 +472,11 @@ export async function approveMembership(
               and other_membership.membership_id <> ${current.membership_id}::uuid
               and other_membership.state = 'ACTIVE'
               and other_membership.competition_enabled
-          ) as has_other_active_competitive_membership
+          ) as has_other_active_competitive_membership,
+          coalesce((
+            select flag.enabled from platform.feature_flags as flag
+            where flag.feature_key = 'MULTI_COMMUNITY_DISCIPLINE'
+          ), false) as multi_community_discipline_enabled
         from identity.users as users
         join community.communities as target_community
           on target_community.community_id = ${current.community_id}::uuid
@@ -479,6 +491,7 @@ export async function approveMembership(
         communityState: resource.community_state, userAgeDivision: resource.age_division,
         currentMembershipState: current.state, hasCurrentRelationship: true,
         hasOtherActiveCompetitiveMembership: resource.has_other_active_competitive_membership,
+        multiCommunityDisciplineEnabled: resource.multi_community_discipline_enabled,
         actorControlsVenue: controlsVenue, now: context.occurredAt,
       });
       const decidedAt = context.occurredAt.toISOString();

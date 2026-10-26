@@ -120,6 +120,17 @@ describe('community access projection', () => {
       capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_WAIT', retryable: true,
     }));
   });
+
+  it('[AC-183] exposes a second Membership request only under the explicit future policy', () => {
+    const futurePolicy = projectCommunityAccess({
+      ...base, membership: null, hasOtherActiveCompetitiveMembership: true,
+      multiCommunityDisciplineEnabled: true,
+    });
+    expect(futurePolicy.capabilities).toContain('REQUEST_MEMBERSHIP');
+    expect(futurePolicy.denials).not.toContainEqual(expect.objectContaining({
+      capability: 'REQUEST_MEMBERSHIP', code: 'MVP_ACTIVE_COMMUNITY_LIMIT',
+    }));
+  });
 });
 
 describe('community lifecycle guard', () => {

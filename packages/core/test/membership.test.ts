@@ -67,6 +67,17 @@ describe('Membership lifecycle policy', () => {
     })).toThrowError(expect.objectContaining({ code: 'MVP_ACTIVE_COMMUNITY_LIMIT' }));
   });
 
+  it('[AC-183] keeps the MVP limit by default and permits a second scope only when enabled', () => {
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'ACTIVATE', inviteValid: true, inviteAgeDivision: 'ADULT',
+      hasOtherActiveCompetitiveMembership: true,
+    })).toThrowError(expect.objectContaining({ code: 'MVP_ACTIVE_COMMUNITY_LIMIT' }));
+    expect(() => assertMembershipTransition({
+      ...base, transition: 'ACTIVATE', inviteValid: true, inviteAgeDivision: 'ADULT',
+      hasOtherActiveCompetitiveMembership: true, multiCommunityDisciplineEnabled: true,
+    })).not.toThrow();
+  });
+
   it('[M-04] requires private and neutral reasons and starts an exact seven-day reapply wait', () => {
     expect(() => assertMembershipTransition({
       ...base, transition: 'REJECT', currentMembershipState: 'PENDING',

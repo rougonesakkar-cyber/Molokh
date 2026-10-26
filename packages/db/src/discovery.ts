@@ -58,6 +58,8 @@ interface DiscoveryViewerRow {
   readonly city_code: string | null;
   readonly latitude: string | null;
   readonly longitude: string | null;
+  readonly primary_community_id: string | null;
+  readonly multi_community_discipline_enabled: boolean;
 }
 
 interface DiscoveryCandidateRow {
@@ -179,6 +181,11 @@ export async function readDiscoveryCards(
       profile.primary_sport,
       profile.secondary_sport,
       profile.discovery_radius_km,
+      profile.primary_community_id,
+      coalesce((
+        select flag.enabled from platform.feature_flags as flag
+        where flag.feature_key = 'MULTI_COMMUNITY_DISCIPLINE'
+      ), false) as multi_community_discipline_enabled,
       venue.venue_id,
       venue.city_code,
       venue.latitude::text as latitude,
@@ -249,6 +256,20 @@ export async function readDiscoveryCards(
     join identity.athlete_profiles as profile on profile.user_id = candidate.user_id
     join community.venues as venue on venue.venue_id = profile.home_venue_id
     where venue.city_code = ${viewer.city_code}
+      and (
+        not ${viewer.multi_community_discipline_enabled}
+        or (
+          ${viewer.primary_community_id}::uuid is not null
+          and profile.primary_community_id = ${viewer.primary_community_id}::uuid
+          and exists (
+            select 1 from community.community_memberships as candidate_membership
+            where candidate_membership.user_id = candidate.user_id
+              and candidate_membership.community_id = ${viewer.primary_community_id}::uuid
+              and candidate_membership.state = 'ACTIVE'
+              and candidate_membership.competition_enabled
+          )
+        )
+      )
   `.execute(database);
 
   const eligibleCards: DiscoveryCardProjection[] = [];

@@ -107,12 +107,23 @@ export interface PublicProfileResultEntry {
   readonly occurredAt: string;
 }
 
+export interface PublicProfileCompetitionScope {
+  readonly competitionId: string;
+  readonly communityId: string;
+  readonly communityName: string;
+  readonly ageDivision: IdentityProjection['ageDivision'];
+  readonly disciplineKey: string | null;
+  readonly primaryForHomeDiscovery: boolean;
+}
+
 export interface PublicAthleteProfileProjection {
   readonly userId: string;
   readonly displayName: string;
   readonly ageDivision: IdentityProjection['ageDivision'];
   readonly primarySport: string;
   readonly secondarySport: string | null;
+  readonly selectedCompetitionScope: PublicProfileCompetitionScope | null;
+  readonly competitionScopes: readonly PublicProfileCompetitionScope[];
   readonly currentStatuses: readonly PublicProfileCurrentStatus[];
   readonly statusHistory: readonly PublicProfileStatusHistoryEntry[];
   readonly officialRecord: {
@@ -131,6 +142,7 @@ interface PublicProfileIdentityRow {
   readonly account_state: IdentityProjection['accountState'];
   readonly primary_sport: string;
   readonly secondary_sport: string | null;
+  readonly primary_community_id: string | null;
 }
 
 interface PublicProfileAccessRow {
@@ -142,6 +154,10 @@ interface PublicProfileAccessRow {
 interface PublicProfileCompetitionRow {
   readonly competition_id: string;
   readonly community_id: string;
+  readonly community_name: string;
+  readonly age_division: IdentityProjection['ageDivision'];
+  readonly discipline_key: string | null;
+  readonly primary_for_home_discovery: boolean;
 }
 
 interface PublicProfileResultRow {
@@ -244,10 +260,11 @@ export async function readPublicAthleteProfile(
   database: Kysely<Database>,
   viewerUserId: string,
   subjectUserId: string,
+  requestedCompetitionId?: string,
 ): Promise<PublicAthleteProfileProjection | null> {
   const identityResult = await sql<PublicProfileIdentityRow>`
     select users.user_id, users.display_name, users.age_division, users.account_state,
-      profile.primary_sport, profile.secondary_sport
+      profile.primary_sport, profile.secondary_sport, profile.primary_community_id
     from identity.users as users
     join identity.athlete_profiles as profile on profile.user_id = users.user_id
     where users.user_id = ${subjectUserId}::uuid
@@ -326,10 +343,33 @@ export async function readPublicAthleteProfile(
   }
 
   const competitionResult = await sql<PublicProfileCompetitionRow>`
-    select competition.competition_id, competition.community_id
+    select distinct competition.competition_id, competition.community_id,
+      community.name as community_name, competition.age_division,
+      competition.discipline_key,
+      coalesce(competition.community_id = profile.primary_community_id, false)
+        as primary_for_home_discovery
     from competition.competitions as competition
+    join community.communities as community
+      on community.community_id = competition.community_id
+    join identity.athlete_profiles as profile
+      on profile.user_id = ${subjectUserId}::uuid
     where ${subjectUserId}::uuid in (
         competition.champion_user_id, competition.contender_user_id
+      )
+      or exists (
+        select 1 from community.community_memberships as membership
+        where membership.user_id = ${subjectUserId}::uuid
+          and membership.community_id = competition.community_id
+          and membership.age_division = competition.age_division
+          and membership.state = 'ACTIVE'
+          and membership.competition_enabled
+      )
+      or exists (
+        select 1
+        from competition.challenges as challenge
+        join competition.results as result on result.challenge_id = challenge.challenge_id
+        where challenge.competition_id = competition.competition_id
+          and ${subjectUserId}::uuid in (challenge.pair_low_id, challenge.pair_high_id)
       )
       or exists (
         select 1 from platform.domain_events as event
@@ -344,10 +384,27 @@ export async function readPublicAthleteProfile(
             case when event.payload ? 'assignedStatus' then event.payload->>'userId' else null end
           )
       )
-    order by competition.competition_id
+    order by primary_for_home_discovery desc, competition.community_id,
+      competition.age_division, competition.discipline_key nulls first,
+      competition.competition_id
   `.execute(database);
+  const competitionScopes: PublicProfileCompetitionScope[] = competitionResult.rows.map((scope) => ({
+    competitionId: scope.competition_id,
+    communityId: scope.community_id,
+    communityName: scope.community_name,
+    ageDivision: scope.age_division,
+    disciplineKey: scope.discipline_key,
+    primaryForHomeDiscovery: scope.primary_for_home_discovery,
+  }));
+  const selectedCompetitionScope = requestedCompetitionId
+    ? competitionScopes.find((scope) => scope.competitionId === requestedCompetitionId) ?? null
+    : competitionScopes[0] ?? null;
+  if (requestedCompetitionId && selectedCompetitionScope === null) {
+    throw new IdentityPermissionDeniedError();
+  }
   const statusHistory: PublicProfileStatusHistoryEntry[] = [];
   for (const competition of competitionResult.rows) {
+    if (competition.competition_id !== selectedCompetitionScope?.competitionId) continue;
     const projection = await replayCompetitionProjection(database, competition.competition_id);
     for (const tenure of projection.tenures) {
       if (tenure.userId !== subjectUserId) continue;
@@ -378,7 +435,9 @@ export async function readPublicAthleteProfile(
       reviewState: provisional ? 'PENDING' as const : null,
     }));
 
-  const effectiveResults = await sql<PublicProfileResultRow>`
+  const effectiveResults = selectedCompetitionScope === null
+    ? { rows: [] as PublicProfileResultRow[] }
+    : await sql<PublicProfileResultRow>`
     select result.result_id, competition.competition_id, result.state,
       coalesce(
         integrity_decision.effective_outcome_code,
@@ -427,6 +486,7 @@ export async function readPublicAthleteProfile(
     left join competition.integrity_decisions as integrity_decision
       on integrity_decision.case_id = integrity_case.case_id
     where ${subjectUserId}::uuid in (challenge.pair_low_id, challenge.pair_high_id)
+      and competition.competition_id = ${selectedCompetitionScope.competitionId}::uuid
       and result.state not in ('ANNULLED', 'REPEAT_ORDERED')
       and coalesce(integrity_decision.effective_disposition, '') not in ('ANNUL', 'REPEAT')
       and coalesce(appeal_decision.decision, '') not in ('ANNUL', 'REPEAT')
@@ -479,6 +539,8 @@ export async function readPublicAthleteProfile(
     ageDivision: identity.age_division,
     primarySport: identity.primary_sport,
     secondarySport: identity.secondary_sport,
+    selectedCompetitionScope,
+    competitionScopes,
     currentStatuses,
     statusHistory,
     officialRecord,

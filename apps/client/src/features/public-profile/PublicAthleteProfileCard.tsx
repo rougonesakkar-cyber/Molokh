@@ -12,6 +12,8 @@ export const PUBLIC_PROFILE_COPY = {
   privacy: 'Обычные партнёры по тренировкам и внутренние причины не публикуются.',
   reviewPending: 'на проверке',
   reviewed: 'пересмотрено',
+  selectedScope: 'Выбранный соревновательный контур',
+  scopedStatistics: 'Статус и результаты показаны только для выбранного контура. Глобального рейтинга нет.',
 } as const;
 
 export function publicReviewLabel(reviewState: PublicReviewState): string {
@@ -46,6 +48,23 @@ export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardPr
         {profile.displayName}
       </Text>
       <Text style={styles.muted}>{profile.primarySport}</Text>
+
+      {profile.selectedCompetitionScope ? (
+        <View style={styles.section}>
+          <Text accessibilityRole="header" aria-level={3} style={styles.title}>
+            {PUBLIC_PROFILE_COPY.selectedScope}
+          </Text>
+          <Text style={styles.value}>
+            {profile.selectedCompetitionScope.communityName}
+            {' · '}{profile.selectedCompetitionScope.ageDivision}
+            {profile.selectedCompetitionScope.disciplineKey
+              ? ` · ${profile.selectedCompetitionScope.disciplineKey}`
+              : ''}
+            {profile.selectedCompetitionScope.primaryForHomeDiscovery ? ' · основное сообщество' : ''}
+          </Text>
+          <Text style={styles.muted}>{PUBLIC_PROFILE_COPY.scopedStatistics}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.section}>
         <Text accessibilityRole="header" aria-level={3} style={styles.title}>

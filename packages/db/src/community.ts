@@ -114,6 +114,7 @@ interface CommunityContextRow {
     | 'REQUEST_NOT_APPROVED'
     | null;
   readonly has_other_active_competitive_membership: boolean;
+  readonly multi_community_discipline_enabled: boolean;
 }
 
 interface RoleGrantRow {
@@ -277,7 +278,11 @@ export async function readCommunityContext(
           and other_membership.community_id <> community.community_id
           and other_membership.state = 'ACTIVE'
           and other_membership.competition_enabled
-      ) as has_other_active_competitive_membership
+      ) as has_other_active_competitive_membership,
+      coalesce((
+        select flag.enabled from platform.feature_flags as flag
+        where flag.feature_key = 'MULTI_COMMUNITY_DISCIPLINE'
+      ), false) as multi_community_discipline_enabled
     from identity.users as users
     cross join community.communities as community
     join community.venues as venue on venue.venue_id = community.venue_id
@@ -335,6 +340,7 @@ export async function readCommunityContext(
     membershipReapplyBlocked:
       (row.membership_reapply_not_before_at?.getTime() ?? 0) > Date.now(),
     hasOtherActiveCompetitiveMembership: row.has_other_active_competitive_membership,
+    multiCommunityDisciplineEnabled: row.multi_community_discipline_enabled,
     activeRoleGrants,
   });
 

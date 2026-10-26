@@ -55,6 +55,7 @@ export interface IdentityRouteDependencies {
   readonly readPublicProfile?: (
     viewerUserId: string,
     subjectUserId: string,
+    competitionId?: string,
   ) => Promise<PublicAthleteProfileProjection | null>;
   readonly changeDisplayName: (
     command: CommandEnvelope<ChangeDisplayNamePayload>,
@@ -121,6 +122,10 @@ function contractPublicAthleteProfile(
     statusHistory: profile.statusHistory.map((tenure) => ({ ...tenure })),
     officialRecord: { ...profile.officialRecord },
     recentOfficialResults: profile.recentOfficialResults.map((result) => ({ ...result })),
+    selectedCompetitionScope: profile.selectedCompetitionScope
+      ? { ...profile.selectedCompetitionScope }
+      : null,
+    competitionScopes: profile.competitionScopes.map((scope) => ({ ...scope })),
   };
 }
 
@@ -161,6 +166,7 @@ export async function registerIdentityRoutes(
 
   if (dependencies.readPublicProfile) app.get<{
     Params: { readonly userId: string };
+    Querystring: { readonly competitionId?: string };
     Headers: IdentityHeaders;
   }>(
     '/api/v1/athletes/:userId/profile',
@@ -172,6 +178,10 @@ export async function registerIdentityRoutes(
           additionalProperties: false,
           required: ['userId'],
           properties: { userId: { type: 'string', format: 'uuid' } },
+        },
+        querystring: {
+          type: 'object', additionalProperties: false,
+          properties: { competitionId: { type: 'string', format: 'uuid' } },
         },
         response: {
           200: PublicAthleteProfileResponseSchema,
@@ -192,6 +202,7 @@ export async function registerIdentityRoutes(
         profile = await dependencies.readPublicProfile!(
           authenticated.userId,
           request.params.userId,
+          request.query.competitionId,
         );
       } catch (error) {
         if (!(error instanceof IdentityPermissionDeniedError)) throw error;

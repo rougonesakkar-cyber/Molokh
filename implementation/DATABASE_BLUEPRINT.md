@@ -553,6 +553,15 @@ RoleGrant. Central approval appends decision lineage and reuses the existing Ven
 transfer, so the unique active-Primary constraint and the ordinary Gym Admin grants remain the
 authority source.
 
+Migration `0079_multi_community_discipline_policy.sql` keeps the future policy disabled by
+default. It replaces the single-active-competitive-Membership partial index with a user-row-locked
+policy trigger, gates non-null `discipline_key`, and validates that the single
+`athlete_profiles.primary_community_id` is an active competitive Membership whose Venue owns the
+Home preference. Existing Competition foreign keys continue to isolate status transitions,
+tenures, queue entries, Cooldowns and Results; the user-wide active obligation unique index remains
+the cross-scope safety boundary. Public profile statistics require an explicit selected Competition
+scope and expose no global rank.
+
 Membership rejection uses the original `community_memberships` privacy split: the Athlete-facing
 projection, event and notification contain only a neutral public category and the seven-day
 `reapply_not_before_at`; the internal reason code and optional Case reference remain in the private

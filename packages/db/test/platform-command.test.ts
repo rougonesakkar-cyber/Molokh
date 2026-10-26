@@ -2562,7 +2562,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
     `.execute(database);
     await sql`
       insert into platform.feature_flags (feature_key, enabled, reason, version)
-      values ('YOUTH_OFFICIAL', false, 'Reset by integration test', 1)
+      values
+        ('YOUTH_OFFICIAL', false, 'Reset by integration test', 1),
+        ('MULTI_COMMUNITY_DISCIPLINE', false, 'Reset by integration test', 1)
     `.execute(database);
   });
 
@@ -5531,7 +5533,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
   });
 
-  it('[AC-165] [AC-213] projects effective public Athlete statistics and neutral review history', async () => {
+  it('[AC-165] [AC-183] [AC-213] keeps public effective statistics isolated by Competition scope', async () => {
     const base = 130000;
     const fixture = await seedConfirmedTrainingForConversion(base);
     const subjectUserId = fixture.athleteA;
@@ -5855,6 +5857,193 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(JSON.stringify(profile)).not.toMatch(
       /winRate|reliability|safety|private|partner|comment|reason|evidence/i,
     );
+
+    const secondVenue = testId(base + 500);
+    const secondCommunity = testId(base + 501);
+    const secondCompetition = testId(base + 502);
+    const secondConfiguration = testId(base + 503);
+    const secondMembership = testId(base + 504);
+    const secondQueueEntry = testId(base + 505);
+    const firstQueueEntry = testId(base + 506);
+    const firstCooldown = testId(base + 507);
+    const secondCooldown = testId(base + 508);
+    const secondChallenge = testId(base + 509);
+    const secondRuleset = testId(base + 510);
+    const firstObligation = testId(base + 511);
+    const secondObligation = testId(base + 512);
+    const secondFixture = {
+      venueId: secondVenue, venueConfigurationId: testId(base + 513),
+      communityId: secondCommunity, communityConfigurationId: secondConfiguration,
+      membershipId: secondMembership, centralGrantId: testId(base + 17),
+      athleteUserId: subjectUserId, centralActorId: fixture.central,
+      legalName: 'Second Scope Gym LLC', venueDisplayName: 'Second Scope Gym',
+      communityName: 'Second Scope Community', address: 'Москва', cityCode: 'MOSCOW',
+      timezone: 'Europe/Moscow', contactPayload: { phone: '+79990130513' },
+      occurredAt: '2026-10-09T10:00:00.000Z',
+    } as const;
+
+    await expect(ensureLocalPilotCommunity(database, secondFixture))
+      .rejects.toThrow(/MVP_ACTIVE_COMMUNITY_LIMIT/);
+    await sql`
+      update platform.feature_flags
+      set enabled = true, reason = 'AC-183 explicit future policy test',
+        version = version + 1, updated_at = '2026-10-09T10:01:00.000Z'
+      where feature_key = 'MULTI_COMMUNITY_DISCIPLINE' and version = 1
+    `.execute(database);
+    await ensureLocalPilotCommunity(database, secondFixture);
+    await ensureLocalPilotCompetition(database, {
+      competitionId: secondCompetition, communityId: secondCommunity,
+      centralActorId: fixture.central, occurredAt: '2026-10-09T10:02:00.000Z',
+      memberships: [{ membershipId: secondMembership, userId: subjectUserId }],
+    });
+    await sql`
+      update competition.competitions
+      set discipline_key = 'KICKBOXING', phase = 'RUNNING',
+        champion_user_id = null, contender_user_id = ${subjectUserId}::uuid,
+        status_version = 1, version = version + 1
+      where competition_id = ${secondCompetition}::uuid
+    `.execute(database);
+    await sql`
+      update identity.athlete_profiles
+      set primary_community_id = ${fixture.community}::uuid
+      where user_id = ${subjectUserId}::uuid
+    `.execute(database);
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, actor_id,
+        occurred_at, payload, idempotency_key_hash
+      ) values (
+        ${testId(base + 514)}::uuid, 'StatusFixtureEstablished', 1, 'Competition',
+        ${secondCompetition}::uuid, 2, 'ST-04', ${testId(base + 515)}::uuid,
+        ${fixture.central}::uuid, '2026-10-09T10:03:00.000Z',
+        ${JSON.stringify({ championUserId: null, contenderUserId: subjectUserId,
+          statusVersion: 1, provisional: false })}::jsonb,
+        'fixture:ac-183:second-scope-status'
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.challenge_queue_entries (
+        queue_entry_id, competition_id, initiator_user_id, target_status,
+        kind, state, source_type, submitted_at, version
+      ) values
+        (${firstQueueEntry}::uuid, ${fixture.competition}::uuid, ${subjectUserId}::uuid,
+          'CONTENDER', 'DIRECT_STATUS', 'WAITING', 'DIRECT',
+          '2026-10-09T10:04:00.000Z', 1),
+        (${secondQueueEntry}::uuid, ${secondCompetition}::uuid, ${subjectUserId}::uuid,
+          'CHAMPION', 'DIRECT_STATUS', 'WAITING', 'DIRECT',
+          '2026-10-09T10:05:00.000Z', 1)
+    `.execute(database);
+    await sql`
+      insert into competition.pair_cooldowns (
+        cooldown_id, competition_id, pair_low_id, pair_high_id, started_at, ends_at
+      ) values
+        (${firstCooldown}::uuid, ${fixture.competition}::uuid,
+          least(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+          greatest(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+          '2026-10-09T10:00:00.000Z', '2026-10-24T10:00:00.000Z'),
+        (${secondCooldown}::uuid, ${secondCompetition}::uuid,
+          least(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+          greatest(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+          '2026-10-10T10:00:00.000Z', '2026-10-25T10:00:00.000Z')
+    `.execute(database);
+
+    const firstScope = await readPublicAthleteProfile(
+      database, viewerUserId, subjectUserId, fixture.competition,
+    );
+    const secondScope = await readPublicAthleteProfile(
+      database, viewerUserId, subjectUserId, secondCompetition,
+    );
+    expect(firstScope).toMatchObject({
+      selectedCompetitionScope: { competitionId: fixture.competition,
+        communityId: fixture.community, primaryForHomeDiscovery: true },
+      officialRecord: { wins: 3, losses: 2, draws: 1 },
+      currentStatuses: [{ competitionId: fixture.competition, status: 'CHAMPION' }],
+    });
+    expect(secondScope).toMatchObject({
+      selectedCompetitionScope: { competitionId: secondCompetition,
+        communityId: secondCommunity, disciplineKey: 'KICKBOXING',
+        primaryForHomeDiscovery: false },
+      officialRecord: { wins: 0, losses: 0, draws: 0 },
+      currentStatuses: [{ competitionId: secondCompetition, status: 'CONTENDER' }],
+      recentOfficialResults: [],
+    });
+    expect(firstScope?.competitionScopes).toHaveLength(2);
+    expect(firstScope).toEqual(await readPublicAthleteProfile(
+      database, viewerUserId, subjectUserId, fixture.competition,
+    ));
+    expect(JSON.stringify({ firstScope, secondScope })).not.toMatch(/globalRank/i);
+
+    const firstCompetitionStatus = await readCompetitionStatus(
+      database, fixture.competition, subjectUserId,
+    );
+    const secondCompetitionStatus = await readCompetitionStatus(
+      database, secondCompetition, subjectUserId,
+    );
+    expect(firstCompetitionStatus?.queue.map((entry) => entry.queueEntryId))
+      .toEqual([firstQueueEntry]);
+    expect(secondCompetitionStatus?.queue.map((entry) => entry.queueEntryId))
+      .toEqual([secondQueueEntry]);
+    const scopedFacts = await sql<{
+      readonly competition_id: string; readonly cooldown_count: string;
+    }>`
+      select competition_id, count(*)::text as cooldown_count
+      from competition.pair_cooldowns
+      group by competition_id order by competition_id
+    `.execute(database);
+    expect(scopedFacts.rows).toEqual(expect.arrayContaining([
+      { competition_id: fixture.competition, cooldown_count: '1' },
+      { competition_id: secondCompetition, cooldown_count: '1' },
+    ]));
+
+    await sql`
+      insert into competition.ruleset_snapshots (
+        ruleset_snapshot_id, competition_id, community_configuration_id,
+        ruleset_ref, ruleset_ack_mode, policy_version, created_at
+      ) values (
+        ${secondRuleset}::uuid, ${secondCompetition}::uuid, ${secondConfiguration}::uuid,
+        'kickboxing-v1', 'IMPLICIT_ON_ACCEPT', 'ac-183-v1',
+        '2026-10-09T10:06:00.000Z'
+      )
+    `.execute(database);
+    await sql`
+      insert into competition.challenges (
+        challenge_id, competition_id, source_chat_id, service_chat_id,
+        initiator_user_id, recipient_user_id, pair_low_id, pair_high_id,
+        response_policy, stake, state, ruleset_snapshot_id,
+        response_deadline_at, version, created_at, updated_at
+      ) values (
+        ${secondChallenge}::uuid, ${secondCompetition}::uuid, ${fixture.chat}::uuid,
+        ${fixture.chat}::uuid, ${subjectUserId}::uuid, ${viewerUserId}::uuid,
+        least(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+        greatest(${subjectUserId}::uuid, ${viewerUserId}::uuid),
+        'OPTIONAL', 'NONE', 'ACCEPTED_UNSCHEDULED', ${secondRuleset}::uuid,
+        '2026-10-10T10:00:00.000Z', 1,
+        '2026-10-09T10:07:00.000Z', '2026-10-09T10:07:00.000Z'
+      )
+    `.execute(database);
+    const firstChallengeResult = await sql<{ readonly challenge_id: string }>`
+      select challenge_id from competition.challenges
+      where competition_id = ${fixture.competition}::uuid
+      order by created_at, challenge_id limit 1
+    `.execute(database);
+    const firstChallenge = firstChallengeResult.rows[0]!.challenge_id;
+    await sql`
+      insert into competition.challenge_participant_obligations (
+        obligation_id, challenge_id, user_id, accepted_at
+      ) values (
+        ${firstObligation}::uuid, ${firstChallenge}::uuid, ${subjectUserId}::uuid,
+        '2026-10-10T10:00:00.000Z'
+      )
+    `.execute(database);
+    await expect(sql`
+      insert into competition.challenge_participant_obligations (
+        obligation_id, challenge_id, user_id, accepted_at
+      ) values (
+        ${secondObligation}::uuid, ${secondChallenge}::uuid, ${subjectUserId}::uuid,
+        '2026-10-10T10:01:00.000Z'
+      )
+    `.execute(database)).rejects.toThrow(/challenge_one_active_obligation_per_user_uq/);
 
     const outsiderUserId = testId(base + 37);
     await sql`

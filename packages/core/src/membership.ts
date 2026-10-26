@@ -73,6 +73,7 @@ export interface MembershipTransitionInput {
     | null;
   readonly hasCurrentRelationship: boolean;
   readonly hasOtherActiveCompetitiveMembership: boolean;
+  readonly multiCommunityDisciplineEnabled?: boolean;
   readonly reapplyNotBeforeAt?: string | null;
   readonly actorControlsVenue?: boolean;
   readonly actorIsRequester?: boolean;
@@ -139,6 +140,7 @@ export function assertMembershipTransition(input: MembershipTransitionInput): vo
   if (
     ['REQUEST', 'ACTIVATE', 'APPROVE'].includes(input.transition)
     && input.hasOtherActiveCompetitiveMembership
+    && !input.multiCommunityDisciplineEnabled
   ) {
     throw new MembershipConflictError('MVP_ACTIVE_COMMUNITY_LIMIT');
   }
