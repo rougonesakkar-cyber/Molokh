@@ -6,7 +6,14 @@ import type {
   ChatMessageCommandResponse,
   ChatMessagesResponse,
   GroupPlanCommandResponse,
+  GroupPlanOfficialConversionCommandResponse,
+  MyGroupPlanOfficialConversionsResponse,
+  MutualChallengeRescheduleRequestResponse,
+  SafetyCancellationCommandResponse,
+  SessionResponse,
   TrainingOptionsResponse,
+  YouthConsentCommandResponse,
+  YouthConsentSummaryResponse,
 } from '@molokh/contracts';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -24,11 +31,24 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
+import {
+  CHAT_REPORT_CONFIRMATION_COPY,
+  CHAT_REPORT_SUBMITTED_LABEL,
+  SAFETY_CANCEL_ACTION_LABEL,
+  SAFETY_CANCEL_CONFIRMATION_COPY,
+} from '../lib/chat-report-presentation';
+import {
+  challengeCreateDenialCopy,
+  challengeStakeLabel,
+  genesisSchedulingExplanation,
+} from '../lib/challenge-presentation';
 
 type ChatMessage = ChatMessagesResponse['data'][number];
 type TrainingOptions = TrainingOptionsResponse['data'];
+type GroupPlanOfficialConversion = MyGroupPlanOfficialConversionsResponse['data'][number];
 type ChatChallenge = ChatChallengeResponse['data'];
 type ChatState = ChatMessagesResponse['meta']['chatState'];
+type YouthConsentSummary = YouthConsentSummaryResponse['data'];
 type PendingMessageAction = {
   readonly action: 'hide' | 'report';
   readonly messageId: string;
@@ -66,9 +86,14 @@ export default function ChatScreen() {
   const [chatState, setChatState] = useState<ChatState | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [trainingOptions, setTrainingOptions] = useState<TrainingOptions | null>(null);
+  const [groupPlanConversions, setGroupPlanConversions] = useState<GroupPlanOfficialConversion[]>([]);
   const [chatChallenge, setChatChallenge] = useState<ChatChallenge | null>(null);
   const [challengeLoading, setChallengeLoading] = useState(false);
   const [actingChallenge, setActingChallenge] = useState(false);
+  const [youthConsent, setYouthConsent] = useState<YouthConsentSummary | null>(null);
+  const [guardianEmail, setGuardianEmail] = useState('');
+  const [requestingYouthConsent, setRequestingYouthConsent] = useState(false);
+  const [developmentConsentUrl, setDevelopmentConsentUrl] = useState<string | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [actingTrainingId, setActingTrainingId] = useState<string | null>(null);
@@ -139,6 +164,30 @@ export default function ChatScreen() {
     void loadChallenge();
   }, [loadChallenge]);
 
+  const activeChallengeId = chatChallenge?.challenge?.challengeId ?? '';
+  const loadYouthConsent = useCallback(async () => {
+    if (!activeChallengeId) {
+      setYouthConsent(null);
+      return;
+    }
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${activeChallengeId}/youth-consents`,
+        { headers: { Authorization: `Bearer ${localToken}` } },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as YouthConsentSummaryResponse;
+      setYouthConsent(result.data);
+    } catch (caught) {
+      setYouthConsent(null);
+      setError(caught instanceof Error ? caught.message : 'Не удалось загрузить согласие представителя');
+    }
+  }, [activeChallengeId]);
+
+  useEffect(() => {
+    void loadYouthConsent();
+  }, [loadYouthConsent]);
+
   const loadTrainingOptions = useCallback(async () => {
     if (!chatId) {
       setOptionsLoading(false);
@@ -147,15 +196,23 @@ export default function ChatScreen() {
     setOptionsLoading(true);
     setOptionsError(null);
     try {
-      const response = await fetch(`${apiUrl}/api/v1/chats/${chatId}/training-options`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
+      const headers = { Authorization: `Bearer ${localToken}` };
+      const [response, conversionResponse] = await Promise.all([
+        fetch(`${apiUrl}/api/v1/chats/${chatId}/training-options`, { headers }),
+        fetch(`${apiUrl}/api/v1/me/group-plan-official-conversions`, { headers }),
+      ]);
       if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as TrainingOptionsResponse;
+      if (!conversionResponse.ok) throw new Error(await apiErrorMessage(conversionResponse));
+      const [result, conversionResult] = await Promise.all([
+        response.json() as Promise<TrainingOptionsResponse>,
+        conversionResponse.json() as Promise<MyGroupPlanOfficialConversionsResponse>,
+      ]);
       setTrainingOptions(result.data);
+      setGroupPlanConversions(conversionResult.data.filter((item) => item.chatId === chatId));
       setViewerUserId(result.meta.viewerUserId);
     } catch (caught) {
       setTrainingOptions(null);
+      setGroupPlanConversions([]);
       setOptionsError(
         caught instanceof Error ? caught.message : 'Не удалось загрузить расписание',
       );
@@ -225,7 +282,8 @@ export default function ChatScreen() {
         }
         throw new Error(await apiErrorMessage(response));
       }
-      await response.json() as BookingIntentCommandResponse | GroupPlanCommandResponse;
+      await response.json() as BookingIntentCommandResponse | GroupPlanCommandResponse
+        | GroupPlanOfficialConversionCommandResponse;
       actionKeys.current.delete(input.operation);
       await Promise.all([loadTrainingOptions(), loadChallenge()]);
     } catch (caught) {
@@ -277,6 +335,230 @@ export default function ChatScreen() {
     }
   };
 
+  const runChallengeReschedule = async (
+    reasonCode: 'SCHEDULE_CHANGED' | 'OTHER',
+    confirmForfeit = false,
+  ) => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge || actingChallenge) return;
+    const operation = `challenge:reschedule:${challenge.challengeId}:v${challenge.version}:${reasonCode}:${confirmForfeit}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingChallenge(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challenge.challengeId}/reschedule`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(challenge.version),
+          },
+          body: JSON.stringify({ reasonCode, confirmForfeit }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) {
+          await Promise.all([loadChallenge(), loadTrainingOptions()]);
+        }
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as ChallengeCommandResponse;
+      actionKeys.current.delete(operation);
+      setChatChallenge((current) => current ? { ...current, challenge: result.data } : current);
+      await Promise.all([loadChallenge(), loadTrainingOptions()]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось перенести Challenge');
+    } finally {
+      setActingChallenge(false);
+    }
+  };
+
+  const confirmChallengeReschedule = () => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge) return;
+    if (challenge.userRescheduleCount >= 2) {
+      Alert.alert(
+        'Переносы закончились',
+        'Ещё один виновный перенос немедленно зафиксирует ваш FORFEIT и поражение. Партнёр станет победителем, возможное изменение статуса и Cooldown начнутся сразу. Result можно обжаловать в течение 48 часов.',
+        [
+          { text: 'Вернуться', style: 'cancel' },
+          {
+            text: 'Подтвердить FORFEIT',
+            style: 'destructive',
+            onPress: () => void runChallengeReschedule('OTHER', true),
+          },
+        ],
+      );
+      return;
+    }
+    Alert.alert(
+      'Перенести Challenge?',
+      `Будет использован перенос ${challenge.userRescheduleCount + 1} из 2. Текущий выбор слота отменится без поражения, а Challenge останется принятым.`,
+      [
+        { text: 'Не переносить', style: 'cancel' },
+        {
+          text: 'Изменилось расписание',
+          onPress: () => void runChallengeReschedule('SCHEDULE_CHANGED'),
+        },
+        { text: 'Другая причина', onPress: () => void runChallengeReschedule('OTHER') },
+      ],
+    );
+  };
+
+  const runMutualRescheduleProposal = async (
+    reasonCode: 'SCHEDULE_CHANGED' | 'OTHER',
+  ) => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge || actingChallenge) return;
+    const operation = `challenge:mutual-reschedule:propose:${challenge.challengeId}:v${challenge.version}:${reasonCode}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingChallenge(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challenge.challengeId}/mutual-reschedules`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(challenge.version),
+          },
+          body: JSON.stringify({ reasonCode }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) await loadChallenge();
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as MutualChallengeRescheduleRequestResponse;
+      actionKeys.current.delete(operation);
+      setChatChallenge((current) => current
+        ? { ...current, mutualRescheduleRequest: result.data }
+        : current);
+      await loadChallenge();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось предложить взаимный перенос');
+    } finally {
+      setActingChallenge(false);
+    }
+  };
+
+  const confirmMutualRescheduleProposal = async () => {
+    const challenge = chatChallenge?.challenge;
+    const request = chatChallenge?.mutualRescheduleRequest;
+    if (!challenge || !request || actingChallenge || request.proposedByUserId === viewerUserId) return;
+    const operation = `challenge:mutual-reschedule:confirm:${request.requestId}:v${request.version}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingChallenge(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challenge.challengeId}/mutual-reschedules/${request.requestId}/confirm`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(challenge.version),
+          },
+          body: JSON.stringify({ requestVersion: request.version }),
+        },
+      );
+      if (!response.ok) {
+        if (response.status === 409) {
+          await Promise.all([loadChallenge(), loadTrainingOptions()]);
+        }
+        throw new Error(await apiErrorMessage(response));
+      }
+      const result = (await response.json()) as ChallengeCommandResponse;
+      actionKeys.current.delete(operation);
+      setChatChallenge((current) => current
+        ? { ...current, challenge: result.data, mutualRescheduleRequest: null }
+        : current);
+      await Promise.all([loadChallenge(), loadTrainingOptions()]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось подтвердить взаимный перенос');
+    } finally {
+      setActingChallenge(false);
+    }
+  };
+
+  const proposeMutualReschedule = () => {
+    const challenge = chatChallenge?.challenge;
+    if (!challenge || challenge.userRescheduleCount >= 2) return;
+    Alert.alert(
+      'Предложить взаимный перенос?',
+      `Пока партнёр не подтвердит, Session и Challenge не изменятся. После подтверждения будет использован перенос ${challenge.userRescheduleCount + 1} из 2 без назначения виновного.`,
+      [
+        { text: 'Не предлагать', style: 'cancel' },
+        {
+          text: 'Изменилось расписание',
+          onPress: () => void runMutualRescheduleProposal('SCHEDULE_CHANGED'),
+        },
+        { text: 'Другая причина', onPress: () => void runMutualRescheduleProposal('OTHER') },
+      ],
+    );
+  };
+
+  const confirmMutualReschedule = () => {
+    Alert.alert(
+      'Подтвердить взаимный перенос?',
+      'Текущая бронь будет закрыта без поражения. Challenge вернётся к выбору времени, а общий счётчик переносов увеличится на один.',
+      [
+        { text: 'Не подтверждать', style: 'cancel' },
+        { text: 'Подтвердить перенос', onPress: () => void confirmMutualRescheduleProposal() },
+      ],
+    );
+  };
+
+  const requestGuardianConsent = async () => {
+    const challengeId = chatChallenge?.challenge?.challengeId;
+    const normalizedEmail = guardianEmail.trim();
+    if (!challengeId || requestingYouthConsent || !normalizedEmail) return;
+    const operation = `youth-consent:request:${challengeId}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setRequestingYouthConsent(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/v1/challenges/${challengeId}/youth-consents`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': '0',
+          },
+          body: JSON.stringify({ channel: 'EMAIL', guardianContact: normalizedEmail }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      const result = (await response.json()) as YouthConsentCommandResponse;
+      setDevelopmentConsentUrl(result.meta.developmentActionUrl ?? null);
+      actionKeys.current.delete(operation);
+      await loadYouthConsent();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось отправить ссылку представителю');
+    } finally {
+      setRequestingYouthConsent(false);
+    }
+  };
+
   const chooseSlot = async (slot: TrainingOptions['slots'][number]) => {
     if (!chatId || !viewerUserId) return;
     const booking = trainingOptions?.activeIntent.booking;
@@ -313,6 +595,108 @@ export default function ChatScreen() {
     }
   };
 
+  const confirmBookingWithdrawal = (
+    booking: NonNullable<TrainingOptions['activeIntent']['booking']>,
+  ) => {
+    Alert.alert(
+      'Отменить выбор слота?',
+      booking.purpose === 'OFFICIAL_CHALLENGE'
+        ? 'Challenge останется принятым. Вы сможете выбрать другое время без поражения, Cooldown или переноса.'
+        : 'Запрос будет закрыт без бронирования и спортивных последствий.',
+      [
+        { text: 'Оставить выбор', style: 'cancel' },
+        {
+          text: 'Отменить выбор',
+          style: 'destructive',
+          onPress: () => {
+            void runTrainingAction({
+              operation: `withdraw-booking:${booking.bookingId}:v${booking.version}`,
+              resourceId: booking.bookingId,
+              path: `/api/v1/bookings/${booking.bookingId}/withdraw`,
+              version: booking.version,
+              body: {},
+            });
+          },
+        },
+      ],
+    );
+  };
+
+  const reportSafetyAndCancel = async (
+    booking: NonNullable<TrainingOptions['activeIntent']['booking']>,
+  ) => {
+    const challenge = chatChallenge?.challenge;
+    if (!booking.sessionId || !challenge || challenge.state !== 'BOOKED' || actingTrainingId) {
+      return;
+    }
+    const subjectUserId = challenge.initiatorUserId === viewerUserId
+      ? challenge.recipientUserId
+      : challenge.recipientUserId === viewerUserId
+        ? challenge.initiatorUserId
+        : null;
+    if (!subjectUserId) {
+      setOptionsError('Safety-cancel доступен участникам этой Official Session.');
+      return;
+    }
+    const operation = `safety-cancel:${booking.sessionId}:v${booking.version}:${challenge.version}`;
+    const idempotencyKey = actionKeys.current.get(operation)
+      ?? newAsciiIdempotencyKey('scheduling');
+    actionKeys.current.set(operation, idempotencyKey);
+    setActingTrainingId(booking.sessionId);
+    setOptionsError(null);
+    try {
+      const sessionResponse = await fetch(`${apiUrl}/api/v1/sessions/${booking.sessionId}`, {
+        headers: { Authorization: `Bearer ${localToken}` },
+      });
+      if (!sessionResponse.ok) throw new Error(await apiErrorMessage(sessionResponse));
+      const session = (await sessionResponse.json() as SessionResponse).data;
+      const response = await fetch(
+        `${apiUrl}/api/v1/sessions/${booking.sessionId}/safety-report`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localToken}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'If-Match': String(session.version),
+          },
+          body: JSON.stringify({
+            subjectUserId,
+            reasonCode: 'THREAT',
+            explicitConfirmation: true,
+            expectedBookingVersion: booking.version,
+            expectedChallengeVersion: challenge.version,
+          }),
+        },
+      );
+      if (!response.ok) throw new Error(await apiErrorMessage(response));
+      await response.json() as SafetyCancellationCommandResponse;
+      actionKeys.current.delete(operation);
+      await Promise.all([loadChallenge(), loadTrainingOptions()]);
+    } catch (caught) {
+      setOptionsError(caught instanceof Error ? caught.message : 'Не удалось отправить safety-сообщение');
+    } finally {
+      setActingTrainingId(null);
+    }
+  };
+
+  const confirmSafetyAndCancel = (
+    booking: NonNullable<TrainingOptions['activeIntent']['booking']>,
+  ) => {
+    Alert.alert(
+      'Сообщить об угрозе?',
+      SAFETY_CANCEL_CONFIRMATION_COPY,
+      [
+        { text: 'Не отменять', style: 'cancel' },
+        {
+          text: 'Сообщить и отменить',
+          style: 'destructive',
+          onPress: () => void reportSafetyAndCancel(booking),
+        },
+      ],
+    );
+  };
+
   const chooseGroup = async (offering: TrainingOptions['groupOfferings'][number]) => {
     if (!chatId || !viewerUserId) return;
     const plan = trainingOptions?.activeIntent.groupPlan;
@@ -339,6 +723,31 @@ export default function ChatScreen() {
         body: {},
       });
     }
+  };
+
+  const requestGroupOfficialConversion = async (
+    plan: NonNullable<TrainingOptions['activeIntent']['groupPlan']>,
+  ) => {
+    await runTrainingAction({
+      operation: `request-group-official:${plan.groupPlanId}:v${plan.version}`,
+      resourceId: plan.groupPlanId,
+      path: `/api/v1/group-plans/${plan.groupPlanId}/request-official-conversion`,
+      version: plan.version,
+      body: { explicitRulesetAcknowledged: true },
+    });
+  };
+
+  const decideGroupOfficialConversion = async (
+    conversion: GroupPlanOfficialConversion,
+    decision: 'ACCEPT' | 'DECLINE',
+  ) => {
+    await runTrainingAction({
+      operation: `decide-group-official:${conversion.conversionId}:${decision}:v${conversion.version}`,
+      resourceId: conversion.conversionId,
+      path: `/api/v1/group-plan-official-conversions/${conversion.conversionId}/decision`,
+      version: conversion.version,
+      body: { decision, explicitRulesetAcknowledged: decision === 'ACCEPT' },
+    });
   };
 
   const sendOrEdit = async () => {
@@ -486,7 +895,7 @@ export default function ChatScreen() {
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
         <View style={styles.headerIdentity}>
-          <Text accessibilityRole="header" style={styles.title}>{counterpart}</Text>
+          <Text accessibilityRole="header" aria-level={1} style={styles.title}>{counterpart}</Text>
           <Text style={styles.subtitle}>
             {chatIsOpen
               ? chatChallenge?.challenge?.responsePolicy === 'MUTUAL_GENESIS'
@@ -535,14 +944,72 @@ export default function ChatScreen() {
                   )}
                 </Pressable>
               ) : null}
+              {!challengeLoading && !chatChallenge?.challenge && chatChallenge?.canCreate === false ? (
+                <Text style={styles.trainingTerms}>
+                  {challengeCreateDenialCopy(
+                    chatChallenge.createDenialCode,
+                    chatChallenge.createRetryAt,
+                  )}
+                </Text>
+              ) : null}
               {chatChallenge?.challenge ? (
                 <View style={styles.challengeCard}>
                   <Text style={styles.challengeBadge}>
-                    {chatChallenge.challenge.stake === 'NONE' ? 'Открытый поединок · без статуса' : 'Статусный поединок'}
+                    {challengeStakeLabel(chatChallenge.challenge.stake)}
                   </Text>
                   <Text style={styles.trainingTitle}>
                     {chatChallenge.challenge.initiatorDisplayName} → {chatChallenge.challenge.recipientDisplayName}
                   </Text>
+                  {youthConsent && youthConsent.requiredCount > 0 ? (
+                    <View style={styles.youthConsentCard}>
+                      <Text style={styles.youthConsentTitle}>Согласие представителя</Text>
+                      <Text style={styles.trainingTerms}>
+                        Получено {youthConsent.grantedCount} из {youthConsent.requiredCount}. У каждого Youth-спортсмена — отдельная защищённая ссылка; аккаунт и документы представителя не нужны.
+                      </Text>
+                      {youthConsent.viewerAgeDivision === 'YOUTH'
+                        && youthConsent.consents.find((item) => item.athleteUserId === viewerUserId)?.state === 'NOT_REQUESTED' ? (
+                        <View style={styles.challengeActions}>
+                          <TextInput
+                            accessibilityLabel="E-mail представителя"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            inputMode="email"
+                            onChangeText={setGuardianEmail}
+                            placeholder="E-mail представителя"
+                            style={styles.guardianInput}
+                            value={guardianEmail}
+                          />
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: requestingYouthConsent || guardianEmail.trim().length === 0 }}
+                            disabled={requestingYouthConsent || guardianEmail.trim().length === 0}
+                            onPress={() => void requestGuardianConsent()}
+                            style={({ pressed }) => [
+                              styles.challengeButton,
+                              (requestingYouthConsent || guardianEmail.trim().length === 0) && styles.disabled,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.trainingButtonText}>
+                              {requestingYouthConsent ? 'Отправляем…' : 'Отправить защищённую ссылку'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                      {youthConsent.viewerAgeDivision === 'YOUTH'
+                        && youthConsent.consents.find((item) => item.athleteUserId === viewerUserId)?.state === 'PENDING' ? (
+                        <Text style={styles.youthConsentPending}>Ссылка отправлена. Ожидаем решение представителя.</Text>
+                      ) : null}
+                      {developmentConsentUrl ? (
+                        <Pressable
+                          accessibilityRole="link"
+                          onPress={() => void Linking.openURL(developmentConsentUrl)}
+                        >
+                          <Text style={styles.developmentLink}>Открыть тестовую ссылку представителя</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
                   {chatChallenge.challenge.state === 'AWAITING_RESPONSE'
                     && chatChallenge.challenge.responsePolicy === 'OPTIONAL' ? (
                     <>
@@ -553,14 +1020,16 @@ export default function ChatScreen() {
                         <View style={styles.challengeActions}>
                           <Pressable
                             accessibilityRole="button"
-                            disabled={actingChallenge}
+                            accessibilityState={{ disabled: actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true }}
+                            disabled={actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true}
                             onPress={() => void runChallengeAction('accept')}
-                            style={({ pressed }) => [styles.challengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
+                            style={({ pressed }) => [styles.challengeButton, (actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true) && styles.disabled, pressed && styles.pressed]}
                           >
                             <Text style={styles.trainingButtonText}>Принять Challenge</Text>
                           </Pressable>
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
                             disabled={actingChallenge}
                             onPress={() => void runChallengeAction('decline')}
                             style={({ pressed }) => [styles.secondaryChallengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
@@ -571,6 +1040,7 @@ export default function ChatScreen() {
                       ) : (
                         <Pressable
                           accessibilityRole="button"
+                          accessibilityState={{ disabled: actingChallenge }}
                           disabled={actingChallenge}
                           onPress={() => void runChallengeAction('withdraw')}
                           style={({ pressed }) => [styles.secondaryChallengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
@@ -583,20 +1053,22 @@ export default function ChatScreen() {
                     && chatChallenge.challenge.responsePolicy === 'MANDATORY' ? (
                     <>
                       <Text style={styles.trainingTerms}>
-                        Обязательный статусный Challenge. Ответ до {formatDateTime(chatChallenge.challenge.responseDeadlineAt)}. Отказ или отсутствие ответа фиксируется как Forfeit; затем доступен Appeal в течение 48 часов.
+                        Обязательный статусный Challenge. Ответ до {formatDateTime(chatChallenge.challenge.responseDeadlineAt)}. Через 48 часов после вызова придёт напоминание. Отказ или отсутствие ответа фиксируется как Forfeit; затем доступен Appeal в течение 48 часов.
                       </Text>
                       {chatChallenge.challenge.viewerRole === 'RECIPIENT' ? (
                         <View style={styles.challengeActions}>
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
                             disabled={actingChallenge}
                             onPress={() => void runChallengeAction('accept')}
-                            style={({ pressed }) => [styles.challengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
+                            style={({ pressed }) => [styles.challengeButton, (actingChallenge || (youthConsent?.requiredCount ?? 0) > 0 && youthConsent?.ready !== true) && styles.disabled, pressed && styles.pressed]}
                           >
                             <Text style={styles.trainingButtonText}>Принять Challenge</Text>
                           </Pressable>
                           <Pressable
                             accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
                             disabled={actingChallenge}
                             onPress={() => Alert.alert(
                               'Подтвердить отказ?',
@@ -614,6 +1086,7 @@ export default function ChatScreen() {
                       ) : (
                         <Pressable
                           accessibilityRole="button"
+                          accessibilityState={{ disabled: actingChallenge }}
                           disabled={actingChallenge}
                           onPress={() => void runChallengeAction('withdraw')}
                           style={({ pressed }) => [styles.secondaryChallengeButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
@@ -628,6 +1101,38 @@ export default function ChatScreen() {
                       <Text style={styles.trainingTerms}>
                         Договоритесь о времени до {chatChallenge.challenge.schedulingDeadlineAt ? formatDateTime(chatChallenge.challenge.schedulingDeadlineAt) : 'назначенного срока'}. Официальная Session будет связана с этим Challenge.
                       </Text>
+                      {genesisSchedulingExplanation(chatChallenge.challenge.responsePolicy) ? (
+                        <Text style={styles.trainingTerms}>
+                          {genesisSchedulingExplanation(chatChallenge.challenge.responsePolicy)}
+                        </Text>
+                      ) : null}
+                      <Text style={styles.trainingTerms}>
+                        Пользовательские переносы: {chatChallenge.challenge.userRescheduleCount} из 2.
+                      </Text>
+                      <Pressable
+                        accessibilityLabel={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? 'Запросить ещё один перенос с немедленным FORFEIT'
+                          : 'Перенести Challenge без поражения'}
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: actingChallenge }}
+                        disabled={actingChallenge}
+                        onPress={confirmChallengeReschedule}
+                        style={({ pressed }) => [
+                          chatChallenge.challenge!.userRescheduleCount >= 2
+                            ? styles.challengeButton
+                            : styles.secondaryChallengeButton,
+                          actingChallenge && styles.disabled,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? styles.trainingButtonText
+                          : styles.secondaryChallengeText}>
+                          {chatChallenge.challenge.userRescheduleCount >= 2
+                            ? 'Ещё один перенос · FORFEIT'
+                            : 'Перенести Challenge'}
+                        </Text>
+                      </Pressable>
                     </>
                   ) : chatChallenge.challenge.state === 'BOOKING_PENDING' ? (
                     <>
@@ -635,6 +1140,35 @@ export default function ChatScreen() {
                       <Text style={styles.trainingTerms}>
                         Подтвердите один вариант вместе. После этого зал или Coach создаст Official Session одной кнопкой.
                       </Text>
+                      <Text style={styles.trainingTerms}>
+                        {chatChallenge.challenge.userRescheduleCount >= 2
+                          ? '«Отменить выбор слота» не расходует перенос. Ещё один виновный перенос возможен только с немедленным FORFEIT.'
+                          : `«Отменить выбор слота» не расходует перенос. «Перенести Challenge» использует один из ${2 - chatChallenge.challenge.userRescheduleCount} оставшихся переносов.`}
+                      </Text>
+                      <Pressable
+                        accessibilityLabel={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? 'Запросить ещё один перенос с немедленным FORFEIT'
+                          : 'Перенести Challenge без поражения'}
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: actingChallenge }}
+                        disabled={actingChallenge}
+                        onPress={confirmChallengeReschedule}
+                        style={({ pressed }) => [
+                          chatChallenge.challenge!.userRescheduleCount >= 2
+                            ? styles.challengeButton
+                            : styles.secondaryChallengeButton,
+                          actingChallenge && styles.disabled,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={chatChallenge.challenge.userRescheduleCount >= 2
+                          ? styles.trainingButtonText
+                          : styles.secondaryChallengeText}>
+                          {chatChallenge.challenge.userRescheduleCount >= 2
+                            ? 'Ещё один перенос · FORFEIT'
+                            : 'Перенести Challenge'}
+                        </Text>
+                      </Pressable>
                     </>
                   ) : chatChallenge.challenge.state === 'BOOKED' ? (
                     <>
@@ -664,12 +1198,64 @@ export default function ChatScreen() {
                         : chatChallenge.challenge.state === 'WITHDRAWN'
                           ? 'Инициатор отозвал приглашение без спортивных последствий.'
                           : chatChallenge.challenge.state === 'EXPIRED_NO_FAULT'
-                            ? 'Срок ответа истёк. Спортивных последствий нет.'
+                            ? 'Срок ответа истёк без вины сторон. Поражения и других спортивных последствий нет.'
                             : chatChallenge.challenge.state === 'RESULT_RECORDED'
                               ? 'Зафиксирован предварительный Result. Проигравший может подать Appeal в течение 48 часов.'
                             : `Статус: ${chatChallenge.challenge.state}`}
                     </Text>
                   )}
+                  {['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED']
+                    .includes(chatChallenge.challenge.state) ? (
+                    <View style={styles.challengeActions}>
+                      {chatChallenge.mutualRescheduleRequest ? (
+                        chatChallenge.mutualRescheduleRequest.proposedByUserId === viewerUserId ? (
+                          <Text style={styles.trainingTerms}>
+                            Взаимный перенос предложен. До ответа партнёра бронь и Challenge не изменяются.
+                          </Text>
+                        ) : (
+                          <Pressable
+                            accessibilityLabel="Подтвердить взаимный перенос без назначения виновного"
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: actingChallenge }}
+                            disabled={actingChallenge}
+                            onPress={confirmMutualReschedule}
+                            style={({ pressed }) => [
+                              styles.challengeButton,
+                              actingChallenge && styles.disabled,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.trainingButtonText}>Подтвердить взаимный перенос</Text>
+                          </Pressable>
+                        )
+                      ) : (
+                        <Pressable
+                          accessibilityLabel="Предложить партнёру взаимный перенос"
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            disabled: actingChallenge
+                              || chatChallenge.challenge.userRescheduleCount >= 2,
+                          }}
+                          disabled={actingChallenge
+                            || chatChallenge.challenge.userRescheduleCount >= 2}
+                          onPress={proposeMutualReschedule}
+                          style={({ pressed }) => [
+                            styles.secondaryChallengeButton,
+                            (actingChallenge
+                              || chatChallenge.challenge!.userRescheduleCount >= 2)
+                              && styles.disabled,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.secondaryChallengeText}>
+                            {chatChallenge.challenge.userRescheduleCount >= 2
+                              ? 'Лимит взаимных переносов использован'
+                              : 'Предложить взаимный перенос'}
+                          </Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  ) : null}
                 </View>
               ) : null}
               {challengeIsTerminal && chatChallenge?.canCreate ? (
@@ -685,7 +1271,10 @@ export default function ChatScreen() {
               ) : null}
               {!challengeLoading && !chatChallenge?.challenge && chatChallenge && !chatChallenge.canCreate ? (
                 <Text style={styles.challengeUnavailable}>
-                  Официальный вызов сейчас недоступен. Обычная совместная тренировка остаётся доступной.
+                  {challengeCreateDenialCopy(
+                    chatChallenge.createDenialCode,
+                    chatChallenge.createRetryAt,
+                  )} Обычная совместная тренировка остаётся доступной.
                 </Text>
               ) : null}
             </View>
@@ -747,6 +1336,25 @@ export default function ChatScreen() {
                 <Text style={styles.trainingTerms}>
                   Session запланирована. В назначенное время Coach зафиксирует фактическое начало и посещение.
                 </Text>
+                {trainingOptions.activeIntent.booking.purpose === 'OFFICIAL_CHALLENGE'
+                  && trainingOptions.activeIntent.booking.sessionId
+                  && chatChallenge?.challenge?.state === 'BOOKED'
+                  && ['INITIATOR', 'RECIPIENT'].includes(chatChallenge.challenge.viewerRole) ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={SAFETY_CANCEL_ACTION_LABEL}
+                      accessibilityState={{ disabled: actingTrainingId !== null }}
+                      disabled={actingTrainingId !== null}
+                      onPress={() => confirmSafetyAndCancel(trainingOptions.activeIntent.booking!)}
+                      style={({ pressed }) => [
+                        styles.safetyCancelButton,
+                        actingTrainingId !== null && styles.disabled,
+                        pressed && actingTrainingId === null && styles.pressed,
+                      ]}
+                    >
+                      <Text style={styles.safetyCancelText}>{SAFETY_CANCEL_ACTION_LABEL}</Text>
+                    </Pressable>
+                  ) : null}
               </View>
             ) : null}
             {trainingOptions?.slots.map((slot) => {
@@ -814,6 +1422,26 @@ export default function ChatScreen() {
                       <Text style={styles.trainingButtonText}>{buttonLabel}</Text>
                     )}
                   </Pressable>
+                  {booking && selected && ['SELECTING', 'HOST_CONFIRMATION_PENDING'].includes(booking.state) ? (
+                    <Pressable
+                      accessibilityLabel="Отменить выбор этого слота без спортивных последствий"
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: actingTrainingId !== null }}
+                      disabled={actingTrainingId !== null}
+                      onPress={() => confirmBookingWithdrawal(booking)}
+                      style={({ pressed }) => [
+                        styles.secondaryChallengeButton,
+                        actingTrainingId !== null && styles.disabled,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      {actingTrainingId === booking.bookingId ? (
+                        <ActivityIndicator color="#8b2f22" size="small" />
+                      ) : (
+                        <Text style={styles.secondaryChallengeText}>Отменить выбор слота</Text>
+                      )}
+                    </Pressable>
+                  ) : null}
                   {selected && booking.state === 'SELECTING' ? (
                     <Text style={styles.intentDeadline}>
                       Выбор действует до{' '}
@@ -842,9 +1470,14 @@ export default function ChatScreen() {
               const ownProposal = selected && plan.proposedByUserId === viewerUserId;
               const canConfirm = selected && plan.state === 'PROPOSED' && !ownProposal;
               const notified = selected && plan.state === 'NOTIFIED';
+              const conversion = selected
+                ? groupPlanConversions.find((item) => item.groupPlanId === plan?.groupPlanId) ?? null
+                : null;
+              const conversionPending = selected && plan.state === 'CONVERSION_PENDING';
               const disabled =
                 actingTrainingId !== null ||
                 notified ||
+                conversionPending ||
                 ownProposal ||
                 (plan !== null && !selected);
               const buttonLabel = notified
@@ -910,6 +1543,77 @@ export default function ChatScreen() {
                       <Text style={styles.trainingButtonText}>{buttonLabel}</Text>
                     )}
                   </Pressable>
+                  {notified && plan ? (
+                    <View style={styles.statusSchedulingNotice}>
+                      {plan.offeringSnapshot.coachUserId ? (
+                        <>
+                          <Text style={styles.trainingTerms}>
+                            Хотите сделать эту тренировку Official? Нужны отдельные подтверждения обоих Athlete и Coach. До третьего подтверждения Challenge и Session не создаются.
+                          </Text>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: actingTrainingId !== null }}
+                            disabled={actingTrainingId !== null}
+                            onPress={() => void requestGroupOfficialConversion(plan)}
+                            style={({ pressed }) => [
+                              styles.groupButton,
+                              actingTrainingId !== null && styles.disabled,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.trainingButtonText}>Предложить сделать Official</Text>
+                          </Pressable>
+                        </>
+                      ) : (
+                        <Text style={styles.trainingTerms}>
+                          Это социальный план. Для Official зал должен заранее назначить авторизованного Coach.
+                        </Text>
+                      )}
+                    </View>
+                  ) : null}
+                  {conversionPending && conversion ? (
+                    <View style={styles.statusSchedulingNotice}>
+                      <Text style={styles.trainingTerms}>
+                        Official подтверждают 3 стороны: инициатор, второй Athlete и Coach {conversion.coachDisplayName}. Сейчас подтверждено {conversion.confirmations.filter((item) => item.decision === 'ACCEPT').length} из 3. Срок: {formatDateTime(conversion.confirmationDeadlineAt)}.
+                      </Text>
+                      {conversion.viewerHasDecided ? (
+                        <Text style={styles.trainingMeta}>Ваш ответ уже зафиксирован.</Text>
+                      ) : null}
+                      {conversion.viewerCanConfirm ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: actingTrainingId !== null }}
+                          disabled={actingTrainingId !== null}
+                          onPress={() => void decideGroupOfficialConversion(conversion, 'ACCEPT')}
+                          style={({ pressed }) => [styles.groupButton,
+                            actingTrainingId !== null && styles.disabled, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.trainingButtonText}>Подтвердить Official</Text>
+                        </Pressable>
+                      ) : null}
+                      {conversion.viewerCanDecline ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: actingTrainingId !== null }}
+                          disabled={actingTrainingId !== null}
+                          onPress={() => Alert.alert(
+                            'Отказаться от Official?',
+                            'Групповой план сохранится. Challenge, поражение и Cooldown не появятся.',
+                            [
+                              { text: 'Назад', style: 'cancel' },
+                              { text: 'Отказаться', style: 'destructive', onPress: () => {
+                                void decideGroupOfficialConversion(conversion, 'DECLINE');
+                              } },
+                            ],
+                          )}
+                          style={({ pressed }) => [styles.phoneAction,
+                            actingTrainingId !== null && styles.disabled, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.phoneActionText}>Оставить только групповой план</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
                 </View>
               );
             }) : null}
@@ -938,7 +1642,7 @@ export default function ChatScreen() {
                 <Text style={styles.messageMeta}>
                   {formatDateTime(message.createdAt)}
                   {message.edited ? ' · изменено' : ''}
-                  {message.reported ? ' · передано Central' : ''}
+                  {message.reported ? ` · ${CHAT_REPORT_SUBMITTED_LABEL}` : ''}
                 </Text>
                 <View style={styles.messageActions}>
                   {chatIsOpen && own && message.content.kind === 'PERSONAL_TEXT' && !message.reported ? (
@@ -969,7 +1673,7 @@ export default function ChatScreen() {
                     <Text style={styles.confirmationText}>
                       {pendingMessageAction.action === 'hide'
                         ? 'Удалить сообщение только из вашей истории? Отменить это действие нельзя.'
-                        : 'Передать сообщение команде Central для рассмотрения?'}
+                        : CHAT_REPORT_CONFIRMATION_COPY}
                     </Text>
                     <View style={styles.confirmationActions}>
                       <Pressable
@@ -1117,6 +1821,11 @@ const styles = StyleSheet.create({
   secondaryChallengeText: { color: '#8b2f22', fontSize: 14, fontWeight: '800' },
   acceptedChallengeText: { color: '#2f6846', fontSize: 14, fontWeight: '900' },
   challengeUnavailable: { color: '#777168', fontSize: 13, lineHeight: 19 },
+  youthConsentCard: { backgroundColor: '#fff7e8', borderColor: '#e7c98d', borderRadius: 12, borderWidth: 1, gap: 8, padding: 12 },
+  youthConsentTitle: { color: '#5e451b', fontSize: 14, fontWeight: '900' },
+  youthConsentPending: { color: '#7a5b23', fontSize: 13, fontWeight: '700' },
+  guardianInput: { backgroundColor: '#fff', borderColor: '#cfc6b8', borderRadius: 10, borderWidth: 1, minHeight: 44, paddingHorizontal: 12 },
+  developmentLink: { color: '#8b2f22', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
   optionsHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   optionsRefreshButton: {
     alignItems: 'center',
@@ -1183,7 +1892,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     justifyContent: 'center',
     marginTop: 7,
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 12,
   },
   groupButton: {
@@ -1192,10 +1901,15 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     justifyContent: 'center',
     marginTop: 7,
-    minHeight: 42,
+    minHeight: 44,
     paddingHorizontal: 12,
   },
   trainingButtonText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
+  safetyCancelButton: {
+    alignItems: 'center', borderColor: '#8b2f22', borderRadius: 10,
+    borderWidth: 1, marginTop: 12, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  safetyCancelText: { color: '#8b2f22', fontSize: 13, fontWeight: '800' },
   intentDeadline: { color: '#8b2f22', fontSize: 11, textAlign: 'center' },
   capacityNotice: { color: '#31533a', fontSize: 12, lineHeight: 17, marginTop: 4 },
   phoneAction: {

@@ -1,0 +1,195 @@
+import type {
+  ActivateMembershipPayload,
+  ApproveMembershipPayload,
+  MembershipEffectIds,
+  MembershipProjection,
+  RejectMembershipPayload,
+  RequestMembershipPayload,
+  WithdrawMembershipRequestPayload,
+} from '@molokh/db';
+import { MembershipConflictError, type CommandEnvelope } from '@molokh/core';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { buildApp } from '../src/app.js';
+import { StaticBearerAuthAdapter } from '../src/auth.js';
+
+const token = 'membership-route-token';
+const athleteId = '0199a1b2-1234-7000-8000-000000000101';
+const communityId = '0199a1b2-1234-7000-8000-000000000102';
+const membershipId = '0199a1b2-1234-7000-8000-000000000103';
+const eventId = '0199a1b2-1234-7000-8000-000000000104';
+
+function projection(overrides: Partial<MembershipProjection> = {}): MembershipProjection {
+  return {
+    membershipId, communityId, userId: athleteId, ageDivision: 'ADULT',
+    state: 'PENDING', competitionEnabled: false, joinPath: 'SELF_REQUEST',
+    requestedAt: '2026-10-04T10:00:00.000Z', decidedAt: null, decidedBy: null,
+    publicRejectionReasonCode: null, reapplyNotBeforeAt: null, version: 1, ...overrides,
+  };
+}
+
+describe('Membership routes', () => {
+  const apps: Array<Awaited<ReturnType<typeof buildApp>>> = [];
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  it('[AC-014][AC-015] exposes self-request, pending Admin queue and approval', async () => {
+    const requestMembership = vi.fn(async (
+      _command: CommandEnvelope<RequestMembershipPayload>, _ids: MembershipEffectIds,
+    ) => ({ responseStatus: 201, response: projection(), eventId,
+      aggregateVersion: 1, replayed: false }));
+    const approveMembership = vi.fn(async (
+      _command: CommandEnvelope<ApproveMembershipPayload>, _ids: MembershipEffectIds,
+    ) => ({ responseStatus: 200, response: projection({ state: 'ACTIVE',
+      competitionEnabled: true, decidedAt: '2026-10-04T11:00:00.000Z',
+      decidedBy: athleteId, version: 2 }), eventId,
+      aggregateVersion: 2, replayed: false }));
+    const app = await buildApp({ membership: {
+      auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership,
+      activateMembershipByInvite: vi.fn(), approveMembership,
+      rejectMembership: vi.fn(), withdrawMembershipRequest: vi.fn(),
+      listPendingMemberships: async () => [{ ...projection(), displayName: 'Свободный атлет' }],
+    } });
+    apps.push(app);
+
+    const requested = await app.inject({
+      method: 'POST', url: `/api/v1/communities/${communityId}/memberships`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-request-1' },
+    });
+    expect(requested.statusCode).toBe(201);
+    expect(requested.json()).toMatchObject({ data: { state: 'PENDING' },
+      meta: { replayed: false } });
+    expect(requestMembership.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REQUEST_MEMBERSHIP', expectedVersion: 0,
+      actor: { id: athleteId }, payload: { communityId },
+    });
+    expect(requestMembership.mock.calls[0]?.[1]).toMatchObject({
+      reminderTimerOutboxMessageId: expect.any(String),
+      escalationTimerOutboxMessageId: expect.any(String),
+    });
+
+    const pending = await app.inject({
+      method: 'GET', url: `/api/v1/communities/${communityId}/memberships/pending`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(pending.statusCode).toBe(200);
+    expect(pending.json()).toMatchObject({ data: [{ membershipId,
+      displayName: 'Свободный атлет' }] });
+
+    const approved = await app.inject({
+      method: 'POST', url: `/api/v1/memberships/${membershipId}/approve`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-approve-1',
+        'if-match': '1' },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({ data: { state: 'ACTIVE', version: 2 } });
+    expect(approveMembership.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'APPROVE_MEMBERSHIP', aggregateId: membershipId,
+      expectedVersion: 1, payload: { membershipId }, source: 'admin',
+    });
+  });
+
+  it('[AC-013] accepts an invite token without putting it in the URL response', async () => {
+    const activateMembershipByInvite = vi.fn(async (
+      _command: CommandEnvelope<ActivateMembershipPayload>, _ids: MembershipEffectIds,
+    ) => ({ responseStatus: 201, response: projection({ state: 'ACTIVE',
+      competitionEnabled: true, joinPath: 'QR', requestedAt: null,
+      decidedAt: '2026-10-04T10:00:00.000Z', decidedBy: athleteId }), eventId,
+      aggregateVersion: 1, replayed: false }));
+    const app = await buildApp({ membership: {
+      auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership: vi.fn(),
+      activateMembershipByInvite, approveMembership: vi.fn(),
+      rejectMembership: vi.fn(), withdrawMembershipRequest: vi.fn(),
+      listPendingMemberships: async () => [],
+    } });
+    apps.push(app);
+    const inviteToken = 'pilot-venue-qr-token-2026';
+    const accepted = await app.inject({
+      method: 'POST', url: '/api/v1/community-invites/accept', body: { token: inviteToken },
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-qr-1' },
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(accepted.json()).toMatchObject({ data: { state: 'ACTIVE', joinPath: 'QR' } });
+    expect(JSON.stringify(accepted.json())).not.toContain(inviteToken);
+    expect(activateMembershipByInvite.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'JOIN_BY_QR_OR_INVITE', payload: { token: inviteToken },
+    });
+  });
+
+  it('[AC-176] returns the canonical reapply conflict with the server retry time', async () => {
+    const retryAt = '2026-10-11T10:00:00.000Z';
+    const requestMembership = vi.fn(async () => {
+      throw new MembershipConflictError('MEMBERSHIP_REAPPLY_WAIT', retryAt);
+    });
+    const app = await buildApp({ membership: {
+      auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership,
+      activateMembershipByInvite: vi.fn(), approveMembership: vi.fn(),
+      rejectMembership: vi.fn(), withdrawMembershipRequest: vi.fn(),
+      listPendingMemberships: async () => [],
+    } });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'POST', url: `/api/v1/communities/${communityId}/memberships`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-reapply-1' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      code: 'MEMBERSHIP_REAPPLY_WAIT', retryAt,
+    });
+  });
+
+  it('[M-04][M-05] exposes reasoned Admin rejection and requester withdrawal', async () => {
+    const rejectMembership = vi.fn(async (
+      _command: CommandEnvelope<RejectMembershipPayload>, _ids: MembershipEffectIds,
+    ) => ({ responseStatus: 200, response: projection({
+      state: 'REJECTED', decidedAt: '2026-10-04T11:00:00.000Z',
+      decidedBy: athleteId, publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+      reapplyNotBeforeAt: '2026-10-11T11:00:00.000Z', version: 2,
+    }), eventId, aggregateVersion: 2, replayed: false }));
+    const withdrawMembershipRequest = vi.fn(async (
+      _command: CommandEnvelope<WithdrawMembershipRequestPayload>, _ids: MembershipEffectIds,
+    ) => ({ responseStatus: 200, response: projection({
+      state: 'LEFT', decidedAt: '2026-10-04T11:00:00.000Z',
+      decidedBy: athleteId, version: 2,
+    }), eventId, aggregateVersion: 2, replayed: false }));
+    const app = await buildApp({ membership: {
+      auth: new StaticBearerAuthAdapter(token, athleteId), requestMembership: vi.fn(),
+      activateMembershipByInvite: vi.fn(), approveMembership: vi.fn(), rejectMembership,
+      withdrawMembershipRequest, listPendingMemberships: async () => [],
+    } });
+    apps.push(app);
+
+    const rejected = await app.inject({
+      method: 'POST', url: `/api/v1/memberships/${membershipId}/reject`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-reject-1',
+        'if-match': '1' },
+      body: { publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+        internalRejectionReasonCode: 'CAPACITY_LIMIT' },
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json()).toMatchObject({ data: { state: 'REJECTED',
+      publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+      reapplyNotBeforeAt: '2026-10-11T11:00:00.000Z' } });
+    expect(rejected.body).not.toContain('CAPACITY_LIMIT');
+    expect(rejectMembership.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REJECT_MEMBERSHIP', expectedVersion: 1,
+      payload: { membershipId, publicRejectionReasonCode: 'CAPACITY_UNAVAILABLE',
+        internalRejectionReasonCode: 'CAPACITY_LIMIT' }, source: 'admin',
+    });
+
+    const withdrawn = await app.inject({
+      method: 'POST', url: `/api/v1/memberships/${membershipId}/withdraw`,
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'membership-withdraw-1',
+        'if-match': '1' },
+    });
+    expect(withdrawn.statusCode).toBe(200);
+    expect(withdrawn.json()).toMatchObject({ data: { state: 'LEFT', version: 2 } });
+    expect(withdrawMembershipRequest.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'WITHDRAW_MEMBERSHIP_REQUEST', expectedVersion: 1,
+      payload: { membershipId }, source: 'api',
+    });
+  });
+});

@@ -3,20 +3,28 @@ import {
   ChatMessageActionResponseSchema,
   ChatMessageCommandResponseSchema,
   ChatMessagesResponseSchema,
+  CentralModerationCaseListResponseSchema,
   EditChatMessageBodySchema,
   ReportChatMessageBodySchema,
+  ResolveSafetyCaseBodySchema,
+  SafetyCaseReviewCommandResponseSchema,
+  StartSafetyCaseReviewBodySchema,
   SendChatMessageBodySchema,
   type ChatMessageActionResponse,
   type ChatMessageCommandResponse,
   type ChatMessagesResponse,
+  type CentralModerationCaseListResponse,
   type EditChatMessageBody,
   type ReportChatMessageBody,
+  type ResolveSafetyCaseBody,
+  type SafetyCaseReviewCommandResponse,
   type SendChatMessageBody,
 } from '@molokh/contracts';
 import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core';
 import type {
   ChatMessagePage,
   ChatMessageProjection,
+  CentralModerationCaseProjection,
   EditChatMessageEffectIds,
   EditChatMessagePayload,
   ExecutedCommand,
@@ -26,8 +34,13 @@ import type {
   ReportChatMessageEffectIds,
   ReportChatMessagePayload,
   ReportedMessageProjection,
+  ResolveSafetyCasePayload,
+  SafetyCaseResolutionEffectIds,
+  SafetyCaseReviewEffectIds,
+  SafetyCaseReviewProjection,
   SendChatMessageEffectIds,
   SendChatMessagePayload,
+  StartSafetyCaseReviewPayload,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -50,8 +63,13 @@ interface MessageParams {
   readonly messageId: string;
 }
 
+interface ModerationCaseParams {
+  readonly caseId: string;
+}
+
 export interface ChatRouteDependencies {
   readonly auth: AuthAdapter;
+  readonly centralAuth: AuthAdapter;
   readonly readMessages: (
     chatId: string,
     viewerUserId: string,
@@ -74,6 +92,17 @@ export interface ChatRouteDependencies {
     command: CommandEnvelope<ReportChatMessagePayload>,
     ids: ReportChatMessageEffectIds,
   ) => Promise<ExecutedCommand<ReportedMessageProjection>>;
+  readonly readModerationCases: (
+    centralUserId: string,
+  ) => Promise<readonly CentralModerationCaseProjection[]>;
+  readonly startSafetyCaseReview: (
+    command: CommandEnvelope<StartSafetyCaseReviewPayload>,
+    ids: SafetyCaseReviewEffectIds,
+  ) => Promise<ExecutedCommand<SafetyCaseReviewProjection>>;
+  readonly resolveSafetyCase: (
+    command: CommandEnvelope<ResolveSafetyCasePayload>,
+    ids: SafetyCaseResolutionEffectIds,
+  ) => Promise<ExecutedCommand<SafetyCaseReviewProjection>>;
 }
 
 function unauthorized(request: FastifyRequest) {
@@ -127,6 +156,38 @@ function basicEffectIds(): HideChatMessageEffectIds {
   };
 }
 
+function safetyResolutionEffectIds(): SafetyCaseResolutionEffectIds {
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    decisionId: newUuidV7(), decisionEventId: newUuidV7(),
+    challengeEventId: newUuidV7(), challengeOutboxMessageId: newUuidV7(),
+    holdEventId: newUuidV7(), holdOutboxMessageId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+    resultId: newUuidV7(), resultEventId: newUuidV7(),
+    statusTransitionId: newUuidV7(), statusEventId: newUuidV7(),
+    cooldownId: newUuidV7(), cooldownEventId: newUuidV7(),
+    resultOutboxMessageId: newUuidV7(),
+    resultNotificationOutboxMessageId: newUuidV7(),
+    resultNotificationIds: [newUuidV7(), newUuidV7()],
+    enforcementId: newUuidV7(), restrictionEventId: newUuidV7(),
+    restrictionOutboxMessageId: newUuidV7(),
+    restrictionNotificationOutboxMessageId: newUuidV7(),
+    restrictionNotificationId: newUuidV7(),
+    statusReviewHoldId: newUuidV7(), statusReviewHoldEventId: newUuidV7(),
+    statusReviewHoldOutboxMessageId: newUuidV7(),
+  };
+}
+
+function safetyReviewResponse(
+  executed: ExecutedCommand<SafetyCaseReviewProjection>, requestId: string,
+): SafetyCaseReviewCommandResponse {
+  return {
+    data: executed.response,
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  } as SafetyCaseReviewCommandResponse;
+}
+
 function commandResponse(
   executed: ExecutedCommand<ChatMessageProjection>,
   requestId: string,
@@ -151,6 +212,109 @@ export async function registerChatRoutes(
   app: FastifyInstance,
   dependencies: ChatRouteDependencies,
 ): Promise<void> {
+  app.get<{ Headers: ChatHeaders }>(
+    '/api/v1/central/moderation-cases',
+    {
+      schema: {
+        operationId: 'listCentralModerationCases',
+        response: {
+          200: CentralModerationCaseListResponseSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<CentralModerationCaseListResponse | undefined> => {
+      const authenticated = await dependencies.centralAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      return {
+        data: [...await dependencies.readModerationCases(authenticated.userId)],
+        meta: { requestId: requestContext(request).requestId },
+      } as CentralModerationCaseListResponse;
+    },
+  );
+
+  app.post<{
+    Headers: ChatHeaders;
+    Params: ModerationCaseParams;
+    Body: Record<string, never>;
+  }>(
+    '/api/v1/central/moderation-cases/:caseId/review',
+    {
+      schema: {
+        operationId: 'startSafetyCaseReview',
+        params: Type.Object({ caseId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+        body: StartSafetyCaseReviewBodySchema,
+        response: {
+          200: SafetyCaseReviewCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema, 409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SafetyCaseReviewCommandResponse | undefined> => {
+      const authenticated = await dependencies.centralAuth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const executed = await dependencies.startSafetyCaseReview({
+        commandId: newUuidV7(), commandType: 'START_SAFETY_CASE_REVIEW',
+        idempotencyKey: requiredIdempotencyKey(request.headers['idempotency-key']),
+        actor: { type: 'USER', id: authenticated.userId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'ModerationCase', aggregateId: request.params.caseId,
+        expectedVersion: expectedVersion(request.headers['if-match'], 1),
+        correlationId: context.correlationId, causationId: context.causationId,
+        requestId: context.requestId, source: 'api', payloadVersion: 1,
+        payload: { caseId: request.params.caseId },
+      }, basicEffectIds());
+      return safetyReviewResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: ChatHeaders;
+    Params: ModerationCaseParams;
+    Body: ResolveSafetyCaseBody;
+  }>(
+    '/api/v1/central/moderation-cases/:caseId/resolve',
+    {
+      schema: {
+        operationId: 'resolveSafetyCase',
+        params: Type.Object({ caseId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+        body: ResolveSafetyCaseBodySchema,
+        response: {
+          200: SafetyCaseReviewCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema, 409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SafetyCaseReviewCommandResponse | undefined> => {
+      const authenticated = await dependencies.centralAuth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const executed = await dependencies.resolveSafetyCase({
+        commandId: newUuidV7(), commandType: 'RESOLVE_SAFETY_CASE',
+        idempotencyKey: requiredIdempotencyKey(request.headers['idempotency-key']),
+        actor: { type: 'USER', id: authenticated.userId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+        aggregateType: 'ModerationCase', aggregateId: request.params.caseId,
+        expectedVersion: expectedVersion(request.headers['if-match'], 2),
+        correlationId: context.correlationId, causationId: context.causationId,
+        requestId: context.requestId, source: 'api', payloadVersion: 1,
+        payload: { caseId: request.params.caseId, ...request.body },
+      }, safetyResolutionEffectIds());
+      return safetyReviewResponse(executed, context.requestId);
+    },
+  );
+
   app.get<{
     Headers: ChatHeaders;
     Params: ChatParams;
@@ -416,6 +580,7 @@ export async function registerChatRoutes(
       const context = requestContext(request);
       const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
       const reportId = idempotentResourceId('ChatMessageReport', authenticated.userId, idempotencyKey);
+      const caseId = idempotentResourceId('ModerationCase', authenticated.userId, idempotencyKey);
       const command: CommandEnvelope<ReportChatMessagePayload> = {
         commandId: newUuidV7(),
         commandType: 'REPORT_MESSAGE',
@@ -434,6 +599,11 @@ export async function registerChatRoutes(
       const executed = await dependencies.reportMessage(command, {
         ...basicEffectIds(),
         reportId,
+        caseId,
+        caseEventId: newUuidV7(),
+        caseOutboxMessageId: newUuidV7(),
+        notificationId: newUuidV7(),
+        notificationOutboxMessageId: newUuidV7(),
       });
       await reply.status(201).send(actionResponse(executed, context.requestId));
     },

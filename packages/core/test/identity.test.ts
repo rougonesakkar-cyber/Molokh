@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   MinimumAgeNotMetError,
   InvalidIdentityTransitionError,
+  adultTransitionAt,
   activateIdentity,
   approveVerificationState,
+  assertAgeDivisionCanTransition,
   deriveAgeDivision,
   normalizeDisplayName,
   normalizeSportPreferences,
@@ -20,6 +22,33 @@ describe('identity rules', () => {
     expect(() => deriveAgeDivision('2013-09-07', now)).toThrow(MinimumAgeNotMetError);
     expect(deriveAgeDivision('2012-09-06', now)).toBe('YOUTH');
     expect(deriveAgeDivision('2008-09-06', now)).toBe('ADULT');
+  });
+
+  it('[AC-002] transitions Youth exactly once at the 18th-birthday UTC boundary', () => {
+    expect(adultTransitionAt('2008-09-06').toISOString()).toBe(
+      '2026-09-06T00:00:00.000Z',
+    );
+    expect(
+      assertAgeDivisionCanTransition({
+        currentAgeDivision: 'YOUTH',
+        birthDate: '2008-09-06',
+        occurredAt: new Date('2026-09-06T00:00:00.000Z'),
+      }),
+    ).toBe('ADULT');
+    expect(() =>
+      assertAgeDivisionCanTransition({
+        currentAgeDivision: 'YOUTH',
+        birthDate: '2008-09-06',
+        occurredAt: new Date('2026-09-05T23:59:59.999Z'),
+      }),
+    ).toThrow(InvalidIdentityTransitionError);
+    expect(() =>
+      assertAgeDivisionCanTransition({
+        currentAgeDivision: 'ADULT',
+        birthDate: '2008-09-06',
+        occurredAt: new Date('2026-09-06T00:00:00.000Z'),
+      }),
+    ).toThrow(InvalidIdentityTransitionError);
   });
 
   it('accepts arbitrary non-empty display names without legal-name semantics', () => {

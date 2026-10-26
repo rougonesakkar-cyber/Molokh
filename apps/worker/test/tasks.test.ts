@@ -9,6 +9,9 @@ describe('worker task registry', () => {
       onRuntimeProbe,
       onOutboxEvent: vi.fn(),
       onTimer: vi.fn(),
+      onChatRetentionCleanup: vi.fn(),
+      onGuestCoachExpirySweep: vi.fn(),
+      onEvidenceScan: vi.fn(),
     });
 
     await tasks.runtime_probe?.({ message: 'ready' }, {} as never);
@@ -22,6 +25,9 @@ describe('worker task registry', () => {
       onRuntimeProbe: vi.fn(),
       onOutboxEvent,
       onTimer: vi.fn(),
+      onChatRetentionCleanup: vi.fn(),
+      onGuestCoachExpirySweep: vi.fn(),
+      onEvidenceScan: vi.fn(),
     });
     const payload = {
       messageId: 'message-1',
@@ -36,5 +42,48 @@ describe('worker task registry', () => {
     await expect(
       tasks.deliver_outbox_event?.({ eventId: 'event-1' }, {} as never),
     ).rejects.toThrow('messageId');
+  });
+
+  it('runs the scheduled Chat retention cleanup without trusting cron payload', async () => {
+    const onChatRetentionCleanup = vi.fn();
+    const tasks = createTaskList({
+      onRuntimeProbe: vi.fn(),
+      onOutboxEvent: vi.fn(),
+      onTimer: vi.fn(),
+      onChatRetentionCleanup,
+      onGuestCoachExpirySweep: vi.fn(),
+      onEvidenceScan: vi.fn(),
+    });
+
+    await tasks.cleanup_chat_payloads?.({ ignored: true }, {} as never);
+
+    expect(onChatRetentionCleanup).toHaveBeenCalledOnce();
+  });
+
+  it('[AC-019] runs the Guest Coach terminal-scope expiry sweep', async () => {
+    const onGuestCoachExpirySweep = vi.fn();
+    const tasks = createTaskList({
+      onRuntimeProbe: vi.fn(), onOutboxEvent: vi.fn(), onTimer: vi.fn(),
+      onChatRetentionCleanup: vi.fn(), onGuestCoachExpirySweep,
+      onEvidenceScan: vi.fn(),
+    });
+
+    await tasks.expire_guest_coach_grants?.({ ignored: true }, {} as never);
+
+    expect(onGuestCoachExpirySweep).toHaveBeenCalledOnce();
+  });
+
+  it('[AC-182][EVI-02][EVI-03] validates and forwards provider-independent scan outcomes', async () => {
+    const onEvidenceScan = vi.fn();
+    const tasks = createTaskList({ onRuntimeProbe: vi.fn(), onOutboxEvent: vi.fn(),
+      onTimer: vi.fn(), onChatRetentionCleanup: vi.fn(),
+      onGuestCoachExpirySweep: vi.fn(), onEvidenceScan });
+    const payload = { attachmentId: 'attachment-1', expectedVersion: 1,
+      outcome: 'UNCERTAIN' as const, reasonCode: 'SCAN_UNCERTAIN',
+      scanProviderReference: 'scanner-job-1' };
+    await tasks.process_evidence_scan?.(payload, {} as never);
+    expect(onEvidenceScan).toHaveBeenCalledWith(payload);
+    await expect(tasks.process_evidence_scan?.({ ...payload, outcome: 'UNKNOWN' }, {} as never))
+      .rejects.toThrow('invalid');
   });
 });

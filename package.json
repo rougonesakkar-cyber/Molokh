@@ -7,13 +7,18 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "audit:prod": "pnpm audit --prod --audit-level high",
+    "audit:prod": "node ./tools/audit-production.mjs",
     "build": "pnpm -r --if-present build",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm coverage:acceptance",
+    "check": "pnpm typecheck && pnpm test && pnpm check:a11y && pnpm build && pnpm coverage:acceptance",
+    "check:a11y": "node ./tools/check-client-accessibility.mjs",
+    "check:canary": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/check-release-canary.ps1",
+    "check:rollback": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/check-release-rollback.ps1",
     "coverage:acceptance": "node ./tools/acceptance-coverage.mjs",
     "dev:api": "pnpm --filter @molokh/api dev",
     "dev:client": "pnpm --filter @molokh/client start",
     "dev:worker": "pnpm --filter @molokh/worker dev",
+    "monitor:pilot": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/check-pilot-health.ps1",
+    "rehearse:db-recovery": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/rehearse-db-recovery.ps1",
     "test": "pnpm -r --if-present test",
     "test:db": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/test-db.ps1",
     "typecheck": "pnpm -r --if-present typecheck"

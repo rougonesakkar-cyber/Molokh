@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertCommunityPairCooldownChange,
+  assertCommunityClosureTransition,
+  assertCommunityLifecycleTransition,
   projectCommunityAccess,
   type CommunityAccessInput,
 } from '../src/community.js';
@@ -18,6 +21,7 @@ const base: CommunityAccessInput = {
     ageDivision: 'ADULT',
     competitionEnabled: true,
   },
+  membershipReapplyBlocked: false,
   hasOtherActiveCompetitiveMembership: false,
   activeRoleGrants: [],
 };
@@ -74,7 +78,7 @@ describe('community access projection', () => {
     );
   });
 
-  it('gives Primary and ordinary Gym Admin the same everyday Venue operations', () => {
+  it('[AC-204] gives Primary and ordinary Gym Admin the same everyday Venue operations', () => {
     for (const role of ['PRIMARY_ADMIN', 'GYM_ADMIN'] as const) {
       const access = projectCommunityAccess({
         ...base,
@@ -87,7 +91,7 @@ describe('community access projection', () => {
     }
   });
 
-  it('[AC-016] keeps Primary transfer Central-only and blocks a second competitive Community request', () => {
+  it('[AC-016][AC-204] keeps Primary transfer Central-only and blocks a second competitive Community request', () => {
     const central = projectCommunityAccess({
       ...base,
       activeRoleGrants: [{ role: 'CENTRAL_ADMIN', scopeType: 'GLOBAL', scopeId: null }],
@@ -105,5 +109,119 @@ describe('community access projection', () => {
         code: 'MVP_ACTIVE_COMMUNITY_LIMIT',
       }),
     );
+  });
+
+  it('[AC-176][M-04] keeps a rejected self-request closed until its seven-day wait ends', () => {
+    const waiting = projectCommunityAccess({
+      ...base, membership: null, membershipReapplyBlocked: true,
+    });
+    expect(waiting.capabilities).not.toContain('REQUEST_MEMBERSHIP');
+    expect(waiting.denials).toContainEqual(expect.objectContaining({
+      capability: 'REQUEST_MEMBERSHIP', code: 'MEMBERSHIP_REAPPLY_WAIT', retryable: true,
+    }));
+  });
+
+  it('[AC-183] exposes a second Membership request only under the explicit future policy', () => {
+    const futurePolicy = projectCommunityAccess({
+      ...base, membership: null, hasOtherActiveCompetitiveMembership: true,
+      multiCommunityDisciplineEnabled: true,
+    });
+    expect(futurePolicy.capabilities).toContain('REQUEST_MEMBERSHIP');
+    expect(futurePolicy.denials).not.toContainEqual(expect.objectContaining({
+      capability: 'REQUEST_MEMBERSHIP', code: 'MVP_ACTIVE_COMMUNITY_LIMIT',
+    }));
+  });
+});
+
+describe('community lifecycle guard', () => {
+  it('[AC-166] constrains Pair Cooldown changes to scoped Admin values from 7 to 30 days', () => {
+    expect(() => assertCommunityPairCooldownChange({
+      actorCanManage: true, currentState: 'ACTIVE',
+      currentPairCooldownDays: 15, nextPairCooldownDays: 20,
+    })).not.toThrow();
+    for (const nextPairCooldownDays of [6, 31, 7.5]) {
+      expect(() => assertCommunityPairCooldownChange({
+        actorCanManage: true, currentState: 'ACTIVE',
+        currentPairCooldownDays: 15, nextPairCooldownDays,
+      })).toThrowError(expect.objectContaining({ code: 'PAIR_COOLDOWN_OUT_OF_RANGE' }));
+    }
+    expect(() => assertCommunityPairCooldownChange({
+      actorCanManage: false, currentState: 'ACTIVE',
+      currentPairCooldownDays: 15, nextPairCooldownDays: 20,
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CONFIGURATION_ADMIN_REQUIRED',
+    }));
+    expect(() => assertCommunityPairCooldownChange({
+      actorCanManage: true, currentState: 'CLOSING',
+      currentPairCooldownDays: 15, nextPairCooldownDays: 20,
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CONFIGURATION_INVALID_STATE',
+    }));
+  });
+
+  it('[CO-02][CO-03] keeps pause/reactivation Central-only and state-explicit', () => {
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: true, currentState: 'ACTIVE', reason: 'Плановые работы',
+    })).not.toThrow();
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'REACTIVATE', actorIsCentral: true, currentState: 'PAUSED', reason: 'Работы завершены',
+    })).not.toThrow();
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: false, currentState: 'ACTIVE', reason: 'Нет полномочий',
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED',
+    }));
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: true, currentState: 'PAUSED', reason: 'Повтор',
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_LIFECYCLE_INVALID_STATE',
+    }));
+    expect(() => assertCommunityLifecycleTransition({
+      action: 'PAUSE', actorIsCentral: true, currentState: 'ACTIVE', reason: '   ',
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_LIFECYCLE_REASON_REQUIRED',
+    }));
+  });
+
+  it('[CO-04][CO-05][AC-151][AC-177] validates a versioned closure plan and blocks early finalization', () => {
+    const now = new Date('2026-10-01T10:00:00.000Z');
+    const effectiveAt = new Date('2026-10-02T10:00:00.000Z');
+    expect(() => assertCommunityClosureTransition({
+      action: 'SCHEDULE_CLOSURE', actorIsCentral: true, currentState: 'ACTIVE',
+      reason: 'Permanent venue closure', effectiveAt, now, emergency: false,
+      dispositions: [{
+        sessionId: '0199a1b2-1234-7000-8000-000000000404',
+        disposition: 'RETAIN_TO_COMPLETION',
+      }],
+    })).not.toThrow();
+    expect(() => assertCommunityClosureTransition({
+      action: 'SCHEDULE_CLOSURE', actorIsCentral: true, currentState: 'PAUSED',
+      reason: 'Emergency closure', effectiveAt: now, now, emergency: true, dispositions: [],
+    })).not.toThrow();
+    expect(() => assertCommunityClosureTransition({
+      action: 'SCHEDULE_CLOSURE', actorIsCentral: true, currentState: 'ACTIVE',
+      reason: 'Too early', effectiveAt: now, now, emergency: false, dispositions: [],
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CLOSURE_EFFECTIVE_AT_INVALID',
+    }));
+    expect(() => assertCommunityClosureTransition({
+      action: 'FINALIZE_CLOSURE', actorIsCentral: true, currentState: 'CLOSING',
+      reason: 'Plan complete', effectiveAt, now, emergency: false,
+      unresolvedRetainedSessionCount: 0,
+    })).toThrowError(expect.objectContaining({ code: 'COMMUNITY_CLOSURE_NOT_DUE' }));
+    expect(() => assertCommunityClosureTransition({
+      action: 'FINALIZE_CLOSURE', actorIsCentral: true, currentState: 'CLOSING',
+      reason: 'Plan complete', effectiveAt,
+      now: new Date('2026-10-03T10:00:00.000Z'), emergency: false,
+      unresolvedRetainedSessionCount: 1,
+    })).toThrowError(expect.objectContaining({
+      code: 'COMMUNITY_CLOSURE_RETAINED_SESSION_UNRESOLVED',
+    }));
+    expect(() => assertCommunityClosureTransition({
+      action: 'FINALIZE_CLOSURE', actorIsCentral: false, actorIsSystem: true,
+      currentState: 'CLOSING', reason: 'System completed approved plan', effectiveAt,
+      now: new Date('2026-10-03T10:00:00.000Z'), emergency: false,
+      unresolvedRetainedSessionCount: 0,
+    })).not.toThrow();
   });
 });

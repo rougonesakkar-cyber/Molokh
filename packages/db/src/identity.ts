@@ -1,6 +1,7 @@
 import {
   IdentityPermissionDeniedError,
   IdentityValidationError,
+  adultTransitionAt,
   approveVerificationState,
   activateIdentity,
   normalizeChecklistVersion,
@@ -19,11 +20,13 @@ import {
   executeCriticalCommand,
   type ExecutedCommand,
 } from './platform-command.js';
+import { replayCompetitionProjection } from './status-replay.js';
 
 export interface IdentityEffectIds {
   readonly eventId: string;
   readonly auditId: string;
   readonly outboxMessageId: string;
+  readonly ageTransitionTimerOutboxMessageId?: string;
 }
 
 interface IdentityRow {
@@ -52,6 +55,120 @@ export interface ChangeDisplayNamePayload {
 export interface ChangeSportsPayload {
   readonly primarySport: string;
   readonly secondarySport: string | null;
+}
+
+export interface ChangeHomeVenuePayload {
+  readonly venueId: string;
+}
+
+export interface HomeVenueOptionProjection {
+  readonly venueId: string;
+  readonly displayName: string;
+  readonly address: string;
+  readonly cityCode: string;
+}
+
+export interface HomeVenueSettingsProjection {
+  readonly homeVenueId: string | null;
+  readonly userVersion: number;
+  readonly options: readonly HomeVenueOptionProjection[];
+}
+
+export interface HomeVenueSelectionProjection {
+  readonly homeVenueId: string;
+  readonly venueDisplayName: string;
+  readonly version: number;
+}
+
+export type PublicProfileStatus = 'CHAMPION' | 'CONTENDER';
+export type PublicProfileResultOutcome = 'WIN' | 'LOSS' | 'DRAW' | 'NO_CONTEST';
+export type PublicProfileReviewState = 'PENDING' | 'REVIEWED' | null;
+
+export interface PublicProfileCurrentStatus {
+  readonly competitionId: string;
+  readonly communityId: string;
+  readonly status: PublicProfileStatus;
+  readonly provisional: boolean;
+  readonly reviewState: PublicProfileReviewState;
+}
+
+export interface PublicProfileStatusHistoryEntry extends PublicProfileCurrentStatus {
+  readonly tenureId: string;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+}
+
+export interface PublicProfileResultEntry {
+  readonly resultId: string;
+  readonly competitionId: string;
+  readonly outcome: PublicProfileResultOutcome;
+  readonly publicMethod: 'FORFEIT' | 'NO_SHOW' | null;
+  readonly reviewState: PublicProfileReviewState;
+  readonly occurredAt: string;
+}
+
+export interface PublicProfileCompetitionScope {
+  readonly competitionId: string;
+  readonly communityId: string;
+  readonly communityName: string;
+  readonly ageDivision: IdentityProjection['ageDivision'];
+  readonly disciplineKey: string | null;
+  readonly primaryForHomeDiscovery: boolean;
+}
+
+export interface PublicAthleteProfileProjection {
+  readonly userId: string;
+  readonly displayName: string;
+  readonly ageDivision: IdentityProjection['ageDivision'];
+  readonly primarySport: string;
+  readonly secondarySport: string | null;
+  readonly selectedCompetitionScope: PublicProfileCompetitionScope | null;
+  readonly competitionScopes: readonly PublicProfileCompetitionScope[];
+  readonly currentStatuses: readonly PublicProfileCurrentStatus[];
+  readonly statusHistory: readonly PublicProfileStatusHistoryEntry[];
+  readonly officialRecord: {
+    readonly wins: number;
+    readonly losses: number;
+    readonly draws: number;
+  };
+  readonly recentOfficialResults: readonly PublicProfileResultEntry[];
+  readonly completedTrainingCount: number;
+}
+
+interface PublicProfileIdentityRow {
+  readonly user_id: string;
+  readonly display_name: string;
+  readonly age_division: IdentityProjection['ageDivision'];
+  readonly account_state: IdentityProjection['accountState'];
+  readonly primary_sport: string;
+  readonly secondary_sport: string | null;
+  readonly primary_community_id: string | null;
+}
+
+interface PublicProfileAccessRow {
+  readonly viewer_active: boolean;
+  readonly blocked: boolean;
+  readonly allowed_context: boolean;
+}
+
+interface PublicProfileCompetitionRow {
+  readonly competition_id: string;
+  readonly community_id: string;
+  readonly community_name: string;
+  readonly age_division: IdentityProjection['ageDivision'];
+  readonly discipline_key: string | null;
+  readonly primary_for_home_discovery: boolean;
+}
+
+interface PublicProfileResultRow {
+  readonly result_id: string;
+  readonly competition_id: string;
+  readonly state: string;
+  readonly effective_outcome_code:
+    | 'WIN_A' | 'WIN_B' | 'DRAW' | 'NO_CONTEST' | 'FORFEIT' | 'NO_SHOW';
+  readonly effective_winner_user_id: string | null;
+  readonly effective_loser_user_id: string | null;
+  readonly actual_time: Date;
 }
 
 export interface StartVerificationPayload {
@@ -139,18 +256,316 @@ export async function readIdentityProjection(
   return row ? projectRow(row) : null;
 }
 
+export async function readPublicAthleteProfile(
+  database: Kysely<Database>,
+  viewerUserId: string,
+  subjectUserId: string,
+  requestedCompetitionId?: string,
+): Promise<PublicAthleteProfileProjection | null> {
+  const identityResult = await sql<PublicProfileIdentityRow>`
+    select users.user_id, users.display_name, users.age_division, users.account_state,
+      profile.primary_sport, profile.secondary_sport, profile.primary_community_id
+    from identity.users as users
+    join identity.athlete_profiles as profile on profile.user_id = users.user_id
+    where users.user_id = ${subjectUserId}::uuid
+  `.execute(database);
+  const identity = identityResult.rows[0];
+  if (!identity || identity.account_state === 'CLOSED') return null;
+
+  const accessResult = await sql<PublicProfileAccessRow>`
+    select
+      exists (
+        select 1 from identity.users as viewer
+        where viewer.user_id = ${viewerUserId}::uuid and viewer.account_state = 'ACTIVE'
+      ) as viewer_active,
+      exists (
+        select 1 from social.blocks as block
+        where block.state = 'ACTIVE'
+          and (
+            (block.blocker_user_id = ${viewerUserId}::uuid
+              and block.blocked_user_id = ${subjectUserId}::uuid)
+            or (block.blocker_user_id = ${subjectUserId}::uuid
+              and block.blocked_user_id = ${viewerUserId}::uuid)
+          )
+      ) as blocked,
+      (
+        ${viewerUserId}::uuid = ${subjectUserId}::uuid
+        or exists (
+          select 1 from social.matches as match
+          where match.state in ('ACTIVE', 'ARCHIVED')
+            and match.pair_low_id = least(${viewerUserId}::uuid, ${subjectUserId}::uuid)
+            and match.pair_high_id = greatest(${viewerUserId}::uuid, ${subjectUserId}::uuid)
+        )
+        or exists (
+          select 1
+          from community.community_memberships as viewer_membership
+          join community.community_memberships as subject_membership
+            on subject_membership.community_id = viewer_membership.community_id
+          where viewer_membership.user_id = ${viewerUserId}::uuid
+            and viewer_membership.state = 'ACTIVE'
+            and subject_membership.user_id = ${subjectUserId}::uuid
+            and subject_membership.state = 'ACTIVE'
+        )
+        or exists (
+          select 1
+          from community.role_grants as role_grant
+          where role_grant.user_id = ${viewerUserId}::uuid
+            and role_grant.state = 'ACTIVE'
+            and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+            and (
+              (role_grant.role = 'CENTRAL_ADMIN'
+                and role_grant.scope_type = 'GLOBAL' and role_grant.scope_id is null)
+              or (role_grant.role = 'COACH' and role_grant.scope_type = 'COMMUNITY'
+                and exists (
+                  select 1 from community.community_memberships as membership
+                  where membership.user_id = ${subjectUserId}::uuid
+                    and membership.community_id = role_grant.scope_id
+                    and membership.state = 'ACTIVE'
+                ))
+              or (role_grant.role in ('GYM_ADMIN', 'PRIMARY_ADMIN')
+                and role_grant.scope_type = 'VENUE'
+                and exists (
+                  select 1
+                  from community.community_memberships as membership
+                  join community.communities as community
+                    on community.community_id = membership.community_id
+                  where membership.user_id = ${subjectUserId}::uuid
+                    and membership.state = 'ACTIVE'
+                    and community.venue_id = role_grant.scope_id
+                ))
+            )
+        )
+      ) as allowed_context
+  `.execute(database);
+  const access = accessResult.rows[0];
+  if (!access?.viewer_active || access.blocked || !access.allowed_context) {
+    throw new IdentityPermissionDeniedError();
+  }
+
+  const competitionResult = await sql<PublicProfileCompetitionRow>`
+    select distinct competition.competition_id, competition.community_id,
+      community.name as community_name, competition.age_division,
+      competition.discipline_key,
+      coalesce(competition.community_id = profile.primary_community_id, false)
+        as primary_for_home_discovery
+    from competition.competitions as competition
+    join community.communities as community
+      on community.community_id = competition.community_id
+    join identity.athlete_profiles as profile
+      on profile.user_id = ${subjectUserId}::uuid
+    where ${subjectUserId}::uuid in (
+        competition.champion_user_id, competition.contender_user_id
+      )
+      or exists (
+        select 1 from community.community_memberships as membership
+        where membership.user_id = ${subjectUserId}::uuid
+          and membership.community_id = competition.community_id
+          and membership.age_division = competition.age_division
+          and membership.state = 'ACTIVE'
+          and membership.competition_enabled
+      )
+      or exists (
+        select 1
+        from competition.challenges as challenge
+        join competition.results as result on result.challenge_id = challenge.challenge_id
+        where challenge.competition_id = competition.competition_id
+          and ${subjectUserId}::uuid in (challenge.pair_low_id, challenge.pair_high_id)
+      )
+      or exists (
+        select 1 from platform.domain_events as event
+        where event.aggregate_type = 'Competition'
+          and event.aggregate_id = competition.competition_id
+          and ${subjectUserId} in (
+            event.payload->>'championUserId', event.payload->>'contenderUserId',
+            event.payload->>'afterChampionUserId', event.payload->>'afterContenderUserId',
+            event.payload->'after'->>'championUserId',
+            event.payload->'after'->>'contenderUserId',
+            event.payload->'to'->>'championUserId', event.payload->'to'->>'contenderUserId',
+            case when event.payload ? 'assignedStatus' then event.payload->>'userId' else null end
+          )
+      )
+    order by primary_for_home_discovery desc, competition.community_id,
+      competition.age_division, competition.discipline_key nulls first,
+      competition.competition_id
+  `.execute(database);
+  const competitionScopes: PublicProfileCompetitionScope[] = competitionResult.rows.map((scope) => ({
+    competitionId: scope.competition_id,
+    communityId: scope.community_id,
+    communityName: scope.community_name,
+    ageDivision: scope.age_division,
+    disciplineKey: scope.discipline_key,
+    primaryForHomeDiscovery: scope.primary_for_home_discovery,
+  }));
+  const selectedCompetitionScope = requestedCompetitionId
+    ? competitionScopes.find((scope) => scope.competitionId === requestedCompetitionId) ?? null
+    : competitionScopes[0] ?? null;
+  if (requestedCompetitionId && selectedCompetitionScope === null) {
+    throw new IdentityPermissionDeniedError();
+  }
+  const statusHistory: PublicProfileStatusHistoryEntry[] = [];
+  for (const competition of competitionResult.rows) {
+    if (competition.competition_id !== selectedCompetitionScope?.competitionId) continue;
+    const projection = await replayCompetitionProjection(database, competition.competition_id);
+    for (const tenure of projection.tenures) {
+      if (tenure.userId !== subjectUserId) continue;
+      statusHistory.push({
+        tenureId: tenure.tenureId,
+        competitionId: competition.competition_id,
+        communityId: competition.community_id,
+        status: tenure.status,
+        startedAt: tenure.startedAt,
+        endedAt: tenure.endedAt,
+        provisional: tenure.provisional,
+        reviewState: tenure.provisional && tenure.endedAt === null
+          ? 'PENDING'
+          : tenure.provisional || tenure.compensatesTenureId !== null
+            ? 'REVIEWED'
+            : null,
+      });
+    }
+  }
+  statusHistory.sort((left, right) =>
+    right.startedAt.localeCompare(left.startedAt)
+      || left.competitionId.localeCompare(right.competitionId)
+      || left.tenureId.localeCompare(right.tenureId));
+  const currentStatuses = statusHistory
+    .filter((tenure) => tenure.endedAt === null)
+    .map(({ competitionId, communityId, status, provisional }) => ({
+      competitionId, communityId, status, provisional,
+      reviewState: provisional ? 'PENDING' as const : null,
+    }));
+
+  const effectiveResults = selectedCompetitionScope === null
+    ? { rows: [] as PublicProfileResultRow[] }
+    : await sql<PublicProfileResultRow>`
+    select result.result_id, competition.competition_id, result.state,
+      coalesce(
+        integrity_decision.effective_outcome_code,
+        appeal_decision.effective_outcome_code,
+        correction_decision.effective_outcome_code,
+        result.recorded_outcome_code
+      ) as effective_outcome_code,
+      case
+        when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
+          or appeal_decision.decision in ('ANNUL', 'REPEAT') then null
+        else coalesce(
+          integrity_decision.effective_winner_user_id,
+          appeal_decision.effective_winner_user_id,
+          case when correction_decision.decision_id is not null
+            then correction_decision.effective_winner_user_id
+            else result.winner_user_id end
+        )
+      end as effective_winner_user_id,
+      case
+        when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
+          or appeal_decision.decision in ('ANNUL', 'REPEAT') then null
+        else coalesce(
+          integrity_decision.effective_loser_user_id,
+          appeal_decision.effective_loser_user_id,
+          case when correction_decision.decision_id is not null
+            then correction_decision.effective_loser_user_id
+            else result.loser_user_id end
+        )
+      end as effective_loser_user_id,
+      result.actual_time
+    from competition.results as result
+    join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
+    join competition.competitions as competition
+      on competition.competition_id = challenge.competition_id
+    left join competition.appeal_decisions as appeal_decision
+      on appeal_decision.result_id = result.result_id
+    left join competition.technical_correction_decisions as correction_decision
+      on correction_decision.result_id = result.result_id
+    left join lateral (
+      select integrity_case.case_id
+      from competition.integrity_cases as integrity_case
+      where integrity_case.result_id = result.result_id
+      order by integrity_case.opened_at desc, integrity_case.case_id desc
+      limit 1
+    ) as integrity_case on true
+    left join competition.integrity_decisions as integrity_decision
+      on integrity_decision.case_id = integrity_case.case_id
+    where ${subjectUserId}::uuid in (challenge.pair_low_id, challenge.pair_high_id)
+      and competition.competition_id = ${selectedCompetitionScope.competitionId}::uuid
+      and result.state not in ('ANNULLED', 'REPEAT_ORDERED')
+      and coalesce(integrity_decision.effective_disposition, '') not in ('ANNUL', 'REPEAT')
+      and coalesce(appeal_decision.decision, '') not in ('ANNUL', 'REPEAT')
+    order by result.actual_time desc, result.result_id desc
+  `.execute(database);
+  const publicResults: PublicProfileResultEntry[] = effectiveResults.rows.map((result) => {
+    const outcome: PublicProfileResultOutcome = result.effective_outcome_code === 'DRAW'
+      ? 'DRAW'
+      : result.effective_outcome_code === 'NO_CONTEST'
+        ? 'NO_CONTEST'
+        : result.effective_winner_user_id === subjectUserId
+          ? 'WIN'
+          : 'LOSS';
+    return {
+      resultId: result.result_id,
+      competitionId: result.competition_id,
+      outcome,
+      publicMethod: result.effective_outcome_code === 'FORFEIT'
+        ? 'FORFEIT'
+        : result.effective_outcome_code === 'NO_SHOW'
+          ? 'NO_SHOW'
+          : null,
+      reviewState: result.state === 'RECORDED' || result.state === 'UNDER_APPEAL'
+        ? 'PENDING'
+        : result.state === 'REVERSED'
+          ? 'REVIEWED'
+          : null,
+      occurredAt: result.actual_time.toISOString(),
+    };
+  });
+  const officialRecord = publicResults.reduce((record, result) => ({
+    wins: record.wins + (result.outcome === 'WIN' ? 1 : 0),
+    losses: record.losses + (result.outcome === 'LOSS' ? 1 : 0),
+    draws: record.draws + (result.outcome === 'DRAW' ? 1 : 0),
+  }), { wins: 0, losses: 0, draws: 0 });
+
+  const trainingResult = await sql<{ readonly completed_training_count: string }>`
+    select count(*)::text as completed_training_count
+    from scheduling.attendance as attendance
+    join scheduling.sessions as session on session.session_id = attendance.session_id
+    where attendance.athlete_user_id = ${subjectUserId}::uuid
+      and attendance.status in ('PRESENT', 'LATE')
+      and session.purpose = 'TRAINING'
+      and session.state = 'ENDED'
+  `.execute(database);
+
+  return {
+    userId: identity.user_id,
+    displayName: identity.display_name,
+    ageDivision: identity.age_division,
+    primarySport: identity.primary_sport,
+    secondarySport: identity.secondary_sport,
+    selectedCompetitionScope,
+    competitionScopes,
+    currentStatuses,
+    statusHistory,
+    officialRecord,
+    recentOfficialResults: publicResults.slice(0, 5),
+    completedTrainingCount: Number(trainingResult.rows[0]?.completed_training_count ?? '0'),
+  };
+}
+
 export async function activateUser(
   database: Kysely<Database>,
   command: CommandEnvelope<ActivateIdentityInput>,
   ids: IdentityEffectIds,
+  now?: () => Date,
 ): Promise<ExecutedCommand<IdentityProjection>> {
   if (command.payload.userId !== command.aggregateId) {
     throw new IdentityValidationError('userId');
   }
   return executeCriticalCommand(database, {
     command,
+    ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const identity = activateIdentity(command.payload, context.occurredAt);
+      if (identity.ageDivision === 'YOUTH' && !ids.ageTransitionTimerOutboxMessageId) {
+        throw new TypeError('Youth activation age-transition timer effect ID is required');
+      }
       await sql`
         insert into identity.users (
           user_id, phone_e164, phone_verified_at, birth_date, age_division,
@@ -224,6 +639,25 @@ export async function activateUser(
               version: context.nextVersion,
             },
           },
+          ...(identity.ageDivision === 'YOUTH'
+            ? [{
+                messageId: ids.ageTransitionTimerOutboxMessageId!,
+                topic: 'identity.age-division-timer.v1',
+                payload: {
+                  userId: command.payload.userId,
+                  timer: {
+                    commandType: 'TRANSITION_TO_ADULT',
+                    aggregateType: 'AgeDivisionTransition',
+                    aggregateId: command.payload.userId,
+                    expectedState: 'YOUTH',
+                    expectedVersion: 0,
+                    deadlineAt: adultTransitionAt(identity.birthDate).toISOString(),
+                    policyVersion: 'identity-v1',
+                    idempotencyKey: `age-division:${command.payload.userId}:adult:v1`,
+                  },
+                },
+              }]
+            : []),
         ],
       };
     },
@@ -440,6 +874,139 @@ export async function changeSports(
             payload: { userId: current.user_id, version: context.nextVersion, ...sports },
           },
         ],
+      };
+    },
+  });
+}
+
+export async function readHomeVenueSettings(
+  database: Kysely<Database>,
+  userId: string,
+): Promise<HomeVenueSettingsProjection | null> {
+  const current = await sql<{
+    readonly home_venue_id: string | null;
+    readonly version: string;
+  }>`
+    select profile.home_venue_id, users.version::text as version
+    from identity.users as users
+    join identity.athlete_profiles as profile on profile.user_id = users.user_id
+    where users.user_id = ${userId}::uuid
+  `.execute(database);
+  const row = current.rows[0];
+  if (!row) return null;
+  const venues = await sql<{
+    readonly venue_id: string;
+    readonly display_name: string;
+    readonly address: string;
+    readonly city_code: string;
+  }>`
+    select venue_id, display_name, address, city_code
+    from community.venues
+    where state = 'ACTIVE'
+    order by city_code, display_name, venue_id
+  `.execute(database);
+  return {
+    homeVenueId: row.home_venue_id,
+    userVersion: Number(row.version),
+    options: venues.rows.map((venue) => ({
+      venueId: venue.venue_id,
+      displayName: venue.display_name,
+      address: venue.address,
+      cityCode: venue.city_code,
+    })),
+  };
+}
+
+export async function changeHomeVenue(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ChangeHomeVenuePayload>,
+  ids: IdentityEffectIds,
+): Promise<ExecutedCommand<HomeVenueSelectionProjection>> {
+  if (command.actor.id !== command.aggregateId) throw new IdentityNotFoundError();
+  return executeCriticalCommand(database, {
+    command,
+    mutate: async (transaction, context) => {
+      const currentResult = await sql<{
+        readonly user_id: string;
+        readonly account_state: IdentityRow['account_state'];
+        readonly home_venue_id: string | null;
+      }>`
+        select users.user_id, users.account_state, profile.home_venue_id
+        from identity.users as users
+        join identity.athlete_profiles as profile on profile.user_id = users.user_id
+        where users.user_id = ${command.aggregateId}::uuid
+        for update of users, profile
+      `.execute(transaction);
+      const current = currentResult.rows[0];
+      if (!current) throw new IdentityNotFoundError();
+      if (current.account_state !== 'ACTIVE') {
+        throw new IdentityValidationError('accountState');
+      }
+      if (current.home_venue_id === command.payload.venueId) {
+        throw new IdentityValidationError('homeVenueId');
+      }
+      const venueResult = await sql<{
+        readonly venue_id: string;
+        readonly display_name: string;
+      }>`
+        select venue_id, display_name
+        from community.venues
+        where venue_id = ${command.payload.venueId}::uuid and state = 'ACTIVE'
+        for share
+      `.execute(transaction);
+      const venue = venueResult.rows[0];
+      if (!venue) throw new IdentityValidationError('homeVenueId');
+
+      await sql`
+        update identity.athlete_profiles
+        set home_venue_id = ${venue.venue_id}::uuid,
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where user_id = ${current.user_id}::uuid
+      `.execute(transaction);
+      await sql`
+        update identity.users
+        set version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where user_id = ${current.user_id}::uuid
+      `.execute(transaction);
+      const response: HomeVenueSelectionProjection = {
+        homeVenueId: venue.venue_id,
+        venueDisplayName: venue.display_name,
+        version: context.nextVersion,
+      };
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'HomeVenueChanged',
+          schemaVersion: 1,
+          transitionId: null,
+          payload: { userId: current.user_id, homeVenueId: venue.venue_id },
+          metadata: { policyVersion: 'identity-v1' },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'CHANGE_HOME_VENUE',
+          transitionId: null,
+          reasonCode: null,
+          beforeState: current.account_state,
+          afterState: current.account_state,
+          metadata: {
+            previousHomeVenueId: current.home_venue_id,
+            homeVenueId: venue.venue_id,
+            competitionStateChanged: false,
+          },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'identity.home_venue.changed.v1',
+          payload: {
+            userId: current.user_id,
+            homeVenueId: venue.venue_id,
+            version: context.nextVersion,
+          },
+        }],
       };
     },
   });

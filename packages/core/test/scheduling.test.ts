@@ -6,11 +6,17 @@ import {
   SchedulingPermissionDeniedError,
   SchedulingValidationError,
   assertHostConfirmationWindow,
+  assertBookingRequestCanBeWithdrawn,
+  assertAthleteScheduleAvailable,
   assertFutureScheduleCanBeMutated,
   assertAttendanceCanBeRecorded,
   assertCoachReplacementCanBeCommitted,
   assertCoachReplacementCanBeRejected,
   assertExternalSessionFailureCanBeCommitted,
+  assertSafetyCaseReviewCanStart,
+  assertSafetyCaseReviewerIndependent,
+  assertEnforcementAppealReviewCanStart,
+  assertSafetyCancellationCanBeSubmitted,
   assertPublicationWindow,
   assertSessionCanEnd,
   assertSessionCanStart,
@@ -20,23 +26,36 @@ import {
   assertOfficialConversionDecisionCanBeRecorded,
   assertSoloContinuationCanExpire,
   assertSoloContinuationDecisionCanBeRecorded,
+  assertOfficialTrainingRetentionCanBeOffered,
+  assertTrainingRetentionCanExpire,
+  assertTrainingRetentionDecisionCanBeRecorded,
   assertTrainingParticipantCanCancel,
+  officialCancellationWinner,
+  assertGroupPlanOfficialConversionCanBeRequested,
   assertTrainingOfficialConversionCanBeRequested,
   attendanceCountsAsCompletedTraining,
   bookingSelectionExpiresAt,
   hostConfirmationDeadline,
+  extendSchedulingDeadlineForSafetyHold,
   officialConversionDeadline,
   soloContinuationDeadline,
+  trainingRetentionDeadline,
   normalizeCommercialPrice,
   normalizeOptionalScheduleText,
   normalizeScheduleMutationReason,
+  normalizeSafetyAccountRestrictionDecision,
+  normalizeEnforcementAppealSubmission,
+  normalizeEnforcementAppealRevocation,
+  normalizeSafetyEnforcementDecision,
+  normalizeSafetyCaseReleaseDecision,
   normalizeScheduleLabel,
+  safetyRestrictionSubjectStatus,
 } from '../src/scheduling.js';
 
 describe('Scheduling publication policy', () => {
   const occurredAt = new Date('2026-09-07T09:00:00.000Z');
 
-  it('accepts a future interval inside the Venue horizon', () => {
+  it('[AC-027] accepts a future interval inside the Venue horizon', () => {
     expect(() =>
       assertPublicationWindow({
         startAt: '2026-09-14T09:00:00.000Z',
@@ -52,7 +71,7 @@ describe('Scheduling publication policy', () => {
     ['reversed interval', '2026-09-08T10:00:00.000Z', '2026-09-08T09:00:00.000Z', 30],
     ['outside horizon', '2026-10-08T09:00:00.001Z', '2026-10-08T10:00:00.000Z', 30],
     ['invalid horizon', '2026-09-08T09:00:00.000Z', '2026-09-08T10:00:00.000Z', 31],
-  ])('rejects %s', (_name, startAt, endAt, horizonDays) => {
+  ])('[AC-028] rejects %s', (_name, startAt, endAt, horizonDays) => {
     expect(() => assertPublicationWindow({ startAt, endAt, occurredAt, horizonDays })).toThrow(
       SchedulingValidationError,
     );
@@ -69,6 +88,31 @@ describe('Scheduling publication policy', () => {
       amount: '1500.00',
       currency: 'RUB',
     });
+  });
+
+  it('[AC-066] lets either Athlete withdraw only an unconfirmed Booking request', () => {
+    for (const state of ['SELECTING', 'HOST_CONFIRMATION_PENDING']) {
+      expect(() => assertBookingRequestCanBeWithdrawn({
+        state,
+        actorUserId: 'athlete-a',
+        participantUserIds: ['athlete-a', 'athlete-b'],
+      })).not.toThrow();
+      expect(() => assertBookingRequestCanBeWithdrawn({
+        state,
+        actorUserId: 'athlete-b',
+        participantUserIds: ['athlete-a', 'athlete-b'],
+      })).not.toThrow();
+    }
+    expect(() => assertBookingRequestCanBeWithdrawn({
+      state: 'SELECTING',
+      actorUserId: 'outsider',
+      participantUserIds: ['athlete-a', 'athlete-b'],
+    })).toThrow(SchedulingPermissionDeniedError);
+    expect(() => assertBookingRequestCanBeWithdrawn({
+      state: 'CONFIRMED_PAIR',
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'],
+    })).toThrowError(expect.objectContaining({ reason: 'BOOKING_WITHDRAWAL_NOT_ALLOWED' }));
   });
 
   it('allows only reasoned future schedule mutations without active pair intent', () => {
@@ -105,7 +149,7 @@ describe('Scheduling publication policy', () => {
     );
   });
 
-  it('derives the host boundary from the Venue notice and rejects a late choice', () => {
+  it('[AC-040] derives the host boundary from the Venue 8–48h notice and rejects a late choice', () => {
     expect(
       hostConfirmationDeadline({
         startAt: '2026-09-08T17:00:00.000Z',
@@ -120,9 +164,21 @@ describe('Scheduling publication policy', () => {
         occurredAt,
       }),
     ).toThrow(SchedulingConflictError);
+    for (const minimumBookingNoticeHours of [7, 49]) {
+      expect(() => hostConfirmationDeadline({
+        startAt: '2026-09-10T17:00:00.000Z',
+        minimumBookingNoticeHours,
+        occurredAt,
+      })).toThrowError(SchedulingValidationError);
+    }
+    expect(hostConfirmationDeadline({
+      startAt: '2026-09-09T10:00:00.000Z',
+      minimumBookingNoticeHours: 48,
+      occurredAt,
+    }).toISOString()).toBe('2026-09-07T10:00:00.000Z');
   });
 
-  it('allows host confirmation only for a mutually selected Slot before the deadline', () => {
+  it('[AC-040] allows host confirmation only for a mutually selected Slot strictly before the deadline', () => {
     expect(() =>
       assertHostConfirmationWindow({
         state: 'HOST_CONFIRMATION_PENDING',
@@ -149,6 +205,15 @@ describe('Scheduling publication policy', () => {
     ).toThrowError(expect.objectContaining({ reason: 'HOST_CONFIRMATION_EXPIRED' }));
   });
 
+  it('[AC-153] rejects an overlapping confirmed Session for either Athlete', () => {
+    expect(() => assertAthleteScheduleAvailable({
+      hasOverlappingConfirmedSession: false,
+    })).not.toThrow();
+    expect(() => assertAthleteScheduleAvailable({
+      hasOverlappingConfirmedSession: true,
+    })).toThrowError(expect.objectContaining({ reason: 'ATHLETE_SCHEDULE_CONFLICT' }));
+  });
+
   it('opens the Session window only at the scheduled boundary', () => {
     expect(() =>
       assertSessionWindowCanOpen({
@@ -166,7 +231,7 @@ describe('Scheduling publication policy', () => {
     ).toThrowError(expect.objectContaining({ reason: 'SESSION_NOT_READY' }));
   });
 
-  it('keeps Session facts under the assigned non-participant Coach', () => {
+  it('[AC-020] keeps Session facts under the assigned non-participant Coach', () => {
     expect(() =>
       assertSessionCoach({
         actorId: 'coach',
@@ -178,6 +243,13 @@ describe('Scheduling publication policy', () => {
       assertSessionCoach({
         actorId: 'athlete-a',
         coachUserId: 'coach',
+        athleteUserIds: ['athlete-a', 'athlete-b'],
+      }),
+    ).toThrow(SchedulingPermissionDeniedError);
+    expect(() =>
+      assertSessionCoach({
+        actorId: 'athlete-a',
+        coachUserId: 'athlete-a',
         athleteUserIds: ['athlete-a', 'athlete-b'],
       }),
     ).toThrow(SchedulingPermissionDeniedError);
@@ -204,7 +276,7 @@ describe('Scheduling publication policy', () => {
     ).toThrowError(expect.objectContaining({ reason: 'SESSION_OPERATION_WINDOW_CLOSED' }));
   });
 
-  it('protects NO_SHOW grace and counts only attended ended Training', () => {
+  it('[AC-074][AC-202][AC-203] protects NO_SHOW grace and counts only attended Training', () => {
     expect(() =>
       assertAttendanceCanBeRecorded({
         state: 'IN_PROGRESS',
@@ -216,6 +288,17 @@ describe('Scheduling publication policy', () => {
         occurredAt: new Date('2026-09-07T09:14:59.999Z'),
       }),
     ).toThrowError(expect.objectContaining({ reason: 'NO_SHOW_TOO_EARLY' }));
+    expect(() =>
+      assertAttendanceCanBeRecorded({
+        state: 'IN_PROGRESS',
+        status: 'NO_SHOW',
+        athleteId: 'athlete-b',
+        athleteUserIds: ['athlete-a', 'athlete-b'],
+        scheduledStartAt: occurredAt.toISOString(),
+        noShowGraceMinutes: 15,
+        occurredAt: new Date('2026-09-07T09:15:00.000Z'),
+      }),
+    ).not.toThrow();
     expect(attendanceCountsAsCompletedTraining('PRESENT')).toBe(true);
     expect(attendanceCountsAsCompletedTraining('LATE')).toBe(true);
     expect(attendanceCountsAsCompletedTraining('NO_SHOW')).toBe(false);
@@ -272,13 +355,208 @@ describe('Scheduling publication policy', () => {
     })).toThrowError(expect.objectContaining({ reason: 'COACH_REPLACEMENT_NOT_REJECTABLE' }));
   });
 
-  it('closes an external failure only while the Session has not actually started', () => {
+  it('[AC-063] closes an external failure only while the Session has not actually started', () => {
     expect(() => assertExternalSessionFailureCanBeCommitted({
       state: 'SCHEDULED', actualStartAt: null,
     })).not.toThrow();
     expect(() => assertExternalSessionFailureCanBeCommitted({
       state: 'IN_PROGRESS', actualStartAt: occurredAt.toISOString(),
     })).toThrowError(expect.objectContaining({ reason: 'EXTERNAL_FAILURE_NOT_ALLOWED' }));
+  });
+
+  it('[AC-124] requires an explicit pre-start safety cancellation against the frozen pair', () => {
+    const input = {
+      sessionState: 'SCHEDULED' as const,
+      sessionPurpose: 'OFFICIAL_CHALLENGE',
+      bookingState: 'CONFIRMED_PAIR',
+      challengeState: 'BOOKED',
+      actualStartAt: null,
+      resultExists: false,
+      explicitConfirmation: true,
+      reporterUserId: 'athlete-a',
+      subjectUserId: 'athlete-b',
+      athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      actorIsOperational: false,
+      actorIsAssignedCoach: false,
+      reporterPolicy: 'PARTICIPANT_OR_OPERATIONAL' as const,
+      reasonCode: 'THREAT',
+    };
+    expect(assertSafetyCancellationCanBeSubmitted(input)).toBe('THREAT');
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, explicitConfirmation: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, actualStartAt: occurredAt.toISOString(), sessionState: 'IN_PROGRESS',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, subjectUserId: 'athlete-a',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+  });
+
+  it('[AC-125] permits only the assigned Coach to refuse a pre-start unsafe Session', () => {
+    const input = {
+      sessionState: 'READY_FOR_COACH' as const,
+      sessionPurpose: 'OFFICIAL_CHALLENGE', bookingState: 'CONFIRMED_PAIR',
+      challengeState: 'BOOKED', actualStartAt: null, resultExists: false,
+      explicitConfirmation: true, reporterUserId: 'coach', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      actorIsOperational: true, actorIsAssignedCoach: true,
+      reporterPolicy: 'ASSIGNED_COACH_ONLY' as const, reasonCode: 'UNSAFE_CONDUCT',
+    };
+    expect(assertSafetyCancellationCanBeSubmitted(input)).toBe('UNSAFE_CONDUCT');
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, actorIsAssignedCoach: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+    expect(() => assertSafetyCancellationCanBeSubmitted({
+      ...input, subjectUserId: 'outsider',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CANCELLATION_NOT_ALLOWED' }));
+  });
+
+  it('[AC-126] releases a reviewed Safety hold with a normalized replacement and exact deadline extension', () => {
+    expect(() => assertSafetyCaseReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'central',
+      reporterUserId: 'coach-a', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'], assignedCoachUserId: 'coach-a',
+      reviewerIsInterestedVenueAdmin: false,
+    })).not.toThrow();
+    expect(() => assertSafetyCaseReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'coach-a',
+      reporterUserId: 'coach-a', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'], assignedCoachUserId: 'coach-a',
+      reviewerIsInterestedVenueAdmin: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' }));
+    expect(normalizeSafetyCaseReleaseDecision({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      remedyCode: 'REPLACE_COACH', replacementCoachUserId: 'coach-b',
+      replacementVenueId: null, replacementCoachAvailable: true,
+      replacementVenueAvailable: false, reason: ' independent safe replacement ',
+    })).toEqual({
+      remedyCode: 'REPLACE_COACH', replacementCoachUserId: 'coach-b',
+      replacementVenueId: null, reason: 'independent safe replacement',
+    });
+    expect(extendSchedulingDeadlineForSafetyHold({
+      schedulingDeadlineAt: '2026-10-20T10:00:00.000Z',
+      holdStartedAt: '2026-10-18T10:00:00.000Z',
+      releasedAt: new Date('2026-10-18T13:30:00.000Z'),
+    }).toISOString()).toBe('2026-10-20T13:30:00.000Z');
+  });
+
+  it('[AC-127] requires a direct causal link before Safety enforcement Forfeit', () => {
+    const decision = {
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      subjectUserId: 'athlete-a', athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      caseReasonCode: 'UNSAFE_CONDUCT', causalLinkConfirmed: true,
+      consequencesConfirmed: true, reason: ' direct conduct caused session failure ',
+    };
+    expect(normalizeSafetyEnforcementDecision(decision)).toEqual({
+      remedyCode: 'FORFEIT_BY_ENFORCEMENT', loserUserId: 'athlete-a',
+      winnerUserId: 'athlete-b', enforcementReasonCode: 'UNSAFE_CONDUCT',
+      causalLinkCode: 'SUBJECT_CAUSED_SESSION_FAILURE',
+      reason: 'direct conduct caused session failure',
+    });
+    expect(() => normalizeSafetyEnforcementDecision({
+      ...decision, causalLinkConfirmed: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_CAUSAL_LINK_REQUIRED' }));
+    expect(() => normalizeSafetyEnforcementDecision({
+      ...decision, consequencesConfirmed: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED' }));
+  });
+
+  it('[AC-128] permits account restriction only for a confirmed serious category', () => {
+    const decision = {
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      subjectUserId: 'athlete-a', athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      categoryCode: 'VIOLENCE', seriousCategoryConfirmed: true,
+      consequencesConfirmed: true, reason: ' confirmed serious safety violation ',
+    };
+    expect(normalizeSafetyAccountRestrictionDecision(decision)).toEqual({
+      remedyCode: 'ACCOUNT_RESTRICTION', subjectUserId: 'athlete-a',
+      categoryCode: 'VIOLENCE', reason: 'confirmed serious safety violation',
+    });
+    expect(() => normalizeSafetyAccountRestrictionDecision({
+      ...decision, categoryCode: 'THREAT',
+    })).toThrowError(expect.objectContaining({ field: 'restrictionCategoryCode' }));
+    expect(() => normalizeSafetyAccountRestrictionDecision({
+      ...decision, seriousCategoryConfirmed: false,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_SERIOUS_CATEGORY_REQUIRED' }));
+    expect(safetyRestrictionSubjectStatus({
+      subjectUserId: 'athlete-a', championUserId: 'athlete-a', contenderUserId: 'athlete-b',
+    })).toBe('CHAMPION');
+    expect(safetyRestrictionSubjectStatus({
+      subjectUserId: 'ordinary', championUserId: 'athlete-a', contenderUserId: 'athlete-b',
+    })).toBeNull();
+  });
+
+  it('[AC-129] keeps an appealed restriction active and requires an independent reviewer', () => {
+    const submission = {
+      actorUserId: 'athlete-a', subjectUserId: 'athlete-a', accountState: 'RESTRICTED',
+      enforcementType: 'ACCOUNT_RESTRICTION', enforcementState: 'ACTIVE',
+      appealDeadlineAt: new Date('2026-10-07T10:00:00.000Z'),
+      occurredAt: new Date('2026-10-06T10:00:00.000Z'), appealExists: false,
+      statement: ' Прошу независимо пересмотреть ограничение аккаунта ',
+    };
+    expect(normalizeEnforcementAppealSubmission(submission))
+      .toBe('Прошу независимо пересмотреть ограничение аккаунта');
+    expect(() => normalizeEnforcementAppealSubmission({
+      ...submission, occurredAt: new Date('2026-10-07T10:00:00.001Z'),
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_WINDOW_CLOSED' }));
+    expect(() => assertEnforcementAppealReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'original-central',
+      subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'original-central',
+      reporterUserId: 'coach',
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT' }));
+    expect(() => assertEnforcementAppealReviewCanStart({
+      state: 'SUBMITTED', actorIsCentral: true, reviewerUserId: 'independent-central',
+      subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'original-central',
+      reporterUserId: 'coach',
+    })).not.toThrow();
+  });
+
+  it('[AC-152] permits only the assigned independent Central to revoke a restriction', () => {
+    const decision = {
+      state: 'UNDER_REVIEW', enforcementType: 'ACCOUNT_RESTRICTION',
+      enforcementState: 'ACTIVE', accountState: 'RESTRICTED', actorIsCentral: true,
+      reviewerUserId: 'central-b', assignedReviewerUserId: 'central-b',
+      subjectUserId: 'athlete-a', originalDecisionMakerUserId: 'central-a',
+      reporterUserId: 'coach-a', reason: ' Ограничение отзывается после независимой проверки ',
+    };
+    expect(normalizeEnforcementAppealRevocation(decision))
+      .toBe('Ограничение отзывается после независимой проверки');
+    expect(() => normalizeEnforcementAppealRevocation({
+      ...decision, reviewerUserId: 'central-c',
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT' }));
+    expect(() => normalizeEnforcementAppealRevocation({
+      ...decision, accountState: 'ACTIVE',
+    })).toThrowError(expect.objectContaining({ reason: 'ENFORCEMENT_APPEAL_CANNOT_BE_REVOKED' }));
+  });
+
+  it('[AC-130] rejects a Safety reviewer who is the subject or interested Venue Admin', () => {
+    const independent = {
+      reviewerUserId: 'central-b', reporterUserId: 'coach-a', subjectUserId: 'athlete-a',
+      athleteUserIds: ['athlete-a', 'athlete-b'] as const,
+      assignedCoachUserId: 'coach-a', reviewerIsInterestedVenueAdmin: false,
+    };
+    expect(() => assertSafetyCaseReviewerIndependent(independent)).not.toThrow();
+    expect(() => assertSafetyCaseReviewerIndependent({
+      ...independent, reviewerUserId: 'athlete-a',
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' }));
+    expect(() => assertSafetyCaseReviewerIndependent({
+      ...independent, reviewerIsInterestedVenueAdmin: true,
+    })).toThrowError(expect.objectContaining({ reason: 'SAFETY_CASE_REVIEWER_CONFLICT' }));
+  });
+
+  it('[AC-065] permits only a booked Official participant to cancel before actual start', () => {
+    const input = {
+      bookingState: 'CONFIRMED_PAIR', bookingPurpose: 'OFFICIAL_CHALLENGE',
+      challengeState: 'BOOKED', sessionState: 'READY_FOR_COACH' as const,
+      actualStartAt: null, actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const, resultExists: false,
+    };
+    expect(officialCancellationWinner(input)).toBe('athlete-b');
+    expect(() => officialCancellationWinner({ ...input, actorUserId: 'outsider' }))
+      .toThrow(SchedulingPermissionDeniedError);
+    expect(() => officialCancellationWinner({ ...input, actualStartAt: '2026-10-01T10:01:00.000Z' }))
+      .toThrowError(new SchedulingConflictError('OFFICIAL_CANCELLATION_NOT_ALLOWED'));
   });
 
   it('AC-155 caps a Training-to-Official confirmation window at 72 hours or Session start', () => {
@@ -314,6 +592,17 @@ describe('Scheduling publication policy', () => {
       actorIsAthlete: true,
       hasLiveConversion: false,
       occurredAt,
+    })).toThrowError(expect.objectContaining({ reason: 'OFFICIAL_CONVERSION_NOT_ALLOWED' }));
+  });
+
+  it('[AC-025][AC-026] opens GroupPlan confirmation only for a mutual plan with Coach', () => {
+    expect(assertGroupPlanOfficialConversionCanBeRequested({
+      groupPlanState: 'NOTIFIED', actorIsAthlete: true, coachAssigned: true,
+      hasLiveConversion: false, scheduledStartAt: '2026-09-11T16:00:00.000Z', occurredAt,
+    }).toISOString()).toBe('2026-09-10T09:00:00.000Z');
+    expect(() => assertGroupPlanOfficialConversionCanBeRequested({
+      groupPlanState: 'PROPOSED', actorIsAthlete: true, coachAssigned: true,
+      hasLiveConversion: false, scheduledStartAt: '2026-09-11T16:00:00.000Z', occurredAt,
     })).toThrowError(expect.objectContaining({ reason: 'OFFICIAL_CONVERSION_NOT_ALLOWED' }));
   });
 
@@ -366,6 +655,41 @@ describe('Scheduling publication policy', () => {
       deadlineAt: occurredAt.toISOString(), occurredAt,
     })).toThrowError(expect.objectContaining({ reason: 'SOLO_CONTINUATION_EXPIRED' }));
     expect(() => assertSoloContinuationCanExpire({
+      state: 'PENDING', deadlineAt: occurredAt.toISOString(), occurredAt,
+    })).not.toThrow();
+  });
+
+  it('AC-170 caps booked Official-to-Training retention at one hour or Session start', () => {
+    expect(trainingRetentionDeadline({
+      occurredAt,
+      scheduledStartAt: '2026-09-07T12:00:00.000Z',
+    }).toISOString()).toBe('2026-09-07T10:00:00.000Z');
+    expect(assertOfficialTrainingRetentionCanBeOffered({
+      bookingState: 'CONFIRMED_PAIR',
+      bookingPurpose: 'OFFICIAL_CHALLENGE',
+      sessionState: 'SCHEDULED',
+      actualStartAt: null,
+      slotState: 'BOOKED',
+      scheduledStartAt: '2026-09-07T09:30:00.000Z',
+      occurredAt,
+    }).toISOString()).toBe('2026-09-07T09:30:00.000Z');
+    expect(() => assertOfficialTrainingRetentionCanBeOffered({
+      bookingState: 'CONFIRMED_PAIR', bookingPurpose: 'TRAINING',
+      sessionState: 'SCHEDULED', actualStartAt: null, slotState: 'BOOKED',
+      scheduledStartAt: '2026-09-07T09:30:00.000Z', occurredAt,
+    })).toThrowError(expect.objectContaining({ reason: 'TRAINING_RETENTION_NOT_ALLOWED' }));
+  });
+
+  it('AC-170 accepts one decision per required party and expires at the exact deadline', () => {
+    expect(() => assertTrainingRetentionDecisionCanBeRecorded({
+      state: 'PENDING', actorRequired: true, actorAlreadyDecided: false,
+      deadlineAt: '2026-09-07T10:00:00.000Z', occurredAt,
+    })).not.toThrow();
+    expect(() => assertTrainingRetentionDecisionCanBeRecorded({
+      state: 'PENDING', actorRequired: true, actorAlreadyDecided: true,
+      deadlineAt: '2026-09-07T10:00:00.000Z', occurredAt,
+    })).toThrowError(expect.objectContaining({ reason: 'TRAINING_RETENTION_ALREADY_DECIDED' }));
+    expect(() => assertTrainingRetentionCanExpire({
       state: 'PENDING', deadlineAt: occurredAt.toISOString(), occurredAt,
     })).not.toThrow();
   });

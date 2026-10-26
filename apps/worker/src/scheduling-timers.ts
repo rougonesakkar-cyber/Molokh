@@ -25,11 +25,21 @@ export function schedulingTimerFromOutbox(
                         aggregateType: 'BookingOfficialConversion',
                         commandType: 'EXPIRE_BOOKING_OFFICIAL_CONVERSION',
                       }
+                    : topic === 'scheduling.group-plan.official-conversion-timer.v1'
+                      ? {
+                          aggregateType: 'GroupPlanOfficialConversion',
+                          commandType: 'EXPIRE_GROUP_PLAN_OFFICIAL_CONVERSION',
+                        }
                     : topic === 'scheduling.booking.solo-continuation-timer.v1'
                       ? {
                           aggregateType: 'BookingSoloContinuation',
                           commandType: 'EXPIRE_BOOKING_SOLO_CONTINUATION',
                         }
+                      : topic === 'scheduling.booking.training-retention-timer.v1'
+                        ? {
+                            aggregateType: 'BookingTrainingRetention',
+                            commandType: 'EXPIRE_BOOKING_TRAINING_RETENTION',
+                          }
         : null;
   if (!expected) return null;
   if (typeof payload !== 'object' || payload === null || !('timer' in payload)) {

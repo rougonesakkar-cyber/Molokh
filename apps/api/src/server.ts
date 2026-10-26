@@ -1,22 +1,33 @@
-import type { CommandEnvelope } from '@molokh/core';
+import { AccountLifecycleConflictError, type CommandEnvelope } from '@molokh/core';
 import {
   activateUser,
+  activateMembershipByInvite,
   addAppealResponse,
   acceptCoachInvite,
+  authorizeGuestCoach,
   decideAppeal,
   appointGymAdmin,
   approveAccountVerification,
+  approveMembership,
   changeDisplayName,
+  changeHomeVenue,
+  changeCommunityPairCooldown,
   changeSports,
   confirmMissingResultVenue,
   changePrimaryAdmin,
+  proposePrimaryAdminSuccessor,
+  approvePrimaryAdminSuccessor,
   confirmBookingHost,
   decideBookingOfficialConversion,
   decideBookingSoloContinuation,
+  decideBookingTrainingRetention,
   rejectBookingHost,
   cancelSessionAfterCoachReplacement,
+  cancelOfficialSessionByAthlete,
   endSession,
   failSessionExternal,
+  reportSafetyAndCancelSession,
+  resolveSafetyCase,
   blockUser,
   createDiscoveryLike,
   createDirectOpenChallenge,
@@ -29,17 +40,28 @@ import {
   inviteCoach,
   hideChatMessageForUser,
   listPendingCoachInvites,
+  listPrimaryAdminSuccessorProposals,
+  listPendingMemberships,
   listMissingResultReviewsForCentral,
   listMissingResultReviewsForViewer,
   listIntegrityCasesForCentral,
   listIntegrityCasesForViewer,
+  listTechnicalCorrectionsForCentral,
+  listTechnicalCorrectionsForViewer,
   listAppealsForCentral,
+  listEnforcementAppealsForCentral,
+  listEvidenceAttachmentsForViewer,
   listPendingVerifications,
+  listModerationCasesForCentral,
+  startSafetyCaseReview,
   probeDatabase,
   publishGroupOffering,
   publishSlot,
   orderMissingResultRepeat,
   readAppealForViewer,
+  readActiveEnforcementAppealForSubject,
+  readEvidenceOriginalAccess,
+  revokeEnforcementAppeal,
   readMissingResultReview,
   readIntegrityCase,
   updateGroupOffering,
@@ -48,11 +70,17 @@ import {
   withdrawSlot,
   proposeGroupPlan,
   readCommunityContext,
+  readCommunityLifecycle,
   readChatChallenge,
+  confirmMutualChallengeReschedule,
+  proposeMutualChallengeReschedule,
+  rescheduleChallengeByAthlete,
   readChatMessages,
   readActiveBlocks,
   readDiscoveryCards,
   readIdentityProjection,
+  readPublicAthleteProfile,
+  readHomeVenueSettings,
   readHostConfirmationQueue,
   readMySessions,
   requestBookingOfficialConversion,
@@ -63,74 +91,138 @@ import {
   readRoleGrant,
   readLatestDirectedBlock,
   readVenueRoleSummary,
+  verifyVenue,
   readTrainingOptions,
   readCompetitionStatus,
   reconfirmStatusQueueEntry,
   previewStatusRelease,
   confirmStatusRelease,
+  previewMembershipExit,
+  confirmMembershipExit,
+  appealMembershipRemoval,
+  decideMembershipRemoval,
+  listMembershipRemovalsForCentral,
+  listMembershipRemovalsForSubject,
+  listVenueMembersForAdmin,
+  requestMembershipRemoval,
+  requestMembership,
+  rejectMembership,
   respondToGenesisChallenge,
+  withdrawMembershipRequest,
   readVenueAdminDashboard,
   reportChatMessage,
   recordSessionAttendance,
   recordSessionResult,
+  reviseResultMetadata,
   replaceSessionCoach,
   selectSameSlot,
   selectSlot,
+  withdrawBookingRequest,
   runMigrations,
   sendChatMessage,
   startAccountVerification,
   startAppealReview,
+  startEnforcementAppealReview,
   startMissingResultReview,
   extendAppealSla,
   startSession,
   skipDiscoveryCandidate,
   confirmGroupPlan,
+  decideGroupPlanOfficialConversion,
+  listGroupPlanOfficialConversionsForViewer,
+  requestGroupPlanOfficialConversion,
   unblockUser,
   unmatchPair,
   acceptOptionalChallenge,
   declineOptionalChallenge,
   withdrawOptionalChallenge,
   submitResultAppeal,
+  submitEnforcementAppeal,
+  submitEvidenceAttachment,
+  prepareEvidenceUpload,
   submitMissingResultStatement,
   submitStatusQueueEntry,
   waiveResultAppeal,
   withdrawAppeal,
   withdrawStatusQueueEntry,
   openIntegrityCase,
+  requestTechnicalCorrection,
+  rejectTechnicalCorrection,
+  approveTechnicalCorrection,
+  pauseCommunity,
+  reactivateCommunity,
+  readCommunityClosure,
+  readCommunityClosureCommandPreparation,
+  scheduleCommunityClosure,
+  finalizeCommunityClosure,
   startIntegrityReview,
+  startTechnicalCorrectionReview,
   decideIntegrityCase,
+  decideYouthConsent,
+  readPublicYouthConsent,
+  readYouthConsentSummary,
+  requestYouthConsent,
+  listPlatformIncidents,
+  confirmPlatformIncident,
+  rejectPlatformIncident,
+  resolvePlatformIncident,
+  readMyAccountLifecycle,
+  requestAccountClosure,
+  cancelAccountClosure,
+  requestAccountExport,
+  readAccountExportPayload,
+  listAccountClosuresForCentral,
+  executeAccountClosure,
+  readMyAccountAccess,
+  requestAccountRecovery,
+  approvePhoneChange,
+  completeVerifiedRecovery,
+  rejectAccountRecovery,
+  confirmAccessIncident,
+  listAccountRecoveryCasesForCentral,
+  listDuplicateAccountCasesForCentral,
+  openDuplicateAccountReview,
+  clearDuplicateAccountReview,
+  resolveDuplicateAccountReview,
+  authenticateAccessToken,
+  hasActiveCentralRole,
+  readRefreshTokenContext,
+  requestAuthOtp,
+  revokeAuthSession,
+  rotateAuthSession,
+  verifyAuthOtp,
 } from '@molokh/db';
 
 import { buildApp } from './app.js';
+import { DisabledAvatarMediaAdapter } from './avatar-media.js';
+import { DisabledEvidenceMediaAdapter } from './evidence-media.js';
 import {
-  StaticBearerAuthAdapter,
+  AuthorizedAuthAdapter,
+  CompositeAuthAdapter,
+  DatabaseBearerAuthAdapter,
   StaticBearerAuthRegistryAdapter,
 } from './auth.js';
+import { readApiRuntimeConfig } from './runtime-config.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
-const production = process.env.NODE_ENV === 'production';
-const connectionString =
-  process.env.DATABASE_URL ??
-  (production
-    ? undefined
-    : 'postgres://molokh:local-only-password@localhost:5432/molokh');
-
-if (!connectionString) throw new Error('DATABASE_URL is required');
-if (production) {
-  throw new Error('A production AuthAdapter must be configured before production startup');
-}
+const runtimeConfig = readApiRuntimeConfig();
+const production = runtimeConfig.production;
+const connectionString = runtimeConfig.databaseUrl;
+const youthConsentTokenSecret = runtimeConfig.youthConsentTokenSecret;
+const authSessionSecret = runtimeConfig.authSessionSecret;
 
 const localUserId = '0199a1b2-1234-7000-8000-000000000101';
 const localVenueId = '0199a1b2-1234-7000-8000-000000000501';
-const localCommunityId = '0199a1b2-1234-7000-8000-000000000502';
-const localCompetitionId = '0199a1b2-1234-7000-8000-000000000901';
+const localCommunityId = runtimeConfig.pilotCommunityId;
+const localCompetitionId = runtimeConfig.pilotCompetitionId;
 const localCentralUserId = '0199a1b2-1234-7000-8000-000000000506';
 const localCoachUserId = '0199a1b2-1234-7000-8000-000000000508';
 const localReplacementCoachUserId = '0199a1b2-1234-7000-8000-000000000801';
 const localAdminUserId = '0199a1b2-1234-7000-8000-000000000509';
 const localDiscoveryUserId = '0199a1b2-1234-7000-8000-000000000554';
 const localDiscoveryUserTwoId = '0199a1b2-1234-7000-8000-000000000561';
+const localMembershipApplicantUserId = '0199a1b2-1234-7000-8000-000000000620';
 const localToken = process.env.LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 const localCentralToken =
   process.env.LOCAL_CENTRAL_AUTH_TOKEN ?? 'molokh-local-central-token';
@@ -144,6 +236,8 @@ const localDiscoveryToken =
   process.env.LOCAL_DISCOVERY_AUTH_TOKEN ?? 'molokh-local-discovery-token';
 const localDiscoveryTwoToken =
   process.env.LOCAL_DISCOVERY_TWO_AUTH_TOKEN ?? 'molokh-local-discovery-two-token';
+const localMembershipApplicantToken =
+  process.env.LOCAL_MEMBERSHIP_APPLICANT_AUTH_TOKEN ?? 'molokh-local-applicant-token';
 const localActivation: CommandEnvelope<{
   readonly userId: string;
   readonly phoneE164: string;
@@ -336,6 +430,32 @@ const localDiscoveryTwoActivation: typeof localActivation = {
   },
 };
 
+const localMembershipApplicantActivation: typeof localActivation = {
+  commandId: '0199a1b2-1234-7000-8000-000000000621',
+  commandType: 'ACTIVATE_ACCOUNT',
+  idempotencyKey: 'local-development-membership-applicant-v1',
+  actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+  aggregateType: 'User',
+  aggregateId: localMembershipApplicantUserId,
+  expectedVersion: 0,
+  correlationId: '0199a1b2-1234-7000-8000-000000000622',
+  causationId: null,
+  requestId: '0199a1b2-1234-7000-8000-000000000623',
+  source: 'scheduler',
+  payloadVersion: 1,
+  payload: {
+    userId: localMembershipApplicantUserId,
+    phoneE164: '+79990000620',
+    phoneVerifiedAt: '2026-09-05T09:00:00.000Z',
+    birthDate: '1996-06-20',
+    displayName: 'Кирилл Старт',
+    locale: 'ru-RU',
+    primarySport: 'BOXING',
+    secondarySport: null,
+    discoveryRadiusKm: 15,
+  },
+};
+
 // Temporary local Discovery fixtures for UI testing. Keep this block isolated so
 // the five profiles can be removed together after the pilot walkthroughs.
 const localTemporaryDiscoveryFixtures: ReadonlyArray<{
@@ -510,6 +630,7 @@ const localTemporaryDiscoveryFixtures: ReadonlyArray<{
 
 await runMigrations(connectionString);
 const database = createDatabase(connectionString);
+if (runtimeConfig.localFixturesEnabled) {
 const existingLocalIdentity = await readIdentityProjection(database, localUserId);
 if (!existingLocalIdentity) {
   await activateUser(database, localActivation, {
@@ -573,6 +694,17 @@ if (!existingDiscoveryTwoIdentity) {
     eventId: '0199a1b2-1234-7000-8000-000000000565',
     auditId: '0199a1b2-1234-7000-8000-000000000566',
     outboxMessageId: '0199a1b2-1234-7000-8000-000000000567',
+  });
+}
+const existingMembershipApplicantIdentity = await readIdentityProjection(
+  database,
+  localMembershipApplicantUserId,
+);
+if (!existingMembershipApplicantIdentity) {
+  await activateUser(database, localMembershipApplicantActivation, {
+    eventId: '0199a1b2-1234-7000-8000-000000000624',
+    auditId: '0199a1b2-1234-7000-8000-000000000625',
+    outboxMessageId: '0199a1b2-1234-7000-8000-000000000626',
   });
 }
 for (const fixture of localTemporaryDiscoveryFixtures) {
@@ -762,6 +894,13 @@ const localAthleteVerificationFixture = (
 for (const [index, userId] of athleteVerificationUserIds.entries()) {
   await ensureLocalVerifiedUser(localAthleteVerificationFixture(userId, index + 1));
 }
+
+await ensureLocalVerifiedUser(
+  localAthleteVerificationFixture(
+    localMembershipApplicantUserId,
+    athleteVerificationUserIds.length + 1,
+  ),
+);
 
 await ensureLocalPilotCompetition(database, {
   competitionId: localCompetitionId,
@@ -1020,8 +1159,10 @@ if (!localAdminAlreadyActive && !(await readRoleGrant(database, localAdminGrantI
     },
   );
 }
+}
 
-const localAuth = new StaticBearerAuthRegistryAdapter([
+const localStaticAuth = runtimeConfig.localFixturesEnabled
+  ? new StaticBearerAuthRegistryAdapter([
   { token: localToken, userId: localUserId },
   { token: localCentralToken, userId: localCentralUserId },
   { token: localCoachToken, userId: localCoachUserId },
@@ -1029,17 +1170,80 @@ const localAuth = new StaticBearerAuthRegistryAdapter([
   { token: localAdminToken, userId: localAdminUserId },
   { token: localDiscoveryToken, userId: localDiscoveryUserId },
   { token: localDiscoveryTwoToken, userId: localDiscoveryUserTwoId },
+  { token: localMembershipApplicantToken, userId: localMembershipApplicantUserId },
   ...localTemporaryDiscoveryFixtures.map((fixture) => ({
     token: fixture.token,
     userId: fixture.activation.payload.userId,
   })),
-]);
-const localCentralAuth = new StaticBearerAuthAdapter(
-  localCentralToken,
-  localCentralUserId,
+]) : null;
+const databaseAuth = new DatabaseBearerAuthAdapter(
+  (tokenHash) => authenticateAccessToken(database, tokenHash),
+);
+const localAuth = localStaticAuth
+  ? new CompositeAuthAdapter([databaseAuth, localStaticAuth])
+  : databaseAuth;
+const localCentralAuth = new AuthorizedAuthAdapter(
+  localAuth,
+  (authenticated) => hasActiveCentralRole(database, authenticated.userId),
 );
 
 const app = await buildApp({
+  authentication: {
+    auth: databaseAuth,
+    secret: authSessionSecret,
+    localDevelopmentTransportEnabled: runtimeConfig.localFixturesEnabled,
+    smsTransportAvailable: false,
+    secureCookies: production,
+    requestOtp: (command, ids, codeVerifierHash) =>
+      requestAuthOtp(database, command, ids, codeVerifierHash),
+    verifyOtp: (command, ids, secrets) =>
+      verifyAuthOtp(database, command, ids, secrets),
+    readRefreshContext: (tokenHash) => readRefreshTokenContext(database, tokenHash),
+    rotateSession: (command, ids, hashes) =>
+      rotateAuthSession(database, command, ids, hashes),
+    revokeSession: (command, ids) => revokeAuthSession(database, command, ids),
+  },
+  accountAccess: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    readMine: (userId) => readMyAccountAccess(database, userId),
+    requestRecovery: (command, ids) => requestAccountRecovery(database, command, ids),
+    listRecovery: (centralUserId) => listAccountRecoveryCasesForCentral(database, centralUserId),
+    approvePhone: (command, ids) => approvePhoneChange(database, command, ids),
+    completeVerified: (command, ids) => completeVerifiedRecovery(database, command, ids),
+    rejectRecovery: (command, ids) => rejectAccountRecovery(database, command, ids),
+    confirmIncident: (command, ids) => confirmAccessIncident(database, command, ids),
+    listDuplicates: (centralUserId) => listDuplicateAccountCasesForCentral(database, centralUserId),
+    openDuplicate: (command, ids) => openDuplicateAccountReview(database, command, ids),
+    clearDuplicate: (command, ids) => clearDuplicateAccountReview(database, command, ids),
+    resolveDuplicate: (command, ids) => resolveDuplicateAccountReview(database, command, ids),
+  },
+  accountLifecycle: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    read: (userId) => readMyAccountLifecycle(database, userId),
+    requestClosure: (command, ids) => requestAccountClosure(database, command, ids),
+    cancelClosure: (command, ids) => cancelAccountClosure(database, command, ids),
+    requestExport: (command, ids) => requestAccountExport(database, command, ids),
+    downloadExport: async (userId, exportId) => {
+      const lifecycle = await readMyAccountLifecycle(database, userId);
+      if (lifecycle.dataExport?.exportId !== exportId
+        || lifecycle.dataExport.payloadSha256 === null) {
+        throw new AccountLifecycleConflictError('ACCOUNT_EXPORT_INVALID_STATE');
+      }
+      return { payload: await readAccountExportPayload(database, userId, exportId),
+        payloadSha256: lifecycle.dataExport.payloadSha256 };
+    },
+    listCentral: (centralUserId) => listAccountClosuresForCentral(database, centralUserId),
+    executeClosure: (command, ids) => executeAccountClosure(database, command, ids),
+  },
+  platformIncident: {
+    centralAuth: localCentralAuth,
+    list: (centralUserId) => listPlatformIncidents(database, centralUserId),
+    confirm: (command, ids) => confirmPlatformIncident(database, command, ids),
+    reject: (command, ids) => rejectPlatformIncident(database, command, ids),
+    resolve: (command, ids) => resolvePlatformIncident(database, command, ids),
+  },
   appeal: {
     auth: localAuth,
     centralAuth: localCentralAuth,
@@ -1050,6 +1254,28 @@ const app = await buildApp({
     addResponse: (command, ids) => addAppealResponse(database, command, ids),
     withdraw: (command, ids) => withdrawAppeal(database, command, ids),
     extendSla: (command, ids) => extendAppealSla(database, command, ids),
+  },
+  enforcementAppeal: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    readForSubject: (subjectUserId) =>
+      readActiveEnforcementAppealForSubject(database, subjectUserId),
+    listForCentral: (centralUserId) =>
+      listEnforcementAppealsForCentral(database, centralUserId),
+    submit: (command, ids) => submitEnforcementAppeal(database, command, ids),
+    startReview: (command, ids) => startEnforcementAppealReview(database, command, ids),
+    revoke: (command, ids) => revokeEnforcementAppeal(database, command, ids),
+  },
+  evidence: {
+    auth: localAuth,
+    media: new DisabledEvidenceMediaAdapter(),
+    prepare: (scopeType, scopeId, actorUserId) =>
+      prepareEvidenceUpload(database, scopeType, scopeId, actorUserId),
+    submit: (command, ids) => submitEvidenceAttachment(database, command, ids),
+    list: (scopeType, scopeId, viewerUserId) =>
+      listEvidenceAttachmentsForViewer(database, scopeType, scopeId, viewerUserId),
+    readOriginalAccess: (scopeType, scopeId, attachmentId, viewerUserId) =>
+      readEvidenceOriginalAccess(database, scopeType, scopeId, attachmentId, viewerUserId),
   },
   missingResult: {
     auth: localAuth,
@@ -1076,6 +1302,18 @@ const app = await buildApp({
     startReview: (command, ids) => startIntegrityReview(database, command, ids),
     decide: (command, ids) => decideIntegrityCase(database, command, ids),
   },
+  technicalCorrection: {
+    auth: localAuth,
+    centralAuth: localCentralAuth,
+    listForViewer: (viewerUserId) =>
+      listTechnicalCorrectionsForViewer(database, viewerUserId),
+    listForCentral: (centralUserId) =>
+      listTechnicalCorrectionsForCentral(database, centralUserId),
+    request: (command, ids) => requestTechnicalCorrection(database, command, ids),
+    startReview: (command, ids) => startTechnicalCorrectionReview(database, command, ids),
+    reject: (command, ids) => rejectTechnicalCorrection(database, command, ids),
+    approve: (command, ids) => approveTechnicalCorrection(database, command, ids),
+  },
   statusQueue: {
     auth: localAuth,
     competitionId: localCompetitionId,
@@ -1093,6 +1331,36 @@ const app = await buildApp({
       previewStatusRelease(database, command, ids, confirmationToken),
     confirm: (command, ids) => confirmStatusRelease(database, command, ids),
   },
+  membershipExit: {
+    auth: localAuth,
+    preview: (command, ids, confirmationToken) =>
+      previewMembershipExit(database, command, ids, confirmationToken),
+    confirm: (command, ids) => confirmMembershipExit(database, command, ids),
+  },
+  membershipRemoval: {
+    auth: localAuth,
+    listVenueMembers: (actorUserId, venueId) =>
+      listVenueMembersForAdmin(database, actorUserId, venueId),
+    listForSubject: (subjectUserId) =>
+      listMembershipRemovalsForSubject(database, subjectUserId),
+    listForCentral: (centralUserId) =>
+      listMembershipRemovalsForCentral(database, centralUserId),
+    request: (command, ids) => requestMembershipRemoval(database, command, ids),
+    appeal: (command, ids) => appealMembershipRemoval(database, command, ids),
+    decide: (command, ids) => decideMembershipRemoval(database, command, ids),
+  },
+  membership: {
+    auth: localAuth,
+    requestMembership: (command, ids) => requestMembership(database, command, ids),
+    activateMembershipByInvite: (command, ids) =>
+      activateMembershipByInvite(database, command, ids),
+    approveMembership: (command, ids) => approveMembership(database, command, ids),
+    rejectMembership: (command, ids) => rejectMembership(database, command, ids),
+    withdrawMembershipRequest: (command, ids) =>
+      withdrawMembershipRequest(database, command, ids),
+    listPendingMemberships: (actorId, communityId) =>
+      listPendingMemberships(database, actorId, communityId),
+  },
   logger: {
     redact: {
       paths: [
@@ -1106,16 +1374,24 @@ const app = await buildApp({
       remove: true,
     },
   },
-  allowedOrigins: ['http://localhost:8081', 'http://127.0.0.1:8081'],
+  allowedOrigins: runtimeConfig.allowedOrigins,
+  trustProxy: runtimeConfig.trustProxy,
   readiness: () => probeDatabase(database),
+  releaseSha: runtimeConfig.releaseSha,
   chat: {
     auth: localAuth,
+    centralAuth: localCentralAuth,
     readMessages: (chatId, userId, limit, cursor) =>
       readChatMessages(database, chatId, userId, limit, cursor),
     sendMessage: (command, ids) => sendChatMessage(database, command, ids),
     editMessage: (command, ids) => editChatMessage(database, command, ids),
     hideMessage: (command, ids) => hideChatMessageForUser(database, command, ids),
     reportMessage: (command, ids) => reportChatMessage(database, command, ids),
+    readModerationCases: (centralUserId) =>
+      listModerationCasesForCentral(database, centralUserId),
+    startSafetyCaseReview: (command, ids) =>
+      startSafetyCaseReview(database, command, ids),
+    resolveSafetyCase: (command, ids) => resolveSafetyCase(database, command, ids),
   },
   challenge: {
     auth: localAuth,
@@ -1129,10 +1405,44 @@ const app = await buildApp({
       declineOptionalChallenge(database, command, ids),
     withdrawOptionalChallenge: (command, ids) =>
       withdrawOptionalChallenge(database, command, ids),
+    rescheduleChallengeByAthlete: (command, ids) =>
+      rescheduleChallengeByAthlete(database, command, ids),
+    proposeMutualChallengeReschedule: (command, ids) =>
+      proposeMutualChallengeReschedule(database, command, ids),
+    confirmMutualChallengeReschedule: (command, ids) =>
+      confirmMutualChallengeReschedule(database, command, ids),
+  },
+  youthConsent: {
+    auth: localAuth,
+    tokenSecret: youthConsentTokenSecret,
+    publicBaseUrl: runtimeConfig.publicWebUrl,
+    exposeDevelopmentActionUrl: runtimeConfig.localFixturesEnabled,
+    readSummary: (challengeId, viewerUserId) =>
+      readYouthConsentSummary(database, challengeId, viewerUserId),
+    request: (command, ids, deliveryToken) =>
+      requestYouthConsent(database, command, ids, deliveryToken),
+    readPublic: (token) => readPublicYouthConsent(database, token),
+    decide: (command, ids) => decideYouthConsent(database, command, ids),
   },
   community: {
     auth: localAuth,
     readContext: (userId) => readCommunityContext(database, userId, localCommunityId),
+    configuration: {
+      updatePairCooldown: (command, ids) =>
+        changeCommunityPairCooldown(database, command, ids),
+    },
+    lifecycle: {
+      auth: localCentralAuth,
+      read: (communityId) => readCommunityLifecycle(database, communityId),
+      pause: (command, ids) => pauseCommunity(database, command, ids),
+      reactivate: (command, ids) => reactivateCommunity(database, command, ids),
+      closure: {
+        read: (communityId) => readCommunityClosure(database, communityId),
+        prepare: (communityId) => readCommunityClosureCommandPreparation(database, communityId),
+        schedule: (command, ids) => scheduleCommunityClosure(database, command, ids),
+        finalize: (command, ids) => finalizeCommunityClosure(database, command, ids),
+      },
+    },
   },
   discovery: {
     auth: localAuth,
@@ -1149,9 +1459,14 @@ const app = await buildApp({
   },
   identity: {
     auth: localAuth,
+    avatarMedia: new DisabledAvatarMediaAdapter(),
     readMe: (userId) => readIdentityProjection(database, userId),
+    readPublicProfile: (viewerUserId, subjectUserId, competitionId) =>
+      readPublicAthleteProfile(database, viewerUserId, subjectUserId, competitionId),
     changeDisplayName: (command, ids) => changeDisplayName(database, command, ids),
     changeSports: (command, ids) => changeSports(database, command, ids),
+    readHomeVenueSettings: (userId) => readHomeVenueSettings(database, userId),
+    changeHomeVenue: (command, ids) => changeHomeVenue(database, command, ids),
   },
   roles: {
     operatorAuth: localCentralAuth,
@@ -1159,18 +1474,28 @@ const app = await buildApp({
     inviteCoach: (command, ids) => inviteCoach(database, command, ids),
     acceptCoachInvite: (command, ids) =>
       acceptCoachInvite(database, command, ids),
+    authorizeGuestCoach: (command, ids) =>
+      authorizeGuestCoach(database, command, ids),
     listPendingCoachInvites: (userId) =>
       listPendingCoachInvites(database, userId),
     appointGymAdmin: (command, ids) => appointGymAdmin(database, command, ids),
     changePrimaryAdmin: (command, ids) =>
       changePrimaryAdmin(database, command, ids),
+    proposePrimaryAdminSuccessor: (command, ids) =>
+      proposePrimaryAdminSuccessor(database, command, ids),
+    approvePrimaryAdminSuccessor: (command, ids) =>
+      approvePrimaryAdminSuccessor(database, command, ids),
+    listPrimaryAdminSuccessorProposals: (centralUserId) =>
+      listPrimaryAdminSuccessorProposals(database, centralUserId),
     readVenueRoleSummary: (centralUserId, venueId) =>
       readVenueRoleSummary(database, centralUserId, venueId),
+    verifyVenue: (command, ids) => verifyVenue(database, command, ids),
   },
   result: {
     auth: localAuth,
     readResult: (resultId, viewerUserId) => readResult(database, resultId, viewerUserId),
     recordSessionResult: (command, ids) => recordSessionResult(database, command, ids),
+    reviseResultMetadata: (command, ids) => reviseResultMetadata(database, command, ids),
     submitResultAppeal: (command, ids) => submitResultAppeal(database, command, ids),
     waiveResultAppeal: (command, ids) => waiveResultAppeal(database, command, ids),
   },
@@ -1189,6 +1514,8 @@ const app = await buildApp({
       withdrawGroupOffering(database, command, ids),
     selectSlot: (command, ids) => selectSlot(database, command, ids),
     selectSameSlot: (command, ids) => selectSameSlot(database, command, ids),
+    withdrawBookingRequest: (command, ids) =>
+      withdrawBookingRequest(database, command, ids),
     readHostConfirmationQueue: (actorUserId) =>
       readHostConfirmationQueue(database, actorUserId),
     readVenueAdminDashboard: (actorUserId, venueId) =>
@@ -1208,8 +1535,12 @@ const app = await buildApp({
       replaceSessionCoach(database, command, ids),
     cancelSessionAfterCoachReplacement: (command, ids) =>
       cancelSessionAfterCoachReplacement(database, command, ids),
+    cancelOfficialSessionByAthlete: (command, ids) =>
+      cancelOfficialSessionByAthlete(database, command, ids),
     failSessionExternal: (command, ids) =>
       failSessionExternal(database, command, ids),
+    reportSafetyAndCancelSession: (command, ids) =>
+      reportSafetyAndCancelSession(database, command, ids),
     requestBookingOfficialConversion: (command, ids) =>
       requestBookingOfficialConversion(database, command, ids),
     decideBookingOfficialConversion: (command, ids) =>
@@ -1218,8 +1549,16 @@ const app = await buildApp({
       requestTrainingParticipantCancellation(database, command, ids),
     decideBookingSoloContinuation: (command, ids) =>
       decideBookingSoloContinuation(database, command, ids),
+    decideBookingTrainingRetention: (command, ids) =>
+      decideBookingTrainingRetention(database, command, ids),
     proposeGroupPlan: (command, ids) => proposeGroupPlan(database, command, ids),
     confirmGroupPlan: (command, ids) => confirmGroupPlan(database, command, ids),
+    listGroupPlanOfficialConversionsForViewer: (actorUserId) =>
+      listGroupPlanOfficialConversionsForViewer(database, actorUserId),
+    requestGroupPlanOfficialConversion: (command, ids) =>
+      requestGroupPlanOfficialConversion(database, command, ids),
+    decideGroupPlanOfficialConversion: (command, ids) =>
+      decideGroupPlanOfficialConversion(database, command, ids),
   },
   verification: {
     athleteAuth: localAuth,

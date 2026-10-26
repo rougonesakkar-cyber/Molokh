@@ -2,6 +2,7 @@ import type { ChallengeStake } from './challenge.js';
 
 export const RESULT_POLICY_VERSION = 'result-mvp-v1' as const;
 export const RESULT_APPEAL_HOURS = 48;
+export const RESULT_METADATA_REVISION_HOURS = 24;
 export const APPEAL_RESPONSE_HOURS = 24;
 export const APPEAL_REVIEW_SLA_HOURS = 72;
 
@@ -12,6 +13,21 @@ export type ResultOutcomeCode =
   | 'NO_CONTEST'
   | 'FORFEIT'
   | 'NO_SHOW';
+
+export const ATHLETE_STOPPAGE_METHOD_CODES = [
+  'INJURY_STOPPAGE',
+  'VOLUNTARY_WITHDRAWAL',
+] as const;
+
+export type AthleteStoppageMethodCode = typeof ATHLETE_STOPPAGE_METHOD_CODES[number];
+
+export const EXTERNAL_NO_CONTEST_REASON_CODES = [
+  'EXTERNAL_EQUIPMENT_FAILURE',
+  'EXTERNAL_SAFETY_FAILURE',
+  'EXTERNAL_VENUE_FAILURE',
+] as const;
+
+export type ExternalNoContestReasonCode = typeof EXTERNAL_NO_CONTEST_REASON_CODES[number];
 
 export type ResultState =
   | 'RECORDED'
@@ -34,6 +50,17 @@ export type AppealDecision = 'UPHOLD' | 'REVERSE' | 'ANNUL' | 'REPEAT';
 export type AppealResponseRole = 'OPPONENT' | 'COACH';
 export type AppealSlaExtensionHours = 24 | 48;
 
+export type TechnicalCorrectionCategory =
+  | 'OUTCOME_OR_WINNER_ERROR'
+  | 'LATE_RESULT_CORRECTION';
+
+export type TechnicalCorrectionState =
+  | 'SUBMITTED'
+  | 'UNDER_REVIEW'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'WITHDRAWN';
+
 export type StatusTransitionType =
   | 'NONE'
   | 'GENESIS_APPLIED'
@@ -48,6 +75,8 @@ export type ResultConflictCode =
   | 'CHALLENGE_NOT_AWAITING_RESULT'
   | 'SESSION_NOT_ENDED'
   | 'RESULT_ALREADY_RECORDED'
+  | 'RESULT_METADATA_REVISION_WINDOW_CLOSED'
+  | 'RESULT_METADATA_REVISION_NO_CHANGE'
   | 'RESULT_NOT_RECORDED'
   | 'RESULT_APPEAL_WINDOW_CLOSED'
   | 'RESULT_APPEAL_NOT_DUE'
@@ -81,6 +110,15 @@ export type ResultConflictCode =
   | 'INTEGRITY_REVIEWER_MISMATCH'
   | 'INTEGRITY_DECISION_INVALID'
   | 'INTEGRITY_REPEAT_NOT_ALLOWED'
+  | 'TECHNICAL_CORRECTION_RESULT_NOT_PROVISIONAL'
+  | 'TECHNICAL_CORRECTION_ALREADY_OPEN'
+  | 'TECHNICAL_CORRECTION_NO_CHANGE'
+  | 'TECHNICAL_CORRECTION_CENTRAL_UNAVAILABLE'
+  | 'TECHNICAL_CORRECTION_NOT_SUBMITTED'
+  | 'TECHNICAL_CORRECTION_REVIEWER_CONFLICT'
+  | 'TECHNICAL_CORRECTION_NOT_UNDER_REVIEW'
+  | 'TECHNICAL_CORRECTION_REVIEWER_MISMATCH'
+  | 'TECHNICAL_CORRECTION_ACTIVE_APPEAL'
   | 'COMPETITION_INTEGRITY_HOLD'
   | 'COMPETITION_STATUS_SNAPSHOT_STALE'
   | 'COMPETITION_STATUS_LOCKED';
@@ -126,6 +164,10 @@ export function resultAppealDeadline(recordedAt: Date): Date {
   return plusHours(recordedAt, RESULT_APPEAL_HOURS);
 }
 
+export function resultMetadataRevisionDeadline(recordedAt: Date): Date {
+  return plusHours(recordedAt, RESULT_METADATA_REVISION_HOURS);
+}
+
 export function appealResponseDeadline(submittedAt: Date): Date {
   return plusHours(submittedAt, APPEAL_RESPONSE_HOURS);
 }
@@ -140,6 +182,74 @@ function requiredText(value: string | null, field: string, maximum: number): str
     throw new ResultValidationError(field);
   }
   return normalized;
+}
+
+function optionalText(value: string | null, field: string, maximum: number): string | null {
+  if (value === null) return null;
+  const normalized = value.trim();
+  if (normalized.length === 0 || normalized.length > maximum) {
+    throw new ResultValidationError(field);
+  }
+  return normalized;
+}
+
+export interface ResultMetadata {
+  readonly methodCode: string | null;
+  readonly methodText: string | null;
+  readonly scorePayload: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload: Readonly<Record<string, unknown>> | null;
+}
+
+function canonicalMetadataValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new ResultValidationError('metadataPayload');
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalMetadataValue(item)).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    const object = value as Readonly<Record<string, unknown>>;
+    return `{${Object.keys(object).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalMetadataValue(object[key])}`).join(',')}}`;
+  }
+  throw new ResultValidationError('metadataPayload');
+}
+
+export function normalizeResultMetadataRevision(input: {
+  readonly recordedAt: Date;
+  readonly occurredAt: Date;
+  readonly before: ResultMetadata;
+  readonly methodCode?: string | null;
+  readonly methodText?: string | null;
+  readonly scorePayload?: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload?: Readonly<Record<string, unknown>> | null;
+}): ResultMetadata {
+  validDate(input.recordedAt, 'recordedAt');
+  validDate(input.occurredAt, 'occurredAt');
+  if (input.occurredAt >= resultMetadataRevisionDeadline(input.recordedAt)) {
+    throw new ResultConflictError('RESULT_METADATA_REVISION_WINDOW_CLOSED');
+  }
+  const after: ResultMetadata = {
+    methodCode: input.methodCode === undefined
+      ? input.before.methodCode
+      : optionalText(input.methodCode, 'methodCode', 80),
+    methodText: input.methodText === undefined
+      ? input.before.methodText
+      : optionalText(input.methodText, 'methodText', 500),
+    scorePayload: input.scorePayload === undefined
+      ? input.before.scorePayload
+      : input.scorePayload,
+    methodPayload: input.methodPayload === undefined
+      ? input.before.methodPayload
+      : input.methodPayload,
+  };
+  if (canonicalMetadataValue(after) === canonicalMetadataValue(input.before)) {
+    throw new ResultConflictError('RESULT_METADATA_REVISION_NO_CHANGE');
+  }
+  return after;
 }
 
 export interface NormalizedResultParticipants {
@@ -201,6 +311,165 @@ export function normalizeResultParticipants(input: {
     decisive,
     reasonCode,
     comment,
+  };
+}
+
+export function assertAthleteStoppageResult(input: {
+  readonly outcomeCode: ResultOutcomeCode;
+  readonly winnerUserId: string | null;
+  readonly methodCode: string | null;
+  readonly actualStartAt: Date | null;
+}): void {
+  if (!ATHLETE_STOPPAGE_METHOD_CODES.some((code) => code === input.methodCode)) return;
+  if (input.actualStartAt === null || !Number.isFinite(input.actualStartAt.getTime())) {
+    throw new ResultValidationError('actualStartAt');
+  }
+  if (
+    (input.outcomeCode !== 'WIN_A' && input.outcomeCode !== 'WIN_B')
+    || input.winnerUserId === null
+  ) {
+    throw new ResultValidationError('outcomeCode');
+  }
+}
+
+export function assertExternalNoContestResult(input: {
+  readonly outcomeCode: ResultOutcomeCode;
+  readonly winnerUserId: string | null;
+  readonly reasonCode: string | null;
+  readonly methodCode: string | null;
+  readonly actualStartAt: Date | null;
+}): void {
+  if (!EXTERNAL_NO_CONTEST_REASON_CODES.some((code) => code === input.reasonCode)) return;
+  if (input.actualStartAt === null || !Number.isFinite(input.actualStartAt.getTime())) {
+    throw new ResultValidationError('actualStartAt');
+  }
+  if (input.outcomeCode !== 'NO_CONTEST' || input.winnerUserId !== null) {
+    throw new ResultValidationError('outcomeCode');
+  }
+  if (input.methodCode !== null) throw new ResultValidationError('methodCode');
+}
+
+export function normalizeTechnicalCorrectionRequest(input: {
+  readonly resultState: ResultState;
+  readonly existingOpenRequest: boolean;
+  readonly originalOutcomeCode: ResultOutcomeCode;
+  readonly originalWinnerUserId: string | null;
+  readonly proposedOutcomeCode: ResultOutcomeCode;
+  readonly proposedWinnerUserId: string | null;
+  readonly participantUserIds: readonly [string, string];
+  readonly category: TechnicalCorrectionCategory;
+  readonly internalReason: string;
+  readonly evidenceReference: string;
+}): {
+  readonly proposedOutcomeCode: ResultOutcomeCode;
+  readonly proposedWinnerUserId: string | null;
+  readonly category: TechnicalCorrectionCategory;
+  readonly internalReason: string;
+  readonly evidenceReference: string;
+} {
+  if (input.resultState !== 'RECORDED' && input.resultState !== 'UNDER_APPEAL') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_RESULT_NOT_PROVISIONAL');
+  }
+  if (input.existingOpenRequest) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_ALREADY_OPEN');
+  }
+  const normalized = normalizeResultParticipants({
+    outcomeCode: input.proposedOutcomeCode,
+    winnerUserId: input.proposedWinnerUserId,
+    participantUserIds: input.participantUserIds,
+    reasonCode: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.category
+      : null,
+    comment: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.internalReason
+      : null,
+  });
+  if (
+    input.originalOutcomeCode === input.proposedOutcomeCode
+    && input.originalWinnerUserId === normalized.winnerUserId
+  ) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NO_CHANGE');
+  }
+  return {
+    proposedOutcomeCode: input.proposedOutcomeCode,
+    proposedWinnerUserId: normalized.winnerUserId,
+    category: input.category,
+    internalReason: requiredText(input.internalReason, 'internalReason', 2000),
+    evidenceReference: requiredText(input.evidenceReference, 'evidenceReference', 500),
+  };
+}
+
+export function assertTechnicalCorrectionReviewCanStart(input: {
+  readonly state: TechnicalCorrectionState;
+  readonly reviewerUserId: string;
+  readonly protectedUserIds: readonly string[];
+}): void {
+  if (input.state !== 'SUBMITTED') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NOT_SUBMITTED');
+  }
+  if (input.protectedUserIds.includes(input.reviewerUserId)) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_CONFLICT');
+  }
+}
+
+export function normalizeTechnicalCorrectionRejection(input: {
+  readonly state: TechnicalCorrectionState;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly reason: string;
+}): string {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH');
+  }
+  return requiredText(input.reason, 'decisionReason', 2000);
+}
+
+export function normalizeTechnicalCorrectionApproval(input: {
+  readonly state: TechnicalCorrectionState;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly resultState: ResultState;
+  readonly proposedOutcomeCode: ResultOutcomeCode;
+  readonly proposedWinnerUserId: string | null;
+  readonly participantUserIds: readonly [string, string];
+  readonly category: TechnicalCorrectionCategory;
+  readonly reason: string;
+}): {
+  readonly outcomeCode: ResultOutcomeCode;
+  readonly winnerUserId: string | null;
+  readonly loserUserId: string | null;
+  readonly decisive: boolean;
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH');
+  }
+  if (input.resultState !== 'RECORDED') {
+    throw new ResultConflictError('TECHNICAL_CORRECTION_ACTIVE_APPEAL');
+  }
+  const participants = normalizeResultParticipants({
+    outcomeCode: input.proposedOutcomeCode,
+    winnerUserId: input.proposedWinnerUserId,
+    participantUserIds: input.participantUserIds,
+    reasonCode: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.category
+      : null,
+    comment: ['FORFEIT', 'NO_SHOW', 'NO_CONTEST'].includes(input.proposedOutcomeCode)
+      ? input.reason
+      : null,
+  });
+  return {
+    outcomeCode: input.proposedOutcomeCode,
+    winnerUserId: participants.winnerUserId,
+    loserUserId: participants.loserUserId,
+    decisive: participants.decisive,
+    reason: requiredText(input.reason, 'decisionReason', 2000),
   };
 }
 

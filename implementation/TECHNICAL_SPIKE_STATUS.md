@@ -1,7 +1,7 @@
 # Technical Spike Status
 
-**Date:** 2026-09-30
-**Scope:** stack baseline through transparent FIFO, Training conversion and no-fault Training-to-solo continuation.
+**Date:** 2026-10-03
+**Scope:** stack baseline through governed account closure, self-export and export-payload retention.
 
 ## Gates
 
@@ -20,30 +20,48 @@
 | Notification projection | atomic event-to-inbox projection, duplicate delivery and read ownership | Pass |
 | Request context | validated request/correlation/causation headers, response propagation and safe error mapping | Pass |
 | Identity vertical slice | 14+ activation, arbitrary display name, no-document Central verification, public capability projection, API/client path and private audit | Pass |
+| Home Venue preference | active-Venue selection changes Discovery/Slot geography only; Membership/status/FIFO/Challenge snapshots remain unchanged | Pass in API/client and real PostgreSQL |
 | Community scope foundation | pilot Venue/Community/Membership, immutable config ownership, role scope guard and universal client projection | Pass |
+| Membership onboarding | QR/invite activation with hashed expiring tokens, self-request, 12h Admin reminder, 24h Central escalation, FIFO approve/reject, seven-day reapply guard, requester withdrawal and local two-role walkthrough | Pass in Core/API/client/worker and real PostgreSQL |
 | Coach authorization slice | scoped 72h invite, invitee-only acceptance, audit/in-app notification and role-adaptive client path | Pass |
+| Guest Coach exact Session scope | verified assigned non-participant, immediate terminal capability cutoff plus idempotent RG-07 history | Pass in Core/API/client/worker and real PostgreSQL |
 | Venue Admin role lifecycle | verified Gym Admin appointment plus serialized first/transfer Primary command and local operator path | Pass |
 | Discovery read slice | hard gates, radius-first deterministic order, typed API and universal-client candidate card | Pass |
 | Discovery mutation slice | idempotent Like/Skip, expiry timers, atomic Match/Chat and Block/Unmatch preservation | Pass in Core/API/client and real PostgreSQL |
 | Personal Chat slice | participant-only history/send, append-only edits, local visibility, Report freeze and typed system actions | Pass in Core/API/client and real PostgreSQL |
 | Scheduling publication slice | role-scoped Slot/GroupOffering publish, overlap guard, expiry timers and active-Match Chat cards | Pass in Core/API/client/worker and real PostgreSQL |
+| GroupPlan Official conversion | frozen Coach/offering snapshot, independent Athlete/Athlete/Coach confirmation, final eligibility recheck and atomic NONE-stake Challenge/GROUP_REFERENCE Session; decline preserves social plan | Pass in Core/API/client/worker and real PostgreSQL |
 | API edge baseline | official CORS/Helmet/rate-limit plugins, DB-backed readiness and secret log redaction | Pass |
+| Production auth bootstrap | database sessions only, no local fixtures/static tokens, live Central-role check, required secrets/pilot IDs/HTTPS origins | Pass in code and automated config/auth/DB tests; external OTP provider remains unconfigured |
+| Avatar media boundary | authenticated/idempotent private upload-ticket port, JPEG/PNG/WebP 10 MiB contract, disabled adapter and no pre-scan attachment path | Pass in API contract tests; external object/scan provider remains unconfigured |
 | Migration integrity | SHA-256 drift detection for every applied migration | Pass |
-| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 86/213 mapped (`80/195 P0`) as implementation grows |
-| Result/Appeal foundation | atomic Coach Result, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
+| Acceptance traceability | executable `AC-###` tag validation and generated coverage matrix | Pass; 178/214 mapped (`172/196 P0`) as implementation grows |
+| Technical Correction lifecycle | independent DB-authorized reviewer, protected approve/reject reasons, immutable recorded versus effective Result, deterministic status/Cooldown compensation and neutral notifications | Pass in Core/API/client and real PostgreSQL |
+| Critical role audit completeness | DB-authorized Coach, scoped Gym Admin and assigned Central actor/scope/reason/state/lineage/server-time facts; append-only and privacy guards | Pass in real PostgreSQL |
+| Athlete Challenge reschedule | CH-22 bounded counter, immutable initiator/reason/fault/Booking fact, original deadline and Booking/host race serialization | Pass in Core/API/client and real PostgreSQL |
+| Exhausted reschedule Forfeit | CH-23 explicit consequence confirmation, capped counter, no third reschedule fact, pending-resource cleanup and ordinary Result/Appeal lifecycle | Pass in Core/API/client and real PostgreSQL |
+| Mutual Challenge reschedule | CH-21 peer confirmation, one shared counter, no fault user, private reason and atomic B-15/SL-06 pre-start cleanup | Pass in Core/API/client and real PostgreSQL |
+| External Challenge reschedule | assigned Coach/scoped Venue/Central authority, unchanged counter, EXTERNAL no-fault lineage and atomic CH-21/B-15/SL-06 cleanup | Pass in Core/API/client and real PostgreSQL |
+| Result/Appeal foundation | atomic Coach Result, Competition-row serialization and hash-verified projection rebuild, provisional status, Cooldown, waiver/Appeal, 48h finalizer and Central compensation | Pass in Core/API/client/worker and real PostgreSQL |
+| Champion→Ordinary OPEN isolation | Match-gated optional Challenge, frozen `NONE` stake, official Result/Appeal with unchanged Champion/Contender and no status history | Pass in Core/API/client and real PostgreSQL |
 | Final Result integrity | evidence-scoped Central review, Competition hold, immutable decision and deterministic status replay | Pass in Core/API/client and real PostgreSQL |
 | Status queue foundation | explicit GENESIS/status intent, server-time FIFO, member/outsider projection and no-loss withdrawal | Pass in Core/API/client and real PostgreSQL |
 | GENESIS mutual response | atomic first-two pairing, 48h versioned timer, no-fault survivor FIFO return, two-accept obligation and service-Chat scheduling handoff | Pass in Core/API/client/worker and real PostgreSQL |
-| Direct-status FIFO activation | strict valid head, current-holder binding, 72h mandatory response, 48h reminder, accepted obligations and appealable refusal/timeout Forfeit | Pass in Core/API/client/worker and real PostgreSQL |
+| Direct-status FIFO activation | strict valid head, current-holder binding, 72h mandatory response, 48h reminder, accepted obligations, accept-race safety and duplicate-safe appealable refusal/timeout Forfeit | Pass in Core/API/client/worker and real PostgreSQL |
 | Holder-change reconfirmation | final-transition reconciliation, preserved FIFO key, 24h versioned timer, manual reconfirm/exit and no-loss expiry | Pass in Core/API/client/worker and real PostgreSQL |
 | Voluntary status release | two-step 15m token/version confirmation, ST-09/ST-10/ST-14 projection, preserved Membership/FIFO and no Result/loss/Cooldown | Pass in Core/API/client and real PostgreSQL |
+| Voluntary Membership exit | separate two-step 15m preview, no-fault optional-request closure, FIFO invalidation, deterministic status succession/vacancy and terminal `LEFT` Membership; accepted not-started Challenge becomes FINAL administrative Forfeit with waiver/Cooldown and resource cancellation | Pass for no-obligation and accepted-obligation contours in Core/API/client and real PostgreSQL |
 | Vacancy succession | Worker revalidation, atomic first-two pairing, visible three-day solo deadline and stale-safe C-03/C-08 promotion | Pass in Core/client/worker and real PostgreSQL |
 | Training conversion | ordinary/Contender conversion, strict FIFO, three-party confirmation and no-fault fallback | Pass in Core/API/client/worker and real PostgreSQL |
 | Training cancellation/solo | Athlete no-fault withdrawal, two-party one-hour decision, solo conversion or atomic resource release | Pass in Core/API/client/worker and real PostgreSQL |
-| Dependency severity gate | CI rejects high/critical production advisories; production audit reports zero high/critical and six moderate advisories | Pass |
+| Confirmed Official cancellation | explicit pre-start Athlete confirmation closes Booking/Session/Slot and creates one administrative `FORFEIT` with peer winner, ordinary 48h Appeal and unchanged reschedule history | Pass in Core/API/client and real PostgreSQL |
+| Youth consent, booked retention and age transition | independent Challenge-scoped grants, guardian token page, privacy-minimized persistence, acceptance/Booking guards, B-26…B-29 three-party Training retention and one server-boundary `YOUTH→ADULT` timer that preserves started snapshots | Pass in Core/API/client/worker and real PostgreSQL |
+| PlatformIncident reconciliation | PI-01…PI-05, Central queue/actions, active timer suppression, exact-overlap extension for all registered pausable deadlines and append-only mandatory-timeout compensation | Pass in Core/API/client/worker and real PostgreSQL |
+| Account closure and self-export | ACR-01…ACR-03 30-day recovery, Central blocker queue, public pseudonymization, ADE-01…ADE-03 private JSON export and exact 48h payload deletion | Pass in Core/API/client/worker and real PostgreSQL |
+| Dependency severity gate | CI rejects unknown high/critical production advisories; published fixes are installed and the exact Expo-CLI `node-forge`/`braces` advisories have regression-tested, expiring local backports | Pass with two time-bounded upstream exceptions through 2026-11-16 |
 | Android native build | APK builds, installs and renders the app through Android tooling | Pass on API 36 emulator |
 | iOS native build | EAS internal build or macOS runner | External gate; EAS login and Apple credentials required |
-| Source control | local repository supports isolated branches | Pass locally: baseline commit `d8bc793` and CI workflow; remote protection remains external |
+| Source control | isolated branch, remote PR and CI | Pass on `codex/gym-admin-dashboard`; branch protection remains an external repository setting |
 
 ## Installed host toolchain
 
@@ -144,6 +162,13 @@ script demonstrates a safe repeatable operator/invitee walkthrough.
 The universal client renders an actionable pending invitation and shows the active Coach
 capability after acceptance.
 
+AC-019/RG-06/RG-07 reuse the same RoleGrant foundation without a new permission engine. The
+Admin/Central command authorizes only the verified Coach already assigned to the exact Session
+and rejects participant misuse. All Coach commands still require that exact
+assignment and active DB grant. Cancellation or terminal Result makes the grant ineffective at
+the permission query immediately; the versioned Worker command then records `EXPIRED` with the
+original authorization lineage intact.
+
 The RG-08/RG-09/RG-10 Admin workflow is executable as well. Central can appoint only an
 active verified account to the owning Venue. Primary assignment uses a dedicated Venue
 aggregate, optimistic version and advisory lock; transfer revokes only the former Primary
@@ -178,24 +203,28 @@ marker and deterministic status compensation. Explicit GENESIS/status intent, th
 FIFO projection, no-loss withdrawal and strict direct-head activation against the current
 Contender are executable. A mandatory refusal or timeout is represented by an appealable
 administrative Forfeit without inventing a Session. Final holder changes move waiting entries into
-a visible 24-hour reconfirmation without changing their FIFO keys. Production OTP/session handling,
-recovery/duplicate cases, Membership/account lifecycle and incident hardening remain.
+a visible 24-hour reconfirmation without changing their FIFO keys. Production session handling,
+recovery/duplicate cases and the fail-closed avatar provider boundary are complete; external OTP
+and private object/scan providers remain unconfigured. PlatformIncident lifecycle, exact-overlap deadline effects,
+mandatory-timeout compensation and account closure/self-export are executable. Chat retention is
+an audited daily bounded cleanup; attachment/evidence cleanup remains disabled together with its
+unconfigured object-storage capability.
 
 ## Verification result
 
-Verified on 2026-10-01:
+Verified on 2026-10-13:
 
 - frozen lockfile installation and Expo dependency compatibility pass;
 - TypeScript checks pass in all seven workspace packages;
-- 164 non-database automated tests pass across Core, DB, API, worker and testkit;
-- the current PostgreSQL gate passes all 27 integration scenarios, including MissingResultReview, Appeal, IntegrityCase compensation, direct mandatory status activation/Forfeit, holder-change reconfirmation/expiry, vacancy succession, Training conversion and Training cancellation/solo continuation;
+- 283 non-database automated tests pass across Core, DB, API, client, worker and testkit;
+- the current PostgreSQL gate passes all 59 integration scenarios, including AC-053 mandatory TITLE reminder/expiry with provisional role swap and Appeal, AC-073 Champion-to-Ordinary OPEN with frozen `NONE` stake and unchanged status holders, AC-078 append-only 24-hour Result metadata revision, AC-079 immutable Result correction boundary through TC-01 only, AC-112 symmetric DRAW Appeal eligibility plus one-winner Athlete concurrency, AC-122 irreversible decisive Appeal waiver with atomic R-04 finalization, AC-138 accepted-Challenge stale expiry safety, AC-139 concurrent duplicate-job serialization, AC-140 competing status-Result serialization, AC-143 hash-verified Competition projection rebuild under the row lock, AC-144 complete append-only critical-role audit lineage, AC-147 immutable Technical Correction approval with deterministic effective-result/status replay, AC-150 annulled provisional-tenure compensation with FIFO preservation and hash-stable replay/rebuild, AC-166 immutable Pair Cooldown configuration versions with frozen Challenge/Session/Cooldown snapshots, Membership request/approve/reject/withdraw/QR activation, timer creation, the AC-061/062/063/064/065/066 Athlete/mutual/external-reschedule/reschedule-limit/withdrawal/confirmed-cancellation/host-confirmation and AC-153 shared-Athlete confirmation races, two independent Youth grants, booked-Session Training retention, AC-002/184/185 age-boundary behavior, AC-164 mandatory push-intent/no-SMS delivery, AC-167 media-free Result boundary, AC-172 optional Challenge reminders/expiry, AC-202 LATE-to-ordinary-Result and AC-203 single/double-NO_SHOW semantics, AC-195/196 incident reconciliation, account closure/export retention and AC-214 Chat minimization;
 - event-driven pending-conversion reconciliation restores the same Training without Challenge,
   obligation, loss or Cooldown when current official eligibility is lost;
 - Fastify publishes OpenAPI 3.1 and both runtime endpoints return HTTP 200;
-- Expo produces a static Web export for `/chat`, `/`, `/_sitemap` and `/+not-found`;
+- Expo produces a static Web export for `/chat`, `/guardian-consent`, `/`, `/_sitemap` and `/+not-found`;
 - Android native build, install and runtime rendering pass;
 - Docker Engine 29.8.1 and PostgreSQL 18 are healthy after moving only the inaccessible transient host runtime-socket directory into quarantine; no project, WSL disk or Docker data volume was reset;
-- migrations `0001`–`0040`, including Training-to-Official conversion and Training solo continuation, apply successfully with checksum verification;
+- migrations `0001`–`0067` apply successfully with checksum verification; `0057` reissues only missing current-version Session window timers, `0058` adds audited policy-bound Chat cleanup, `0059` adds hashed expiring QR/invite resources, `0060` adds bounded immutable Challenge-reschedule history, `0061` adds versioned mutual-reschedule proposals, `0062` adds contact-free provider-independent critical delivery intents, `0063` adds immutable TC-01 requests, `0064` adds independent review/rejection fields, `0065` adds immutable TC-04 decisions/compensations, `0066` adds append-only Result metadata revisions, `0067` adds GroupPlan Official conversion confirmations and `YOUTH_OFFICIAL` remains disabled by default;
 - the live universal client renders the empty GENESIS state, submits a position-1 status intent and withdraws it without loss; the queue immediately returns to empty and no browser error is produced by the flow;
 - the live Worker revalidates a fresh GENESIS intent, records the exact three-day single-candidate deadline, projects its mandatory notification and makes the pending timer stale after a no-loss withdrawal; the visible queue returns to empty;
 - the live Web client reads the seeded Athlete, and an actual display-name command replays with the same event and no duplicate mutation;
@@ -211,7 +240,34 @@ Verified on 2026-10-01:
   `OFFICIAL_CHALLENGE`, creates one BOOKED Challenge and exactly two active obligations;
 - live Athlete Training withdrawal followed by remaining-Athlete and Coach acceptance preserves
   the same Session as `CONFIRMED_SOLO` and keeps the Slot booked without a loss or Challenge;
+- live recovery reissued the missing current-version timers for both an Official conversion and a
+  solo conversion; Worker moved them from `SCHEDULED` to `READY_FOR_COACH`, and the refreshed
+  Athlete/Coach projections expose `Ожидает Coach` plus the permitted Coach start action;
+- the local database recovery rehearsal creates a PostgreSQL custom-format archive, verifies its
+  SHA-256, restores only into a fresh isolated `molokh_restore_*` database, matches nine critical
+  table counts plus the migration ledger and removes the rehearsal database after success; the source database is never
+  overwritten and the operational steps are recorded in `PILOT_OPERATIONS_RUNBOOK.md`;
+- the read-only pilot monitor passes API live/ready, PostgreSQL, outbox, Worker, overdue-window,
+  Result/Appeal/status-lock and backup-freshness checks; its only current warning is the expected
+  pair of restored `READY_FOR_COACH` Sessions awaiting an explicit Coach action;
+- the isolated recovery rehearsal shadow-rebuilds all generated notification fields from canonical
+  `notification.in_app.v1` outbox events and matches 55 rows, their deterministic hash and every
+  `notification-inbox-v1` receipt without mutating user-owned `read_at`;
+- the client accessibility gate covers every TSX `Pressable`/`TextInput`, heading hierarchy and
+  control state; six compact controls now meet the 44-point target and static Web exports
+  `lang="ru"` with Molokh title/description. Real VoiceOver/TalkBack and 200% zoom remain manual
+  pre-pilot checks rather than claimed automated coverage;
+- the local Web keyboard rehearsal traverses and wraps all 14 Discovery controls without a focus
+  trap, shows native focus, activates Profile with Enter and has no console error or horizontal
+  overflow at the 640px reflow proxy. Actual browser 200% zoom and device screen readers remain
+  explicitly unverified;
+- the release rollback gate hashes every migration blob in the selected Git target against the
+  applied PostgreSQL ledger. The current migration set passes all 60 migrations, while a target
+  that omits an already-applied migration is rejected before deployment;
+- production runtime now requires and publishes the exact Git SHA. The read-only release canary
+  passes live/ready, runtime identity, security headers, configured CORS and unauthenticated-boundary
+  probes with the correct SHA and rejects a deliberate release mismatch;
 - a durable versioned timer opens `READY_FOR_COACH` at the scheduled boundary; Coach Start/first Attendance records `actual_start_at`, Coach End records `actual_end_at`, and only ended `PRESENT/LATE` attendance contributes to Training count;
-- the generated acceptance matrix maps 86 scenarios (`80/195 P0`) and distinguishes traceability from complete coverage;
-- Expo dependency compatibility passes at 57.0.26/57.0.24, and the production dependency gate reports no high or critical advisories;
-- the Core specification validator reports 300 transitions, 213 acceptance scenarios, zero open questions and zero errors.
+- the generated acceptance matrix maps 178 scenarios (`172/196 P0`) and distinguishes traceability from complete coverage;
+- Expo dependency compatibility passes at 57.0.26/57.0.24; Fastify and all published production-runtime transitive fixes, including `shell-quote@1.11.0`, are updated. The still-unreleased `node-forge` CVE-2026-85393 and `braces` CVE-2026-93687 fixes remain locally backported with passing regression probes; the production high/critical audit gate permits only exact Expo dependency paths, checks for upstream releases on every run and expires both reviewed exceptions automatically on 2026-11-16. A newly published Zod advisory has no compatible Zod 3 release and reaches the workspace only through Expo's bundled `@expo/cli`; an exact advisory/version/path exclusion expires on 2026-11-24 and any non-CLI path remains blocking. The whole-workspace raw audit now reports 44 advisories (9 low / 20 moderate / 15 high), predominantly in `eas-cli`, Expo CLI and `vitest`/`vite`; AC-154/165/213 do not change the dependency graph;
+- the Core specification validator reports 309 transitions, 310 registered events, 214 acceptance scenarios, zero open questions and zero errors.

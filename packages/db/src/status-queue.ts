@@ -17,12 +17,15 @@ import {
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
   normalizeSocialPair,
+  optionalChallengeReminderDeadlines,
+  optionalChallengeResponseDeadline,
   statusQueueReconfirmationDeadline,
   type ChallengeState,
   type CommandEnvelope,
   type CompetitionAvailability,
   type CompetitionPhase,
   type CompetitionStatus,
+  type DirectStatusChallengeMode,
   type QueueEntryKind,
   type QueueEntryState,
   type QueueTargetStatus,
@@ -33,6 +36,11 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
+import {
+  assertYouthChallengeConsentReady,
+  assertYouthOfficialAvailableForUser,
+} from './youth-consent.js';
 
 export interface SubmitStatusQueueEntryPayload {
   readonly competitionId: string;
@@ -96,6 +104,8 @@ export interface StatusQueueEffectIds {
   readonly acknowledgmentId: string;
   readonly pairedQueueEventId: string;
   readonly timerOutboxMessageId: string;
+  readonly mandatoryReminderTimerOutboxMessageId?: string;
+  readonly optionalReminderTimerOutboxMessageIds?: readonly [string, string];
   readonly staleQueueEventId: string;
   readonly staleQueueOutboxMessageId: string;
   readonly notificationOutboxMessageId: string;
@@ -167,6 +177,8 @@ export interface ActiveStatusChallengeProjection {
   readonly challengeId: string;
   readonly serviceChatId: string;
   readonly state: ChallengeState;
+  readonly responsePolicy: 'OPTIONAL' | 'MANDATORY' | 'MUTUAL_GENESIS';
+  readonly stake: 'CONTENDER' | 'TITLE' | 'GENESIS_CHAMPION' | 'GENESIS_CONTENDER';
   readonly initiatorDisplayName: string;
   readonly recipientDisplayName: string;
   readonly viewerIsParticipant: boolean;
@@ -249,6 +261,7 @@ interface CompetitionViewerRow {
   readonly competition_enabled: boolean | null;
   readonly has_live_entry: boolean;
   readonly pair_cooldown_active: boolean;
+  readonly pair_challenge_exists: boolean;
 }
 
 interface QueueEntryRow {
@@ -260,9 +273,11 @@ interface QueueEntryRow {
   readonly kind: QueueEntryKind;
   readonly state: QueueEntryState;
   readonly bound_holder_user_id: string | null;
+  readonly direct_challenge_mode: DirectStatusChallengeMode | null;
   readonly submitted_at: Date;
   readonly reconfirmation_deadline_at: Date | null;
   readonly single_candidate_since_at: Date | null;
+  readonly single_candidate_deadline_at: Date | null;
   readonly position: string | null;
   readonly version: string;
 }
@@ -273,6 +288,7 @@ interface GenesisCandidateRow {
   readonly target_status: QueueTargetStatus;
   readonly submitted_at: Date;
   readonly single_candidate_since_at: Date | null;
+  readonly single_candidate_deadline_at: Date | null;
   readonly version: string;
 }
 
@@ -295,6 +311,7 @@ interface ActivationCompetitionRow {
   readonly availability: CompetitionAvailability;
   readonly integrity_hold_active: boolean;
   readonly community_active: boolean;
+  readonly champion_user_id: string | null;
   readonly contender_user_id: string | null;
   readonly status_slot_free: boolean;
 }
@@ -348,6 +365,8 @@ interface GenesisEligibilityRow {
 interface ActiveChallengeRow {
   readonly challenge_id: string;
   readonly state: ChallengeState;
+  readonly response_policy: 'OPTIONAL' | 'MANDATORY' | 'MUTUAL_GENESIS';
+  readonly stake: 'CONTENDER' | 'TITLE' | 'GENESIS_CHAMPION' | 'GENESIS_CONTENDER';
   readonly initiator_display_name: string;
   readonly recipient_display_name: string;
 }
@@ -374,9 +393,10 @@ function entryProjection(row: QueueEntryRow, viewerUserId: string): StatusQueueE
     boundHolderUserId: row.bound_holder_user_id,
     submittedAt: row.submitted_at.toISOString(),
     reconfirmationDeadlineAt: row.reconfirmation_deadline_at?.toISOString() ?? null,
-    singleCandidateDeadlineAt: row.single_candidate_since_at
-      ? genesisSingleCandidateDeadline(row.single_candidate_since_at).toISOString()
-      : null,
+    singleCandidateDeadlineAt: (row.single_candidate_deadline_at
+      ?? (row.single_candidate_since_at
+        ? genesisSingleCandidateDeadline(row.single_candidate_since_at)
+        : null))?.toISOString() ?? null,
     position: row.position === null ? null : Number(row.position),
     isViewerEntry: row.initiator_user_id === viewerUserId,
     version: Number(row.version),
@@ -395,7 +415,12 @@ async function competitionViewerContext(
       competitive.phase,
       competitive.availability,
       competitive.status_version::text,
-      competitive.integrity_hold_case_id is not null as integrity_hold_active,
+      (competitive.integrity_hold_case_id is not null or exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )) as integrity_hold_active,
       competitive.champion_user_id,
       champion.display_name as champion_display_name,
       competitive.contender_user_id,
@@ -431,6 +456,21 @@ async function competitionViewerContext(
             or (cooldown.pair_high_id = viewer.user_id and cooldown.pair_low_id = competitive.contender_user_id)
           )
       ) as pair_cooldown_active
+      , exists (
+        select 1 from competition.challenges as challenge
+        where challenge.competition_id = competitive.competition_id
+          and competitive.contender_user_id is not null
+          and (
+            (challenge.pair_low_id = viewer.user_id
+              and challenge.pair_high_id = competitive.contender_user_id)
+            or (challenge.pair_high_id = viewer.user_id
+              and challenge.pair_low_id = competitive.contender_user_id)
+          )
+          and challenge.state in (
+            'AWAITING_RESPONSE', 'ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED',
+            'IN_SESSION', 'RESULT_PENDING', 'RESULT_RECORDED', 'UNDER_APPEAL'
+          )
+      ) as pair_challenge_exists
     from competition.competitions as competitive
     join community.communities as community on community.community_id = competitive.community_id
     cross join identity.users as viewer
@@ -461,6 +501,7 @@ function eligibility(row: CompetitionViewerRow, userId: string) {
     contenderUserId: row.contender_user_id,
     hasLiveEntry: row.has_live_entry,
     pairCooldownActive: row.pair_cooldown_active,
+    pairChallengeExists: row.pair_challenge_exists,
   } as const;
 }
 
@@ -501,9 +542,11 @@ async function queueEntries(
       entry.kind,
       entry.state,
       entry.bound_holder_user_id,
+      entry.direct_challenge_mode,
       entry.submitted_at,
       entry.reconfirmation_deadline_at,
       entry.single_candidate_since_at,
+      entry.single_candidate_deadline_at,
       row_number() over (order by entry.submitted_at, entry.queue_entry_id)::text as position,
       entry.version::text
     from competition.challenge_queue_entries as entry
@@ -527,7 +570,9 @@ async function queueEntry(
         select entry.queue_entry_id, entry.competition_id, entry.initiator_user_id,
           athlete.display_name as initiator_display_name, entry.target_status, entry.kind,
           entry.state, entry.bound_holder_user_id, entry.submitted_at,
+          entry.direct_challenge_mode,
           entry.reconfirmation_deadline_at, entry.single_candidate_since_at,
+          entry.single_candidate_deadline_at,
           null::text as position, entry.version::text
         from competition.challenge_queue_entries as entry
         join identity.users as athlete on athlete.user_id = entry.initiator_user_id
@@ -538,7 +583,9 @@ async function queueEntry(
         select entry.queue_entry_id, entry.competition_id, entry.initiator_user_id,
           athlete.display_name as initiator_display_name, entry.target_status, entry.kind,
           entry.state, entry.bound_holder_user_id, entry.submitted_at,
+          entry.direct_challenge_mode,
           entry.reconfirmation_deadline_at, entry.single_candidate_since_at,
+          entry.single_candidate_deadline_at,
           case when entry.state in (
             'WAITING', 'PAIRED_PENDING_ACCEPTANCE', 'RECONFIRMATION_REQUIRED', 'ACTIVATED'
           ) then 1 + (
@@ -569,6 +616,7 @@ async function activeStatusChallenge(
   }>`
     select challenge.challenge_id, challenge.service_chat_id,
       challenge.initiator_user_id, challenge.recipient_user_id, challenge.state,
+      challenge.response_policy, challenge.stake,
       initiator.display_name as initiator_display_name,
       recipient.display_name as recipient_display_name
     from competition.challenges as challenge
@@ -588,6 +636,8 @@ async function activeStatusChallenge(
     challengeId: row.challenge_id,
     serviceChatId: row.service_chat_id,
     state: row.state,
+    responsePolicy: row.response_policy,
+    stake: row.stake,
     initiatorDisplayName: row.initiator_display_name,
     recipientDisplayName: row.recipient_display_name,
     viewerIsParticipant: [row.initiator_user_id, row.recipient_user_id].includes(viewerUserId),
@@ -620,6 +670,12 @@ async function viewerGenesisAction(
       (
         competitive.availability = 'ACTIVE'
         and competitive.integrity_hold_case_id is null
+        and not exists (
+          select 1 from competition.process_holds as process_hold
+          where process_hold.aggregate_type = 'COMPETITION'
+            and process_hold.aggregate_id = competitive.competition_id
+            and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+        )
         and community.state = 'ACTIVE'
         and (
           (challenge.stake = 'GENESIS_CHAMPION' and competitive.phase = 'FOUNDING_CHALLENGE')
@@ -750,7 +806,12 @@ async function vacancyCompetition(
   const result = lock
     ? await sql<VacancyCompetitionRow>`
         select competitive.competition_id, competitive.phase, competitive.availability,
-          competitive.integrity_hold_case_id is not null as integrity_hold_active,
+          (competitive.integrity_hold_case_id is not null or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competitive.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )) as integrity_hold_active,
           community.state = 'ACTIVE' as community_active,
           competitive.status_lock_result_id is null and not exists (
             select 1 from competition.challenges as challenge
@@ -771,7 +832,12 @@ async function vacancyCompetition(
       `.execute(database)
     : await sql<VacancyCompetitionRow>`
         select competitive.competition_id, competitive.phase, competitive.availability,
-          competitive.integrity_hold_case_id is not null as integrity_hold_active,
+          (competitive.integrity_hold_case_id is not null or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competitive.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )) as integrity_hold_active,
           community.state = 'ACTIVE' as community_active,
           competitive.status_lock_result_id is null and not exists (
             select 1 from competition.challenges as challenge
@@ -801,7 +867,7 @@ async function vacancyCandidates(
   const result = lock
     ? await sql<GenesisCandidateRow>`
         select queue_entry_id, initiator_user_id, target_status, submitted_at,
-          single_candidate_since_at, version::text
+          single_candidate_since_at, single_candidate_deadline_at, version::text
         from competition.challenge_queue_entries
         where competition_id = ${competition.competition_id}::uuid
           and target_status = ${targetStatus}
@@ -812,7 +878,7 @@ async function vacancyCandidates(
       `.execute(database)
     : await sql<GenesisCandidateRow>`
         select queue_entry_id, initiator_user_id, target_status, submitted_at,
-          single_candidate_since_at, version::text
+          single_candidate_since_at, single_candidate_deadline_at, version::text
         from competition.challenge_queue_entries
         where competition_id = ${competition.competition_id}::uuid
           and target_status = ${targetStatus}
@@ -925,6 +991,12 @@ export async function readStatusQueueActivationCandidate(
       and competitive.phase = 'RUNNING'
       and competitive.availability = 'ACTIVE'
       and competitive.integrity_hold_case_id is null
+      and not exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )
       and competitive.status_lock_result_id is null
       and competitive.contender_user_id is not null
       and community.state = 'ACTIVE'
@@ -976,10 +1048,15 @@ export async function readStatusQueueReconciliationCandidates(
     where competitive.competition_id = ${competitionId}::uuid
       and competitive.phase = 'RUNNING'
       and competitive.contender_user_id is not null
-      and entry.target_status = 'CONTENDER'
+      and competitive.status_lock_result_id is null
       and entry.kind = 'DIRECT_STATUS'
       and entry.state = 'WAITING'
-      and entry.bound_holder_user_id is distinct from competitive.contender_user_id
+      and (
+        (entry.target_status = 'CONTENDER'
+          and entry.bound_holder_user_id is distinct from competitive.contender_user_id)
+        or (entry.target_status = 'CHAMPION'
+          and entry.initiator_user_id is distinct from competitive.contender_user_id)
+      )
     order by entry.submitted_at, entry.queue_entry_id
   `.execute(database);
   return result.rows.map((row) => ({
@@ -994,6 +1071,7 @@ async function directCandidateInvalidationReason(
   competitionId: string,
   userId: string,
   currentContenderUserId: string,
+  directChallengeMode: DirectStatusChallengeMode,
 ): Promise<StatusQueueConflictCode | null> {
   const viewer = await competitionViewerContext(transaction, competitionId, userId);
   if (!viewer) return 'MEMBERSHIP_NOT_ACTIVE';
@@ -1004,6 +1082,9 @@ async function directCandidateInvalidationReason(
     });
     if (intent.kind !== 'DIRECT_STATUS') return 'COMPETITION_PHASE_UNAVAILABLE';
     if (intent.boundHolderUserId !== currentContenderUserId) return 'BOUND_HOLDER_CHANGED';
+    if (intent.directChallengeMode !== directChallengeMode) {
+      return 'COMPETITION_PHASE_UNAVAILABLE';
+    }
   } catch (error) {
     if (!(error instanceof StatusQueueConflictError)) throw error;
     return error.code;
@@ -1036,32 +1117,43 @@ export async function requestStatusQueueReconfirmation(
         readonly competition_id: string;
         readonly phase: CompetitionPhase;
         readonly contender_user_id: string | null;
+        readonly status_lock_result_id: string | null;
       }>`
-        select competition_id, phase, contender_user_id
+        select competition_id, phase, contender_user_id, status_lock_result_id
         from competition.competitions
         where competition_id = ${command.payload.competitionId}::uuid
         for update
       `.execute(transaction);
       const competition = competitionResult.rows[0];
-      if (!competition || competition.phase !== 'RUNNING' || competition.contender_user_id === null) {
+      if (
+        !competition
+        || competition.phase !== 'RUNNING'
+        || competition.contender_user_id === null
+        || competition.status_lock_result_id !== null
+      ) {
         throw new StatusQueueConflictError('COMPETITION_PHASE_UNAVAILABLE');
       }
       const existing = await queueEntry(transaction, command.payload.queueEntryId, true);
       if (!existing || existing.competition_id !== competition.competition_id) {
         throw new StatusQueueConflictError('QUEUE_ENTRY_NOT_FOUND');
       }
-      assertStatusQueueReconfirmationCanBeRequested({
+      const reconciliationAction = assertStatusQueueReconfirmationCanBeRequested({
         state: existing.state,
         kind: existing.kind,
+        targetStatus: existing.target_status,
+        initiatorUserId: existing.initiator_user_id,
         boundHolderUserId: existing.bound_holder_user_id,
         currentContenderUserId: competition.contender_user_id,
       });
-      const invalidationReason = await directCandidateInvalidationReason(
-        transaction,
-        competition.competition_id,
-        existing.initiator_user_id,
-        competition.contender_user_id,
-      );
+      const invalidationReason = reconciliationAction === 'INVALIDATE_FORMER_CONTENDER_TITLE_INTENT'
+        ? 'FORMER_CONTENDER_TITLE_INTENT' as const
+        : await directCandidateInvalidationReason(
+            transaction,
+            competition.competition_id,
+            existing.initiator_user_id,
+            competition.contender_user_id,
+            existing.direct_challenge_mode ?? 'MANDATORY_CONTENDER',
+          );
       if (invalidationReason !== null) {
         const reason = invalidationReason;
         await sql`
@@ -1258,6 +1350,7 @@ export async function reconfirmStatusQueueEntry(
         existing.competition_id,
         existing.initiator_user_id,
         currentContenderUserId!,
+        existing.direct_challenge_mode ?? 'MANDATORY_CONTENDER',
       );
       if (invalidationReason !== null) throw new StatusQueueConflictError(invalidationReason);
       await sql`
@@ -1338,6 +1431,11 @@ export async function expireStatusQueueReconfirmation(
     mutate: async (transaction, context) => {
       const existing = await queueEntry(transaction, command.payload.queueEntryId, true);
       if (!existing) throw new StatusQueueConflictError('QUEUE_ENTRY_NOT_FOUND');
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
       assertStatusQueueReconfirmationCanExpire({
         state: existing.state,
         reconfirmationDeadlineAt: existing.reconfirmation_deadline_at,
@@ -1431,8 +1529,14 @@ export async function activateStatusQueueHead(
     mutate: async (transaction, context) => {
       const competitionResult = await sql<ActivationCompetitionRow>`
         select competitive.competition_id, competitive.phase, competitive.availability,
-          competitive.integrity_hold_case_id is not null as integrity_hold_active,
+          (competitive.integrity_hold_case_id is not null or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competitive.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )) as integrity_hold_active,
           community.state = 'ACTIVE' as community_active,
+          competitive.champion_user_id,
           competitive.contender_user_id,
           (
             competitive.status_lock_result_id is null
@@ -1504,6 +1608,7 @@ export async function activateStatusQueueHead(
         competition.competition_id,
         existing.initiator_user_id,
         contenderUserId,
+        existing.direct_challenge_mode ?? 'MANDATORY_CONTENDER',
       );
       if (invalidationReason && invalidationReason !== 'BOUND_HOLDER_CHANGED') {
         await sql`
@@ -1609,8 +1714,18 @@ export async function activateStatusQueueHead(
         throw new StatusQueueConflictError('RULESET_ACK_REQUIRED');
       }
       const pair = normalizeSocialPair(existing.initiator_user_id, contenderUserId);
-      const responseDeadline = mandatoryChallengeResponseDeadline(context.occurredAt);
-      const reminderDeadlines = mandatoryChallengeReminderDeadlines(context.occurredAt);
+      const optionalTitle = existing.direct_challenge_mode === 'OPTIONAL_TITLE';
+      if (optionalTitle && competition.champion_user_id !== existing.initiator_user_id) {
+        throw new StatusQueueConflictError('COMPETITION_PHASE_UNAVAILABLE');
+      }
+      const responsePolicy = optionalTitle ? 'OPTIONAL' as const : 'MANDATORY' as const;
+      const stake = optionalTitle ? 'TITLE' as const : 'CONTENDER' as const;
+      const responseDeadline = optionalTitle
+        ? optionalChallengeResponseDeadline(context.occurredAt)
+        : mandatoryChallengeResponseDeadline(context.occurredAt);
+      const reminderDeadlines = optionalTitle
+        ? optionalChallengeReminderDeadlines(context.occurredAt)
+        : mandatoryChallengeReminderDeadlines(context.occurredAt);
 
       await sql`
         insert into social.chats (chat_id, scope, state, version, created_at, updated_at)
@@ -1646,7 +1761,7 @@ export async function activateStatusQueueHead(
           ${ids.serviceChatId}::uuid, ${ids.serviceChatId}::uuid,
           ${existing.initiator_user_id}::uuid, ${contenderUserId}::uuid,
           ${pair.lowUserId}::uuid, ${pair.highUserId}::uuid,
-          'MANDATORY', 'CONTENDER', 'AWAITING_RESPONSE', ${ids.rulesetSnapshotId}::uuid,
+          ${responsePolicy}, ${stake}, 'AWAITING_RESPONSE', ${ids.rulesetSnapshotId}::uuid,
           ${responseDeadline.toISOString()}::timestamptz, 1,
           ${context.occurredAt.toISOString()}::timestamptz,
           ${context.occurredAt.toISOString()}::timestamptz
@@ -1702,8 +1817,8 @@ export async function activateStatusQueueHead(
               challengeId: ids.challengeId,
               competitionId: competition.competition_id,
               participants: [existing.initiator_user_id, contenderUserId],
-              responsePolicy: 'MANDATORY',
-              stake: 'CONTENDER',
+              responsePolicy,
+              stake,
               responseDeadlineAt: responseDeadline.toISOString(),
             },
             metadata: { policyVersion: CHALLENGE_POLICY_VERSION, rulesetSnapshotId: ids.rulesetSnapshotId },
@@ -1744,6 +1859,47 @@ export async function activateStatusQueueHead(
               challengeId: ids.challengeId,
             },
           },
+          ...(optionalTitle ? [
+            {
+              messageId: ids.timerOutboxMessageId,
+              topic: 'competition.challenge.created.v1',
+              payload: {
+                challengeId: ids.challengeId,
+                timer: {
+                  commandType: 'EXPIRE_OPTIONAL_CHALLENGE',
+                  aggregateType: 'Challenge',
+                  aggregateId: ids.challengeId,
+                  expectedState: 'AWAITING_RESPONSE',
+                  expectedVersion: 1,
+                  deadlineAt: responseDeadline.toISOString(),
+                  policyVersion: CHALLENGE_POLICY_VERSION,
+                  idempotencyKey: `challenge:${ids.challengeId}:expire-optional:v1`,
+                },
+              },
+            },
+            ...reminderDeadlines.map((deadlineAt, index) => ({
+              messageId: ids.optionalReminderTimerOutboxMessageIds?.[index]
+                ?? (index === 0 ? ids.staleQueueEventId : ids.staleQueueOutboxMessageId),
+              topic: index === 0
+                ? 'competition.challenge.optional-response-reminder-12h-timer.v1'
+                : 'competition.challenge.optional-response-reminder-24h-timer.v1',
+              payload: {
+                challengeId: ids.challengeId,
+                timer: {
+                  commandType: index === 0
+                    ? 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H'
+                    : 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H',
+                  aggregateType: 'Challenge',
+                  aggregateId: ids.challengeId,
+                  expectedState: 'AWAITING_RESPONSE',
+                  expectedVersion: 1,
+                  deadlineAt: deadlineAt.toISOString(),
+                  policyVersion: CHALLENGE_POLICY_VERSION,
+                  idempotencyKey: `challenge:${ids.challengeId}:optional-response-reminder-${index === 0 ? '12h' : '24h'}:v1`,
+                },
+              },
+            })),
+          ] : [
           {
             messageId: ids.timerOutboxMessageId,
             topic: 'competition.challenge.mandatory-response-timer.v1',
@@ -1763,6 +1919,24 @@ export async function activateStatusQueueHead(
             },
           },
           {
+            messageId: ids.mandatoryReminderTimerOutboxMessageId ?? ids.staleQueueOutboxMessageId,
+            topic: 'competition.challenge.mandatory-response-reminder-48h-timer.v1',
+            payload: {
+              challengeId: ids.challengeId,
+              timer: {
+                commandType: 'REMIND_MANDATORY_CHALLENGE_RESPONSE_48H',
+                aggregateType: 'Challenge',
+                aggregateId: ids.challengeId,
+                expectedState: 'AWAITING_RESPONSE',
+                expectedVersion: 1,
+                deadlineAt: reminderDeadlines[0].toISOString(),
+                policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${ids.challengeId}:mandatory-response-reminder-48h:v1`,
+              },
+            },
+          },
+          ]),
+          {
             messageId: ids.notificationOutboxMessageId,
             topic: 'notification.in_app.v1',
             payload: {
@@ -1771,9 +1945,17 @@ export async function activateStatusQueueHead(
                   notificationId: ids.notificationIds[0],
                   recipientUserId: contenderUserId,
                   category: 'MANDATORY',
-                  renderKey: 'challenge.mandatory-received',
+                  renderKey: optionalTitle
+                    ? 'challenge.optional-title-received'
+                    : 'challenge.mandatory-received',
                   actionTarget: { type: 'CHAT', chatId: ids.serviceChatId },
-                  payload: { challengeId: ids.challengeId, challengerUserId: existing.initiator_user_id },
+                  payload: {
+                    challengeId: ids.challengeId,
+                    challengerUserId: existing.initiator_user_id,
+                    responsePolicy,
+                    stake,
+                    declineHasNoForfeit: optionalTitle,
+                  },
                   deadlineAt: responseDeadline.toISOString(),
                 },
                 {
@@ -1782,7 +1964,12 @@ export async function activateStatusQueueHead(
                   category: 'MANDATORY',
                   renderKey: 'status.queue-entry-activated',
                   actionTarget: { type: 'CHAT', chatId: ids.serviceChatId },
-                  payload: { challengeId: ids.challengeId, contenderUserId },
+                  payload: {
+                    challengeId: ids.challengeId,
+                    contenderUserId,
+                    responsePolicy,
+                    stake,
+                  },
                   deadlineAt: responseDeadline.toISOString(),
                 },
               ],
@@ -1832,6 +2019,7 @@ export async function reconcileVacancyQueue(
         await sql`
           update competition.challenge_queue_entries
           set state = 'INVALIDATED', single_candidate_since_at = null,
+            single_candidate_deadline_at = null,
             decided_at = ${context.occurredAt.toISOString()}::timestamptz,
             terminal_reason = ${reason}, version = ${context.nextVersion},
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -1900,6 +2088,7 @@ export async function reconcileVacancyQueue(
         await sql`
           update competition.challenge_queue_entries
           set single_candidate_since_at = ${context.occurredAt.toISOString()}::timestamptz,
+            single_candidate_deadline_at = ${deadline.toISOString()}::timestamptz,
             version = ${context.nextVersion},
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
           where queue_entry_id = ${command.aggregateId}::uuid
@@ -2055,7 +2244,7 @@ export async function reconcileVacancyQueue(
       await sql`
         update competition.challenge_queue_entries
         set state = 'PAIRED_PENDING_ACCEPTANCE', linked_challenge_id = ${ids.challengeId}::uuid,
-          single_candidate_since_at = null,
+          single_candidate_since_at = null, single_candidate_deadline_at = null,
           version = case when queue_entry_id = ${first.queue_entry_id}::uuid
             then ${context.nextVersion} else version + 1 end,
           updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -2219,18 +2408,19 @@ export async function submitStatusQueueEntry(
         command.actor.id!,
       );
       if (!viewer) throw new StatusQueueConflictError('MEMBERSHIP_NOT_ACTIVE');
+      await assertYouthOfficialAvailableForUser(transaction, command.actor.id!);
       const intent: StatusQueueIntent = assertStatusQueueEntryCanBeSubmitted(
         eligibility(viewer, command.actor.id!),
       );
       await sql`
         insert into competition.challenge_queue_entries (
           queue_entry_id, competition_id, initiator_user_id, target_status,
-          kind, state, bound_holder_user_id, source_type, source_id,
+          kind, state, bound_holder_user_id, direct_challenge_mode, source_type, source_id,
           submitted_at, version, created_at, updated_at
         ) values (
           ${command.aggregateId}::uuid, ${command.payload.competitionId}::uuid,
           ${command.actor.id}::uuid, ${intent.targetStatus}, ${intent.kind}, 'WAITING',
-          ${intent.boundHolderUserId}::uuid, 'DIRECT', null,
+          ${intent.boundHolderUserId}::uuid, ${intent.directChallengeMode}, 'DIRECT', null,
           clock_timestamp(), ${context.nextVersion}, clock_timestamp(), clock_timestamp()
         )
       `.execute(transaction);
@@ -2238,7 +2428,7 @@ export async function submitStatusQueueEntry(
       const candidatesResult = intent.kind === 'GENESIS_CANDIDATE'
         ? await sql<GenesisCandidateRow>`
             select queue_entry_id, initiator_user_id, target_status, submitted_at,
-              single_candidate_since_at, version::text
+              single_candidate_since_at, single_candidate_deadline_at, version::text
             from competition.challenge_queue_entries
             where competition_id = ${command.payload.competitionId}::uuid
               and target_status = ${intent.targetStatus}
@@ -2288,6 +2478,7 @@ export async function submitStatusQueueEntry(
             update competition.challenge_queue_entries
             set state = 'INVALIDATED', decided_at = ${context.occurredAt.toISOString()}::timestamptz,
               terminal_reason = ${invalidationReason}, single_candidate_since_at = null,
+              single_candidate_deadline_at = null,
               version = version + 1,
               updated_at = ${context.occurredAt.toISOString()}::timestamptz
             where queue_entry_id = ${previousCandidate.queue_entry_id}::uuid
@@ -2367,7 +2558,7 @@ export async function submitStatusQueueEntry(
         await sql`
           update competition.challenge_queue_entries
           set state = 'PAIRED_PENDING_ACCEPTANCE', linked_challenge_id = ${ids.challengeId}::uuid,
-            single_candidate_since_at = null,
+            single_candidate_since_at = null, single_candidate_deadline_at = null,
             version = case when queue_entry_id = ${command.aggregateId}::uuid
               then version else version + 1 end,
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -2660,7 +2851,12 @@ async function assertGenesisParticipantsEligible(
     select
       competitive.availability as competition_availability,
       competitive.phase as competition_phase,
-      competitive.integrity_hold_case_id is not null as integrity_hold_active,
+      (competitive.integrity_hold_case_id is not null or exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )) as integrity_hold_active,
       community.state = 'ACTIVE' as community_active,
       (select count(*)::text from identity.users as athlete
         where athlete.user_id in (${row.initiator_user_id}::uuid, ${row.recipient_user_id}::uuid)
@@ -2761,6 +2957,12 @@ export async function respondToGenesisChallenge(
       }
       if (decision === 'ACCEPT') {
         await assertGenesisParticipantsEligible(transaction, row);
+        await assertYouthChallengeConsentReady(
+          transaction,
+          row.challenge_id,
+          [row.initiator_user_id, row.recipient_user_id],
+          context.occurredAt,
+        );
         const obligationLockOrder = [row.initiator_user_id, row.recipient_user_id].sort();
         for (const userId of obligationLockOrder) {
           await sql`
@@ -2798,6 +3000,7 @@ export async function respondToGenesisChallenge(
         await sql`
           update competition.challenge_queue_entries
           set state = 'WITHDRAWN', single_candidate_since_at = null,
+            single_candidate_deadline_at = null,
             decided_at = ${context.occurredAt.toISOString()}::timestamptz,
             terminal_reason = 'GENESIS_DECLINED', version = version + 1,
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -2806,7 +3009,8 @@ export async function respondToGenesisChallenge(
         await sql`
           update competition.challenge_queue_entries
           set state = 'WAITING', linked_challenge_id = null,
-            single_candidate_since_at = null, version = version + 1,
+            single_candidate_since_at = null, single_candidate_deadline_at = null,
+            version = version + 1,
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
           where queue_entry_id = ${survivorQueue.queue_entry_id}::uuid
         `.execute(transaction);
@@ -2831,6 +3035,12 @@ export async function respondToGenesisChallenge(
         if (nextResponses.filter((response) => response.decision === 'ACCEPT').length === 2) {
           afterState = 'ACCEPTED_UNSCHEDULED';
           const schedulingDeadline = acceptedChallengeSchedulingDeadline(context.occurredAt);
+          await sql`
+            update governance.youth_challenge_consents
+            set expires_at = ${schedulingDeadline.toISOString()}::timestamptz,
+              updated_at = ${context.occurredAt.toISOString()}::timestamptz
+            where challenge_id = ${row.challenge_id}::uuid and state = 'GRANTED'
+          `.execute(transaction);
           await sql`
             update competition.challenges
             set state = 'ACCEPTED_UNSCHEDULED',
@@ -3003,6 +3213,11 @@ export async function expireGenesisChallenge(
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const row = await genesisChallengeRow(transaction, command.aggregateId, true);
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
       assertGenesisChallengeCanExpire({
         state: row.state,
         responseDeadlineAt: row.response_deadline_at,
@@ -3032,7 +3247,8 @@ export async function expireGenesisChallenge(
           await sql`
             update competition.challenge_queue_entries
             set state = 'WAITING', linked_challenge_id = null,
-              single_candidate_since_at = null, version = version + 1,
+              single_candidate_since_at = null, single_candidate_deadline_at = null,
+              version = version + 1,
               updated_at = ${context.occurredAt.toISOString()}::timestamptz
             where queue_entry_id = ${entry.queue_entry_id}::uuid
           `.execute(transaction);
@@ -3040,6 +3256,7 @@ export async function expireGenesisChallenge(
           await sql`
             update competition.challenge_queue_entries
             set state = 'EXPIRED', single_candidate_since_at = null,
+              single_candidate_deadline_at = null,
               decided_at = ${context.occurredAt.toISOString()}::timestamptz,
               terminal_reason = 'GENESIS_RESPONSE_TIMEOUT', version = version + 1,
               updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -3161,6 +3378,11 @@ export async function promoteSingleGenesisCandidate(
       if (!existing) {
         throw new StatusQueueConflictError('QUEUE_ENTRY_NOT_FOUND');
       }
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
       const competition = await vacancyCompetition(
         transaction,
         existing.competition_id,
@@ -3182,6 +3404,7 @@ export async function promoteSingleGenesisCandidate(
         isOnlyCandidate: candidates.length === 1
           && candidates[0]?.queue_entry_id === existing.queue_entry_id,
         singleCandidateSinceAt: existing.single_candidate_since_at,
+        singleCandidateDeadlineAt: existing.single_candidate_deadline_at,
         occurredAt: context.occurredAt,
       });
       const invalidationReason = await genesisCandidateInvalidationReason(
@@ -3193,6 +3416,7 @@ export async function promoteSingleGenesisCandidate(
         await sql`
           update competition.challenge_queue_entries
           set state = 'INVALIDATED', single_candidate_since_at = null,
+            single_candidate_deadline_at = null,
             decided_at = ${context.occurredAt.toISOString()}::timestamptz,
             terminal_reason = ${invalidationReason}, version = ${context.nextVersion},
             updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -3277,6 +3501,7 @@ export async function promoteSingleGenesisCandidate(
       await sql`
         update competition.challenge_queue_entries
         set state = 'CONSUMED', single_candidate_since_at = null,
+          single_candidate_deadline_at = null,
           decided_at = ${context.occurredAt.toISOString()}::timestamptz,
           terminal_reason = 'SINGLE_CANDIDATE_PROMOTED', version = ${context.nextVersion},
           updated_at = ${context.occurredAt.toISOString()}::timestamptz
@@ -3416,7 +3641,7 @@ export async function withdrawStatusQueueEntry(
       await sql`
         update competition.challenge_queue_entries
         set state = 'WITHDRAWN', reconfirmation_deadline_at = null,
-          single_candidate_since_at = null,
+          single_candidate_since_at = null, single_candidate_deadline_at = null,
           decided_at = ${context.occurredAt.toISOString()}::timestamptz,
           terminal_reason = 'ATHLETE_WITHDREW', version = ${context.nextVersion},
           updated_at = ${context.occurredAt.toISOString()}::timestamptz

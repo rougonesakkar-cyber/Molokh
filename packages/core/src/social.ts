@@ -1,6 +1,7 @@
 export const SOCIAL_POLICY_VERSION = 'social-mvp-v1' as const;
 export const LIKE_TTL_DAYS = 30;
 export const DISCOVERY_SUPPRESSION_DAYS = 15;
+export const MATCH_INACTIVITY_DAYS = 30;
 
 export type LikeState =
   | 'ACTIVE'
@@ -35,6 +36,7 @@ export type SocialActionDenialCode =
   | 'DISCOVERY_CANDIDATE_UNAVAILABLE'
   | 'MATCH_NOT_FOUND'
   | 'MATCH_NOT_ACTIVE'
+  | 'MATCH_NOT_DUE'
   | 'MATCH_PARTICIPANT_REQUIRED'
   | 'BLOCK_ALREADY_ACTIVE'
   | 'BLOCK_NOT_ACTIVE'
@@ -91,6 +93,22 @@ export function likeExpiresAt(createdAt: Date): Date {
 
 export function discoverySuppressionEndsAt(startedAt: Date): Date {
   return plusDays(startedAt, DISCOVERY_SUPPRESSION_DAYS);
+}
+
+export function matchInactivityDeadline(lastActivityAt: Date): Date {
+  return plusDays(lastActivityAt, MATCH_INACTIVITY_DAYS);
+}
+
+export function assertMatchCanBeArchived(
+  state: MatchState,
+  lastActivityAt: Date,
+  occurredAt: Date,
+): void {
+  if (state !== 'ACTIVE') throw new SocialActionDeniedError('MATCH_NOT_ACTIVE');
+  assertValidDate(occurredAt, 'occurredAt');
+  if (occurredAt < matchInactivityDeadline(lastActivityAt)) {
+    throw new SocialActionDeniedError('MATCH_NOT_DUE');
+  }
 }
 
 export function newLikeState(reverseLikeActive: boolean): Extract<LikeState, 'ACTIVE' | 'MATCHED'> {

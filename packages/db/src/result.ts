@@ -4,16 +4,23 @@ import {
   ResultConflictError,
   ResultPermissionDeniedError,
   ResultValidationError,
+  acceptedChallengeSchedulingDeadline,
   appealResponseDeadline,
   appealReviewSlaDeadline,
   assertAppealActionCanBeTaken,
+  assertAthleteStoppageResult,
+  assertExternalNoContestResult,
+  assertExpectedVersion,
   assertReviewedResultMatchesAssignment,
   assertResultCanFinalize,
   assertResultMatchesAttendance,
   deriveProvisionalStatusTransition,
+  effectiveChallengeStakeAtSessionWindow,
   eligibleAppealUserIds,
   normalizeResultParticipants,
+  normalizeResultMetadataRevision,
   resultAppealDeadline,
+  resultMetadataRevisionDeadline,
   resultCanFinalize,
   type ChallengeStake,
   type AppealDecision,
@@ -53,6 +60,21 @@ export interface WaiveResultAppealPayload {
   readonly resultId: string;
 }
 
+export interface ReviseResultMetadataPayload {
+  readonly resultId: string;
+  readonly methodCode?: string | null;
+  readonly methodText?: string | null;
+  readonly scorePayload?: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload?: Readonly<Record<string, unknown>> | null;
+}
+
+export interface ResultMetadataRevisionEffectIds {
+  readonly revisionId: string;
+  readonly eventId: string;
+  readonly auditId: string;
+  readonly outboxMessageId: string;
+}
+
 export interface FinalizeResultPayload {
   readonly resultId: string;
 }
@@ -74,9 +96,50 @@ export interface ResultEffectIds {
   readonly waiverId?: string;
   readonly waiverEventId?: string;
   readonly statusFinalizationId?: string;
+  readonly genesisEventId?: string;
   readonly notificationOutboxMessageId?: string;
   readonly notificationIds?: readonly string[];
   readonly missingResultReviewEventId?: string;
+}
+
+export interface AdministrativeForfeitEffectIds {
+  readonly resultId: string;
+  readonly resultEventId: string;
+  readonly statusTransitionId: string;
+  readonly statusEventId: string;
+  readonly cooldownId: string;
+  readonly cooldownEventId: string;
+  readonly resultOutboxMessageId: string;
+  readonly notificationOutboxMessageId: string;
+  readonly notificationIds: readonly string[];
+}
+
+export interface RecordAdministrativeForfeitInput {
+  readonly challengeId: string;
+  readonly loserUserId: string;
+  readonly recordedByUserId: string;
+  readonly reasonCode: string;
+  readonly comment: string;
+  readonly sourceSessionId: string | null;
+  readonly sourceCoachUserId: string | null;
+  readonly notificationRecipientUserIds: readonly string[];
+  readonly occurredAt: Date;
+  readonly expectedChallengeState: 'BOOKED' | 'ACCEPTED_UNSCHEDULED' | 'BOOKING_PENDING';
+}
+
+export interface AdministrativeForfeitArtifacts {
+  readonly resultId: string;
+  readonly challengeVersion: number;
+  readonly appealDeadlineAt: Date;
+  readonly statusTransitionType: StatusTransitionType;
+  readonly response: ResultProjection;
+  readonly relatedEvents: readonly RelatedDomainEventDraft[];
+  readonly outbox: readonly {
+    readonly messageId: string;
+    readonly topic: string;
+    readonly sourceEventId?: string;
+    readonly payload: Readonly<Record<string, unknown>>;
+  }[];
 }
 
 export interface ResultProjection {
@@ -85,15 +148,28 @@ export interface ResultProjection {
   readonly sessionId: string | null;
   readonly state: ResultState;
   readonly outcomeCode: ResultOutcomeCode;
+  readonly recordedOutcomeCode: ResultOutcomeCode;
   readonly winnerUserId: string | null;
   readonly winnerDisplayName: string | null;
   readonly loserUserId: string | null;
   readonly loserDisplayName: string | null;
+  readonly recordedWinnerUserId: string | null;
+  readonly recordedLoserUserId: string | null;
+  readonly technicalCorrectionDecisionId: string | null;
   readonly reasonCode: string | null;
   readonly comment: string | null;
   readonly methodCode: string | null;
   readonly methodText: string | null;
   readonly scorePayload: Readonly<Record<string, unknown>> | null;
+  readonly methodPayload: Readonly<Record<string, unknown>> | null;
+  readonly recordedMethodCode: string | null;
+  readonly recordedMethodText: string | null;
+  readonly recordedScorePayload: Readonly<Record<string, unknown>> | null;
+  readonly recordedMethodPayload: Readonly<Record<string, unknown>> | null;
+  readonly latestMetadataRevisionId: string | null;
+  readonly metadataRevisionCount: number;
+  readonly metadataRevisionDeadlineAt: string;
+  readonly viewerCanReviseMetadata: boolean;
   readonly recordedAt: string;
   readonly appealDeadlineAt: string;
   readonly finalizedAt: string | null;
@@ -124,16 +200,19 @@ interface RecordContextRow {
   readonly challenge_version: string;
   readonly cycle_no: number;
   readonly competition_id: string;
+  readonly competition_phase: string;
   readonly competition_version: string;
   readonly current_champion_user_id: string | null;
   readonly current_contender_user_id: string | null;
   readonly current_status_version: string;
   readonly status_lock_result_id: string | null;
   readonly integrity_hold_case_id: string | null;
+  readonly status_review_hold_active: boolean;
   readonly session_id: string;
   readonly session_state: string;
   readonly venue_id: string;
   readonly coach_user_id: string;
+  readonly actual_start_at: Date | null;
   readonly actual_end_at: Date;
   readonly pair_low_id: string;
   readonly pair_high_id: string;
@@ -164,15 +243,25 @@ interface ResultRow {
   readonly session_id: string | null;
   readonly state: ResultState;
   readonly recorded_outcome_code: ResultOutcomeCode;
+  readonly source_outcome_code: ResultOutcomeCode;
   readonly winner_user_id: string | null;
+  readonly source_winner_user_id: string | null;
   readonly winner_display_name: string | null;
   readonly loser_user_id: string | null;
+  readonly source_loser_user_id: string | null;
   readonly loser_display_name: string | null;
   readonly reason_code: string | null;
   readonly comment: string | null;
   readonly method_code: string | null;
   readonly method_text: string | null;
   readonly score_payload: unknown;
+  readonly method_payload: unknown;
+  readonly source_method_code: string | null;
+  readonly source_method_text: string | null;
+  readonly source_score_payload: unknown;
+  readonly source_method_payload: unknown;
+  readonly latest_metadata_revision_id: string | null;
+  readonly metadata_revision_count: string | null;
   readonly recorded_at: Date;
   readonly appeal_deadline_at: Date;
   readonly finalized_at: Date | null;
@@ -181,9 +270,13 @@ interface ResultRow {
   readonly pair_low_id: string;
   readonly pair_high_id: string;
   readonly coach_user_id: string | null;
+  readonly session_coach_user_id: string | null;
   readonly challenge_state: string;
   readonly challenge_version: string;
+  readonly cycle_no: number;
+  readonly effective_stake: ChallengeStake;
   readonly competition_id: string;
+  readonly competition_phase: string;
   readonly competition_version: string;
   readonly competition_status_version: string;
   readonly current_champion_user_id: string | null;
@@ -197,9 +290,17 @@ interface ResultRow {
   readonly after_champion_user_id: string | null;
   readonly after_contender_user_id: string | null;
   readonly after_status_version: string | null;
+  readonly technical_correction_decision_id: string | null;
+  readonly technical_compensation_id: string | null;
+  readonly technical_corrected_transition_type: StatusTransitionType | null;
+  readonly technical_to_champion_user_id: string | null;
+  readonly technical_to_contender_user_id: string | null;
+  readonly technical_status_version: string | null;
   readonly viewer_waived: boolean;
   readonly viewer_appealed: boolean;
   readonly viewer_admin: boolean;
+  readonly viewer_session_coach: boolean;
+  readonly viewer_coach_authorized: boolean;
   readonly integrity_review_state: string | null;
   readonly integrity_review_category: string | null;
   readonly version: string;
@@ -250,14 +351,21 @@ async function recordContext(
   const result = await sql<RecordContextRow>`
     select challenge.challenge_id, challenge.state as challenge_state,
       challenge.version::text as challenge_version, challenge.cycle_no,
-      competition.competition_id, competition.version::text as competition_version,
+      competition.competition_id, competition.phase as competition_phase,
+      competition.version::text as competition_version,
       competition.champion_user_id as current_champion_user_id,
       competition.contender_user_id as current_contender_user_id,
       competition.status_version::text as current_status_version,
       competition.status_lock_result_id,
       competition.integrity_hold_case_id,
+      exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competition.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      ) as status_review_hold_active,
       session.session_id, session.state as session_state, session.venue_id,
-      session.coach_user_id, session.actual_end_at,
+      session.coach_user_id, session.actual_start_at, session.actual_end_at,
       session.pair_low_id, session.pair_high_id,
       snapshot.snapshot_id, snapshot.effective_stake,
       snapshot.champion_user_id as snapshot_champion_user_id,
@@ -317,27 +425,53 @@ async function resultRow(
   const result = await sql<ResultRow>`
     select result.result_id, result.challenge_id, result.session_id,
       result.state, coalesce(integrity_decision.effective_outcome_code,
-        decision.effective_outcome_code, result.recorded_outcome_code)
+        decision.effective_outcome_code, correction_decision.effective_outcome_code,
+        result.recorded_outcome_code)
         as recorded_outcome_code,
+      result.recorded_outcome_code as source_outcome_code,
       case when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
           or decision.decision in ('ANNUL', 'REPEAT') then null
         else coalesce(integrity_decision.effective_winner_user_id,
-          decision.effective_winner_user_id, result.winner_user_id)
+          decision.effective_winner_user_id,
+          case when correction_decision.decision_id is not null
+            then correction_decision.effective_winner_user_id else result.winner_user_id end)
       end as winner_user_id,
+      result.winner_user_id as source_winner_user_id,
       winner.display_name as winner_display_name,
       case when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
           or decision.decision in ('ANNUL', 'REPEAT') then null
         else coalesce(integrity_decision.effective_loser_user_id,
-          decision.effective_loser_user_id, result.loser_user_id)
+          decision.effective_loser_user_id,
+          case when correction_decision.decision_id is not null
+            then correction_decision.effective_loser_user_id else result.loser_user_id end)
       end as loser_user_id,
+      result.loser_user_id as source_loser_user_id,
       loser.display_name as loser_display_name,
-      result.reason_code, result.comment, result.method_code, result.method_text,
-      result.score_payload, result.recorded_at, result.appeal_deadline_at,
+      result.reason_code, result.comment,
+      case when latest_revision.revision_id is null then result.method_code
+        else latest_revision.after_method_code end as method_code,
+      case when latest_revision.revision_id is null then result.method_text
+        else latest_revision.after_method_text end as method_text,
+      case when latest_revision.revision_id is null then result.score_payload
+        else latest_revision.after_score_payload end as score_payload,
+      case when latest_revision.revision_id is null then result.method_payload
+        else latest_revision.after_method_payload end as method_payload,
+      result.method_code as source_method_code,
+      result.method_text as source_method_text,
+      result.score_payload as source_score_payload,
+      result.method_payload as source_method_payload,
+      latest_revision.revision_id as latest_metadata_revision_id,
+      latest_revision.revision_count::text as metadata_revision_count,
+      result.recorded_at, result.appeal_deadline_at,
       result.finalized_at, decision.decision, decision.reason as decision_reason,
       challenge.pair_low_id, challenge.pair_high_id,
-      result.coach_user_id, challenge.state as challenge_state,
+      result.coach_user_id, source_session.coach_user_id as session_coach_user_id,
+      challenge.state as challenge_state,
       challenge.version::text as challenge_version,
-      competition.competition_id, competition.version::text as competition_version,
+      challenge.cycle_no,
+      coalesce(snapshot.effective_stake, challenge.stake) as effective_stake,
+      competition.competition_id, competition.phase as competition_phase,
+      competition.version::text as competition_version,
       competition.status_version::text as competition_status_version,
       competition.champion_user_id as current_champion_user_id,
       competition.contender_user_id as current_contender_user_id,
@@ -347,6 +481,14 @@ async function resultRow(
       transition.before_status_version::text as before_status_version,
       transition.after_champion_user_id, transition.after_contender_user_id,
       transition.after_status_version::text as after_status_version,
+      correction_decision.decision_id as technical_correction_decision_id,
+      correction_compensation.compensation_id as technical_compensation_id,
+      correction_compensation.corrected_transition_type
+        as technical_corrected_transition_type,
+      correction_compensation.to_champion_user_id as technical_to_champion_user_id,
+      correction_compensation.to_contender_user_id as technical_to_contender_user_id,
+      correction_compensation.competition_status_version::text
+        as technical_status_version,
       exists (
         select 1 from competition.appeal_waivers as waiver
         where waiver.result_id = result.result_id and waiver.user_id = ${viewerUserId}::uuid
@@ -366,13 +508,47 @@ async function resultRow(
               and role_grant.scope_type = 'VENUE' and role_grant.scope_id = result.venue_id)
           )
       ) as viewer_admin,
+      exists (
+        select 1 from scheduling.sessions as source_session
+        where source_session.challenge_id = result.challenge_id
+          and source_session.purpose = 'OFFICIAL_CHALLENGE'
+          and source_session.coach_user_id = ${viewerUserId}::uuid
+      ) as viewer_session_coach,
+      exists (
+        select 1 from community.role_grants as coach_grant
+        where coach_grant.user_id = ${viewerUserId}::uuid
+          and coach_grant.role = 'COACH' and coach_grant.state = 'ACTIVE'
+          and (coach_grant.expires_at is null or coach_grant.expires_at > clock_timestamp())
+          and (
+            (coach_grant.scope_type = 'SESSION' and coach_grant.scope_id = result.session_id
+              and result.state not in ('FINAL', 'REVERSED', 'ANNULLED', 'REPEAT_ORDERED'))
+            or (coach_grant.scope_type = 'COMMUNITY'
+              and coach_grant.scope_id = competition.community_id)
+          )
+      ) as viewer_coach_authorized,
       integrity.state as integrity_review_state,
       integrity.public_reason_category as integrity_review_category,
       result.version::text as version
     from competition.results as result
     join competition.challenges as challenge on challenge.challenge_id = result.challenge_id
     join competition.competitions as competition on competition.competition_id = challenge.competition_id
+    left join scheduling.sessions as source_session on source_session.session_id = result.session_id
+    left join scheduling.session_competitive_snapshots as snapshot
+      on snapshot.snapshot_id = result.competitive_snapshot_id
     left join competition.appeal_decisions as decision on decision.result_id = result.result_id
+    left join competition.technical_correction_decisions as correction_decision
+      on correction_decision.result_id = result.result_id
+    left join competition.technical_correction_status_compensations as correction_compensation
+      on correction_compensation.decision_id = correction_decision.decision_id
+    left join lateral (
+      select revision.revision_id, revision.after_method_code,
+        revision.after_method_text, revision.after_score_payload,
+        revision.after_method_payload, count(*) over () as revision_count
+      from competition.result_metadata_revisions as revision
+      where revision.result_id = result.result_id
+      order by revision.result_version desc
+      limit 1
+    ) as latest_revision on true
     left join lateral (
       select integrity_case.case_id, integrity_case.state,
         integrity_case.public_reason_category
@@ -387,13 +563,17 @@ async function resultRow(
       when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
         or decision.decision in ('ANNUL', 'REPEAT') then null
       else coalesce(integrity_decision.effective_winner_user_id,
-        decision.effective_winner_user_id, result.winner_user_id)
+        decision.effective_winner_user_id,
+        case when correction_decision.decision_id is not null
+          then correction_decision.effective_winner_user_id else result.winner_user_id end)
     end
     left join identity.users as loser on loser.user_id = case
       when integrity_decision.effective_disposition in ('ANNUL', 'REPEAT')
         or decision.decision in ('ANNUL', 'REPEAT') then null
       else coalesce(integrity_decision.effective_loser_user_id,
-        decision.effective_loser_user_id, result.loser_user_id)
+        decision.effective_loser_user_id,
+        case when correction_decision.decision_id is not null
+          then correction_decision.effective_loser_user_id else result.loser_user_id end)
     end
     left join competition.status_transitions as transition
       on transition.source_result_id = result.result_id
@@ -405,7 +585,9 @@ async function resultRow(
 
 function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new Date()): ResultProjection {
   const direct = [row.pair_low_id, row.pair_high_id, row.coach_user_id].includes(viewerUserId);
-  if (!direct && !row.viewer_admin) throw new ResultPermissionDeniedError();
+  if (!direct && !row.viewer_admin && !row.viewer_session_coach) {
+    throw new ResultPermissionDeniedError();
+  }
   const eligible = eligibleAppealUserIds({
     outcomeCode: row.recorded_outcome_code,
     loserUserId: row.loser_user_id,
@@ -418,17 +600,24 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     && !row.viewer_appealed;
   const beforeVersion = Number(row.before_status_version ?? row.competition_status_version);
   const afterVersion = Number(row.after_status_version ?? row.competition_status_version);
+  const technicalProjectionApplies = row.technical_compensation_id !== null
+    && row.decision === null
+    && !row.integrity_review_state?.startsWith('DECIDED_');
   const beforeChampionUserId = row.transition_id
     ? row.before_champion_user_id
     : row.current_champion_user_id;
   const beforeContenderUserId = row.transition_id
     ? row.before_contender_user_id
     : row.current_contender_user_id;
-  const afterChampionUserId = row.transition_id
-    ? row.after_champion_user_id
+  const afterChampionUserId = technicalProjectionApplies
+    ? row.technical_to_champion_user_id
+    : row.transition_id
+      ? row.after_champion_user_id
     : row.current_champion_user_id;
-  const afterContenderUserId = row.transition_id
-    ? row.after_contender_user_id
+  const afterContenderUserId = technicalProjectionApplies
+    ? row.technical_to_contender_user_id
+    : row.transition_id
+      ? row.after_contender_user_id
     : row.current_contender_user_id;
   return {
     resultId: row.result_id,
@@ -436,21 +625,39 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     sessionId: row.session_id,
     state: row.state,
     outcomeCode: row.recorded_outcome_code,
+    recordedOutcomeCode: row.source_outcome_code,
     winnerUserId: row.winner_user_id,
     winnerDisplayName: row.winner_display_name,
     loserUserId: row.loser_user_id,
     loserDisplayName: row.loser_display_name,
+    recordedWinnerUserId: row.source_winner_user_id,
+    recordedLoserUserId: row.source_loser_user_id,
+    technicalCorrectionDecisionId: row.technical_correction_decision_id,
     reasonCode: row.reason_code,
     comment: row.comment,
     methodCode: row.method_code,
     methodText: row.method_text,
     scorePayload: record(row.score_payload),
+    methodPayload: record(row.method_payload),
+    recordedMethodCode: row.source_method_code,
+    recordedMethodText: row.source_method_text,
+    recordedScorePayload: record(row.source_score_payload),
+    recordedMethodPayload: record(row.source_method_payload),
+    latestMetadataRevisionId: row.latest_metadata_revision_id,
+    metadataRevisionCount: Number(row.metadata_revision_count ?? '0'),
+    metadataRevisionDeadlineAt: resultMetadataRevisionDeadline(row.recorded_at).toISOString(),
+    viewerCanReviseMetadata: row.viewer_coach_authorized
+      && (viewerUserId === row.coach_user_id || viewerUserId === row.session_coach_user_id)
+      && ![row.pair_low_id, row.pair_high_id].includes(viewerUserId)
+      && occurredAt < resultMetadataRevisionDeadline(row.recorded_at),
     recordedAt: row.recorded_at.toISOString(),
     appealDeadlineAt: row.appeal_deadline_at.toISOString(),
     finalizedAt: row.finalized_at?.toISOString() ?? null,
     decision: row.decision,
     decisionReason: row.decision_reason,
-    statusTransitionType: row.transition_type ?? 'NONE',
+    statusTransitionType: technicalProjectionApplies
+      ? row.technical_corrected_transition_type ?? 'NONE'
+      : row.transition_type ?? 'NONE',
     statusBefore: {
       championUserId: beforeChampionUserId,
       contenderUserId: beforeContenderUserId,
@@ -459,7 +666,9 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     statusAfter: {
       championUserId: afterChampionUserId,
       contenderUserId: afterContenderUserId,
-      statusVersion: afterVersion,
+      statusVersion: technicalProjectionApplies
+        ? Number(row.technical_status_version)
+        : afterVersion,
     },
     provisional: row.state === 'RECORDED' || row.state === 'UNDER_APPEAL',
     integrityReviewState: row.integrity_review_state,
@@ -467,6 +676,321 @@ function resultProjection(row: ResultRow, viewerUserId: string, occurredAt = new
     viewerCanAppeal: canAct,
     viewerCanWaiveAppeal: canAct,
     version: Number(row.version),
+  };
+}
+
+interface AdministrativeForfeitContextRow {
+  readonly challenge_id: string;
+  readonly challenge_state: string;
+  readonly challenge_version: string;
+  readonly cycle_no: number;
+  readonly stake: ChallengeStake;
+  readonly pair_low_id: string;
+  readonly pair_high_id: string;
+  readonly active_obligation_count: string;
+  readonly existing_result_id: string | null;
+  readonly competition_id: string;
+  readonly competition_version: string;
+  readonly current_champion_user_id: string | null;
+  readonly current_contender_user_id: string | null;
+  readonly current_status_version: string;
+  readonly status_lock_result_id: string | null;
+  readonly integrity_hold_case_id: string | null;
+  readonly status_review_hold_active: boolean;
+  readonly pair_cooldown_days: number;
+  readonly snapshot_id: string | null;
+  readonly effective_stake: ChallengeStake | null;
+  readonly snapshot_champion_user_id: string | null;
+  readonly snapshot_contender_user_id: string | null;
+  readonly snapshot_status_version: string | null;
+}
+
+export async function recordAdministrativeForfeit(
+  transaction: Transaction<Database>,
+  input: RecordAdministrativeForfeitInput,
+  ids: AdministrativeForfeitEffectIds,
+): Promise<AdministrativeForfeitArtifacts> {
+  if (
+    !Number.isFinite(input.occurredAt.getTime())
+    || input.reasonCode.trim().length === 0
+    || input.reasonCode.length > 80
+    || input.comment.trim().length === 0
+    || input.comment.length > 500
+    || input.notificationRecipientUserIds.length !== ids.notificationIds.length
+  ) {
+    throw new ResultValidationError('administrativeForfeit');
+  }
+  const contextResult = await sql<AdministrativeForfeitContextRow>`
+    select challenge.challenge_id, challenge.state as challenge_state,
+      challenge.version::text as challenge_version, challenge.cycle_no,
+      challenge.stake, challenge.pair_low_id, challenge.pair_high_id,
+      (select count(*)::text from competition.challenge_participant_obligations obligation
+        where obligation.challenge_id = challenge.challenge_id
+          and obligation.released_at is null) as active_obligation_count,
+      existing.result_id as existing_result_id,
+      competition.competition_id, competition.version::text as competition_version,
+      competition.champion_user_id as current_champion_user_id,
+      competition.contender_user_id as current_contender_user_id,
+      competition.status_version::text as current_status_version,
+      competition.status_lock_result_id, competition.integrity_hold_case_id,
+      exists (
+        select 1 from competition.process_holds process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competition.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      ) as status_review_hold_active,
+      configuration.pair_cooldown_days,
+      snapshot.snapshot_id, snapshot.effective_stake,
+      snapshot.champion_user_id as snapshot_champion_user_id,
+      snapshot.contender_user_id as snapshot_contender_user_id,
+      snapshot.competition_status_version::text as snapshot_status_version
+    from competition.challenges challenge
+    join competition.competitions competition
+      on competition.competition_id = challenge.competition_id
+    join community.communities community on community.community_id = competition.community_id
+    join community.community_configuration_versions configuration
+      on configuration.configuration_id = community.configuration_id
+    left join competition.results existing
+      on existing.challenge_id = challenge.challenge_id and existing.cycle_no = challenge.cycle_no
+    left join lateral (
+      select competitive.snapshot_id, competitive.effective_stake,
+        competitive.champion_user_id, competitive.contender_user_id,
+        competitive.competition_status_version
+      from scheduling.session_competitive_snapshots competitive
+      where competitive.challenge_id = challenge.challenge_id
+      order by competitive.created_at desc, competitive.snapshot_id desc
+      limit 1
+    ) snapshot on true
+    where challenge.challenge_id = ${input.challengeId}::uuid
+    for update of challenge, competition
+  `.execute(transaction);
+  const row = contextResult.rows[0];
+  if (
+    !row
+    || row.challenge_state !== input.expectedChallengeState
+    || Number(row.active_obligation_count) !== 2
+    || row.existing_result_id !== null
+    || ![row.pair_low_id, row.pair_high_id].includes(input.loserUserId)
+  ) {
+    throw new ResultConflictError('CHALLENGE_NOT_AWAITING_RESULT');
+  }
+  const winnerUserId = row.pair_low_id === input.loserUserId
+    ? row.pair_high_id
+    : row.pair_low_id;
+  const statusSnapshot = {
+    championUserId: row.snapshot_id
+      ? row.snapshot_champion_user_id
+      : row.current_champion_user_id,
+    contenderUserId: row.snapshot_id
+      ? row.snapshot_contender_user_id
+      : row.current_contender_user_id,
+    statusVersion: Number(row.snapshot_id
+      ? row.snapshot_status_version
+      : row.current_status_version),
+  };
+  const effectiveStake = row.effective_stake ?? effectiveChallengeStakeAtSessionWindow({
+    plannedStake: row.stake,
+    participantUserIds: [row.pair_low_id, row.pair_high_id],
+    championUserId: row.current_champion_user_id,
+    contenderUserId: row.current_contender_user_id,
+  });
+  const transition = deriveProvisionalStatusTransition({
+    stake: effectiveStake,
+    outcomeCode: 'FORFEIT',
+    winnerUserId,
+    loserUserId: input.loserUserId,
+    snapshot: statusSnapshot,
+  });
+  if (transition.locksStatus) {
+    if (row.integrity_hold_case_id || row.status_review_hold_active) {
+      throw new ResultConflictError('COMPETITION_INTEGRITY_HOLD');
+    }
+    if (row.status_lock_result_id) throw new ResultConflictError('COMPETITION_STATUS_LOCKED');
+    if (
+      row.current_champion_user_id !== statusSnapshot.championUserId
+      || row.current_contender_user_id !== statusSnapshot.contenderUserId
+      || Number(row.current_status_version) !== statusSnapshot.statusVersion
+    ) throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+  }
+  const appealDeadlineAt = resultAppealDeadline(input.occurredAt);
+  const preStatus = {
+    championUserId: transition.before.championUserId,
+    contenderUserId: transition.before.contenderUserId,
+    statusVersion: transition.before.statusVersion,
+  };
+  await sql`
+    insert into competition.results (
+      result_id, challenge_id, session_id, competitive_snapshot_id,
+      cycle_no, origin, state, recorded_outcome_code,
+      winner_user_id, loser_user_id, reason_code, comment,
+      method_code, method_text, score_payload, method_payload,
+      actual_time, venue_id, coach_user_id, recorded_by, recorded_at,
+      appeal_deadline_at, pre_status_snapshot, status_transition_event_id,
+      version, updated_at
+    ) values (
+      ${ids.resultId}::uuid, ${row.challenge_id}::uuid, null, null,
+      ${row.cycle_no}, 'ADMINISTRATIVE_FORFEIT', 'RECORDED', 'FORFEIT',
+      ${winnerUserId}::uuid, ${input.loserUserId}::uuid,
+      ${input.reasonCode}, ${input.comment}, null, null, null, null,
+      ${input.occurredAt.toISOString()}::timestamptz, null, null,
+      ${input.recordedByUserId}::uuid, ${input.occurredAt.toISOString()}::timestamptz,
+      ${appealDeadlineAt.toISOString()}::timestamptz,
+      ${JSON.stringify(preStatus)}::jsonb,
+      ${transition.locksStatus ? ids.statusEventId : null}::uuid,
+      1, ${input.occurredAt.toISOString()}::timestamptz
+    )
+  `.execute(transaction);
+  const challengeVersion = Number(row.challenge_version) + 1;
+  await sql`
+    update competition.challenges
+    set state = 'RESULT_RECORDED', decided_at = ${input.occurredAt.toISOString()}::timestamptz,
+      version = ${challengeVersion}, updated_at = ${input.occurredAt.toISOString()}::timestamptz
+    where challenge_id = ${row.challenge_id}::uuid and state = ${input.expectedChallengeState}
+  `.execute(transaction);
+  let competitionAggregateVersion: number | null = null;
+  if (transition.locksStatus) {
+    competitionAggregateVersion = Number(row.competition_version) + 1;
+    await sql`
+      update competition.competitions
+      set champion_user_id = ${transition.after.championUserId}::uuid,
+        contender_user_id = ${transition.after.contenderUserId}::uuid,
+        status_version = ${transition.after.statusVersion},
+        status_lock_result_id = ${ids.resultId}::uuid,
+        version = ${competitionAggregateVersion},
+        updated_at = ${input.occurredAt.toISOString()}::timestamptz
+      where competition_id = ${row.competition_id}::uuid
+        and status_version = ${transition.before.statusVersion}
+        and status_lock_result_id is null
+    `.execute(transaction);
+    await sql`
+      insert into competition.status_transitions (
+        transition_id, source_result_id, source_event_id, competition_id,
+        transition_type, before_champion_user_id, before_contender_user_id,
+        before_status_version, after_champion_user_id, after_contender_user_id,
+        after_status_version, competitive_snapshot_id, provisional, applied_at
+      ) values (
+        ${ids.statusTransitionId}::uuid, ${ids.resultId}::uuid,
+        ${ids.resultEventId}::uuid, ${row.competition_id}::uuid,
+        ${transition.type}, ${transition.before.championUserId}::uuid,
+        ${transition.before.contenderUserId}::uuid, ${transition.before.statusVersion},
+        ${transition.after.championUserId}::uuid,
+        ${transition.after.contenderUserId}::uuid, ${transition.after.statusVersion},
+        null, true, ${input.occurredAt.toISOString()}::timestamptz
+      )
+    `.execute(transaction);
+  }
+  const cooldownEndsAt = new Date(
+    input.occurredAt.getTime() + row.pair_cooldown_days * 24 * 60 * 60 * 1_000,
+  );
+  await sql`
+    insert into competition.pair_cooldowns (
+      cooldown_id, competition_id, pair_low_id, pair_high_id,
+      source_result_id, started_at, ends_at
+    ) values (
+      ${ids.cooldownId}::uuid, ${row.competition_id}::uuid,
+      ${row.pair_low_id}::uuid, ${row.pair_high_id}::uuid,
+      ${ids.resultId}::uuid, ${input.occurredAt.toISOString()}::timestamptz,
+      ${cooldownEndsAt.toISOString()}::timestamptz
+    )
+  `.execute(transaction);
+  const projectionRow = await resultRow(transaction, ids.resultId, input.recordedByUserId);
+  if (!projectionRow) throw new ResultConflictError('RESULT_NOT_RECORDED');
+  const response = resultProjection(projectionRow, input.recordedByUserId, input.occurredAt);
+  const canonicalPayload = {
+    resultId: ids.resultId,
+    competitionId: row.competition_id,
+    challengeId: row.challenge_id,
+    sessionId: null,
+    sourceSessionId: input.sourceSessionId,
+    origin: 'ADMINISTRATIVE_FORFEIT',
+    competitiveContextSnapshotId: null,
+    sourceCompetitiveContextSnapshotId: row.snapshot_id,
+    outcomeCode: 'FORFEIT',
+    winnerUserId,
+    loserUserId: input.loserUserId,
+    reasonCode: input.reasonCode,
+    actualTime: input.occurredAt.toISOString(),
+    venueId: null,
+    coachUserId: null,
+    sourceCoachUserId: input.sourceCoachUserId,
+    appealDeadlineAt: appealDeadlineAt.toISOString(),
+    preStatus,
+    stake: effectiveStake,
+  };
+  const relatedEvents: RelatedDomainEventDraft[] = [
+    {
+      eventId: ids.resultEventId, eventName: 'ResultRecorded', schemaVersion: 1,
+      aggregateType: 'Result', aggregateId: ids.resultId, aggregateVersion: 1,
+      transitionId: 'R-01', payload: canonicalPayload,
+      metadata: { policyVersion: RESULT_POLICY_VERSION },
+    },
+    {
+      eventId: ids.cooldownEventId, eventName: 'PairCooldownStarted', schemaVersion: 1,
+      aggregateType: 'PairCooldown', aggregateId: ids.cooldownId, aggregateVersion: 1,
+      transitionId: 'CD-01',
+      payload: {
+        cooldownId: ids.cooldownId, competitionId: row.competition_id,
+        participantIds: [row.pair_low_id, row.pair_high_id], sourceResultId: ids.resultId,
+        startedAt: input.occurredAt.toISOString(), endsAt: cooldownEndsAt.toISOString(),
+      },
+      metadata: { policyVersion: RESULT_POLICY_VERSION },
+    },
+  ];
+  if (transition.locksStatus && competitionAggregateVersion !== null) {
+    relatedEvents.push({
+      eventId: ids.statusEventId, eventName: transition.eventName!, schemaVersion: 1,
+      aggregateType: 'Competition', aggregateId: row.competition_id,
+      aggregateVersion: competitionAggregateVersion, transitionId: transition.transitionId,
+      payload: {
+        transitionId: ids.statusTransitionId, sourceResultId: ids.resultId,
+        sourceEventId: ids.resultEventId, competitionId: row.competition_id,
+        before: transition.before, after: transition.after,
+        transitionType: transition.type, provisional: true,
+        participantIds: [row.pair_low_id, row.pair_high_id], snapshotId: row.snapshot_id,
+      },
+      metadata: { policyVersion: RESULT_POLICY_VERSION },
+    });
+  }
+  return {
+    resultId: ids.resultId,
+    challengeVersion,
+    appealDeadlineAt,
+    statusTransitionType: transition.type,
+    response,
+    relatedEvents,
+    outbox: [
+      {
+        messageId: ids.resultOutboxMessageId,
+        topic: 'competition.result.recorded.v1',
+        sourceEventId: ids.resultEventId,
+        payload: {
+          ...canonicalPayload,
+          timer: {
+            commandType: 'FINALIZE_RESULT', aggregateType: 'Result',
+            aggregateId: ids.resultId, expectedState: 'RECORDED', expectedVersion: 1,
+            deadlineAt: appealDeadlineAt.toISOString(), policyVersion: RESULT_POLICY_VERSION,
+            idempotencyKey: `result:${ids.resultId}:finalize:v1`,
+          },
+        },
+      },
+      {
+        messageId: ids.notificationOutboxMessageId,
+        topic: 'notification.in_app.v1',
+        payload: {
+          notifications: input.notificationRecipientUserIds.map((recipientUserId, index) => ({
+            notificationId: ids.notificationIds[index]!, recipientUserId,
+            category: 'MANDATORY', renderKey: 'result.administrative-forfeit-recorded',
+            actionTarget: { type: 'RESULT', resultId: ids.resultId },
+            payload: {
+              challengeId: row.challenge_id, sourceSessionId: input.sourceSessionId,
+              outcomeCode: 'FORFEIT', winnerUserId, loserUserId: input.loserUserId,
+              statusTransitionType: transition.type, provisional: true,
+            },
+            deadlineAt: appealDeadlineAt.toISOString(),
+          })),
+        },
+      },
+    ],
   };
 }
 
@@ -574,7 +1098,9 @@ export async function recordSessionResult(
         },
       });
       if (transition.locksStatus) {
-        if (row.integrity_hold_case_id) throw new ResultConflictError('COMPETITION_INTEGRITY_HOLD');
+        if (row.integrity_hold_case_id || row.status_review_hold_active) {
+          throw new ResultConflictError('COMPETITION_INTEGRITY_HOLD');
+        }
         if (row.status_lock_result_id) throw new ResultConflictError('COMPETITION_STATUS_LOCKED');
         if (
           row.current_champion_user_id !== row.snapshot_champion_user_id
@@ -585,6 +1111,19 @@ export async function recordSessionResult(
       const appealDeadlineAt = resultAppealDeadline(context.occurredAt);
       const methodCode = optionalText(command.payload.methodCode, 'methodCode', 80);
       const methodText = optionalText(command.payload.methodText, 'methodText', 500);
+      assertAthleteStoppageResult({
+        outcomeCode: command.payload.outcomeCode,
+        winnerUserId: normalized.winnerUserId,
+        methodCode,
+        actualStartAt: row.actual_start_at,
+      });
+      assertExternalNoContestResult({
+        outcomeCode: command.payload.outcomeCode,
+        winnerUserId: normalized.winnerUserId,
+        reasonCode: normalized.reasonCode,
+        methodCode,
+        actualStartAt: row.actual_start_at,
+      });
       const preStatus = {
         championUserId: transition.before.championUserId,
         contenderUserId: transition.before.contenderUserId,
@@ -681,6 +1220,7 @@ export async function recordSessionResult(
       const response = resultProjection(projectionRow, actorUserId, context.occurredAt);
       const canonicalPayload = {
         resultId: required.resultId,
+        competitionId: row.competition_id,
         challengeId: row.challenge_id,
         sessionId: row.session_id,
         origin: 'SESSION',
@@ -834,6 +1374,119 @@ export async function recordSessionResult(
   });
 }
 
+export async function reviseResultMetadata(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ReviseResultMetadataPayload>,
+  ids: ResultMetadataRevisionEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ResultProjection>> {
+  if (
+    !command.actor.id || command.actor.type !== 'USER'
+    || command.aggregateType !== 'Result'
+    || command.commandType !== 'REVISE_RESULT_METADATA'
+    || command.payload.resultId !== command.aggregateId
+  ) throw new ResultPermissionDeniedError();
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await resultRow(transaction, command.aggregateId, command.actor.id!, true);
+      if (!row) throw new ResultPermissionDeniedError();
+      const actorAssigned = command.actor.id === row.coach_user_id
+        || command.actor.id === row.session_coach_user_id;
+      if (
+        !actorAssigned || !row.viewer_coach_authorized
+        || [row.pair_low_id, row.pair_high_id].includes(command.actor.id!)
+      ) throw new ResultPermissionDeniedError();
+      assertExpectedVersion(Number(row.version), command.expectedVersion);
+      const before = {
+        methodCode: row.method_code,
+        methodText: row.method_text,
+        scorePayload: record(row.score_payload),
+        methodPayload: record(row.method_payload),
+      };
+      const after = normalizeResultMetadataRevision({
+        recordedAt: row.recorded_at,
+        occurredAt: context.occurredAt,
+        before,
+        ...(command.payload.methodCode !== undefined
+          ? { methodCode: command.payload.methodCode } : {}),
+        ...(command.payload.methodText !== undefined
+          ? { methodText: command.payload.methodText } : {}),
+        ...(command.payload.scorePayload !== undefined
+          ? { scorePayload: command.payload.scorePayload } : {}),
+        ...(command.payload.methodPayload !== undefined
+          ? { methodPayload: command.payload.methodPayload } : {}),
+      });
+      await sql`
+        insert into competition.result_metadata_revisions (
+          revision_id, result_id, source_result_version, result_version,
+          before_method_code, after_method_code, before_method_text, after_method_text,
+          before_score_payload, after_score_payload,
+          before_method_payload, after_method_payload, revised_by, revised_at
+        ) values (
+          ${ids.revisionId}::uuid, ${row.result_id}::uuid, ${row.version}, ${context.nextVersion},
+          ${before.methodCode}, ${after.methodCode}, ${before.methodText}, ${after.methodText},
+          ${before.scorePayload ? JSON.stringify(before.scorePayload) : null}::jsonb,
+          ${after.scorePayload ? JSON.stringify(after.scorePayload) : null}::jsonb,
+          ${before.methodPayload ? JSON.stringify(before.methodPayload) : null}::jsonb,
+          ${after.methodPayload ? JSON.stringify(after.methodPayload) : null}::jsonb,
+          ${command.actor.id}::uuid, ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        update competition.results
+        set version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where result_id = ${row.result_id}::uuid and version = ${row.version}
+      `.execute(transaction);
+      const projected = await resultRow(transaction, row.result_id, command.actor.id!);
+      if (!projected) throw new ResultConflictError('RESULT_NOT_RECORDED');
+      const response = resultProjection(projected, command.actor.id!, context.occurredAt);
+      return {
+        responseStatus: 201,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'ResultMetadataRevised',
+          schemaVersion: 1,
+          transitionId: 'R-02',
+          payload: {
+            resultId: row.result_id,
+            revisionId: ids.revisionId,
+            resultVersion: context.nextVersion,
+            revisedAt: context.occurredAt.toISOString(),
+          },
+          metadata: { policyVersion: RESULT_POLICY_VERSION },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'REVISE_RESULT_METADATA',
+          transitionId: 'R-02',
+          reasonCode: 'COACH_METADATA_CORRECTION',
+          beforeState: row.state,
+          afterState: row.state,
+          metadata: {
+            revisionId: ids.revisionId,
+            sessionId: row.session_id,
+            before,
+            after,
+          },
+        },
+        outbox: [{
+          messageId: ids.outboxMessageId,
+          topic: 'competition.result-metadata.revised.v1',
+          payload: {
+            resultId: row.result_id,
+            revisionId: ids.revisionId,
+            resultVersion: context.nextVersion,
+          },
+        }],
+      };
+    },
+  });
+}
+
 interface FinalizationArtifacts {
   readonly response: ResultProjection;
   readonly relatedEvents: readonly RelatedDomainEventDraft[];
@@ -849,43 +1502,114 @@ async function finalizeRecordedResult(
 ): Promise<FinalizationArtifacts> {
   const challengeId = requiredIds(ids, ['challengeEventId'] as const).challengeEventId;
   const challengeNextVersion = Number(row.challenge_version) + 1;
+  const genesisRepeat = ['GENESIS_CHAMPION', 'GENESIS_CONTENDER'].includes(row.effective_stake)
+    && ['DRAW', 'NO_CONTEST'].includes(row.recorded_outcome_code);
+  const repeatSchedulingDeadlineAt = genesisRepeat
+    ? acceptedChallengeSchedulingDeadline(occurredAt)
+    : null;
   await sql`
     update competition.results
     set state = 'FINAL', finalized_at = ${occurredAt.toISOString()}::timestamptz,
       version = ${resultNextVersion}, updated_at = ${occurredAt.toISOString()}::timestamptz
     where result_id = ${row.result_id}::uuid and state = 'RECORDED'
   `.execute(transaction);
-  await sql`
-    update competition.challenges
-    set state = 'COMPLETED', decided_at = ${occurredAt.toISOString()}::timestamptz,
-      version = ${challengeNextVersion},
-      updated_at = ${occurredAt.toISOString()}::timestamptz
-    where challenge_id = ${row.challenge_id}::uuid and state = 'RESULT_RECORDED'
-  `.execute(transaction);
-  await sql`
-    update competition.challenge_participant_obligations
-    set released_at = ${occurredAt.toISOString()}::timestamptz,
-      release_reason = 'RESULT_FINAL'
-    where challenge_id = ${row.challenge_id}::uuid and released_at is null
-  `.execute(transaction);
+  if (genesisRepeat) {
+    await sql`
+      update competition.challenges
+      set state = 'ACCEPTED_UNSCHEDULED', cycle_no = cycle_no + 1,
+        scheduling_deadline_at = ${repeatSchedulingDeadlineAt!.toISOString()}::timestamptz,
+        decided_at = null, version = ${challengeNextVersion},
+        updated_at = ${occurredAt.toISOString()}::timestamptz
+      where challenge_id = ${row.challenge_id}::uuid and state = 'RESULT_RECORDED'
+    `.execute(transaction);
+  } else {
+    await sql`
+      update competition.challenges
+      set state = 'COMPLETED', decided_at = ${occurredAt.toISOString()}::timestamptz,
+        version = ${challengeNextVersion},
+        updated_at = ${occurredAt.toISOString()}::timestamptz
+      where challenge_id = ${row.challenge_id}::uuid and state = 'RESULT_RECORDED'
+    `.execute(transaction);
+    await sql`
+      update competition.challenge_participant_obligations
+      set released_at = ${occurredAt.toISOString()}::timestamptz,
+        release_reason = 'RESULT_FINAL'
+      where challenge_id = ${row.challenge_id}::uuid and released_at is null
+    `.execute(transaction);
+  }
   const relatedEvents: RelatedDomainEventDraft[] = [{
     eventId: challengeId,
-    eventName: 'ChallengeCompleted', schemaVersion: 1,
+    eventName: genesisRepeat ? 'RepeatSessionOrdered' : 'ChallengeCompleted', schemaVersion: 1,
     aggregateType: 'Challenge', aggregateId: row.challenge_id,
-    aggregateVersion: challengeNextVersion, transitionId: 'CH-17',
-    payload: { challengeId: row.challenge_id, resultId: row.result_id, finalizedAt: occurredAt.toISOString() },
+    aggregateVersion: challengeNextVersion, transitionId: genesisRepeat ? 'CH-20' : 'CH-17',
+    payload: genesisRepeat ? {
+      challengeId: row.challenge_id, resultId: row.result_id,
+      cycleNo: row.cycle_no + 1,
+      schedulingDeadlineAt: repeatSchedulingDeadlineAt!.toISOString(),
+    } : {
+      challengeId: row.challenge_id, resultId: row.result_id,
+      finalizedAt: occurredAt.toISOString(),
+    },
     metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
   }];
+  if (genesisRepeat) {
+    const expectedPhase = row.effective_stake === 'GENESIS_CHAMPION'
+      ? 'FOUNDING_CHALLENGE'
+      : 'CONTENDER_GENESIS';
+    if (row.competition_phase !== expectedPhase || row.transition_id !== null) {
+      throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+    }
+    const genesisEventId = requiredIds(ids, ['genesisEventId'] as const).genesisEventId;
+    const competitionAggregateVersion = Number(row.competition_version) + 1;
+    await sql`
+      update competition.competitions
+      set version = ${competitionAggregateVersion},
+        updated_at = ${occurredAt.toISOString()}::timestamptz
+      where competition_id = ${row.competition_id}::uuid
+        and version = ${Number(row.competition_version)}
+    `.execute(transaction);
+    relatedEvents.push({
+      eventId: genesisEventId,
+      eventName: 'GenesisRepeatRequired', schemaVersion: 1,
+      aggregateType: 'Competition', aggregateId: row.competition_id,
+      aggregateVersion: competitionAggregateVersion,
+      transitionId: row.effective_stake === 'GENESIS_CHAMPION' ? 'C-05' : 'C-10',
+      payload: {
+        competitionId: row.competition_id, challengeId: row.challenge_id,
+        resultId: row.result_id, stake: row.effective_stake,
+        fromPhase: expectedPhase, toPhase: expectedPhase,
+        cycleNo: row.cycle_no + 1,
+        schedulingDeadlineAt: repeatSchedulingDeadlineAt!.toISOString(),
+      },
+      metadata: { policyVersion: RESULT_POLICY_VERSION },
+    });
+  }
   if (row.transition_id) {
     const statusIds = requiredIds(ids, ['statusFinalizationId', 'statusEventId'] as const);
     if (row.status_lock_result_id !== row.result_id) {
       throw new ResultConflictError('COMPETITION_STATUS_LOCKED');
     }
-    const competitionAggregateVersion = Number(row.competition_version) + 1;
+    const foundingGenesis = row.transition_type === 'GENESIS_APPLIED'
+      || row.transition_type === 'GENESIS_APPLIED_WITH_VACANCY';
+    const contenderGenesis = row.transition_type === 'CONTENDER_ASSIGNED'
+      && row.effective_stake === 'GENESIS_CONTENDER';
+    const genesisFinalization = foundingGenesis || contenderGenesis;
+    const genesisFinalPhase = row.transition_type === 'GENESIS_APPLIED_WITH_VACANCY'
+      ? 'CONTENDER_VACANT_OPEN'
+      : 'RUNNING';
+    if (foundingGenesis && row.competition_phase !== 'FOUNDING_CHALLENGE') {
+      throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+    }
+    if (contenderGenesis && row.competition_phase !== 'CONTENDER_GENESIS') {
+      throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+    }
+    const statusAggregateVersion = Number(row.competition_version) + 1;
+    const competitionAggregateVersion = statusAggregateVersion + Number(genesisFinalization);
     const competitionStatusVersion = Number(row.competition_status_version) + 1;
     await sql`
       update competition.competitions
       set status_lock_result_id = null, status_version = ${competitionStatusVersion},
+        phase = ${genesisFinalization ? genesisFinalPhase : row.competition_phase},
         version = ${competitionAggregateVersion},
         updated_at = ${occurredAt.toISOString()}::timestamptz
       where competition_id = ${row.competition_id}::uuid
@@ -905,7 +1629,7 @@ async function finalizeRecordedResult(
       eventId: statusIds.statusEventId,
       eventName: 'StatusTransitionFinalized', schemaVersion: 1,
       aggregateType: 'Competition', aggregateId: row.competition_id,
-      aggregateVersion: competitionAggregateVersion, transitionId: 'ST-13',
+      aggregateVersion: statusAggregateVersion, transitionId: 'ST-13',
       payload: {
         resultId: row.result_id, transitionId: row.transition_id,
         championUserId: row.after_champion_user_id,
@@ -914,6 +1638,27 @@ async function finalizeRecordedResult(
       },
       metadata: { policyVersion: RESULT_POLICY_VERSION },
     });
+    if (genesisFinalization) {
+      const genesisEventId = requiredIds(ids, ['genesisEventId'] as const).genesisEventId;
+      relatedEvents.push({
+        eventId: genesisEventId,
+        eventName: contenderGenesis ? 'ContenderGenesisFinalized' : 'FoundingGenesisFinalized',
+        schemaVersion: 1,
+        aggregateType: 'Competition', aggregateId: row.competition_id,
+        aggregateVersion: competitionAggregateVersion,
+        transitionId: contenderGenesis ? 'C-09' : 'C-04',
+        payload: {
+          competitionId: row.competition_id,
+          resultId: row.result_id,
+          fromPhase: contenderGenesis ? 'CONTENDER_GENESIS' : 'FOUNDING_CHALLENGE',
+          toPhase: genesisFinalPhase,
+          championUserId: row.after_champion_user_id,
+          contenderUserId: row.after_contender_user_id,
+          finalizedAt: occurredAt.toISOString(),
+        },
+        metadata: { policyVersion: RESULT_POLICY_VERSION },
+      });
+    }
   }
   const projected = await resultRow(transaction, row.result_id, viewerUserId);
   if (!projected) throw new ResultConflictError('RESULT_NOT_RECORDED');

@@ -5,31 +5,54 @@ import {
 } from '@molokh/core';
 import {
   ApiErrorSchema,
+  ApprovePrimaryAdminSuccessorBodySchema,
   AppointGymAdminBodySchema,
+  AuthorizeGuestCoachBodySchema,
   ChangePrimaryAdminBodySchema,
   CoachInviteBodySchema,
   PendingCoachInviteListResponseSchema,
   RoleGrantCommandResponseSchema,
   PrimaryAdminCommandResponseSchema,
+  PrimaryAdminSuccessorCommandResponseSchema,
+  PrimaryAdminSuccessorListResponseSchema,
+  ProposePrimaryAdminSuccessorBodySchema,
   VenueRoleSummaryResponseSchema,
+  VerifyVenueBodySchema,
+  VenueVerificationCommandResponseSchema,
+  type ApprovePrimaryAdminSuccessorBody,
   type AppointGymAdminBody,
+  type AuthorizeGuestCoachBody,
   type ChangePrimaryAdminBody,
   type CoachInviteBody,
   type PendingCoachInviteListResponse,
   type RoleGrantCommandResponse,
   type PrimaryAdminCommandResponse,
+  type PrimaryAdminSuccessorCommandResponse,
+  type PrimaryAdminSuccessorListResponse,
+  type ProposePrimaryAdminSuccessorBody,
   type VenueRoleSummaryResponse,
+  type VerifyVenueBody,
+  type VenueVerificationCommandResponse,
 } from '@molokh/contracts';
 import type {
   AcceptCoachInvitePayload,
+  ApprovePrimaryAdminSuccessorPayload,
   AppointGymAdminPayload,
+  AuthorizeGuestCoachPayload,
   ChangePrimaryAdminPayload,
   ExecutedCommand,
   InviteCoachPayload,
   RoleGrantEffectIds,
   PrimaryAdminEffectIds,
   PrimaryAdminProjection,
+  PrimaryAdminSuccessorApprovalEffectIds,
+  PrimaryAdminSuccessorEffectIds,
+  PrimaryAdminSuccessorProjection,
+  ProposePrimaryAdminSuccessorPayload,
   VenueRoleSummaryProjection,
+  VerifyVenuePayload,
+  VenueVerificationEffectIds,
+  VenueVerificationProjection,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -54,6 +77,10 @@ interface GrantParams {
   readonly grantId: string;
 }
 
+interface SessionParams {
+  readonly sessionId: string;
+}
+
 export interface RoleRouteDependencies {
   readonly operatorAuth: AuthAdapter;
   readonly userAuth: AuthAdapter;
@@ -63,6 +90,10 @@ export interface RoleRouteDependencies {
   ) => Promise<ExecutedCommand<RoleGrantProjection>>;
   readonly acceptCoachInvite: (
     command: CommandEnvelope<AcceptCoachInvitePayload>,
+    ids: RoleGrantEffectIds,
+  ) => Promise<ExecutedCommand<RoleGrantProjection>>;
+  readonly authorizeGuestCoach: (
+    command: CommandEnvelope<AuthorizeGuestCoachPayload>,
     ids: RoleGrantEffectIds,
   ) => Promise<ExecutedCommand<RoleGrantProjection>>;
   readonly listPendingCoachInvites: (
@@ -76,10 +107,25 @@ export interface RoleRouteDependencies {
     command: CommandEnvelope<ChangePrimaryAdminPayload>,
     ids: PrimaryAdminEffectIds,
   ) => Promise<ExecutedCommand<PrimaryAdminProjection>>;
+  readonly proposePrimaryAdminSuccessor: (
+    command: CommandEnvelope<ProposePrimaryAdminSuccessorPayload>,
+    ids: PrimaryAdminSuccessorEffectIds,
+  ) => Promise<ExecutedCommand<PrimaryAdminSuccessorProjection>>;
+  readonly approvePrimaryAdminSuccessor: (
+    command: CommandEnvelope<ApprovePrimaryAdminSuccessorPayload>,
+    ids: PrimaryAdminSuccessorApprovalEffectIds,
+  ) => Promise<ExecutedCommand<PrimaryAdminSuccessorProjection>>;
+  readonly listPrimaryAdminSuccessorProposals: (
+    centralUserId: string,
+  ) => Promise<readonly PrimaryAdminSuccessorProjection[]>;
   readonly readVenueRoleSummary: (
     centralUserId: string,
     venueId: string,
   ) => Promise<VenueRoleSummaryProjection | null>;
+  readonly verifyVenue: (
+    command: CommandEnvelope<VerifyVenuePayload>,
+    ids: VenueVerificationEffectIds,
+  ) => Promise<ExecutedCommand<VenueVerificationProjection>>;
 }
 
 function unauthorized(request: FastifyRequest) {
@@ -123,12 +169,45 @@ function primaryEffectIds(
   };
 }
 
+function successorProposalEffectIds(): PrimaryAdminSuccessorEffectIds {
+  return {
+    eventId: newUuidV7(),
+    auditId: newUuidV7(),
+    outboxMessageId: newUuidV7(),
+  };
+}
+
+function successorApprovalEffectIds(
+  actorId: string,
+  idempotencyKey: string,
+): PrimaryAdminSuccessorApprovalEffectIds {
+  return {
+    ...successorProposalEffectIds(),
+    primaryEventId: newUuidV7(),
+    primaryGrantId: idempotentResourceId(
+      'PrimaryAdminRoleGrant',
+      actorId,
+      idempotencyKey,
+    ),
+    targetNotificationId: newUuidV7(),
+    previousNotificationId: newUuidV7(),
+  };
+}
+
 function effectIds(): RoleGrantEffectIds {
   return {
     eventId: newUuidV7(),
     auditId: newUuidV7(),
     outboxMessageId: newUuidV7(),
     notificationId: newUuidV7(),
+  };
+}
+
+function venueVerificationEffectIds(): VenueVerificationEffectIds {
+  return {
+    eventId: newUuidV7(),
+    auditId: newUuidV7(),
+    outboxMessageId: newUuidV7(),
   };
 }
 
@@ -150,6 +229,135 @@ export async function registerRoleRoutes(
   app: FastifyInstance,
   dependencies: RoleRouteDependencies,
 ): Promise<void> {
+  app.post<{
+    Body: VerifyVenueBody;
+    Headers: RoleHeaders;
+    Params: { readonly venueId: string };
+  }>(
+    '/api/v1/central/venues/:venueId/verify',
+    {
+      schema: {
+        operationId: 'verifyVenue',
+        params: Type.Object({ venueId: Type.String({ format: 'uuid' }) }),
+        body: VerifyVenueBodySchema,
+        response: {
+          200: VenueVerificationCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<VenueVerificationCommandResponse | undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const command: CommandEnvelope<VerifyVenuePayload> = {
+        commandId: newUuidV7(),
+        commandType: 'VERIFY_VENUE',
+        idempotencyKey: requiredIdempotencyKey(request.headers['idempotency-key']),
+        actor: {
+          type: 'USER',
+          id: authenticated.userId,
+          roles: ['CENTRAL_ADMIN'],
+          scopeIds: [],
+        },
+        aggregateType: 'Venue',
+        aggregateId: request.params.venueId,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'admin',
+        payloadVersion: 1,
+        payload: {
+          venueId: request.params.venueId,
+          checklistVersion: request.body.checklistVersion,
+          evidenceReference: request.body.evidenceReference,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.verifyVenue(
+        command,
+        venueVerificationEffectIds(),
+      );
+      return {
+        data: { ...executed.response },
+        meta: {
+          requestId: context.requestId,
+          eventId: executed.eventId,
+          replayed: executed.replayed,
+        },
+      };
+    },
+  );
+
+  app.post<{
+    Body: AuthorizeGuestCoachBody;
+    Headers: RoleHeaders;
+    Params: SessionParams;
+  }>(
+    '/api/v1/sessions/:sessionId/guest-coach',
+    {
+      schema: {
+        operationId: 'authorizeSessionGuestCoach',
+        params: Type.Object({ sessionId: Type.String({ format: 'uuid' }) }),
+        body: AuthorizeGuestCoachBodySchema,
+        response: {
+          201: RoleGrantCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const idempotencyKey = requiredIdempotencyKey(
+        request.headers['idempotency-key'],
+      );
+      const grantId = idempotentResourceId(
+        'GuestCoachRoleGrant', request.params.sessionId,
+        `${authenticated.userId}:${idempotencyKey}`,
+      );
+      const command: CommandEnvelope<AuthorizeGuestCoachPayload> = {
+        commandId: newUuidV7(),
+        commandType: 'AUTHORIZE_GUEST_COACH',
+        idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+        aggregateType: 'RoleGrant', aggregateId: grantId,
+        expectedVersion: expectedVersion(request.headers['if-match'], 0),
+        correlationId: context.correlationId, causationId: context.causationId,
+        requestId: context.requestId, source: 'admin', payloadVersion: 1,
+        payload: {
+          userId: request.body.coachUserId,
+          sessionId: request.params.sessionId,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.authorizeGuestCoach(command, effectIds());
+      await reply.status(201).send(commandResponse(executed, context.requestId));
+    },
+  );
+
   app.post<{
     Body: CoachInviteBody;
     Headers: RoleHeaders;
@@ -462,6 +670,177 @@ export async function registerRoleRoutes(
       const executed = await dependencies.changePrimaryAdmin(
         command,
         primaryEffectIds(authenticated.userId, idempotencyKey),
+      );
+      return {
+        data: { ...executed.response },
+        meta: {
+          requestId: context.requestId,
+          eventId: executed.eventId,
+          replayed: executed.replayed,
+        },
+      };
+    },
+  );
+
+  app.post<{
+    Body: ProposePrimaryAdminSuccessorBody;
+    Headers: RoleHeaders;
+    Params: { readonly venueId: string };
+  }>(
+    '/api/v1/venues/:venueId/primary-admin-successor-proposals',
+    {
+      schema: {
+        operationId: 'proposeVenuePrimaryAdminSuccessor',
+        params: Type.Object({ venueId: Type.String({ format: 'uuid' }) }),
+        body: ProposePrimaryAdminSuccessorBodySchema,
+        response: {
+          201: PrimaryAdminSuccessorCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.userAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const idempotencyKey = requiredIdempotencyKey(
+        request.headers['idempotency-key'],
+      );
+      const proposalId = idempotentResourceId(
+        'PrimaryAdminSuccessorProposal',
+        authenticated.userId,
+        idempotencyKey,
+      );
+      const command: CommandEnvelope<ProposePrimaryAdminSuccessorPayload> = {
+        commandId: newUuidV7(),
+        commandType: 'PROPOSE_PRIMARY_ADMIN_SUCCESSOR',
+        idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+        aggregateType: 'PrimaryAdminSuccessorProposal',
+        aggregateId: proposalId,
+        expectedVersion: 0,
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'api',
+        payloadVersion: 1,
+        payload: {
+          userId: request.body.userId,
+          venueId: request.params.venueId,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.proposePrimaryAdminSuccessor(
+        command,
+        successorProposalEffectIds(),
+      );
+      await reply.status(201).send({
+        data: { ...executed.response },
+        meta: {
+          requestId: context.requestId,
+          eventId: executed.eventId,
+          replayed: executed.replayed,
+        },
+      } satisfies PrimaryAdminSuccessorCommandResponse);
+    },
+  );
+
+  app.get<{ Headers: RoleHeaders }>(
+    '/api/v1/central/primary-admin-successor-proposals',
+    {
+      schema: {
+        operationId: 'listPrimaryAdminSuccessorProposals',
+        response: {
+          200: PrimaryAdminSuccessorListResponseSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<PrimaryAdminSuccessorListResponse | undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const pending = await dependencies.listPrimaryAdminSuccessorProposals(
+        authenticated.userId,
+      );
+      return {
+        data: pending.map((proposal) => ({ ...proposal })),
+        meta: { requestId: context.requestId },
+      };
+    },
+  );
+
+  app.post<{
+    Body: ApprovePrimaryAdminSuccessorBody;
+    Headers: RoleHeaders;
+    Params: { readonly proposalId: string };
+  }>(
+    '/api/v1/central/primary-admin-successor-proposals/:proposalId/approve',
+    {
+      schema: {
+        operationId: 'approvePrimaryAdminSuccessorProposal',
+        params: Type.Object({ proposalId: Type.String({ format: 'uuid' }) }),
+        body: ApprovePrimaryAdminSuccessorBodySchema,
+        response: {
+          200: PrimaryAdminSuccessorCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<PrimaryAdminSuccessorCommandResponse | undefined> => {
+      const authenticated = await dependencies.operatorAuth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const context = requestContext(request);
+      const idempotencyKey = requiredIdempotencyKey(
+        request.headers['idempotency-key'],
+      );
+      const command: CommandEnvelope<ApprovePrimaryAdminSuccessorPayload> = {
+        commandId: newUuidV7(),
+        commandType: 'APPROVE_PRIMARY_ADMIN_SUCCESSOR',
+        idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+        aggregateType: 'PrimaryAdminSuccessorProposal',
+        aggregateId: request.params.proposalId,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'admin',
+        payloadVersion: 1,
+        payload: {
+          proposalId: request.params.proposalId,
+          reasonCode: request.body.reasonCode,
+        },
+      };
+      const executed = await dependencies.approvePrimaryAdminSuccessor(
+        command,
+        successorApprovalEffectIds(authenticated.userId, idempotencyKey),
       );
       return {
         data: { ...executed.response },

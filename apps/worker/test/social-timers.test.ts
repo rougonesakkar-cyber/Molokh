@@ -18,12 +18,28 @@ describe('social timer projection', () => {
     expect(
       socialTimerFromOutbox('social.like.created.v1', { likeId: timer.aggregateId, timer }),
     ).toEqual(timer);
-    expect(socialTimerFromOutbox('social.match.created.v1', {})).toBeNull();
+    expect(socialTimerFromOutbox('chat.message.sent.v1', {})).toBeNull();
     expect(() =>
       socialTimerFromOutbox('social.like.created.v1', {
         timer: { ...timer, commandType: 'UNKNOWN' },
       }),
     ).toThrow('does not match');
+  });
+
+  it('[AC-009] accepts Match inactivity timers from creation and personal Chat activity', () => {
+    const matchTimer = {
+      ...timer,
+      commandType: 'EXPIRE_INACTIVE_MATCH',
+      aggregateType: 'Match',
+      deadlineAt: '2026-10-07T10:00:00.000Z',
+      idempotencyKey: 'match:0199a1b2-1234-7000-8000-000000000001:archive:v1',
+    };
+    expect(socialTimerFromOutbox('social.match.created.v1', { timer: matchTimer }))
+      .toEqual(matchTimer);
+    expect(socialTimerFromOutbox('chat.message.sent.v1', { timer: matchTimer }))
+      .toEqual(matchTimer);
+    expect(() => socialTimerFromOutbox('social.match.created.v1', {}))
+      .toThrow('must contain a timer');
   });
 
   it('[AC-007] accepts the fixed suppression expiry timer', () => {

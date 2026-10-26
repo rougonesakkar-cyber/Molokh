@@ -19,15 +19,28 @@ const recorded: ResultProjection = {
   sessionId,
   state: 'RECORDED',
   outcomeCode: 'WIN_A',
+  recordedOutcomeCode: 'WIN_A',
   winnerUserId,
   winnerDisplayName: 'Атлет А',
   loserUserId,
   loserDisplayName: 'Атлет Б',
+  recordedWinnerUserId: winnerUserId,
+  recordedLoserUserId: loserUserId,
+  technicalCorrectionDecisionId: null,
   reasonCode: null,
   comment: null,
   methodCode: null,
   methodText: null,
   scorePayload: null,
+  methodPayload: null,
+  recordedMethodCode: null,
+  recordedMethodText: null,
+  recordedScorePayload: null,
+  recordedMethodPayload: null,
+  latestMetadataRevisionId: null,
+  metadataRevisionCount: 0,
+  metadataRevisionDeadlineAt: '2026-09-10T10:00:00.000Z',
+  viewerCanReviseMetadata: true,
   recordedAt: '2026-09-09T10:00:00.000Z',
   appealDeadlineAt: '2026-09-11T10:00:00.000Z',
   finalizedAt: null,
@@ -49,7 +62,64 @@ afterEach(async () => {
 });
 
 describe('Result and Appeal routes', () => {
-  it('[AC-076][AC-088][AC-089] exposes the complete provisional Result command surface', async () => {
+  it('[AC-112] exposes a neutral DRAW and forwards the Athlete Appeal command', async () => {
+    const draw: ResultProjection = {
+      ...recorded,
+      outcomeCode: 'DRAW', recordedOutcomeCode: 'DRAW',
+      winnerUserId: null, winnerDisplayName: null,
+      loserUserId: null, loserDisplayName: null,
+      recordedWinnerUserId: null, recordedLoserUserId: null,
+      statusTransitionType: 'NONE',
+      statusAfter: recorded.statusBefore,
+    };
+    const readResult = vi.fn().mockResolvedValue(draw);
+    const submitResultAppeal = vi.fn().mockResolvedValue({
+      responseStatus: 201,
+      response: { ...draw, state: 'UNDER_APPEAL', viewerCanAppeal: false, version: 2 },
+      eventId: '0199a1b2-1234-7000-8000-000000001510', aggregateVersion: 2,
+      replayed: false,
+    });
+    const app = await buildApp({
+      result: {
+        auth: new StaticBearerAuthAdapter(token, actorUserId),
+        readResult, submitResultAppeal,
+        recordSessionResult: vi.fn(), reviseResultMetadata: vi.fn(),
+        waiveResultAppeal: vi.fn(),
+      },
+    });
+    apps.push(app);
+
+    const read = await app.inject({
+      method: 'GET', url: `/api/v1/results/${resultId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({
+      data: {
+        outcomeCode: 'DRAW', winnerUserId: null, loserUserId: null,
+        statusTransitionType: 'NONE', viewerCanAppeal: true,
+      },
+    });
+
+    const appealed = await app.inject({
+      method: 'POST', url: `/api/v1/results/${resultId}/appeal`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'appeal-draw-route-1', 'if-match': '1',
+      },
+      payload: { reasonCode: 'DRAW_DISPUTED', statement: 'Прошу проверить ничью.' },
+    });
+    expect(appealed.statusCode).toBe(201);
+    expect(submitResultAppeal).toHaveBeenCalledWith(expect.objectContaining({
+      aggregateId: resultId, expectedVersion: 1,
+      actor: { type: 'USER', id: actorUserId, roles: ['ATHLETE'], scopeIds: [] },
+      payload: {
+        resultId, reasonCode: 'DRAW_DISPUTED', statement: 'Прошу проверить ничью.',
+      },
+    }), expect.any(Object));
+  });
+
+  it('[AC-076][AC-078][AC-079][AC-088][AC-089][AC-122][AC-167][AC-202][AC-203][AC-209][AC-210] exposes media-free Coach Result facts', async () => {
     const readResult = vi.fn().mockResolvedValue(recorded);
     const recordSessionResult = vi.fn().mockResolvedValue({
       responseStatus: 201, response: recorded,
@@ -71,11 +141,25 @@ describe('Result and Appeal routes', () => {
       eventId: '0199a1b2-1234-7000-8000-000000001509', aggregateVersion: 2,
       replayed: false,
     });
+    const revised = {
+      ...recorded,
+      methodText: 'Победа решением судьи',
+      scorePayload: { display: '3:0' },
+      latestMetadataRevisionId: '0199a1b2-1234-7000-8000-000000001511',
+      metadataRevisionCount: 1,
+      version: 2,
+    };
+    const reviseResultMetadata = vi.fn().mockResolvedValue({
+      responseStatus: 201, response: revised,
+      eventId: '0199a1b2-1234-7000-8000-000000001512', aggregateVersion: 2,
+      replayed: false,
+    });
     const app = await buildApp({
       result: {
         auth: new StaticBearerAuthAdapter(token, actorUserId),
         readResult,
         recordSessionResult,
+        reviseResultMetadata,
         submitResultAppeal,
         waiveResultAppeal,
       },
@@ -96,7 +180,7 @@ describe('Result and Appeal routes', () => {
         'idempotency-key': 'record-result-route-1',
         'if-match': '7',
       },
-      payload: { sessionId, outcomeCode: 'WIN_A' },
+      payload: { sessionId, outcomeCode: 'WIN_A', methodCode: 'INJURY_STOPPAGE' },
     });
     expect(created.statusCode).toBe(201);
     expect(recordSessionResult.mock.calls[0]?.[0]).toMatchObject({
@@ -105,12 +189,94 @@ describe('Result and Appeal routes', () => {
       actor: { id: actorUserId, roles: ['COACH'] },
       payload: {
         challengeId, sessionId, outcomeCode: 'WIN_A', winnerUserId: null,
-        reasonCode: null, comment: null, methodCode: null, methodText: null,
+        reasonCode: null, comment: null, methodCode: 'INJURY_STOPPAGE', methodText: null,
         scorePayload: null, methodPayload: null,
       },
     });
     expect(recordSessionResult.mock.calls[0]?.[1]).toMatchObject({
       notificationIds: expect.arrayContaining([expect.any(String), expect.any(String)]),
+    });
+    expect(JSON.stringify(created.json())).not.toMatch(/media|photo|video|upload|objectKey/i);
+
+    const metadataRevision = await app.inject({
+      method: 'POST', url: `/api/v1/results/${resultId}/metadata-revisions`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'revise-result-metadata-route-1',
+        'if-match': '1',
+      },
+      payload: { methodText: 'Победа решением судьи', scorePayload: { display: '3:0' } },
+    });
+    expect(metadataRevision.statusCode).toBe(201);
+    expect(metadataRevision.json()).toMatchObject({
+      data: {
+        resultId, outcomeCode: 'WIN_A', winnerUserId,
+        methodText: 'Победа решением судьи', scorePayload: { display: '3:0' }, version: 2,
+      },
+    });
+    expect(reviseResultMetadata.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REVISE_RESULT_METADATA', aggregateType: 'Result',
+      aggregateId: resultId, expectedVersion: 1,
+      actor: { id: actorUserId, roles: ['COACH'] },
+      payload: {
+        resultId, methodText: 'Победа решением судьи', scorePayload: { display: '3:0' },
+      },
+    });
+    expect(reviseResultMetadata.mock.calls[0]?.[0].payload).not.toHaveProperty('outcomeCode');
+    expect(reviseResultMetadata.mock.calls[0]?.[0].payload).not.toHaveProperty('winnerUserId');
+
+    const unavailableMediaUpload = await app.inject({
+      method: 'POST',
+      url: `/api/v1/results/${resultId}/media`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { fileName: 'result.mp4', mimeType: 'video/mp4', sizeBytes: 1024 },
+    });
+    expect(unavailableMediaUpload.statusCode).toBe(404);
+    expect(recordSessionResult).toHaveBeenCalledTimes(1);
+
+    const noShow = await app.inject({
+      method: 'POST', url: `/api/v1/challenges/${challengeId}/result`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'record-no-show-route-1',
+        'if-match': '7',
+      },
+      payload: {
+        sessionId, outcomeCode: 'NO_SHOW', winnerUserId,
+        reasonCode: 'ATTENDANCE_NO_SHOW', comment: 'Неявка подтверждена Coach.',
+      },
+    });
+    expect(noShow.statusCode).toBe(201);
+    expect(recordSessionResult.mock.calls[1]?.[0]).toMatchObject({
+      actor: { id: actorUserId, roles: ['COACH'] },
+      payload: {
+        challengeId, sessionId, outcomeCode: 'NO_SHOW', winnerUserId,
+        reasonCode: 'ATTENDANCE_NO_SHOW', comment: 'Неявка подтверждена Coach.',
+      },
+    });
+
+    const externalNoContest = await app.inject({
+      method: 'POST', url: `/api/v1/challenges/${challengeId}/result`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'record-external-no-contest-route-1',
+        'if-match': '7',
+      },
+      payload: {
+        sessionId, outcomeCode: 'NO_CONTEST',
+        reasonCode: 'EXTERNAL_SAFETY_FAILURE',
+        comment: 'Внешняя причина безопасности не позволила завершить Session.',
+      },
+    });
+    expect(externalNoContest.statusCode).toBe(201);
+    expect(recordSessionResult.mock.calls[2]?.[0]).toMatchObject({
+      actor: { id: actorUserId, roles: ['COACH'] },
+      payload: {
+        challengeId, sessionId, outcomeCode: 'NO_CONTEST', winnerUserId: null,
+        reasonCode: 'EXTERNAL_SAFETY_FAILURE',
+        comment: 'Внешняя причина безопасности не позволила завершить Session.',
+        methodCode: null,
+      },
     });
 
     const appealed = await app.inject({
@@ -138,15 +304,36 @@ describe('Result and Appeal routes', () => {
       payload: {},
     });
     expect(waived.statusCode).toBe(200);
+    expect(waived.json()).toMatchObject({
+      data: {
+        state: 'FINAL', viewerCanAppeal: false, viewerCanWaiveAppeal: false,
+      },
+    });
     expect(waiveResultAppeal.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'WAIVE_RESULT_APPEAL', aggregateId: resultId, expectedVersion: 1,
+      actor: { id: actorUserId, roles: ['ATHLETE'] }, payload: { resultId },
     });
 
     await app.ready();
-    expect(app.swagger().paths).toHaveProperty('/api/v1/results/{resultId}');
-    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/result');
-    expect(app.swagger().paths).toHaveProperty('/api/v1/results/{resultId}/appeal');
-    expect(app.swagger().paths).toHaveProperty('/api/v1/results/{resultId}/waive-appeal');
+    const openApi = app.swagger() as {
+      readonly paths: Record<string, { readonly post?: { readonly requestBody?: unknown } }>;
+    };
+    expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}');
+    expect(openApi.paths).toHaveProperty('/api/v1/challenges/{challengeId}/result');
+    expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}/appeal');
+    expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}/waive-appeal');
+    expect(openApi.paths).toHaveProperty('/api/v1/results/{resultId}/metadata-revisions');
+    expect(openApi.paths['/api/v1/results/{resultId}']).not.toHaveProperty('put');
+    expect(openApi.paths['/api/v1/results/{resultId}']).not.toHaveProperty('patch');
+    expect(openApi.paths).not.toHaveProperty('/api/v1/results/{resultId}/replace');
+    expect(openApi.paths).not.toHaveProperty('/api/v1/results/{resultId}/update');
+    expect(Object.keys(openApi.paths).filter((path) =>
+      path.includes('/results/') && /media|photo|video|upload/i.test(path),
+    )).toEqual([]);
+    const recordBodySchema = openApi.paths['/api/v1/challenges/{challengeId}/result']
+      ?.post?.requestBody;
+    expect(JSON.stringify(recordBodySchema)).toContain('"additionalProperties":false');
+    expect(JSON.stringify(recordBodySchema)).not.toMatch(/media|photo|video|upload|objectKey/i);
   });
 
   it('requires optimistic concurrency and authentication for Result writes', async () => {
@@ -154,7 +341,8 @@ describe('Result and Appeal routes', () => {
       result: {
         auth: new StaticBearerAuthAdapter(token, actorUserId),
         readResult: vi.fn(), recordSessionResult: vi.fn(),
-        submitResultAppeal: vi.fn(), waiveResultAppeal: vi.fn(),
+        reviseResultMetadata: vi.fn(), submitResultAppeal: vi.fn(),
+        waiveResultAppeal: vi.fn(),
       },
     });
     apps.push(app);

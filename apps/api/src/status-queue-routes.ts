@@ -130,6 +130,7 @@ function effectIds(): StatusQueueEffectIds {
     acknowledgmentId: newUuidV7(),
     pairedQueueEventId: newUuidV7(),
     timerOutboxMessageId: newUuidV7(),
+    mandatoryReminderTimerOutboxMessageId: newUuidV7(),
     staleQueueEventId: newUuidV7(),
     staleQueueOutboxMessageId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(),

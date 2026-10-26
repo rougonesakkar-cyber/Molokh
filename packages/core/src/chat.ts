@@ -22,7 +22,10 @@ export type ChatActionDenialCode =
   | 'MESSAGE_ALREADY_REPORTED'
   | 'MESSAGE_ALREADY_HIDDEN'
   | 'MESSAGE_CONTENT_INVALID'
-  | 'REPORT_REASON_INVALID';
+  | 'REPORT_REASON_INVALID'
+  | 'REPORT_SUBJECT_REQUIRED'
+  | 'MODERATION_CENTRAL_REQUIRED'
+  | 'MODERATION_CENTRAL_UNAVAILABLE';
 
 export class ChatActionDeniedError extends Error {
   readonly code: ChatActionDenialCode;
@@ -96,8 +99,17 @@ export function assertCanReportMessage(
   senderUserId: string | null,
   reportedAt: Date | null,
 ): void {
+  if (senderUserId === null) throw new ChatActionDeniedError('REPORT_SUBJECT_REQUIRED');
   if (reporterUserId.trim().toLowerCase() === senderUserId?.trim().toLowerCase()) {
     throw new ChatActionDeniedError('REPORT_SELF_NOT_ALLOWED');
   }
   if (reportedAt) throw new ChatActionDeniedError('MESSAGE_ALREADY_REPORTED');
+}
+
+export function normalizeChatReportReasonCode(value: string): string {
+  const normalized = value.trim().toUpperCase();
+  if (!/^[A-Z0-9_]{1,80}$/.test(normalized)) {
+    throw new ChatActionDeniedError('REPORT_REASON_INVALID');
+  }
+  return normalized;
 }

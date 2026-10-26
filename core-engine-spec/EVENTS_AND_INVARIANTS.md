@@ -115,6 +115,35 @@ PII, тексты Report и media не копируются в широкий ev
 
 Содержит appeal/result/decision IDs, reviewer, `UPHOLD|REVERSE|ANNUL|REPEAT`, reason, original/effective outcome, evidence references, `decided_at`, and intended compensation mode. Projection mutation совершается той же транзакцией или идемпотентной saga с decision ID.
 
+### 2.8. `AgeDivisionChanged.v1`
+
+Owner — Identity; producer — единственный SYSTEM timer агрегата `AgeDivisionTransition` с
+версией `0→1`. Payload содержит transition/User IDs, `YOUTH→ADULT`, server
+`transitioned_at`, итоговую Identity version, ID закрытых Challenge/B-26 retention/queue/consent
+и минимальные before/after status projections. Дата рождения, guardian contact и иные raw PII в
+event/outbox не копируются; PII class — `INTERNAL_IDENTIFIER`, retention — бессрочная
+аудит-линия Identity. Consumers: Membership, Competition vacancy/FIFO, Scheduling retention,
+Discovery и notification projection.
+
+### 2.9. Account closure and export events
+
+`AccountClosureRequested.v1` содержит closure/User IDs, `recovery_until`, `export_requested` и
+policy version, но не копирует телефон или иные raw PII. `AccountClosureExecuted.v1` ссылается на
+атомарный `UserAccountClosed.v1`/pseudonymization event. Исполнение доступно Central только после
+30 дней и при нулевых active blockers.
+
+`AccountDataExportRequested.v1` запускает подготовку Worker. `AccountDataExportPrepared.v1`
+содержит export/User IDs, `expires_at=ready_at+48h` и SHA-256, но не сам private payload.
+`AccountDataExportExpired.v1` подтверждает физическое удаление payload; checksum, policy version
+и минимальная audit-lineage остаются. Retention clock не останавливается PlatformIncident.
+
+Транзакция выпускает ровно один канонический `AgeDivisionChanged`. Технические связанные
+события `UserAgeDivisionChanged` и `MembershipAgeDivisionChanged` двигают версии своих
+агрегатов; `ChallengeCancelledNoFault`, `BookingTrainingRetentionRequested` и status events
+сохраняют независимую replay lineage. Started Session и её
+`session_competitive_snapshot` не изменяются: consent истекает, но физически начатая Session,
+Challenge и obligations завершаются по frozen Youth snapshot.
+
 ## 3. Каталог событий
 
 ### 3.1. Identity и Social
@@ -122,8 +151,8 @@ PII, тексты Report и media не копируются в широкий ev
 | Events | Producer | Primary consumers |
 |---|---|---|
 | `VerificationStarted/AccountVerified/VerificationRejected/Expired/Revoked` | Identity | permissions, UI, Governance |
-| `AgeDivisionChanged` | Identity timer | Membership, Competition succession, Discovery |
-| `DisplayNameChanged/AvatarChanged` | Identity | profile, audit, moderation; never verification reset |
+| `AgeDivisionChanged/UserAgeDivisionChanged/MembershipAgeDivisionChanged` | Identity timer | Membership, Competition succession, Scheduling retention, Discovery |
+| `DisplayNameChanged/SportPreferencesChanged/HomeVenueChanged/AvatarChanged` | Identity | profile, Discovery/Slot priorities, audit, moderation; never verification or Competition reset |
 | `AccountRecoveryRequested/Approved/Completed/Rejected`, `AccountAccessIncidentConfirmed` | Identity | permissions, obligations, deadline review |
 | `DuplicateAccountReviewStarted/Cleared/Resolved` | Identity governance | holds, account projection, status disposition |
 | `LikeCreated/Withdrawn/Expired/RemovedBySkip` | Social | Discovery, notifications |
@@ -136,7 +165,7 @@ PII, тексты Report и media не копируются в широкий ev
 
 | Events | Producer | Primary consumers |
 |---|---|---|
-| `CommunityCreated/Paused/Reactivated/ClosureScheduled/Closed` | Central | Competition holds, Scheduling, UI |
+| `CommunityCreated/Paused/Reactivated/ConfigurationChanged/ClosureScheduled/Closed` | Central / scoped Gym Admin | Competition holds, Scheduling, Result, UI |
 | `MembershipRequested/Approved/Rejected/Activated/Left/Removed/ArchivedByCommunityClosure` | Community | Competition eligibility, queue, Governance |
 | `StatusHolderRemovalReviewStarted/MembershipRemovalConfirmed/Rejected` | Governance | ProcessHold, Status Engine |
 | `CoachInvited/Authorized/RoleRevoked/GuestCoachAuthorized/Expired` | Roles | Slot, Booking, Result permissions |
@@ -155,7 +184,7 @@ PII, тексты Report и media не копируются в широкий ev
 | `BookingCoachReplaced/SessionCoachReplaced` | Booking/Session | assignment audit, notifications, Result permission |
 | `BookingTrainingRetentionRequested/Confirmed/Closed`, `BookingConvertedToTraining` | Booking | Session, notifications, Competition audit |
 | `TrainingParticipantCancelled/SoloContinuationConfirmed/BookingConvertedToSolo` | Booking | Session, notifications |
-| `SessionScheduled/WindowOpened/Started/Ended/Cancelled/FailedExternal` | Session | Challenge, Result, stats, operational review |
+| `SessionScheduled/WindowOpened/Started/Ended/Cancelled/FailedExternal/ConvertedToSolo/ConvertedToTraining` | Session | Challenge, Result, stats, operational review |
 | `AttendanceRecorded` | Session | stats, Result validation |
 
 ### 3.4. Competition
@@ -172,10 +201,10 @@ PII, тексты Report и media не копируются в широкий ev
 | `GenesisChallengePartyAccepted/Declined/ResponseExpired` | Challenge | GENESIS queue/Competition phase |
 | `MandatoryChallengeRefused/Expired` | Challenge | Result |
 | `ChallengeBookingStarted/Booked/SessionStarted/AwaitingResult` | Challenge | Activity/read model |
-| `ChallengeRescheduled/RescheduledByAthlete/SchedulingExtended/CancelledNoCapacity` | Challenge | Booking, deadlines |
+| `ChallengeRescheduleProposed/Rescheduled/RescheduledByAthlete/SchedulingExtended/CancelledNoCapacity` | Challenge | Booking, deadlines |
 | `FoundingGenesisPaired/GenesisWithoutOpponent/ContenderGenesisPaired/SuccessionWithoutOpponent/GenesisPairingReleased` | Competition | Challenge, Status, FIFO |
 | `GenesisStatusApplied/ContenderAssigned/Transferred/Defended/TitleTransferred/Defended` | Status Engine | tenure, profile, queue |
-| `ChampionSuccessionApplied/ContenderVacated/AgeTransitionApplied` | Status Engine | Competition phase, queue |
+| `ChampionSuccessionApplied/ChampionVacated/ContenderVacated` | Status Engine | Competition phase, queue |
 | `StatusTransitionApplied/Finalized/Compensated/RolledBack` | Status Engine | all status projections |
 | `PairCooldownStarted/Expired/Removed` | Status Engine | eligibility |
 | `ProcessHeld/ProcessHoldReleased` | Governance/Competition | deadlines, permissions |
@@ -217,6 +246,8 @@ PII, тексты Report и media не копируются в широкий ev
 - `INV-ID-11`: account/device/SIM loss and phone change never delete or silently cancel an accepted obligation. A 24h phone-change hold denies sensitive actions but permits minimum existing-obligation service responses from a trusted old session.
 - `INV-ID-12`: account recovery stores no identity documents. No-fault deadline effect requires a Central-confirmed access incident with exact affected interval/process.
 - `INV-ID-13`: duplicate accounts are never automatically merged. Canonical selection creates private alias lineage; immutable Results remain attributable and status changes only through a separately governed disposition.
+- `INV-ID-14`: account closure is self-requested and reversible for exactly 30 days. Central executes it only after all accepted obligations, status, active Sessions, Memberships, roles and FIFO entries are resolved; immutable sporting/audit lineage is pseudonymized, never deleted.
+- `INV-ID-15`: at most one `REQUESTED/READY` account export exists per User. Its private payload is downloadable only by that User, expires exactly 48h after preparation and is then deleted while checksum/audit lineage remains.
 
 ### Social
 
@@ -268,6 +299,7 @@ PII, тексты Report и media не копируются в широкий ev
 - `INV-SCH-19`: after equivalent Coach replacement either Athlete may choose external no-fault reschedule before start; any material-term change requires normal mutual reconfirmation.
 - `INV-SCH-20`: scheduled start opens READY_FOR_COACH and freezes competitive context but is never proof of physical start, attendance or completed Training. Only authorized Coach Start/first Attendance creates actual_start_at and IN_PROGRESS.
 - `INV-SCH-21`: confirmed Coach/Venue failure before actual start is EXTERNAL: equivalent replacement may proceed within grace; otherwise Booking/Session close no-fault and Official returns scheduling without a user reschedule count.
+- `INV-SCH-22`: any mutation that keeps a Session in `SCHEDULED` while advancing its version reissues `OPEN_SESSION_WINDOW` for the new exact version and the original `scheduled_start_at`; an older timer may become stale, but it cannot strand the Session before `READY_FOR_COACH`.
 
 ### Challenge
 
@@ -276,7 +308,7 @@ PII, тексты Report и media не копируются в широкий ev
 - `INV-CH-03`: Ordinary↔Ordinary и Champion→Ordinary требуют active Match; status path к Contender не требует Match.
 - `INV-CH-04`: Ordinary не может инициировать Official Challenge к Champion; Contender не инициирует Official к Ordinary в MVP.
 - `INV-CH-05`: любой физически начавшийся Official Champion↔Contender — TITLE.
-- `INV-CH-06`: Champion offer to Contender optional; Contender challenge to Champion mandatory for Champion.
+- `INV-CH-06`: Champion offer to Contender optional; Contender challenge to Champion mandatory for Champion, with a stale-safe +48h reminder and a +72h SYSTEM expiry that creates one appealable TITLE Forfeit through the Result engine; a manual accept committed first makes the old expiry timer a no-op even across the preflight/command race.
 - `INV-CH-07`: Ordinary challenge to Contender mandatory for Contender.
 - `INV-CH-08`: pre-accept withdrawal no loss; accepted unilateral Athlete abandonment is Forfeit unless external/mutual/Central no-fault.
 - `INV-CH-09`: scheduling 14d, one capacity extension +7d; unavailable capacity never Athlete fault.
@@ -298,7 +330,7 @@ PII, тексты Report и media не копируются в широкий ev
 
 - `INV-RES-01`: Athlete никогда не является author attendance/result command.
 - `INV-RES-02`: Coach cannot arbitrate a Session in which the same User is an Athlete.
-- `INV-RES-03`: one effective Result per official Session or administrative obligation breach.
+- `INV-RES-03`: one effective Result per official Session or administrative obligation breach; duplicate or concurrent timeout jobs serialize to that single Result and its single status/Cooldown lifecycle. Status-bearing Results targeting one Competition serialize on its row lock; only one may acquire the provisional status lock and commit its status/Cooldown lifecycle.
 - `INV-RES-04`: FORFEIT, NO_SHOW, NO_CONTEST require reason/comment.
 - `INV-RES-05`: sport-specific score/method/ruleset never directly alters status.
 - `INV-RES-06`: Result `RECORDED` immediately applies provisional status projection.
@@ -318,6 +350,7 @@ PII, тексты Report и media не копируются в широкий ev
 - `INV-RES-20`: after actual start, injury/voluntary withdrawal follows the frozen ruleset and may be a decisive Result without medical documents. NO_CONTEST/no-fault requires an external Safety/Venue/equipment impossibility, not merely an Athlete's wish to stop.
 - `INV-RES-21`: FINAL ordinary Appeal never reopens. Only a Central independent IntegrityCase for FRAUD/SYSTEM_ERROR/IDENTITY_ERROR may alter effective outcome through append-only decisions, compensations and deterministic replay.
 - `INV-RES-22`: provisional Result/status is public immediately with a neutral review marker. Final removes it; reversal changes public stats/last-five to the effective outcome while retaining only a neutral review-history fact.
+- `INV-RES-23`: Competition status, StatusTenure and Cooldown projections are deterministically rebuildable from the immutable canonical event journal. Rebuild holds the Competition lock, verifies the canonical version and projection hash, and never rewrites Result, decision, snapshot or source-event facts.
 
 ### Appeal
 
@@ -360,6 +393,7 @@ PII, тексты Report и media не копируются в широкий ev
 - `INV-OPS-12`: only an objectively evidenced, Central-confirmed PlatformIncident can alter deadline/outcome handling; an individual delivery complaint alone cannot.
 - `INV-OPS-13`: confirmed Incident extends each pausable deadline by exact incident overlap. Session facts, Cooldown and retention remain continuous.
 - `INV-OPS-14`: a timeout/Forfeit already committed during an Incident is immutable; recovery uses one idempotent compensating no-fault event and preserves the full source history.
+- `INV-OPS-15`: Chat payload retention uses the effective immutable policy and whole-Chat last activity. Bounded concurrent cleanup nulls only expired, uncaptured revision payloads, preserves a SHA-256/deletion time/policy version plus append-only audit, and never deletes a Case snapshot, domain event or sporting record. PlatformIncident does not pause this clock.
 
 ## 5. Status transition function
 
@@ -607,6 +641,7 @@ BookingCompleted
 BookingConfirmationExpired
 BookingConfirmed
 BookingConflictDetected
+BookingOfficialReleasePending
 BookingConvertedToTraining
 BookingConvertedToSolo
 BookingRejected
@@ -614,6 +649,8 @@ BookingRequestWithdrawn
 BookingTrainingRetentionClosed
 BookingTrainingRetentionConfirmed
 BookingTrainingRetentionRequested
+SessionConvertedToSolo
+SessionConvertedToTraining
 BookingConvertedToOfficial
 CaseClosed
 CaseDecided
@@ -630,6 +667,7 @@ ChallengeCreated
 ChallengeCreatedFromConfirmedTraining
 ChallengeDeclined
 ChallengeQueued
+ChallengeRescheduleProposed
 ChallengeRescheduled
 ChallengeRescheduledByAthlete
 ChallengeResponseExpired
@@ -692,9 +730,11 @@ MatchReactivated
 MembershipActivated
 MembershipApproved
 MembershipArchivedByCommunityClosure
+MembershipAgeDivisionChanged
 MembershipLeft
 MembershipRejected
 MembershipRemovalConfirmed
+MembershipRemovalAppealed
 MembershipRemovalRejected
 MembershipRemoved
 MembershipRequested
@@ -772,11 +812,25 @@ Registry continuation for auxiliary lifecycle machines:
 ```text
 AccountRestrictionApplied
 AccountRestrictionRevoked
+AccountClosureCancelled
+AccountClosureExecuted
+AccountClosureRequested
+AccountDataExportExpired
+AccountDataExportPrepared
+AccountDataExportRequested
 AccountAccessIncidentConfirmed
 AccountRecoveryApproved
 AccountRecoveryCompleted
 AccountRecoveryRejected
 AccountRecoveryRequested
+AuthOtpClosed
+AuthOtpRequested
+AuthOtpVerificationFailed
+AuthOtpVerified
+AuthSessionEstablished
+AuthSessionRevoked
+AuthSessionRotated
+VerifiedPhoneChanged
 BlockCreated
 BlockRevoked
 BookingCoachReplaced
@@ -788,6 +842,7 @@ ChatRestrictedToServiceActions
 ChatServiceRestrictionReleased
 CommunityClosed
 CommunityClosureScheduled
+CommunityConfigurationChanged
 CommunityCreated
 CommunityPaused
 CommunityReactivated
@@ -819,6 +874,7 @@ ChatMessageSent
 DisplayNameChanged
 DuplicateAccountCleared
 DuplicateAccountResolved
+DuplicateAccountRestricted
 DuplicateAccountReviewStarted
 IntegrityCaseAnnulled
 IntegrityCaseCorrected
@@ -834,19 +890,26 @@ GenesisChallengePartyAccepted
 GenesisChallengeResponseExpired
 GenesisPairingReleased
 GroupPlanClosedByPairSocialEnd
+IncidentResultCompensatedNoFault
+IncidentTimeoutCompensatedNoFault
 PairSuppressionExpired
 PairSuppressionStarted
+PairCooldownCompensatedNoFault
+PausableDeadlineExtendedByPlatformIncident
 PlatformIncidentCompensated
 PlatformIncidentConfirmed
 PlatformIncidentDetected
 PlatformIncidentRejected
 PlatformIncidentResolved
+CompetitionStatusReplayedAfterPlatformIncident
 PrimaryAdminAppointed
 PrimaryAdminTransferred
 QueueEntrySourceDetached
 SessionCoachReplaced
 SessionFailedExternal
 SessionWindowOpened
+ResignationPreviewed
+StatusReleasePreviewed
 StatusTenureClosed
 StatusTenureCompensated
 StatusTenureFinalized
@@ -859,6 +922,9 @@ TechnicalCorrectionReviewStarted
 TechnicalCorrectionWithdrawn
 UserAccountActivated
 UserAccountClosed
+UserAgeDivisionChanged
+VoluntaryResignationConfirmed
+VoluntaryStatusReleased
 VenueClosed
 VenuePaused
 VenueReactivated

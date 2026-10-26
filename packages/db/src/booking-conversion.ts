@@ -16,6 +16,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
 
 export interface RequestBookingOfficialConversionPayload {
   readonly sessionId: string;
@@ -51,6 +52,7 @@ export interface BookingOfficialConversionEffectIds {
   readonly obligationIds?: readonly [string, string];
   readonly bookingEventId?: string;
   readonly sessionEventId?: string;
+  readonly sessionTimerOutboxMessageId?: string;
   readonly notificationOutboxMessageId: string;
   readonly notificationIds: readonly [string, string, string];
 }
@@ -145,6 +147,8 @@ interface ConversionContextRow {
   readonly community_state: string;
   readonly low_account_active: boolean;
   readonly high_account_active: boolean;
+  readonly low_age_division: 'YOUTH' | 'ADULT';
+  readonly high_age_division: 'YOUTH' | 'ADULT';
   readonly low_verified: boolean;
   readonly high_verified: boolean;
   readonly low_membership_active: boolean;
@@ -219,6 +223,8 @@ async function conversionContext(
       community.state as community_state,
       low_user.account_state = 'ACTIVE' as low_account_active,
       high_user.account_state = 'ACTIVE' as high_account_active,
+      low_user.age_division as low_age_division,
+      high_user.age_division as high_age_division,
       exists (
         select 1 from identity.account_verifications verification
         where verification.user_id = session.pair_low_id
@@ -328,6 +334,7 @@ function contextEligibilityFailure(
     || !context.low_account_active || !context.high_account_active
     || !context.low_verified || !context.high_verified
     || !context.low_membership_active || !context.high_membership_active
+    || context.low_age_division === 'YOUTH' || context.high_age_division === 'YOUTH'
     || !context.coach_authorized
     || Number(context.active_obligation_count) > 0
     || context.live_pair_challenge
@@ -610,7 +617,9 @@ export async function invalidateActiveBookingOfficialConversion(
 export async function readBookingOfficialConversionActivationCandidate(
   database: Kysely<Database>,
   competitionId: string,
+  now?: () => Date,
 ): Promise<BookingOfficialConversionActivationCandidate | null> {
+  const observedAt = now?.().toISOString() ?? null;
   const result = await sql<{
     readonly conversion_id: string;
     readonly competition_id: string;
@@ -638,13 +647,20 @@ export async function readBookingOfficialConversionActivationCandidate(
     where competitive.competition_id = ${competitionId}::uuid
       and competitive.phase = 'RUNNING' and competitive.availability = 'ACTIVE'
       and competitive.integrity_hold_case_id is null
+      and not exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )
       and competitive.status_lock_result_id is null
       and competitive.contender_user_id is not null
       and community.state = 'ACTIVE'
       and entry.kind = 'PREBOOKED_CONVERSION' and entry.state = 'WAITING'
       and entry.bound_holder_user_id = competitive.contender_user_id
       and session.state = 'SCHEDULED' and session.window_opened_at is null
-      and session.actual_start_at is null and session.scheduled_start_at > clock_timestamp()
+      and session.actual_start_at is null
+      and session.scheduled_start_at > coalesce(${observedAt}::timestamptz, clock_timestamp())
       and not exists (
         select 1 from scheduling.booking_official_conversions other_conversion
         where other_conversion.competition_id = competitive.competition_id
@@ -1444,6 +1460,17 @@ export async function decideBookingOfficialConversion(
           { messageId: ids.outboxMessageId, topic: 'scheduling.booking.converted-to-official.v1',
             payload: { conversionId: existing.conversion_id, bookingId: context.booking_id,
               sessionId: context.session_id, challengeId, competitionId: context.competition_id } },
+          { messageId: requiredId(ids, 'sessionTimerOutboxMessageId'),
+            topic: 'scheduling.session.scheduled.v1',
+            sourceEventId: requiredId(ids, 'sessionEventId'),
+            payload: { sessionId: context.session_id, timer: {
+              commandType: 'OPEN_SESSION_WINDOW', aggregateType: 'Session',
+              aggregateId: context.session_id, expectedState: 'SCHEDULED',
+              expectedVersion: Number(context.session_version) + 1,
+              deadlineAt: context.scheduled_start_at.toISOString(),
+              policyVersion: SCHEDULING_POLICY_VERSION,
+              idempotencyKey: `session:${context.session_id}:open-session-window:v${Number(context.session_version) + 1}`,
+            } } },
           { messageId: ids.notificationOutboxMessageId, topic: 'notification.in_app.v1', payload: {
             notifications: [context.pair_low_id, context.pair_high_id, context.coach_user_id]
               .map((recipientUserId, index) => ({ notificationId: ids.notificationIds[index]!, recipientUserId,
@@ -1474,6 +1501,11 @@ export async function expireBookingOfficialConversion(
       if (!existing || !existing.confirmation_deadline_at) {
         throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_PENDING');
       }
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: eventContext.occurredAt,
+      });
       assertOfficialConversionCanExpire({ state: existing.state,
         confirmationDeadlineAt: existing.confirmation_deadline_at.toISOString(),
         occurredAt: eventContext.occurredAt });

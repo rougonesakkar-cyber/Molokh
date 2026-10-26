@@ -2,7 +2,15 @@ import { randomUUID } from 'node:crypto';
 
 import {
   ChatActionDeniedError,
+  AccountAccessConflictError,
+  AccountLifecycleConflictError,
+  AuthSessionConflictError,
   ChallengeConflictError,
+  EvidenceConflictError,
+  EvidencePermissionDeniedError,
+  EvidenceValidationError,
+  CommunityConfigurationConflictError,
+  CommunityLifecycleConflictError,
   IdempotencyKeyReusedError,
   IdentityPermissionDeniedError,
   IdentityValidationError,
@@ -10,6 +18,10 @@ import {
   InvalidIdentityTransitionError,
   MinimumAgeNotMetError,
   InvalidRoleGrantTransitionError,
+  MembershipExitConflictError,
+  MembershipConflictError,
+  MembershipRemovalConflictError,
+  PlatformIncidentConflictError,
   ResultConflictError,
   ResultPermissionDeniedError,
   ResultValidationError,
@@ -22,6 +34,8 @@ import {
   StatusQueueConflictError,
   StatusReleaseConflictError,
   VersionConflictError,
+  YouthConsentConflictError,
+  YouthConsentValidationError,
 } from '@molokh/core';
 import type { ApiError } from '@molokh/contracts';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -58,6 +72,38 @@ export interface HttpErrorMapping {
 }
 
 export function mapApiError(error: unknown, requestId: string): HttpErrorMapping {
+  if (error instanceof EvidenceValidationError) {
+    return { statusCode: 422, body: { code: error.code,
+      message: 'Evidence media does not satisfy the upload policy', requestId } };
+  }
+  if (error instanceof EvidencePermissionDeniedError) {
+    return { statusCode: 403, body: { code: error.code,
+      message: 'Evidence is outside your Appeal or SafetyCase scope', requestId } };
+  }
+  if (error instanceof EvidenceConflictError) {
+    return { statusCode: error.code === 'EVIDENCE_NOT_FOUND' ? 404 : 409,
+      body: { code: error.code,
+        message: error.code === 'EVIDENCE_LIMIT_EXCEEDED'
+          ? 'Evidence limit is exceeded' : 'Evidence action is no longer available', requestId } };
+  }
+  if (error instanceof AuthSessionConflictError) {
+    const unauthenticated = error.code === 'AUTH_SESSION_INVALID_STATE'
+      || error.code === 'AUTH_REFRESH_EXPIRED';
+    return { statusCode: unauthenticated ? 401 : 409,
+      body: { code: error.code,
+        message: unauthenticated
+          ? 'Authentication session is invalid or expired'
+          : 'Authentication state no longer allows this action', requestId } };
+  }
+  if (error instanceof AccountAccessConflictError) {
+    const forbidden = error.code === 'ACCOUNT_ACCESS_CENTRAL_REQUIRED'
+      || error.code === 'ACCOUNT_ACCESS_SYSTEM_REQUIRED'
+      || error.code === 'ACCOUNT_ACCESS_USER_OR_CENTRAL_REQUIRED';
+    return { statusCode: forbidden ? 403 : 409,
+      body: { code: error.code,
+        message: forbidden ? 'This account-access action is not permitted'
+          : 'Account-access state no longer allows this action', requestId } };
+  }
   if (error instanceof VersionConflictError) {
     return {
       statusCode: 409,
@@ -156,7 +202,9 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
         ? 404
         : error.code === 'CHAT_PARTICIPANT_REQUIRED' ||
             error.code === 'MESSAGE_SENDER_REQUIRED' ||
-            error.code === 'REPORT_SELF_NOT_ALLOWED'
+            error.code === 'REPORT_SELF_NOT_ALLOWED' ||
+            error.code === 'REPORT_SUBJECT_REQUIRED' ||
+            error.code === 'MODERATION_CENTRAL_REQUIRED'
           ? 403
           : error.code === 'MESSAGE_CONTENT_INVALID' || error.code === 'REPORT_REASON_INVALID'
             ? 422
@@ -186,6 +234,72 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
       body: {
         code: error.code,
         message: 'This Official Challenge action is no longer available',
+        requestId,
+        ...(error.retryAt ? { retryAt: error.retryAt } : {}),
+      },
+    };
+  }
+  if (error instanceof YouthConsentValidationError) {
+    return {
+      statusCode: 422,
+      body: {
+        code: error.code,
+        message: `Youth consent input is not valid: ${error.field}`,
+        requestId,
+      },
+    };
+  }
+  if (error instanceof YouthConsentConflictError) {
+    const statusCode = error.code === 'YOUTH_CONSENT_NOT_FOUND'
+        || error.code === 'YOUTH_CONSENT_TOKEN_INVALID'
+      ? 404
+      : error.code === 'YOUTH_CONSENT_SUBJECT_REQUIRED'
+        ? 403
+        : error.code === 'YOUTH_CONSENT_SMS_OPT_IN_REQUIRED'
+          || error.code === 'YOUTH_CONSENT_CHANNEL_NOT_VERIFIED'
+        ? 422
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Youth consent action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof CommunityLifecycleConflictError) {
+    const statusCode = error.code === 'COMMUNITY_LIFECYCLE_CENTRAL_REQUIRED'
+      ? 403
+      : error.code === 'COMMUNITY_LIFECYCLE_REASON_REQUIRED'
+          || error.code === 'COMMUNITY_CLOSURE_EFFECTIVE_AT_INVALID'
+          || error.code === 'COMMUNITY_CLOSURE_SESSION_DISPOSITIONS_INVALID'
+        ? 422
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Community lifecycle action is not available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof CommunityConfigurationConflictError) {
+    const statusCode = error.code === 'COMMUNITY_CONFIGURATION_ADMIN_REQUIRED'
+      ? 403
+      : error.code === 'PAIR_COOLDOWN_OUT_OF_RANGE'
+        ? 422
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: statusCode === 403
+          ? 'This Community configuration action is not permitted'
+          : statusCode === 422
+            ? 'Pair Cooldown must be an integer from 7 to 30 days'
+            : 'Community configuration no longer allows this action',
         requestId,
       },
     };
@@ -227,6 +341,79 @@ export function mapApiError(error: unknown, requestId: string): HttpErrorMapping
         requestId,
       },
     };
+  }
+  if (error instanceof MembershipExitConflictError) {
+    const statusCode = error.code === 'MEMBERSHIP_EXIT_NOT_FOUND'
+      ? 404
+      : error.code === 'MEMBERSHIP_EXIT_OWNER_REQUIRED'
+          || error.code === 'MEMBERSHIP_EXIT_ACCOUNT_NOT_ACTIVE'
+          || error.code === 'MEMBERSHIP_EXIT_MEMBERSHIP_NOT_ACTIVE'
+        ? 403
+        : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This voluntary Membership exit is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof MembershipConflictError) {
+    const statusCode = error.code === 'MEMBERSHIP_NOT_FOUND'
+      || error.code === 'MEMBERSHIP_INVITE_INVALID'
+      ? 404
+      : error.code === 'MEMBERSHIP_ADMIN_REQUIRED'
+          || error.code === 'MEMBERSHIP_ACCOUNT_NOT_ACTIVE'
+          || error.code === 'MEMBERSHIP_REQUESTER_REQUIRED'
+        ? 403
+        : error.code === 'MEMBERSHIP_REJECTION_REASON_INVALID'
+          ? 400
+        : 409;
+    return {
+      statusCode,
+      body: { code: error.code,
+        message: 'This Membership action is not available in the current state', requestId,
+        ...(error.retryAt ? { retryAt: error.retryAt } : {}) },
+    };
+  }
+  if (error instanceof MembershipRemovalConflictError) {
+    const statusCode = error.code === 'MEMBERSHIP_REMOVAL_NOT_FOUND'
+      ? 404
+      : error.code === 'MEMBERSHIP_REMOVAL_ADMIN_REQUIRED'
+          || error.code === 'MEMBERSHIP_REMOVAL_CENTRAL_REQUIRED'
+          || error.code === 'MEMBERSHIP_REMOVAL_SELF_CONFLICT'
+          || error.code === 'MEMBERSHIP_REMOVAL_SUBJECT_REQUIRED'
+        ? 403
+        : error.code === 'MEMBERSHIP_REMOVAL_REASON_REQUIRED'
+          ? 422
+          : 409;
+    return {
+      statusCode,
+      body: {
+        code: error.code,
+        message: 'This Membership removal action is no longer available',
+        requestId,
+      },
+    };
+  }
+  if (error instanceof PlatformIncidentConflictError) {
+    const statusCode = error.code === 'PLATFORM_INCIDENT_CENTRAL_REQUIRED' ? 403
+      : ['PLATFORM_INCIDENT_REASON_REQUIRED', 'PLATFORM_INCIDENT_INVALID_WINDOW',
+          'PLATFORM_INCIDENT_SERVICES_REQUIRED', 'PLATFORM_INCIDENT_SURFACES_REQUIRED',
+          'PLATFORM_INCIDENT_EVIDENCE_REQUIRED'].includes(error.code)
+        ? 422 : 409;
+    return {
+      statusCode,
+      body: { code: error.code,
+        message: 'Platform incident action is not available in the current state', requestId },
+    };
+  }
+  if (error instanceof AccountLifecycleConflictError) {
+    const statusCode = error.code === 'ACCOUNT_LIFECYCLE_CENTRAL_REQUIRED'
+      || error.code === 'ACCOUNT_LIFECYCLE_USER_REQUIRED' ? 403 : 409;
+    return { statusCode, body: { code: error.code,
+      message: 'Account lifecycle action is not available in the current state', requestId } };
   }
   if (error instanceof SchedulingValidationError) {
     return {

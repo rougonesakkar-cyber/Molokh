@@ -3,17 +3,27 @@ import { describe, expect, it } from 'vitest';
 import {
   ResultConflictError,
   ResultValidationError,
+  assertAthleteStoppageResult,
+  assertExternalNoContestResult,
   assertAppealActionCanBeTaken,
   assertAppealCanBeWithdrawn,
   assertAppealReviewCanStart,
+  assertTechnicalCorrectionReviewCanStart,
   assertResultMatchesAttendance,
   assertResultCanFinalize,
   deriveProvisionalStatusTransition,
+  eligibleAppealUserIds,
   normalizeResultParticipants,
+  normalizeResultMetadataRevision,
+  normalizeTechnicalCorrectionRequest,
+  normalizeTechnicalCorrectionRejection,
+  normalizeTechnicalCorrectionApproval,
   normalizeAppealDecision,
   normalizeAppealResponse,
   normalizeAppealSlaExtension,
+  resultCanFinalize,
   resultAppealDeadline,
+  resultMetadataRevisionDeadline,
 } from '../src/index.js';
 
 const participants = ['athlete-a', 'athlete-b'] as const;
@@ -28,7 +38,32 @@ describe('Result and provisional status policy', () => {
       .toBe('2026-09-11T10:00:00.000Z');
   });
 
-  it('requires a winner and explanation for NO_SHOW or FORFEIT', () => {
+  it('[AC-078] appends only changed descriptive metadata during the 24-hour window', () => {
+    const recordedAt = new Date('2026-09-09T10:00:00.000Z');
+    const before = {
+      methodCode: null, methodText: null,
+      scorePayload: null, methodPayload: null,
+    };
+    expect(resultMetadataRevisionDeadline(recordedAt).toISOString())
+      .toBe('2026-09-10T10:00:00.000Z');
+    expect(normalizeResultMetadataRevision({
+      recordedAt, occurredAt: new Date('2026-09-10T09:59:59.999Z'), before,
+      methodText: '  Победа решением судьи  ', scorePayload: { display: '3:0' },
+    })).toEqual({
+      methodCode: null, methodText: 'Победа решением судьи',
+      scorePayload: { display: '3:0' }, methodPayload: null,
+    });
+    expect(() => normalizeResultMetadataRevision({
+      recordedAt, occurredAt: new Date('2026-09-10T10:00:00.000Z'), before,
+      methodText: 'Позднее исправление',
+    })).toThrowError(new ResultConflictError('RESULT_METADATA_REVISION_WINDOW_CLOSED'));
+    expect(() => normalizeResultMetadataRevision({
+      recordedAt, occurredAt: new Date('2026-09-09T11:00:00.000Z'), before,
+      scorePayload: null,
+    })).toThrowError(new ResultConflictError('RESULT_METADATA_REVISION_NO_CHANGE'));
+  });
+
+  it('[AC-203] requires a winner and explanation for NO_SHOW or FORFEIT', () => {
     expect(() => normalizeResultParticipants({
       outcomeCode: 'NO_SHOW', winnerUserId: null, participantUserIds: participants,
       reasonCode: 'ABSENT', comment: 'Неявка подтверждена Coach',
@@ -41,6 +76,81 @@ describe('Result and provisional status policy', () => {
       outcomeCode: 'WIN_A', winnerUserId: null, participantUserIds: participants,
       reasonCode: 'x'.repeat(81), comment: null,
     })).toThrowError(new ResultValidationError('reasonCode'));
+  });
+
+  it('[AC-079][AC-113] normalizes a separate Coach correction request without mutating Result', () => {
+    const input = {
+      resultState: 'RECORDED' as const,
+      existingOpenRequest: false,
+      originalOutcomeCode: 'WIN_A' as const,
+      originalWinnerUserId: 'athlete-a',
+      proposedOutcomeCode: 'WIN_B' as const,
+      proposedWinnerUserId: null,
+      participantUserIds: participants,
+      category: 'OUTCOME_OR_WINNER_ERROR' as const,
+      internalReason: '  Outcome was entered for the wrong corner.  ',
+      evidenceReference: '  session-log:42  ',
+    };
+    expect(normalizeTechnicalCorrectionRequest(input)).toEqual({
+      proposedOutcomeCode: 'WIN_B',
+      proposedWinnerUserId: 'athlete-b',
+      category: 'OUTCOME_OR_WINNER_ERROR',
+      internalReason: 'Outcome was entered for the wrong corner.',
+      evidenceReference: 'session-log:42',
+    });
+    expect(() => normalizeTechnicalCorrectionRequest({
+      ...input, proposedOutcomeCode: 'WIN_A', proposedWinnerUserId: 'athlete-a',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_NO_CHANGE'));
+    expect(() => normalizeTechnicalCorrectionRequest({
+      ...input, resultState: 'FINAL',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_RESULT_NOT_PROVISIONAL'));
+    expect(() => normalizeTechnicalCorrectionRequest({
+      ...input, existingOpenRequest: true,
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_ALREADY_OPEN'));
+  });
+
+  it('[AC-148] requires an independent reviewer and a protected rejection reason', () => {
+    expect(() => assertTechnicalCorrectionReviewCanStart({
+      state: 'SUBMITTED', reviewerUserId: 'coach',
+      protectedUserIds: ['athlete-a', 'athlete-b', 'coach'],
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_CONFLICT'));
+    expect(() => assertTechnicalCorrectionReviewCanStart({
+      state: 'UNDER_REVIEW', reviewerUserId: 'central', protectedUserIds: [],
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_NOT_SUBMITTED'));
+    expect(normalizeTechnicalCorrectionRejection({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      reason: '  Evidence does not support changing the official Result.  ',
+    })).toBe('Evidence does not support changing the official Result.');
+    expect(() => normalizeTechnicalCorrectionRejection({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central-a', reviewerUserId: 'central-b',
+      reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH'));
+    expect(() => normalizeTechnicalCorrectionRejection({
+      state: 'REJECTED', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_NOT_UNDER_REVIEW'));
+  });
+
+  it('[AC-147] approves only a reviewed provisional correction against the frozen pair', () => {
+    expect(normalizeTechnicalCorrectionApproval({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      resultState: 'RECORDED', proposedOutcomeCode: 'WIN_B', proposedWinnerUserId: null,
+      participantUserIds: participants, category: 'OUTCOME_OR_WINNER_ERROR',
+      reason: '  Session journal confirms the opposite winner.  ',
+    })).toEqual({
+      outcomeCode: 'WIN_B', winnerUserId: 'athlete-b', loserUserId: 'athlete-a',
+      decisive: true, reason: 'Session journal confirms the opposite winner.',
+    });
+    expect(() => normalizeTechnicalCorrectionApproval({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central-a', reviewerUserId: 'central-b',
+      resultState: 'RECORDED', proposedOutcomeCode: 'WIN_B', proposedWinnerUserId: null,
+      participantUserIds: participants, category: 'OUTCOME_OR_WINNER_ERROR', reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_REVIEWER_MISMATCH'));
+    expect(() => normalizeTechnicalCorrectionApproval({
+      state: 'UNDER_REVIEW', assignedReviewerUserId: 'central', reviewerUserId: 'central',
+      resultState: 'UNDER_APPEAL', proposedOutcomeCode: 'WIN_B', proposedWinnerUserId: null,
+      participantUserIds: participants, category: 'OUTCOME_OR_WINNER_ERROR', reason: 'Reason',
+    })).toThrowError(new ResultConflictError('TECHNICAL_CORRECTION_ACTIVE_APPEAL'));
   });
 
   it('[AC-080] transfers Contender provisionally only from the frozen snapshot', () => {
@@ -65,7 +175,33 @@ describe('Result and provisional status policy', () => {
     });
   });
 
-  it('[AC-082][AC-083][AC-084] swaps TITLE roles, records a defense and isolates OPEN', () => {
+  it('[AC-100] assigns the first Champion and Contender from a normal GENESIS win', () => {
+    expect(deriveProvisionalStatusTransition({
+      stake: 'GENESIS_CHAMPION', outcomeCode: 'WIN_B', winnerUserId: 'athlete-b',
+      loserUserId: 'athlete-a',
+      snapshot: { championUserId: null, contenderUserId: null, statusVersion: 0 },
+    })).toMatchObject({
+      type: 'GENESIS_APPLIED', eventName: 'GenesisStatusApplied',
+      transitionId: 'ST-01', locksStatus: true,
+      before: { championUserId: null, contenderUserId: null, statusVersion: 0 },
+      after: { championUserId: 'athlete-b', contenderUserId: 'athlete-a', statusVersion: 1 },
+    });
+  });
+
+  it('[AC-101] leaves the Contender vacant after a founding FORFEIT', () => {
+    expect(deriveProvisionalStatusTransition({
+      stake: 'GENESIS_CHAMPION', outcomeCode: 'FORFEIT', winnerUserId: 'athlete-b',
+      loserUserId: 'athlete-a',
+      snapshot: { championUserId: null, contenderUserId: null, statusVersion: 0 },
+    })).toMatchObject({
+      type: 'GENESIS_APPLIED_WITH_VACANCY', eventName: 'GenesisStatusAppliedWithVacancy',
+      transitionId: 'ST-02', locksStatus: true,
+      before: { championUserId: null, contenderUserId: null, statusVersion: 0 },
+      after: { championUserId: 'athlete-b', contenderUserId: null, statusVersion: 1 },
+    });
+  });
+
+  it('[AC-073][AC-082][AC-083][AC-084] swaps TITLE roles, records a defense and isolates OPEN', () => {
     const snapshot = { championUserId: 'athlete-a', contenderUserId: 'athlete-b', statusVersion: 3 };
     expect(deriveProvisionalStatusTransition({
       stake: 'TITLE', outcomeCode: 'WIN_B', winnerUserId: 'athlete-b', loserUserId: 'athlete-a', snapshot,
@@ -87,7 +223,7 @@ describe('Result and provisional status policy', () => {
     }
   });
 
-  it('[AC-087] permits two recorded NO_SHOW facts only as explained NO_CONTEST', () => {
+  it('[AC-087][AC-203] permits two recorded NO_SHOW facts only as explained NO_CONTEST', () => {
     expect(() => assertResultMatchesAttendance({
       outcomeCode: 'NO_CONTEST', winnerUserId: null,
       participantUserIds: participants, noShowUserIds: [...participants],
@@ -96,6 +232,79 @@ describe('Result and provisional status policy', () => {
       outcomeCode: 'WIN_A', winnerUserId: 'athlete-a',
       participantUserIds: participants, noShowUserIds: [...participants],
     })).toThrowError(new ResultValidationError('outcomeCode'));
+  });
+
+  it('[AC-203] binds one NO_SHOW fact to the present Athlete as winner', () => {
+    expect(() => assertResultMatchesAttendance({
+      outcomeCode: 'NO_SHOW', winnerUserId: 'athlete-a',
+      participantUserIds: participants, noShowUserIds: ['athlete-b'],
+    })).not.toThrow();
+    expect(() => assertResultMatchesAttendance({
+      outcomeCode: 'NO_SHOW', winnerUserId: 'athlete-b',
+      participantUserIds: participants, noShowUserIds: ['athlete-b'],
+    })).toThrowError(new ResultValidationError('outcomeCode'));
+    expect(normalizeResultParticipants({
+      outcomeCode: 'NO_SHOW', winnerUserId: 'athlete-a', participantUserIds: participants,
+      reasonCode: 'ATTENDANCE_NO_SHOW', comment: 'Неявка подтверждена Coach.',
+    })).toMatchObject({
+      winnerUserId: 'athlete-a', loserUserId: 'athlete-b', decisive: true,
+    });
+  });
+
+  it('[AC-202] permits an ordinary decisive Result when LATE created no NO_SHOW fact', () => {
+    expect(() => assertResultMatchesAttendance({
+      outcomeCode: 'WIN_B', winnerUserId: 'athlete-b',
+      participantUserIds: participants, noShowUserIds: [],
+    })).not.toThrow();
+    expect(normalizeResultParticipants({
+      outcomeCode: 'WIN_B', winnerUserId: null, participantUserIds: participants,
+      reasonCode: null, comment: null,
+    })).toMatchObject({
+      winnerUserId: 'athlete-b', loserUserId: 'athlete-a', decisive: true,
+    });
+  });
+
+  it('[AC-209] accepts Athlete stoppage only after actual start and as a decisive Result', () => {
+    const decisive = {
+      outcomeCode: 'WIN_B' as const,
+      winnerUserId: 'athlete-b',
+      methodCode: 'INJURY_STOPPAGE',
+      actualStartAt: new Date('2026-10-01T23:50:00.000Z'),
+    };
+    expect(() => assertAthleteStoppageResult(decisive)).not.toThrow();
+    expect(() => assertAthleteStoppageResult({
+      ...decisive, methodCode: 'VOLUNTARY_WITHDRAWAL', actualStartAt: null,
+    })).toThrowError(new ResultValidationError('actualStartAt'));
+    expect(() => assertAthleteStoppageResult({
+      ...decisive, outcomeCode: 'NO_CONTEST', winnerUserId: null,
+    })).toThrowError(new ResultValidationError('outcomeCode'));
+  });
+
+  it('[AC-210] accepts only a post-start external no-winner NO_CONTEST', () => {
+    const external = {
+      outcomeCode: 'NO_CONTEST' as const,
+      winnerUserId: null,
+      reasonCode: 'EXTERNAL_EQUIPMENT_FAILURE',
+      methodCode: null,
+      actualStartAt: new Date('2026-10-03T10:00:00.000Z'),
+    };
+    expect(() => assertExternalNoContestResult(external)).not.toThrow();
+    expect(() => assertExternalNoContestResult({
+      ...external, actualStartAt: null,
+    })).toThrowError(new ResultValidationError('actualStartAt'));
+    expect(() => assertExternalNoContestResult({
+      ...external, outcomeCode: 'WIN_A', winnerUserId: 'athlete-a',
+    })).toThrowError(new ResultValidationError('outcomeCode'));
+    expect(() => assertExternalNoContestResult({
+      ...external, methodCode: 'VOLUNTARY_WITHDRAWAL',
+    })).toThrowError(new ResultValidationError('methodCode'));
+    expect(deriveProvisionalStatusTransition({
+      stake: 'TITLE', outcomeCode: 'NO_CONTEST', winnerUserId: null, loserUserId: null,
+      snapshot: { championUserId: 'athlete-a', contenderUserId: 'athlete-b', statusVersion: 4 },
+    })).toMatchObject({
+      type: 'NONE', locksStatus: false,
+      after: { championUserId: 'athlete-a', contenderUserId: 'athlete-b', statusVersion: 4 },
+    });
   });
 
   it('[AC-088][AC-089] finalizes at 48h or when every eligible Athlete waived', () => {
@@ -131,6 +340,57 @@ describe('Result and provisional status policy', () => {
     expect(() => assertAppealActionCanBeTaken({
       ...base, state: 'UNDER_APPEAL', alreadySubmitted: true,
     })).toThrowError(new ResultConflictError('RESULT_APPEAL_ALREADY_SUBMITTED'));
+  });
+
+  it('[AC-112] gives both DRAW Athletes the same server-window Appeal right', () => {
+    const deadline = new Date('2026-09-11T10:00:00.000Z');
+    for (const participantUserIds of [participants, [...participants].reverse()] as const) {
+      const eligibleUserIds = eligibleAppealUserIds({
+        outcomeCode: 'DRAW', loserUserId: null,
+        participantUserIds: participantUserIds as [string, string],
+      });
+      expect(eligibleUserIds).toEqual(participantUserIds);
+      for (const actorUserId of participants) {
+        expect(() => assertAppealActionCanBeTaken({
+          state: 'RECORDED', actorUserId, eligibleUserIds,
+          appealDeadlineAt: deadline,
+          occurredAt: new Date('2026-09-11T09:59:59.999Z'),
+          alreadyWaived: false, alreadySubmitted: false,
+        })).not.toThrow();
+      }
+    }
+    expect(() => assertAppealActionCanBeTaken({
+      state: 'RECORDED', actorUserId: participants[0],
+      eligibleUserIds: [...participants], appealDeadlineAt: deadline,
+      occurredAt: deadline, alreadyWaived: false, alreadySubmitted: false,
+    })).toThrowError(new ResultConflictError('RESULT_APPEAL_WINDOW_CLOSED'));
+  });
+
+  it('[AC-122] makes an eligible Appeal waiver irreversible without over-finalizing neutral Results', () => {
+    const decisiveEligible = eligibleAppealUserIds({
+      outcomeCode: 'WIN_A', loserUserId: participants[1], participantUserIds: participants,
+    });
+    expect(decisiveEligible).toEqual([participants[1]]);
+    expect(resultCanFinalize({
+      state: 'RECORDED', appealDeadlineAt: new Date('2026-09-11T10:00:00.000Z'),
+      occurredAt: new Date('2026-09-10T10:00:00.000Z'),
+      eligibleUserIds: decisiveEligible, waivedOrWithdrawnUserIds: [participants[1]],
+    })).toBe(true);
+    expect(() => assertAppealActionCanBeTaken({
+      state: 'FINAL', actorUserId: participants[1], eligibleUserIds: decisiveEligible,
+      appealDeadlineAt: new Date('2026-09-11T10:00:00.000Z'),
+      occurredAt: new Date('2026-09-10T10:00:00.000Z'),
+      alreadyWaived: true, alreadySubmitted: false,
+    })).toThrowError(new ResultConflictError('RESULT_APPEAL_ALREADY_WAIVED'));
+
+    const drawEligible = eligibleAppealUserIds({
+      outcomeCode: 'DRAW', loserUserId: null, participantUserIds: participants,
+    });
+    expect(resultCanFinalize({
+      state: 'RECORDED', appealDeadlineAt: new Date('2026-09-11T10:00:00.000Z'),
+      occurredAt: new Date('2026-09-10T10:00:00.000Z'),
+      eligibleUserIds: drawEligible, waivedOrWithdrawnUserIds: [participants[0]],
+    })).toBe(false);
   });
 
   it('[AC-114][AC-117] starts review without waiting for responses and upholds the immutable outcome', () => {

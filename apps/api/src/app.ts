@@ -43,25 +43,63 @@ import { registerResultRoutes, type ResultRouteDependencies } from './result-rou
 import { registerAppealRoutes, type AppealRouteDependencies } from './appeal-routes.js';
 import { registerMissingResultRoutes, type MissingResultRouteDependencies } from './missing-result-routes.js';
 import { registerIntegrityCaseRoutes, type IntegrityCaseRouteDependencies } from './integrity-case-routes.js';
+import {
+  registerTechnicalCorrectionRoutes,
+  type TechnicalCorrectionRouteDependencies,
+} from './technical-correction-routes.js';
 import { registerStatusQueueRoutes, type StatusQueueRouteDependencies } from './status-queue-routes.js';
 import { registerStatusReleaseRoutes, type StatusReleaseRouteDependencies } from './status-release-routes.js';
+import { registerMembershipExitRoutes, type MembershipExitRouteDependencies } from './membership-exit-routes.js';
+import { registerMembershipRemovalRoutes, type MembershipRemovalRouteDependencies } from './membership-removal-routes.js';
+import { registerMembershipRoutes, type MembershipRouteDependencies } from './membership-routes.js';
+import { registerYouthConsentRoutes, type YouthConsentRouteDependencies } from './youth-consent-routes.js';
+import {
+  registerPlatformIncidentRoutes,
+  type PlatformIncidentRouteDependencies,
+} from './platform-incident-routes.js';
+import {
+  registerAccountLifecycleRoutes,
+  type AccountLifecycleRouteDependencies,
+} from './account-lifecycle-routes.js';
+import {
+  registerAccountAccessRoutes,
+  type AccountAccessRouteDependencies,
+} from './account-access-routes.js';
+import { registerAuthRoutes, type AuthRouteDependencies } from './auth-routes.js';
+import {
+  registerEnforcementAppealRoutes,
+  type EnforcementAppealRouteDependencies,
+} from './enforcement-appeal-routes.js';
+import { registerEvidenceRoutes, type EvidenceRouteDependencies } from './evidence-routes.js';
 
 export interface BuildAppOptions extends FastifyServerOptions {
   readonly allowedOrigins?: readonly string[];
   readonly appeal?: AppealRouteDependencies;
+  readonly enforcementAppeal?: EnforcementAppealRouteDependencies;
+  readonly evidence?: EvidenceRouteDependencies;
   readonly community?: CommunityRouteDependencies;
   readonly chat?: ChatRouteDependencies;
   readonly challenge?: ChallengeRouteDependencies;
   readonly discovery?: DiscoveryRouteDependencies;
   readonly identity?: IdentityRouteDependencies;
   readonly integrityCase?: IntegrityCaseRouteDependencies;
+  readonly technicalCorrection?: TechnicalCorrectionRouteDependencies;
   readonly statusQueue?: StatusQueueRouteDependencies;
   readonly statusRelease?: StatusReleaseRouteDependencies;
+  readonly membershipExit?: MembershipExitRouteDependencies;
+  readonly membershipRemoval?: MembershipRemovalRouteDependencies;
+  readonly membership?: MembershipRouteDependencies;
+  readonly youthConsent?: YouthConsentRouteDependencies;
   readonly missingResult?: MissingResultRouteDependencies;
+  readonly platformIncident?: PlatformIncidentRouteDependencies;
+  readonly accountLifecycle?: AccountLifecycleRouteDependencies;
+  readonly accountAccess?: AccountAccessRouteDependencies;
+  readonly authentication?: AuthRouteDependencies;
   readonly roles?: RoleRouteDependencies;
   readonly result?: ResultRouteDependencies;
   readonly scheduling?: SchedulingRouteDependencies;
   readonly readiness?: () => Promise<boolean>;
+  readonly releaseSha?: string;
   readonly verification?: VerificationRouteDependencies;
 }
 
@@ -69,19 +107,31 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const {
     allowedOrigins = [],
     appeal,
+    enforcementAppeal,
+    evidence,
     chat,
     challenge,
     community,
     discovery,
     identity,
     integrityCase,
+    technicalCorrection,
     statusQueue,
     statusRelease,
+    membershipExit,
+    membershipRemoval,
+    membership,
+    youthConsent,
     missingResult,
+    platformIncident,
+    accountLifecycle,
+    accountAccess,
+    authentication,
     roles,
     result,
     scheduling,
     readiness = async () => true,
+    releaseSha = 'development',
     verification,
     ...serverOptions
   } = options;
@@ -105,6 +155,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     ],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     origin: allowedOrigins.length > 0 ? [...allowedOrigins] : false,
+    credentials: true,
     strictPreflight: true,
   });
   await app.register(rateLimit, {
@@ -125,10 +176,21 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   if (identity) await registerIdentityRoutes(app, identity);
   if (integrityCase) await registerIntegrityCaseRoutes(app, integrityCase);
+  if (technicalCorrection) await registerTechnicalCorrectionRoutes(app, technicalCorrection);
   if (statusQueue) await registerStatusQueueRoutes(app, statusQueue);
   if (statusRelease) await registerStatusReleaseRoutes(app, statusRelease);
+  if (membershipExit) await registerMembershipExitRoutes(app, membershipExit);
+  if (membershipRemoval) await registerMembershipRemovalRoutes(app, membershipRemoval);
+  if (membership) await registerMembershipRoutes(app, membership);
+  if (youthConsent) await registerYouthConsentRoutes(app, youthConsent);
   if (appeal) await registerAppealRoutes(app, appeal);
+  if (enforcementAppeal) await registerEnforcementAppealRoutes(app, enforcementAppeal);
+  if (evidence) await registerEvidenceRoutes(app, evidence);
   if (missingResult) await registerMissingResultRoutes(app, missingResult);
+  if (platformIncident) await registerPlatformIncidentRoutes(app, platformIncident);
+  if (accountLifecycle) await registerAccountLifecycleRoutes(app, accountLifecycle);
+  if (accountAccess) await registerAccountAccessRoutes(app, accountAccess);
+  if (authentication) await registerAuthRoutes(app, authentication);
   if (chat) await registerChatRoutes(app, chat);
   if (challenge) await registerChallengeRoutes(app, challenge);
   if (community) await registerCommunityRoutes(app, community);
@@ -191,6 +253,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
       apiTransport: 'https+sse',
       clients: ['web', 'ios', 'android'],
       database: 'postgresql-18',
+      releaseSha,
     }),
   );
 

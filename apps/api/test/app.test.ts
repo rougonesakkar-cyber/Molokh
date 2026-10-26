@@ -1,5 +1,8 @@
 import {
+  ChallengeConflictError,
+  CommunityConfigurationConflictError,
   IdempotencyKeyReusedError,
+  SchedulingConflictError,
   VersionConflictError,
   type CommandEnvelope,
   type IdentityProjection,
@@ -7,13 +10,22 @@ import {
 } from '@molokh/core';
 import type {
   ChangeDisplayNamePayload,
+  ChangeHomeVenuePayload,
   ChangeSportsPayload,
   CommunityContextProjection,
+  CommunityConfigurationEffectIds,
+  CommunityConfigurationProjection,
+  CommunityLifecycleEffectIds,
+  CommunityLifecycleProjection,
   DiscoveryCardProjection,
   IdentityEffectIds,
+  PublicAthleteProfileProjection,
+  HomeVenueSelectionProjection,
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
   AppointGymAdminPayload,
+  ApprovePrimaryAdminSuccessorPayload,
+  AuthorizeGuestCoachPayload,
   BlockActionProjection,
   BlockEffectIds,
   BlockProjection,
@@ -21,6 +33,7 @@ import type {
   ChangePrimaryAdminPayload,
   ChatMessagePage,
   ChatMessageProjection,
+  CentralModerationCaseProjection,
   DiscoveryActionProjection,
   CreateLikePayload,
   StartVerificationPayload,
@@ -28,6 +41,13 @@ import type {
   RoleGrantEffectIds,
   PrimaryAdminEffectIds,
   PrimaryAdminProjection,
+  PrimaryAdminSuccessorApprovalEffectIds,
+  PrimaryAdminSuccessorEffectIds,
+  PrimaryAdminSuccessorProjection,
+  ProposePrimaryAdminSuccessorPayload,
+  VerifyVenuePayload,
+  VenueVerificationEffectIds,
+  VenueVerificationProjection,
   MatchProjection,
   LikeEffectIds,
   SkipDiscoveryPayload,
@@ -50,16 +70,24 @@ import type {
   SendChatMessageEffectIds,
   SendChatMessagePayload,
   BookingIntentProjection,
+  BookingWithdrawalEffectIds,
   BookingOfficialConversionEffectIds,
   BookingOfficialConversionProjection,
   BookingSoloContinuationEffectIds,
   BookingSoloContinuationProjection,
+  BookingTrainingRetentionEffectIds,
+  BookingTrainingRetentionProjection,
   DecideBookingOfficialConversionPayload,
   DecideBookingSoloContinuationPayload,
+  DecideBookingTrainingRetentionPayload,
   ConfirmBookingHostPayload,
   ConfirmGroupPlanPayload,
   GroupOfferingProjection,
   GroupPlanProjection,
+  GroupPlanOfficialConversionEffectIds,
+  GroupPlanOfficialConversionProjection,
+  RequestGroupPlanOfficialConversionPayload,
+  DecideGroupPlanOfficialConversionPayload,
   HostConfirmationEffectIds,
   HostConfirmationProjection,
   HostRejectionEffectIds,
@@ -81,21 +109,48 @@ import type {
   EndSessionPayload,
   ReplaceSessionCoachPayload,
   CancelAfterCoachReplacementPayload,
+  CancelOfficialSessionByAthletePayload,
   FailSessionExternalPayload,
+  ReportSafetyAndCancelSessionPayload,
+  SafetyCancellationEffectIds,
+  SafetyCancellationProjection,
+  SafetyCaseReviewEffectIds,
+  SafetyCaseResolutionEffectIds,
+  SafetyCaseReviewProjection,
+  StartSafetyCaseReviewPayload,
+  ResolveSafetyCasePayload,
   SlotProjection,
   TrainingOptionsProjection,
   UpdateGroupOfferingPayload,
   UpdateSlotPayload,
   VenueAdminDashboardProjection,
   WithdrawGroupOfferingPayload,
+  WithdrawBookingRequestPayload,
   WithdrawSlotPayload,
   ChallengeProjection,
   ChatChallengeProjection,
+  AthleteChallengeRescheduleEffectIds,
+  ConfirmMutualChallengeRescheduleEffectIds,
+  ConfirmMutualChallengeReschedulePayload,
+  MutualChallengeRescheduleRequestProjection,
+  ProposeMutualChallengeRescheduleEffectIds,
+  ProposeMutualChallengeReschedulePayload,
+  RescheduleChallengeByAthletePayload,
+  PauseCommunityPayload,
+  ReactivateCommunityPayload,
+  CommunityClosureCommandPreparation,
+  CommunityClosureProjection,
+  FinalizeCommunityClosureEffectIds,
+  FinalizeCommunityClosurePayload,
+  ScheduleCommunityClosureEffectIds,
+  ScheduleCommunityClosurePayload,
+  ChangeCommunityPairCooldownPayload,
 } from '@molokh/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { StaticBearerAuthAdapter } from '../src/auth.js';
+import type { AvatarMediaPort } from '../src/avatar-media.js';
 import { mapApiError } from '../src/request-context.js';
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
@@ -158,6 +213,23 @@ describe('runtime contract', () => {
     expect(unavailable.json()).toMatchObject({ code: 'SERVICE_NOT_READY' });
   });
 
+  it('publishes the immutable release identity used by canary verification', async () => {
+    const releaseSha = 'a'.repeat(40);
+    const app = await buildApp({ releaseSha });
+    apps.push(app);
+
+    const response = await app.inject({ method: 'GET', url: '/v1/meta/runtime' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      architecture: 'modular-monolith',
+      apiTransport: 'https+sse',
+      clients: ['web', 'ios', 'android'],
+      database: 'postgresql-18',
+      releaseSha,
+    });
+  });
+
   it('publishes an OpenAPI 3.1 document', async () => {
     const app = await buildApp();
     apps.push(app);
@@ -212,6 +284,31 @@ describe('runtime contract', () => {
       statusCode: 409,
       body: { code: 'IDEMPOTENCY_KEY_REUSED', requestId },
     });
+    expect(mapApiError(
+      new CommunityConfigurationConflictError('COMMUNITY_CONFIGURATION_ADMIN_REQUIRED'),
+      requestId,
+    )).toMatchObject({
+      statusCode: 403,
+      body: { code: 'COMMUNITY_CONFIGURATION_ADMIN_REQUIRED', requestId },
+    });
+    expect(mapApiError(
+      new CommunityConfigurationConflictError('PAIR_COOLDOWN_OUT_OF_RANGE'),
+      requestId,
+    )).toMatchObject({
+      statusCode: 422,
+      body: { code: 'PAIR_COOLDOWN_OUT_OF_RANGE', requestId },
+    });
+    expect(mapApiError(
+      new ChallengeConflictError('OPTIONAL_PAIR_QUIET', '2026-10-24T10:00:00.000Z'),
+      requestId,
+    )).toMatchObject({
+      statusCode: 409,
+      body: {
+        code: 'OPTIONAL_PAIR_QUIET',
+        retryAt: '2026-10-24T10:00:00.000Z',
+        requestId,
+      },
+    });
   });
 
   it('protects and returns the public identity projection', async () => {
@@ -221,6 +318,8 @@ describe('runtime contract', () => {
         readMe: async () => identity,
         changeDisplayName: vi.fn(),
         changeSports: vi.fn(),
+        readHomeVenueSettings: vi.fn(),
+        changeHomeVenue: vi.fn(),
       },
     });
     apps.push(app);
@@ -238,6 +337,129 @@ describe('runtime contract', () => {
     expect(response.json()).toMatchObject({ data: identity });
     expect(response.json().data).not.toHaveProperty('phoneE164');
     expect(response.json().data).not.toHaveProperty('birthDate');
+  });
+
+  it('[AC-165][AC-183] exposes only the selected Competition public profile contract', async () => {
+    const subjectUserId = '0199a1b2-1234-7000-8000-000000000341';
+    const competitionId = '0199a1b2-1234-7000-8000-000000000342';
+    const communityId = '0199a1b2-1234-7000-8000-000000000343';
+    const profile: PublicAthleteProfileProjection & Record<string, unknown> = {
+      userId: subjectUserId,
+      displayName: 'Публичный атлет',
+      ageDivision: 'ADULT',
+      primarySport: 'BOXING',
+      secondarySport: null,
+      selectedCompetitionScope: {
+        competitionId, communityId, communityName: 'Community One',
+        ageDivision: 'ADULT', disciplineKey: null, primaryForHomeDiscovery: true,
+      },
+      competitionScopes: [{
+        competitionId, communityId, communityName: 'Community One',
+        ageDivision: 'ADULT', disciplineKey: null, primaryForHomeDiscovery: true,
+      }],
+      currentStatuses: [{
+        competitionId, communityId, status: 'CHAMPION', provisional: false,
+        reviewState: null,
+      }],
+      statusHistory: [{
+        tenureId: '0199a1b2-1234-7000-8000-000000000344',
+        competitionId, communityId, status: 'CHAMPION',
+        startedAt: '2026-10-01T10:00:00.000Z', endedAt: null, provisional: false,
+        reviewState: null,
+      }],
+      officialRecord: { wins: 3, losses: 2, draws: 1 },
+      recentOfficialResults: [{
+        resultId: '0199a1b2-1234-7000-8000-000000000345', competitionId,
+        outcome: 'WIN', publicMethod: 'FORFEIT', occurredAt: '2026-10-20T10:00:00.000Z',
+        reviewState: 'REVIEWED',
+      }],
+      completedTrainingCount: 7,
+      winRate: 0.6,
+      reliabilityScore: 'HIDDEN',
+      safetyReason: 'PRIVATE',
+      trainingPartnerUserIds: ['0199a1b2-1234-7000-8000-000000000346'],
+    };
+    const readPublicProfile = vi.fn(async () => profile);
+    const app = await buildApp({ identity: {
+      auth: new StaticBearerAuthAdapter(token, userId),
+      readMe: async () => identity,
+      readPublicProfile,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(),
+      readHomeVenueSettings: vi.fn(), changeHomeVenue: vi.fn(),
+    } });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'GET', url: `/api/v1/athletes/${subjectUserId}/profile`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ data: {
+      userId: subjectUserId,
+      currentStatuses: [{ status: 'CHAMPION' }],
+      officialRecord: { wins: 3, losses: 2, draws: 1 },
+      completedTrainingCount: 7,
+    } });
+    expect(readPublicProfile).toHaveBeenCalledWith(userId, subjectUserId, undefined);
+    const scopedResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/athletes/${subjectUserId}/profile?competitionId=${competitionId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(scopedResponse.statusCode).toBe(200);
+    expect(readPublicProfile).toHaveBeenLastCalledWith(userId, subjectUserId, competitionId);
+    expect(response.json().data).not.toHaveProperty('winRate');
+    expect(response.json().data).not.toHaveProperty('reliabilityScore');
+    expect(response.json().data).not.toHaveProperty('safetyReason');
+    expect(response.json().data).not.toHaveProperty('trainingPartnerUserIds');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/athletes/{userId}/profile');
+  });
+
+  it('[AC-213] keeps public Result review data neutral and contract-limited', async () => {
+    const subjectUserId = '0199a1b2-1234-7000-8000-000000000351';
+    const competitionId = '0199a1b2-1234-7000-8000-000000000352';
+    const profile: PublicAthleteProfileProjection & Record<string, unknown> = {
+      userId: subjectUserId, displayName: 'Атлет на проверке', ageDivision: 'ADULT',
+      primarySport: 'BOXING', secondarySport: null,
+      selectedCompetitionScope: {
+        competitionId, communityId: '0199a1b2-1234-7000-8000-000000000353',
+        communityName: 'Community Two', ageDivision: 'ADULT', disciplineKey: null,
+        primaryForHomeDiscovery: true,
+      },
+      competitionScopes: [{
+        competitionId, communityId: '0199a1b2-1234-7000-8000-000000000353',
+        communityName: 'Community Two', ageDivision: 'ADULT', disciplineKey: null,
+        primaryForHomeDiscovery: true,
+      }],
+      currentStatuses: [{ competitionId,
+        communityId: '0199a1b2-1234-7000-8000-000000000353',
+        status: 'CONTENDER', provisional: true, reviewState: 'PENDING' }],
+      statusHistory: [], officialRecord: { wins: 1, losses: 0, draws: 0 },
+      recentOfficialResults: [{
+        resultId: '0199a1b2-1234-7000-8000-000000000354', competitionId,
+        outcome: 'WIN', publicMethod: null, reviewState: 'PENDING',
+        occurredAt: '2026-10-21T10:00:00.000Z',
+      }],
+      completedTrainingCount: 0,
+      appealStatement: 'private', evidenceReference: 'private', decisionReason: 'private',
+    };
+    const app = await buildApp({ identity: {
+      auth: new StaticBearerAuthAdapter(token, userId), readMe: async () => identity,
+      readPublicProfile: async () => profile,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(),
+      readHomeVenueSettings: vi.fn(), changeHomeVenue: vi.fn(),
+    } });
+    apps.push(app);
+
+    const response = await app.inject({ method: 'GET',
+      url: `/api/v1/athletes/${subjectUserId}/profile`,
+      headers: { authorization: `Bearer ${token}` } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.currentStatuses[0].reviewState).toBe('PENDING');
+    expect(response.json().data.recentOfficialResults[0].reviewState).toBe('PENDING');
+    expect(response.json().data).not.toHaveProperty('appealStatement');
+    expect(response.json().data).not.toHaveProperty('evidenceReference');
+    expect(response.json().data).not.toHaveProperty('decisionReason');
   });
 
   it('passes an idempotent, versioned display-name command to the identity module', async () => {
@@ -263,6 +485,8 @@ describe('runtime contract', () => {
         readMe: async () => identity,
         changeDisplayName,
         changeSports: vi.fn(),
+        readHomeVenueSettings: vi.fn(),
+        changeHomeVenue: vi.fn(),
       },
     });
     apps.push(app);
@@ -323,6 +547,8 @@ describe('runtime contract', () => {
         readMe: async () => identity,
         changeDisplayName: vi.fn(),
         changeSports,
+        readHomeVenueSettings: vi.fn(),
+        changeHomeVenue: vi.fn(),
       },
     });
     apps.push(app);
@@ -352,6 +578,86 @@ describe('runtime contract', () => {
     });
   });
 
+  it('[AC-017] reads and changes Home Venue through a versioned command', async () => {
+    const venueId = '0199a1b2-1234-7000-8000-000000000320';
+    const readHomeVenueSettings = vi.fn(async () => ({
+      homeVenueId: null, userVersion: 1, options: [{ venueId,
+        displayName: 'Новый зал', address: 'Москва, улица 1', cityCode: 'MOSCOW' }],
+    }));
+    const changeHomeVenue = vi.fn(async (
+      _command: CommandEnvelope<ChangeHomeVenuePayload>, _ids: IdentityEffectIds,
+    ): Promise<ExecutedCommand<HomeVenueSelectionProjection>> => ({
+      responseStatus: 200,
+      response: { homeVenueId: venueId, venueDisplayName: 'Новый зал', version: 2 },
+      eventId: '0199a1b2-1234-7000-8000-000000000321',
+      aggregateVersion: 2, replayed: false,
+    }));
+    const app = await buildApp({ identity: {
+      auth: new StaticBearerAuthAdapter(token, userId), readMe: async () => identity,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(), readHomeVenueSettings,
+      changeHomeVenue,
+    } });
+    apps.push(app);
+    const settings = await app.inject({ method: 'GET', url: '/api/v1/me/home-venue',
+      headers: { authorization: `Bearer ${token}` } });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.json()).toMatchObject({ data: { homeVenueId: null, userVersion: 1,
+      options: [{ venueId, displayName: 'Новый зал' }] } });
+
+    const changed = await app.inject({ method: 'PATCH', url: '/api/v1/me/home-venue',
+      headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'home-venue-test-1', 'if-match': '1' },
+      payload: { venueId } });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toMatchObject({ data: { homeVenueId: venueId,
+      venueDisplayName: 'Новый зал', version: 2 } });
+    expect(changeHomeVenue.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CHANGE_HOME_VENUE', aggregateId: userId, expectedVersion: 1,
+      payload: { venueId },
+    });
+  });
+
+  it('keeps avatar upload disabled unless a private scan adapter is configured', async () => {
+    const baseIdentity = {
+      auth: new StaticBearerAuthAdapter(token, userId), readMe: async () => identity,
+      changeDisplayName: vi.fn(), changeSports: vi.fn(),
+      readHomeVenueSettings: vi.fn(), changeHomeVenue: vi.fn(),
+    };
+    const disabledApp = await buildApp({ identity: baseIdentity });
+    apps.push(disabledApp);
+    const payload = { mimeType: 'image/jpeg', sizeBytes: 1024, sha256: 'a'.repeat(64) };
+    const disabled = await disabledApp.inject({ method: 'POST',
+      url: '/api/v1/me/avatar-uploads', headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'avatar-upload-disabled-1' }, payload });
+    expect(disabled.statusCode).toBe(503);
+    expect(disabled.json()).toMatchObject({ code: 'FEATURE_NOT_AVAILABLE' });
+
+    const beginUpload = vi.fn<AvatarMediaPort['beginUpload']>(async () => ({
+      assetId: '0199a1b2-1234-7000-8000-000000000399', state: 'PENDING_UPLOAD',
+      uploadUrl: 'https://private-objects.example/upload/opaque',
+      expiresAt: '2026-10-04T11:00:00.000Z',
+      requiredHeaders: { 'content-type': 'image/jpeg' },
+      scanPolicyVersion: 'avatar-scan-v1',
+    }));
+    const enabledApp = await buildApp({ identity: { ...baseIdentity,
+      avatarMedia: { beginUpload } } });
+    apps.push(enabledApp);
+    const enabled = await enabledApp.inject({ method: 'POST',
+      url: '/api/v1/me/avatar-uploads', headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'avatar-upload-enabled-1' }, payload });
+    expect(enabled.statusCode).toBe(201);
+    expect(enabled.json()).toMatchObject({ data: { state: 'PENDING_UPLOAD',
+      scanPolicyVersion: 'avatar-scan-v1' } });
+    expect(beginUpload).toHaveBeenCalledWith({ userId,
+      idempotencyKey: 'avatar-upload-enabled-1', ...payload });
+    const invalid = await enabledApp.inject({ method: 'POST',
+      url: '/api/v1/me/avatar-uploads', headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'avatar-upload-invalid-1' },
+      payload: { ...payload, mimeType: 'image/gif' } });
+    expect(invalid.statusCode).toBe(400);
+    expect(beginUpload).toHaveBeenCalledOnce();
+  });
+
   it('answers allowed browser preflight requests without reaching a route', async () => {
     const app = await buildApp({ allowedOrigins: ['http://localhost:8081'] });
     apps.push(app);
@@ -371,10 +677,12 @@ describe('runtime contract', () => {
     expect(response.headers['x-content-type-options']).toBe('nosniff');
   });
 
-  it('returns the authenticated pilot Community with action-level denials', async () => {
+  it('[AC-166] returns public config and exposes a versioned scoped Pair Cooldown command', async () => {
+    const communityId = '0199a1b2-1234-7000-8000-000000000402';
+    const venueId = '0199a1b2-1234-7000-8000-000000000401';
     const context: CommunityContextProjection = {
       venue: {
-        venueId: '0199a1b2-1234-7000-8000-000000000401',
+        venueId,
         displayName: 'Pilot Gym',
         address: 'Pilot address',
         cityCode: 'MOSCOW',
@@ -384,9 +692,12 @@ describe('runtime contract', () => {
         contactPayload: { phone: '+79990000401' },
       },
       community: {
-        communityId: '0199a1b2-1234-7000-8000-000000000402',
+        communityId,
         name: 'Pilot Community',
         state: 'ACTIVE',
+        configurationId: '0199a1b2-1234-7000-8000-000000000404',
+        configurationVersion: 1,
+        configurationEffectiveAt: '2026-10-01T09:00:00.000Z',
         pairCooldownDays: 15,
         noShowGraceMinutes: 15,
         rulesetRef: 'MOLOKH_RECOMMENDED_V1',
@@ -399,10 +710,13 @@ describe('runtime contract', () => {
         ageDivision: 'ADULT',
         competitionEnabled: true,
         joinPath: 'QR',
+        version: 1,
       },
-      activeRoleGrants: [],
+      membershipReapplyNotBeforeAt: null,
+      membershipLatestRejectionReasonCode: null,
+      activeRoleGrants: [{ role: 'GYM_ADMIN', scopeType: 'VENUE', scopeId: venueId }],
       access: {
-        capabilities: ['VIEW_COMMUNITY'],
+        capabilities: ['VIEW_COMMUNITY', 'MANAGE_VENUE_OPERATIONS'],
         denials: [
           {
             capability: 'CREATE_OFFICIAL_CHALLENGE',
@@ -413,10 +727,30 @@ describe('runtime contract', () => {
         ],
       },
     };
+    const changedConfiguration: CommunityConfigurationProjection = {
+      communityId,
+      configurationId: '0199a1b2-1234-7000-8000-000000000405',
+      configurationVersion: 2,
+      pairCooldownDays: 20,
+      noShowGraceMinutes: 15,
+      rulesetRef: 'MOLOKH_RECOMMENDED_V1',
+      rulesetAckMode: 'IMPLICIT_ON_ACCEPT',
+      effectiveAt: '2026-10-02T09:00:00.000Z',
+      version: 2,
+    };
+    const updatePairCooldown = vi.fn(async (
+      _command: CommandEnvelope<ChangeCommunityPairCooldownPayload>,
+      _ids: CommunityConfigurationEffectIds,
+    ) => ({
+      responseStatus: 200, response: changedConfiguration,
+      eventId: '0199a1b2-1234-7000-8000-000000000406',
+      aggregateVersion: 2, replayed: false,
+    }));
     const app = await buildApp({
       community: {
         auth: new StaticBearerAuthAdapter(token, userId),
         readContext: async () => context,
+        configuration: { updatePairCooldown },
       },
     });
     apps.push(app);
@@ -430,7 +764,9 @@ describe('runtime contract', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       data: {
-        community: { name: 'Pilot Community' },
+        community: {
+          name: 'Pilot Community', configurationVersion: 1, pairCooldownDays: 15,
+        },
         membership: { state: 'ACTIVE' },
         access: {
           denials: [
@@ -442,11 +778,233 @@ describe('runtime contract', () => {
         },
       },
     });
+    const changed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/communities/${communityId}/configuration/pair-cooldown`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'community-cooldown-20',
+        'if-match': '1',
+      },
+      payload: { pairCooldownDays: 20 },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toMatchObject({
+      data: { configurationVersion: 2, pairCooldownDays: 20, version: 2 },
+      meta: { replayed: false },
+    });
+    expect(updatePairCooldown.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CHANGE_COMMUNITY_PAIR_COOLDOWN',
+      aggregateType: 'Community', aggregateId: communityId, expectedVersion: 1,
+      actor: { id: userId, roles: ['GYM_ADMIN'], scopeIds: [venueId] },
+      payload: { communityId, pairCooldownDays: 20 },
+    });
+    expect(updatePairCooldown.mock.calls[0]?.[1]).toMatchObject({
+      configurationId: expect.any(String), eventId: expect.any(String),
+      auditId: expect.any(String), outboxMessageId: expect.any(String),
+    });
+    const outOfRange = await app.inject({
+      method: 'POST',
+      url: `/api/v1/communities/${communityId}/configuration/pair-cooldown`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'community-cooldown-invalid',
+        'if-match': '2',
+      },
+      payload: { pairCooldownDays: 31 },
+    });
+    expect(outOfRange.statusCode).toBe(400);
+    expect(updatePairCooldown).toHaveBeenCalledTimes(1);
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/community');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/communities/{communityId}/configuration/pair-cooldown',
+    );
   });
 
-  it('returns transparent Discovery cards without exposing private rank buckets', async () => {
+  it('[CO-02][CO-03][CO-04][CO-05][AC-151] exposes versioned Central Community lifecycle commands', async () => {
+    const communityId = '0199a1b2-1234-7000-8000-000000000402';
+    const active: CommunityLifecycleProjection = {
+      communityId,
+      state: 'ACTIVE',
+      pauseStartedAt: null,
+      latestPauseDurationSeconds: null,
+      version: 7,
+      competitions: [{
+        competitionId: '0199a1b2-1234-7000-8000-000000000404',
+        availability: 'ACTIVE',
+        version: 3,
+      }],
+    };
+    const paused: CommunityLifecycleProjection = {
+      ...active,
+      state: 'PAUSED',
+      pauseStartedAt: '2026-10-01T10:00:00.000Z',
+      version: 8,
+      competitions: active.competitions.map((competition) => ({
+        ...competition, availability: 'PAUSED', version: 4,
+      })),
+    };
+    const pause = vi.fn(async (
+      _command: CommandEnvelope<PauseCommunityPayload>,
+      _ids: CommunityLifecycleEffectIds,
+    ) => ({
+      responseStatus: 200, response: paused,
+      eventId: '0199a1b2-1234-7000-8000-000000000405',
+      aggregateVersion: 8, replayed: false,
+    }));
+    const reactivate = vi.fn(async (
+      _command: CommandEnvelope<ReactivateCommunityPayload>,
+      _ids: CommunityLifecycleEffectIds,
+    ) => ({
+      responseStatus: 200, response: active,
+      eventId: '0199a1b2-1234-7000-8000-000000000406',
+      aggregateVersion: 9, replayed: false,
+    }));
+    const preparation: CommunityClosureCommandPreparation = {
+      sessions: [{
+        sessionId: '0199a1b2-1234-7000-8000-000000000407',
+        state: 'SCHEDULED', scheduledStartAt: '2026-10-05T10:00:00.000Z',
+        scheduledEndAt: '2026-10-05T11:00:00.000Z',
+        athleteDisplayNames: ['Анна', 'Марина'],
+        recommendedDisposition: 'RETAIN_TO_COMPLETION', cancellationAllowed: true,
+      }],
+      competitionCount: 1, liveChallengeCount: 2, memberCount: 2, statusHolderCount: 1,
+    };
+    const closurePlan: CommunityClosureProjection = {
+      planId: '0199a1b2-1234-7000-8000-000000000408', communityId,
+      planVersion: 1, planState: 'SCHEDULED', communityState: 'CLOSING',
+      category: 'VENUE_EXIT', reason: 'Зал прекращает работу', emergency: false,
+      effectiveAt: '2026-10-10T10:00:00.000Z', scheduledAt: '2026-10-01T10:00:00.000Z',
+      finalizedAt: null, retainedSessionCount: 1, cancelledSessionCount: 0,
+      communityVersion: 8,
+    };
+    const schedule = vi.fn(async (
+      _command: CommandEnvelope<ScheduleCommunityClosurePayload>,
+      _ids: ScheduleCommunityClosureEffectIds,
+    ) => ({
+      responseStatus: 200, response: closurePlan,
+      eventId: '0199a1b2-1234-7000-8000-000000000409',
+      aggregateVersion: 8, replayed: false,
+    }));
+    const finalize = vi.fn(async (
+      _command: CommandEnvelope<FinalizeCommunityClosurePayload>,
+      _ids: FinalizeCommunityClosureEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: { ...closurePlan, planState: 'FINALIZED' as const,
+        communityState: 'CLOSED' as const, finalizedAt: '2026-10-10T10:01:00.000Z',
+        communityVersion: 9 },
+      eventId: '0199a1b2-1234-7000-8000-000000000410',
+      aggregateVersion: 9, replayed: false,
+    }));
+    const app = await buildApp({
+      community: {
+        auth: new StaticBearerAuthAdapter(token, userId),
+        readContext: async () => null,
+        lifecycle: {
+          auth: new StaticBearerAuthAdapter(token, userId),
+          read: async () => active,
+          pause,
+          reactivate,
+          closure: {
+            read: async () => closurePlan,
+            prepare: async () => preparation,
+            schedule,
+            finalize,
+          },
+        },
+      },
+    });
+    apps.push(app);
+
+    const read = await app.inject({
+      method: 'GET',
+      url: `/api/v1/central/communities/${communityId}/lifecycle`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({ data: active });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/communities/${communityId}/pause`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'idempotency-key': 'pause-community-test',
+        'if-match': '7',
+      },
+      payload: { reason: 'Плановые работы' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ data: paused, meta: { replayed: false } });
+    expect(pause).toHaveBeenCalledOnce();
+    expect(pause.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PAUSE_COMMUNITY', expectedVersion: 7,
+      actor: { id: userId, roles: ['CENTRAL_ADMIN'] },
+      payload: { communityId, reason: 'Плановые работы' },
+    });
+    expect(pause.mock.calls[0]?.[1].competitionEventIds).toHaveLength(1);
+
+    const candidates = await app.inject({
+      method: 'GET',
+      url: `/api/v1/central/communities/${communityId}/closure/candidates`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(candidates.statusCode).toBe(200);
+    expect(candidates.json()).toMatchObject({ data: preparation.sessions });
+
+    const scheduleResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/communities/${communityId}/closure/schedule`,
+      headers: {
+        authorization: `Bearer ${token}`, 'content-type': 'application/json',
+        'idempotency-key': 'schedule-community-closure-test', 'if-match': '7',
+      },
+      payload: {
+        category: 'VENUE_EXIT', reason: 'Зал прекращает работу', emergency: false,
+        effectiveAt: '2026-10-10T10:00:00.000Z',
+        sessionDispositions: [{
+          sessionId: preparation.sessions[0]!.sessionId,
+          disposition: 'RETAIN_TO_COMPLETION',
+        }],
+      },
+    });
+    expect(scheduleResponse.statusCode).toBe(200);
+    expect(scheduleResponse.json()).toMatchObject({ data: closurePlan });
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(schedule.mock.calls[0]?.[1]).toMatchObject({
+      notificationIds: expect.arrayContaining([expect.any(String), expect.any(String)]),
+      competitionEventIds: [expect.any(String)],
+      challengeEventIds: expect.arrayContaining([expect.any(String), expect.any(String)]),
+      sessionEventIds: [expect.any(String)],
+    });
+
+    const finalizeResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/communities/${communityId}/closure/finalize`,
+      headers: {
+        authorization: `Bearer ${token}`, 'content-type': 'application/json',
+        'idempotency-key': 'finalize-community-closure-test', 'if-match': '8',
+      },
+      payload: { planId: closurePlan.planId, reason: 'Closure Plan completed' },
+    });
+    expect(finalizeResponse.statusCode).toBe(200);
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(finalize.mock.calls[0]?.[1].statusDispositionIds).toHaveLength(1);
+    await app.ready();
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/communities/{communityId}/pause');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/communities/{communityId}/reactivate');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/central/communities/{communityId}/closure/schedule',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/central/communities/{communityId}/closure/finalize',
+    );
+  });
+
+  it('[AC-154] returns transparent Discovery cards without exposing private rank buckets', async () => {
     const cards: DiscoveryCardProjection[] = [
       {
         candidateUserId: '0199a1b2-1234-7000-8000-000000000404',
@@ -640,6 +1198,11 @@ describe('runtime contract', () => {
     });
     expect(response.json().data[0]).not.toHaveProperty('recentActivityBucket');
     expect(response.json().data[0]).not.toHaveProperty('responseSpeedBucket');
+    expect(response.json().data[0].rankingConfigVersion)
+      .toBe(response.json().meta.rankingConfigVersion);
+    expect(response.json().data[0]).not.toHaveProperty('reliabilityScore');
+    expect(response.json().data[0]).not.toHaveProperty('safetyReason');
+    expect(response.json().data[0]).not.toHaveProperty('moderationReason');
 
     const invalidLike = await app.inject({
       method: 'POST',
@@ -758,9 +1321,14 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/blocks');
   });
 
-  it('[AC-193][AC-194] exposes participant-only Chat message commands without parsing action text', async () => {
+  it('[AC-123][AC-126][AC-130][AC-193][AC-194] exposes reporting plus protected Safety review commands', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000000501';
     const messageId = '0199a1b2-1234-7000-8000-000000000502';
+    const reportId = '0199a1b2-1234-7000-8000-000000000506';
+    const caseId = '0199a1b2-1234-7000-8000-000000000508';
+    const centralUserId = '0199a1b2-1234-7000-8000-000000000509';
+    const peerId = '0199a1b2-1234-7000-8000-000000000510';
+    const centralToken = 'molokh-central-api-test-token';
     const message: ChatMessageProjection = {
       messageId,
       chatId,
@@ -829,8 +1397,10 @@ describe('runtime contract', () => {
       response: {
         action: 'REPORTED',
         messageId,
-        reportId: '0199a1b2-1234-7000-8000-000000000506',
+        reportId,
         state: 'PENDING_CENTRAL',
+        caseId,
+        caseState: 'SUBMITTED',
         reportedAt: '2026-09-07T10:06:00.000Z',
         version: 2,
       },
@@ -838,14 +1408,105 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     }));
+    const moderationCase: CentralModerationCaseProjection = {
+      caseId,
+      caseType: 'REPORT',
+      state: 'SUBMITTED',
+      reportId,
+      chatId,
+      messageId,
+      reporterUserId: userId,
+      subjectUserId: '0199a1b2-1234-7000-8000-000000000510',
+      reasonCode: 'ABUSE',
+      evidenceSnapshot: { revisions: [{ revisionNo: 1 }] },
+      challengeId: null,
+      bookingId: null,
+      sessionId: null,
+      initialDueAt: null,
+      finalDueAt: null,
+      assignedReviewerUserId: null,
+      reviewStartedAt: null,
+      challengeVersion: null,
+      schedulingDeadlineAt: null,
+      holdId: null,
+      holdState: null,
+      holdStartedAt: null,
+      holdVersion: null,
+      originalCoachUserId: null,
+      originalVenueId: null,
+      viewerCanStartReview: false,
+      viewerCanResolve: false,
+      viewerHasReviewerConflict: false,
+      replacementCoachOptions: [],
+      replacementVenueOptions: [],
+      submittedAt: '2026-09-07T10:06:00.000Z',
+      version: 1,
+    };
+    const readModerationCases = vi.fn(async () => [moderationCase]);
+    const startSafetyCaseReview = vi.fn(async (
+      _command: CommandEnvelope<StartSafetyCaseReviewPayload>,
+      _ids: SafetyCaseReviewEffectIds,
+    ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'SAFETY_REVIEW_STARTED', caseId, state: 'UNDER_REVIEW',
+        assignedReviewerUserId: centralUserId, reviewStartedAt: '2026-09-07T11:00:00.000Z',
+        challengeId: chatId, challengeVersion: 2, holdId: reportId, holdVersion: 1, version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000520', aggregateVersion: 2, replayed: false,
+    }));
+    const resolveSafetyCase = vi.fn(async (
+      command: CommandEnvelope<ResolveSafetyCasePayload>,
+      ids: SafetyCaseResolutionEffectIds,
+    ): Promise<ExecutedCommand<SafetyCaseReviewProjection>> => {
+      const response: SafetyCaseReviewProjection = command.payload.remedyCode === 'ACCOUNT_RESTRICTION'
+        ? {
+            action: 'SAFETY_ACCOUNT_RESTRICTION_APPLIED', caseId, state: 'CLOSED',
+            decisionId: ids.decisionId, remedyCode: 'ACCOUNT_RESTRICTION',
+            enforcementId: ids.enforcementId!, subjectUserId: userId,
+            categoryCode: 'VIOLENCE', accountState: 'RESTRICTED',
+            appealDeadlineAt: '2026-09-14T12:00:00.000Z',
+            challengeId: chatId, challengeState: 'BOOKED', challengeVersion: 2,
+            holdId: reportId, holdState: 'ACTIVE', holdVersion: 1,
+            competitionId: chatId, subjectStatus: 'CHAMPION',
+            statusReviewHoldId: ids.statusReviewHoldId!, version: 3,
+          }
+        : command.payload.remedyCode === 'FORFEIT_BY_ENFORCEMENT' ? {
+            action: 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED', caseId, state: 'CLOSED',
+            decisionId: ids.decisionId, remedyCode: 'FORFEIT_BY_ENFORCEMENT',
+            resultId: ids.resultId!, challengeId: chatId, challengeState: 'RESULT_RECORDED',
+            challengeVersion: 3, loserUserId: userId, winnerUserId: peerId,
+            appealDeadlineAt: '2026-09-09T12:00:00.000Z',
+            holdId: reportId, holdState: 'RELEASED', holdVersion: 2,
+            releasedAt: '2026-09-07T12:00:00.000Z', version: 3,
+          }
+        : {
+        action: 'SAFETY_REPLACEMENT_APPLIED', caseId, state: 'CLOSED',
+        decisionId: ids.decisionId, remedyCode: 'REPLACE_COACH',
+        replacementCoachUserId: userId, replacementVenueId: null,
+        challengeId: chatId, challengeState: 'ACCEPTED_UNSCHEDULED',
+        schedulingDeadlineAt: '2026-09-10T12:00:00.000Z', challengeVersion: 3,
+        holdId: reportId, holdState: 'RELEASED', holdVersion: 2,
+        releasedAt: '2026-09-07T12:00:00.000Z', version: 3,
+      };
+      return {
+      responseStatus: 200,
+      response,
+      eventId: '0199a1b2-1234-7000-8000-000000000521', aggregateVersion: 3, replayed: false,
+      };
+    });
     const app = await buildApp({
       chat: {
         auth: new StaticBearerAuthAdapter(token, userId),
+        centralAuth: new StaticBearerAuthAdapter(centralToken, centralUserId),
         readMessages,
         sendMessage,
         editMessage,
         hideMessage,
         reportMessage,
+        readModerationCases,
+        startSafetyCaseReview,
+        resolveSafetyCase,
       },
     });
     apps.push(app);
@@ -915,13 +1576,111 @@ describe('runtime contract', () => {
       payload: { reasonCode: 'ABUSE' },
     });
     expect(reported.statusCode).toBe(201);
-    expect(reported.json()).toMatchObject({ data: { action: 'REPORTED' } });
+    expect(reported.json()).toMatchObject({
+      data: { action: 'REPORTED', state: 'PENDING_CENTRAL', caseId, caseState: 'SUBMITTED' },
+    });
+
+    const protectedQueue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/moderation-cases',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(protectedQueue.statusCode).toBe(401);
+    const centralQueue = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/moderation-cases',
+      headers: { authorization: `Bearer ${centralToken}` },
+    });
+    expect(centralQueue.statusCode).toBe(200);
+    expect(centralQueue.json()).toMatchObject({
+      data: [{ caseId, reporterUserId: userId, evidenceSnapshot: moderationCase.evidenceSnapshot }],
+    });
+    expect(readModerationCases).toHaveBeenCalledWith(centralUserId);
+
+    const reviewStarted = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/review`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-review-1', 'if-match': '1' },
+      payload: {},
+    });
+    expect(reviewStarted.statusCode).toBe(200);
+    expect(reviewStarted.json()).toMatchObject({ data: { state: 'UNDER_REVIEW', version: 2 } });
+    expect(startSafetyCaseReview.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'START_SAFETY_CASE_REVIEW', aggregateId: caseId, expectedVersion: 1,
+      actor: { id: centralUserId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+    });
+    const resolved = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/resolve`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-resolve-1', 'if-match': '2' },
+      payload: {
+        remedyCode: 'REPLACE_COACH', replacementCoachUserId: userId,
+        replacementVenueId: null, reason: 'Независимо выбран безопасный Coach',
+        expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(resolved.json()).toMatchObject({
+      data: { state: 'CLOSED', challengeState: 'ACCEPTED_UNSCHEDULED', holdState: 'RELEASED' },
+    });
+    expect(resolveSafetyCase.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'RESOLVE_SAFETY_CASE', expectedVersion: 2,
+      payload: { expectedChallengeVersion: 2, expectedHoldVersion: 1 },
+    });
+    const enforced = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/resolve`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-enforce-1', 'if-match': '2' },
+      payload: {
+        remedyCode: 'FORFEIT_BY_ENFORCEMENT', replacementCoachUserId: null,
+        replacementVenueId: null, causalLinkConfirmed: true, consequencesConfirmed: true,
+        reason: 'Поведение напрямую сорвало связанную Official Session',
+        expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    expect(enforced.statusCode, enforced.body).toBe(200);
+    expect(enforced.json()).toMatchObject({
+      data: {
+        action: 'SAFETY_ENFORCEMENT_FORFEIT_APPLIED',
+        challengeState: 'RESULT_RECORDED', loserUserId: userId, winnerUserId: peerId,
+      },
+    });
+    expect(resolveSafetyCase.mock.calls[1]?.[0]).toMatchObject({
+      payload: {
+        remedyCode: 'FORFEIT_BY_ENFORCEMENT', causalLinkConfirmed: true,
+        consequencesConfirmed: true, expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    const restricted = await app.inject({
+      method: 'POST', url: `/api/v1/central/moderation-cases/${caseId}/resolve`,
+      headers: { authorization: `Bearer ${centralToken}`, 'idempotency-key': 'safety-restrict-1', 'if-match': '2' },
+      payload: {
+        remedyCode: 'ACCOUNT_RESTRICTION', replacementCoachUserId: null,
+        replacementVenueId: null, restrictionCategoryCode: 'VIOLENCE',
+        seriousCategoryConfirmed: true, consequencesConfirmed: true,
+        reason: 'Подтверждена серьёзная категория нарушения безопасности',
+        expectedChallengeVersion: 2, expectedHoldVersion: 1,
+      },
+    });
+    expect(restricted.statusCode, restricted.body).toBe(200);
+    expect(restricted.json()).toMatchObject({
+      data: {
+        action: 'SAFETY_ACCOUNT_RESTRICTION_APPLIED', accountState: 'RESTRICTED',
+        challengeState: 'BOOKED', holdState: 'ACTIVE', subjectStatus: 'CHAMPION',
+      },
+    });
+    expect(resolveSafetyCase.mock.calls[2]?.[0]).toMatchObject({
+      payload: {
+        remedyCode: 'ACCOUNT_RESTRICTION', restrictionCategoryCode: 'VIOLENCE',
+        seriousCategoryConfirmed: true, consequencesConfirmed: true,
+      },
+    });
 
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/messages');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/visibility');
     expect(app.swagger().paths).toHaveProperty('/api/v1/messages/{messageId}/reports');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/moderation-cases');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/moderation-cases/{caseId}/review');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/central/moderation-cases/{caseId}/resolve');
   });
 
   it('runs the no-document Athlete-to-Central verification workflow', async () => {
@@ -1054,12 +1813,14 @@ describe('runtime contract', () => {
     });
   });
 
-  it('executes scoped Coach and Central Venue role commands', async () => {
+  it('[AC-021][AC-145][AC-204] exposes Venue verification and Primary succession through scoped routes', async () => {
     const centralUserId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
+    const successorUserId = '0199a1b2-1234-7000-8000-000000000716';
     const communityId = '0199a1b2-1234-7000-8000-000000000703';
     const grantId = '0199a1b2-1234-7000-8000-000000000704';
     const venueId = '0199a1b2-1234-7000-8000-000000000707';
+    const sessionId = '0199a1b2-1234-7000-8000-000000000712';
     const adminGrantId = '0199a1b2-1234-7000-8000-000000000708';
     const centralToken = 'molokh-role-central-test-token';
     const coachToken = 'molokh-role-coach-test-token';
@@ -1082,6 +1843,18 @@ describe('runtime contract', () => {
       expiresAt: null,
       version: 2,
     };
+    const guest: RoleGrantProjection = {
+      grantId: '0199a1b2-1234-7000-8000-000000000713',
+      userId: coachUserId,
+      role: 'COACH',
+      scopeType: 'SESSION',
+      scopeId: sessionId,
+      state: 'ACTIVE',
+      authorizedBy: centralUserId,
+      authorizedAt: '2026-09-06T12:01:00.000Z',
+      expiresAt: '2026-10-06T13:00:00.000Z',
+      version: 1,
+    };
     const admin: RoleGrantProjection = {
       grantId: adminGrantId,
       userId: coachUserId,
@@ -1102,6 +1875,36 @@ describe('runtime contract', () => {
       change: 'APPOINTED',
       version: 1,
     };
+    const successorProposal: PrimaryAdminSuccessorProjection = {
+      proposalId: '0199a1b2-1234-7000-8000-000000000717',
+      venueId,
+      proposedByUserId: coachUserId,
+      targetUserId: successorUserId,
+      state: 'PENDING',
+      proposedAt: '2026-09-06T12:15:00.000Z',
+      approvedAt: null,
+      approvedByUserId: null,
+      primaryGrantId: null,
+      primaryAdminVersion: null,
+      version: 1,
+    };
+    const approvedSuccessorProposal: PrimaryAdminSuccessorProjection = {
+      ...successorProposal,
+      state: 'APPROVED',
+      approvedAt: '2026-09-06T12:20:00.000Z',
+      approvedByUserId: centralUserId,
+      primaryGrantId: '0199a1b2-1234-7000-8000-000000000718',
+      primaryAdminVersion: 2,
+      version: 2,
+    };
+    const venueVerification: VenueVerificationProjection = {
+      venueId,
+      displayName: 'Pilot Gym',
+      state: 'ACTIVE',
+      version: 2,
+      communityCreationAllowed: true,
+      slotPublicationAllowed: true,
+    };
     const inviteCoach = vi.fn(async (
       _command: CommandEnvelope<InviteCoachPayload>,
       _ids: RoleGrantEffectIds,
@@ -1120,6 +1923,16 @@ describe('runtime contract', () => {
       response: active,
       eventId: '0199a1b2-1234-7000-8000-000000000706',
       aggregateVersion: 2,
+      replayed: false,
+    }));
+    const authorizeGuestCoach = vi.fn(async (
+      _command: CommandEnvelope<AuthorizeGuestCoachPayload>,
+      _ids: RoleGrantEffectIds,
+    ) => ({
+      responseStatus: 201,
+      response: guest,
+      eventId: '0199a1b2-1234-7000-8000-000000000714',
+      aggregateVersion: 1,
       replayed: false,
     }));
     const appointGymAdmin = vi.fn(async (
@@ -1142,15 +1955,50 @@ describe('runtime contract', () => {
       aggregateVersion: 1,
       replayed: false,
     }));
+    const proposePrimaryAdminSuccessor = vi.fn(async (
+      _command: CommandEnvelope<ProposePrimaryAdminSuccessorPayload>,
+      _ids: PrimaryAdminSuccessorEffectIds,
+    ) => ({
+      responseStatus: 201,
+      response: successorProposal,
+      eventId: '0199a1b2-1234-7000-8000-000000000719',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const approvePrimaryAdminSuccessor = vi.fn(async (
+      _command: CommandEnvelope<ApprovePrimaryAdminSuccessorPayload>,
+      _ids: PrimaryAdminSuccessorApprovalEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: approvedSuccessorProposal,
+      eventId: '0199a1b2-1234-7000-8000-000000000720',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
+    const verifyVenue = vi.fn(async (
+      _command: CommandEnvelope<VerifyVenuePayload>,
+      _ids: VenueVerificationEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: venueVerification,
+      eventId: '0199a1b2-1234-7000-8000-000000000715',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
     const app = await buildApp({
       roles: {
         operatorAuth: new StaticBearerAuthAdapter(centralToken, centralUserId),
         userAuth: new StaticBearerAuthAdapter(coachToken, coachUserId),
         inviteCoach,
         acceptCoachInvite,
+        authorizeGuestCoach,
         listPendingCoachInvites: async () => [pending],
         appointGymAdmin,
         changePrimaryAdmin,
+        proposePrimaryAdminSuccessor,
+        approvePrimaryAdminSuccessor,
+        listPrimaryAdminSuccessorProposals: async () => [successorProposal],
+        verifyVenue,
         readVenueRoleSummary: async () => ({
           venueId,
           primaryAdminVersion: 0,
@@ -1159,6 +2007,64 @@ describe('runtime contract', () => {
       },
     });
     apps.push(app);
+
+    const verifiedVenue = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/venues/${venueId}/verify`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'venue-verify-test-1',
+        'if-match': '1',
+      },
+      payload: {
+        checklistVersion: 'venue-safety-v1',
+        evidenceReference: 'protected://venue/inspection-145',
+        reasonCode: 'VENUE_DUE_DILIGENCE_PASSED',
+      },
+    });
+    expect(verifiedVenue.statusCode).toBe(200);
+    expect(verifiedVenue.json()).toMatchObject({
+      data: {
+        venueId,
+        state: 'ACTIVE',
+        communityCreationAllowed: true,
+        slotPublicationAllowed: true,
+      },
+    });
+    expect(verifyVenue.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'VERIFY_VENUE', aggregateType: 'Venue', aggregateId: venueId,
+      expectedVersion: 1,
+      actor: { id: centralUserId, roles: ['CENTRAL_ADMIN'], scopeIds: [] },
+      payload: {
+        venueId, checklistVersion: 'venue-safety-v1',
+        evidenceReference: 'protected://venue/inspection-145',
+        reasonCode: 'VENUE_DUE_DILIGENCE_PASSED',
+      },
+    });
+
+    const guestAuthorized = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/guest-coach`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'guest-coach-test-1',
+        'if-match': '0',
+      },
+      payload: { coachUserId, reasonCode: 'SESSION_COVERAGE' },
+    });
+    expect(guestAuthorized.statusCode).toBe(201);
+    expect(guestAuthorized.json()).toMatchObject({
+      data: { scopeType: 'SESSION', scopeId: sessionId, state: 'ACTIVE' },
+    });
+    expect(authorizeGuestCoach.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'AUTHORIZE_GUEST_COACH', aggregateType: 'RoleGrant',
+      expectedVersion: 0,
+      payload: { userId: coachUserId, sessionId, reasonCode: 'SESSION_COVERAGE' },
+    });
+    expect(authorizeGuestCoach.mock.calls[0]?.[1]).toMatchObject({
+      eventId: expect.any(String), auditId: expect.any(String),
+      outboxMessageId: expect.any(String), notificationId: expect.any(String),
+    });
 
     const denied = await app.inject({
       method: 'POST',
@@ -1281,11 +2187,65 @@ describe('runtime contract', () => {
       aggregateType: 'VenuePrimaryAdmin',
       aggregateId: venueId,
       expectedVersion: 0,
+      actor: { id: centralUserId, roles: [], scopeIds: [] },
       payload: { userId: coachUserId, venueId, reasonCode: 'PILOT_PRIMARY' },
+    });
+
+    const proposed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/venues/${venueId}/primary-admin-successor-proposals`,
+      headers: {
+        authorization: `Bearer ${coachToken}`,
+        'idempotency-key': 'primary-successor-proposal-test-1',
+      },
+      payload: { userId: successorUserId, reasonCode: 'PLANNED_SUCCESSION' },
+    });
+    expect(proposed.statusCode).toBe(201);
+    expect(proposed.json()).toMatchObject({ data: { state: 'PENDING' } });
+    expect(proposePrimaryAdminSuccessor.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PROPOSE_PRIMARY_ADMIN_SUCCESSOR',
+      aggregateType: 'PrimaryAdminSuccessorProposal',
+      expectedVersion: 0,
+      actor: { id: coachUserId, roles: [], scopeIds: [] },
+      payload: { userId: successorUserId, venueId, reasonCode: 'PLANNED_SUCCESSION' },
+    });
+
+    const proposals = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/primary-admin-successor-proposals',
+      headers: { authorization: `Bearer ${centralToken}` },
+    });
+    expect(proposals.statusCode).toBe(200);
+    expect(proposals.json().data).toEqual([successorProposal]);
+
+    const approved = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/primary-admin-successor-proposals/${successorProposal.proposalId}/approve`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'primary-successor-approve-test-1',
+        'if-match': '1',
+      },
+      payload: { reasonCode: 'SUCCESSION_APPROVED' },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({
+      data: { state: 'APPROVED', primaryAdminVersion: 2, version: 2 },
+    });
+    expect(approvePrimaryAdminSuccessor.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'APPROVE_PRIMARY_ADMIN_SUCCESSOR',
+      aggregateType: 'PrimaryAdminSuccessorProposal',
+      aggregateId: successorProposal.proposalId,
+      expectedVersion: 1,
+      actor: { id: centralUserId, roles: [], scopeIds: [] },
+      payload: {
+        proposalId: successorProposal.proposalId,
+        reasonCode: 'SUCCESSION_APPROVED',
+      },
     });
   });
 
-  it('[AC-173] exposes role-owned schedule publication and participant Chat options', async () => {
+  it('[AC-040][AC-063][AC-065][AC-066][AC-153][AC-173][AC-203] exposes role-owned scheduling and NO_SHOW Attendance commands', async () => {
     const venueId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
     const chatId = '0199a1b2-1234-7000-8000-000000000703';
@@ -1313,6 +2273,7 @@ describe('runtime contract', () => {
       classLabel: 'Открытая группа по боксу',
       startAt: '2026-09-11T16:00:00.000Z',
       endAt: '2026-09-11T17:00:00.000Z',
+      coachUserId: '0199a1b2-1234-7000-8000-000000000710',
       coachDisplayName: 'Пилотный тренер',
       priceText: 'Уточните стоимость у зала',
       externalInfoUrl: null,
@@ -1433,12 +2394,34 @@ describe('runtime contract', () => {
         classLabel: offering.classLabel,
         startAt: offering.startAt,
         endAt: offering.endAt,
+        coachUserId: offering.coachUserId,
         coachDisplayName: offering.coachDisplayName,
         priceText: offering.priceText,
         externalInfoUrl: offering.externalInfoUrl,
         contact: offering.contact as Record<string, unknown>,
         offeringVersion: offering.version,
       },
+      version: 1,
+    };
+    const groupPlanConversionId = '0199a1b2-1234-7000-8000-000000000714';
+    const groupPlanConversion: GroupPlanOfficialConversionProjection = {
+      conversionId: groupPlanConversionId,
+      groupPlanId: groupPlan.groupPlanId,
+      chatId,
+      requestedByUserId: userId,
+      coachUserId: '0199a1b2-1234-7000-8000-000000000710',
+      coachDisplayName: 'Пилотный тренер',
+      state: 'PENDING_CONFIRMATION',
+      confirmationDeadlineAt: '2026-09-10T10:00:00.000Z',
+      challengeId: null,
+      bookingId: null,
+      sessionId: null,
+      confirmations: [{ actorUserId: userId, requiredRole: 'ATHLETE_LOW',
+        decision: 'ACCEPT', decidedAt: '2026-09-07T10:00:00.000Z' }],
+      viewerRequiredRole: 'ATHLETE_LOW',
+      viewerHasDecided: true,
+      viewerCanConfirm: false,
+      viewerCanDecline: false,
       version: 1,
     };
     const selectedSlot = vi.fn(
@@ -1483,6 +2466,18 @@ describe('runtime contract', () => {
       },
       version: 2,
     };
+    const withdrawBookingRequest = vi.fn(
+      async (
+        _command: CommandEnvelope<WithdrawBookingRequestPayload>,
+        _ids: BookingWithdrawalEffectIds,
+      ): Promise<ExecutedCommand<BookingIntentProjection>> => ({
+        responseStatus: 200,
+        response: { ...pendingBooking, state: 'CANCELLED', version: 3 },
+        eventId: '0199a1b2-1234-7000-8000-000000000737',
+        aggregateVersion: 3,
+        replayed: false,
+      }),
+    );
     const hostConfirmationItems = [
       {
         booking: pendingBooking,
@@ -1577,9 +2572,40 @@ describe('runtime contract', () => {
         eventId: '0199a1b2-1234-7000-8000-000000000713', aggregateVersion: 2, replayed: false,
       }),
     );
+    const listGroupPlanOfficialConversionsForViewer = vi.fn(
+      async (): Promise<readonly GroupPlanOfficialConversionProjection[]> => [groupPlanConversion],
+    );
+    const requestGroupPlanOfficialConversion = vi.fn(
+      async (
+        _command: CommandEnvelope<RequestGroupPlanOfficialConversionPayload>,
+        _ids: GroupPlanOfficialConversionEffectIds,
+      ): Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>> => ({
+        responseStatus: 201, response: groupPlanConversion,
+        eventId: '0199a1b2-1234-7000-8000-000000000715', aggregateVersion: 1, replayed: false,
+      }),
+    );
+    const decideGroupPlanOfficialConversion = vi.fn(
+      async (
+        _command: CommandEnvelope<DecideGroupPlanOfficialConversionPayload>,
+        _ids: GroupPlanOfficialConversionEffectIds,
+      ): Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>> => ({
+        responseStatus: 200,
+        response: {
+          ...groupPlanConversion,
+          confirmations: [...groupPlanConversion.confirmations, {
+            actorUserId: '0199a1b2-1234-7000-8000-000000000711',
+            requiredRole: 'ATHLETE_HIGH', decision: 'ACCEPT',
+            decidedAt: '2026-09-07T10:01:00.000Z',
+          }],
+          version: 2,
+        },
+        eventId: '0199a1b2-1234-7000-8000-000000000716', aggregateVersion: 2, replayed: false,
+      }),
+    );
     const lifecycleSession: SessionLifecycleProjection = {
       sessionId,
       bookingId: booking.bookingId,
+      bookingVersion: booking.version,
       challengeId: null,
       challengeState: null,
       challengeVersion: null,
@@ -1588,6 +2614,9 @@ describe('runtime contract', () => {
       venueDisplayName: slot.venueDisplayName,
       coachUserId,
       coachDisplayName: slot.coachDisplayName,
+      guestCoachGrantId: null,
+      guestCoachGrantState: null,
+      guestCoachGrantExpiresAt: null,
       athleteUserIds: [userId, '0199a1b2-1234-7000-8000-000000000716'],
       athleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'],
       activeAthleteUserIds: [userId, '0199a1b2-1234-7000-8000-000000000716'],
@@ -1606,11 +2635,15 @@ describe('runtime contract', () => {
       viewerCanManage: true,
       viewerCanRecordResult: true,
       viewerCanAdminister: false,
+      viewerCanAuthorizeGuestCoach: false,
+      viewerCanReportCoachSafetyRefusal: false,
       viewerCanRequestNoFaultReschedule: false,
       viewerCanRequestOfficialConversion: false,
       viewerCanCancelTraining: false,
+      viewerCanCancelOfficial: false,
       officialConversion: null,
       soloContinuation: null,
+      trainingRetention: null,
       replacementCoachOptions: [],
       version: 2,
     };
@@ -1724,6 +2757,52 @@ describe('runtime contract', () => {
       aggregateVersion: 3,
       replayed: false,
     }));
+    const cancelOfficialSessionByAthlete = vi.fn(async (
+      _command: CommandEnvelope<CancelOfficialSessionByAthletePayload>,
+      _ids: SessionEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: {
+        ...lifecycleSession,
+        purpose: 'OFFICIAL_CHALLENGE' as const,
+        state: 'CANCELLED' as const,
+        challengeId: '0199a1b2-1234-7000-8000-000000000725',
+        challengeState: 'RESULT_RECORDED' as const,
+        challengeVersion: 6,
+        resultId: '0199a1b2-1234-7000-8000-000000000726',
+        cancellationReasonCode: 'ATHLETE_CANCELLED_OFFICIAL',
+        version: 3,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000727',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
+    const reportSafetyAndCancelSession = vi.fn(async (
+      _command: CommandEnvelope<ReportSafetyAndCancelSessionPayload>,
+      _ids: SafetyCancellationEffectIds,
+    ): Promise<ExecutedCommand<SafetyCancellationProjection>> => ({
+      responseStatus: 200,
+      response: {
+        action: 'SAFETY_REPORTED_AND_CANCELLED',
+        caseId: '0199a1b2-1234-7000-8000-000000000741',
+        caseState: 'SUBMITTED',
+        challengeId: '0199a1b2-1234-7000-8000-000000000725',
+        bookingId: booking.bookingId,
+        sessionId,
+        holdId: '0199a1b2-1234-7000-8000-000000000742',
+        holdState: 'ACTIVE',
+        initialDueAt: '2026-09-08T10:00:00.000Z',
+        finalDueAt: '2026-09-09T10:00:00.000Z',
+        submittedAt: '2026-09-07T10:00:00.000Z',
+        sessionVersion: 3,
+        bookingVersion: booking.version + 1,
+        slotVersion: slot.version + 1,
+        challengeVersion: 5,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000743',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
     const conversionId = '0199a1b2-1234-7000-8000-000000000726';
     const conversion: BookingOfficialConversionProjection = {
       conversionId,
@@ -1822,6 +2901,37 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     }));
+    const trainingRetentionId = '0199a1b2-1234-7000-8000-000000000734';
+    const trainingRetention: BookingTrainingRetentionProjection = {
+      retentionId: trainingRetentionId,
+      bookingId: booking.bookingId,
+      sessionId,
+      challengeId: '0199a1b2-1234-7000-8000-000000000735',
+      cause: 'COMPETITIVE_CONTEXT_INVALIDATED',
+      state: 'PENDING',
+      deadlineAt: '2026-09-07T11:00:00.000Z',
+      confirmations: [],
+      viewerRequiredRole: 'ATHLETE_LOW',
+      viewerHasDecided: false,
+      viewerCanConfirm: true,
+      viewerCanDecline: true,
+      version: 1,
+    };
+    const decideBookingTrainingRetention = vi.fn(async (
+      _command: CommandEnvelope<DecideBookingTrainingRetentionPayload>,
+      _ids: BookingTrainingRetentionEffectIds,
+    ): Promise<ExecutedCommand<BookingTrainingRetentionProjection>> => ({
+      responseStatus: 200,
+      response: {
+        ...trainingRetention,
+        confirmations: [{ actorUserId: userId, requiredRole: 'ATHLETE_LOW',
+          decision: 'ACCEPT', decidedAt: '2026-09-07T10:05:00.000Z' }],
+        viewerHasDecided: true, viewerCanConfirm: false, viewerCanDecline: false, version: 2,
+      },
+      eventId: '0199a1b2-1234-7000-8000-000000000736',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
     const app = await buildApp({
       scheduling: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -1834,6 +2944,7 @@ describe('runtime contract', () => {
         withdrawGroupOffering,
         selectSlot: selectedSlot,
         selectSameSlot: selectedSameSlot,
+        withdrawBookingRequest,
         readHostConfirmationQueue,
         readVenueAdminDashboard,
         confirmBookingHost: confirmedByHost,
@@ -1845,13 +2956,19 @@ describe('runtime contract', () => {
         endSession,
         replaceSessionCoach,
         cancelSessionAfterCoachReplacement: cancelledAfterReplacement,
+        cancelOfficialSessionByAthlete,
         failSessionExternal,
+        reportSafetyAndCancelSession,
         requestBookingOfficialConversion,
         decideBookingOfficialConversion,
         requestTrainingParticipantCancellation,
         decideBookingSoloContinuation,
+        decideBookingTrainingRetention,
         proposeGroupPlan: proposedGroupPlan,
         confirmGroupPlan: confirmedGroupPlan,
+        listGroupPlanOfficialConversionsForViewer,
+        requestGroupPlanOfficialConversion,
+        decideGroupPlanOfficialConversion,
       },
     });
     apps.push(app);
@@ -2087,6 +3204,26 @@ describe('runtime contract', () => {
       payload: { bookingId: booking.bookingId, commercialVersion: 1 },
     });
 
+    const bookingWithdrawn = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/withdraw`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'withdraw-booking-api-1',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(bookingWithdrawn.statusCode).toBe(200);
+    expect(bookingWithdrawn.json()).toMatchObject({ data: { state: 'CANCELLED', version: 3 } });
+    expect(withdrawBookingRequest.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'WITHDRAW_SLOT_REQUEST',
+      aggregateType: 'Booking',
+      aggregateId: booking.bookingId,
+      expectedVersion: 2,
+      payload: { bookingId: booking.bookingId },
+    });
+
     const hostQueue = await app.inject({
       method: 'GET',
       url: '/api/v1/me/host-confirmations',
@@ -2126,6 +3263,38 @@ describe('runtime contract', () => {
       expectedVersion: 2,
       payload: { bookingId: booking.bookingId },
     });
+
+    confirmedByHost.mockRejectedValueOnce(
+      new SchedulingConflictError('ATHLETE_SCHEDULE_CONFLICT'),
+    );
+    const athleteConflict = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/host-confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'host-confirm-api-athlete-conflict',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(athleteConflict.statusCode).toBe(409);
+    expect(athleteConflict.json()).toMatchObject({ code: 'ATHLETE_SCHEDULE_CONFLICT' });
+
+    confirmedByHost.mockRejectedValueOnce(
+      new SchedulingConflictError('HOST_CONFIRMATION_EXPIRED'),
+    );
+    const expiredConfirmation = await app.inject({
+      method: 'POST',
+      url: `/api/v1/bookings/${booking.bookingId}/host-confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'host-confirm-api-expired',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(expiredConfirmation.statusCode).toBe(409);
+    expect(expiredConfirmation.json()).toMatchObject({ code: 'HOST_CONFIRMATION_EXPIRED' });
 
     const hostRejected = await app.inject({
       method: 'POST',
@@ -2257,6 +3426,28 @@ describe('runtime contract', () => {
       payload: { continuationId: soloContinuationId, decision: 'ACCEPT' },
     });
 
+    const retentionDecisionRecorded = await app.inject({
+      method: 'POST',
+      url: `/api/v1/booking-training-retentions/${trainingRetentionId}/decision`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'confirm-training-retention-api-1',
+        'if-match': '1',
+      },
+      payload: { decision: 'ACCEPT' },
+    });
+    expect(retentionDecisionRecorded.statusCode).toBe(200);
+    expect(retentionDecisionRecorded.json()).toMatchObject({
+      data: { cause: 'COMPETITIVE_CONTEXT_INVALIDATED', version: 2 },
+    });
+    expect(decideBookingTrainingRetention.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'DECIDE_BOOKING_TRAINING_RETENTION',
+      aggregateType: 'BookingTrainingRetention',
+      aggregateId: trainingRetentionId,
+      expectedVersion: 1,
+      payload: { retentionId: trainingRetentionId, decision: 'ACCEPT' },
+    });
+
     const sessionStarted = await app.inject({
       method: 'POST',
       url: `/api/v1/sessions/${sessionId}/start`,
@@ -2284,13 +3475,13 @@ describe('runtime contract', () => {
         'idempotency-key': 'session-attendance-api-1',
         'if-match': '2',
       },
-      payload: { athleteUserId: userId, status: 'PRESENT' },
+      payload: { athleteUserId: userId, status: 'NO_SHOW' },
     });
     expect(attendanceRecorded.statusCode).toBe(200);
     expect(recordSessionAttendance.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'RECORD_ATTENDANCE',
       expectedVersion: 2,
-      payload: { sessionId, athleteUserId: userId, status: 'PRESENT', comment: null },
+      payload: { sessionId, athleteUserId: userId, status: 'NO_SHOW', comment: null },
     });
 
     const sessionEnded = await app.inject({
@@ -2356,7 +3547,99 @@ describe('runtime contract', () => {
     expect(externalFailure.statusCode).toBe(200);
     expect(failSessionExternal.mock.calls[0]?.[0]).toMatchObject({
       commandType: 'FAIL_SESSION_EXTERNAL',
+      actor: { id: userId, roles: [] },
       payload: { sessionId, reasonCode: 'VENUE_UNAVAILABLE' },
+    });
+    expect(failSessionExternal.mock.calls[0]?.[1]).toMatchObject({
+      rescheduleId: expect.any(String),
+      challengeEventId: expect.any(String),
+      challengeOutboxMessageId: expect.any(String),
+    });
+
+    const safetyCancelled = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/safety-report`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-safety-api-1',
+        'if-match': '2',
+      },
+      payload: {
+        subjectUserId: lifecycleSession.athleteUserIds[1],
+        reasonCode: 'THREAT',
+        explicitConfirmation: true,
+        expectedBookingVersion: booking.version,
+        expectedChallengeVersion: 4,
+      },
+    });
+    expect(safetyCancelled.statusCode).toBe(200);
+    expect(safetyCancelled.json()).toMatchObject({
+      data: { action: 'SAFETY_REPORTED_AND_CANCELLED', holdState: 'ACTIVE' },
+    });
+    expect(reportSafetyAndCancelSession.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REPORT_SAFETY_AND_CANCEL', expectedVersion: 2,
+      payload: {
+        sessionId, subjectUserId: lifecycleSession.athleteUserIds[1],
+        reasonCode: 'THREAT', explicitConfirmation: true,
+        expectedBookingVersion: booking.version, expectedChallengeVersion: 4,
+      },
+    });
+    expect(reportSafetyAndCancelSession.mock.calls[0]?.[1]).toMatchObject({
+      caseId: expect.any(String), holdId: expect.any(String),
+      notificationIds: expect.arrayContaining([expect.any(String)]),
+    });
+
+    const coachRefusal = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/refuse-unsafe`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-coach-safety-refusal-api-1',
+        'if-match': '2',
+      },
+      payload: {
+        subjectUserId: lifecycleSession.athleteUserIds[0],
+        reasonCode: 'UNSAFE_CONDUCT',
+        explicitConfirmation: true,
+        expectedBookingVersion: booking.version,
+        expectedChallengeVersion: 4,
+      },
+    });
+    expect(coachRefusal.statusCode).toBe(200);
+    expect(reportSafetyAndCancelSession.mock.calls[1]?.[0]).toMatchObject({
+      commandType: 'REFUSE_UNSAFE_SESSION', expectedVersion: 2,
+      payload: {
+        sessionId, subjectUserId: lifecycleSession.athleteUserIds[0],
+        reasonCode: 'UNSAFE_CONDUCT', explicitConfirmation: true,
+        expectedBookingVersion: booking.version, expectedChallengeVersion: 4,
+      },
+    });
+
+    const officialCancelled = await app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/cancel-official`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'session-cancel-official-api-1',
+        'if-match': '2',
+      },
+      payload: {},
+    });
+    expect(officialCancelled.statusCode).toBe(200);
+    expect(officialCancelled.json()).toMatchObject({
+      data: { state: 'CANCELLED', challengeState: 'RESULT_RECORDED' },
+    });
+    expect(cancelOfficialSessionByAthlete.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CANCEL_OFFICIAL_BY_ATHLETE',
+      actor: { id: userId, roles: [] },
+      aggregateType: 'Session', aggregateId: sessionId, expectedVersion: 2,
+      payload: { sessionId },
+    });
+    expect(cancelOfficialSessionByAthlete.mock.calls[0]?.[1]).toMatchObject({
+      resultId: expect.any(String), resultEventId: expect.any(String),
+      cooldownId: expect.any(String), resultNotificationIds: expect.arrayContaining([
+        expect.any(String), expect.any(String), expect.any(String),
+      ]),
     });
 
     const planProposed = await app.inject({
@@ -2396,6 +3679,46 @@ describe('runtime contract', () => {
       payload: { groupPlanId: groupPlan.groupPlanId },
     });
 
+    const groupConversions = await app.inject({
+      method: 'GET', url: '/api/v1/me/group-plan-official-conversions',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(groupConversions.statusCode).toBe(200);
+    expect(groupConversions.json()).toMatchObject({
+      data: [{ conversionId: groupPlanConversionId, state: 'PENDING_CONFIRMATION' }],
+    });
+    expect(listGroupPlanOfficialConversionsForViewer).toHaveBeenCalledWith(userId);
+
+    const groupConversionRequested = await app.inject({
+      method: 'POST',
+      url: `/api/v1/group-plans/${groupPlan.groupPlanId}/request-official-conversion`,
+      headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'request-group-official-api-1', 'if-match': '2' },
+      payload: { explicitRulesetAcknowledged: true },
+    });
+    expect(groupConversionRequested.statusCode).toBe(201);
+    expect(requestGroupPlanOfficialConversion.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'REQUEST_GROUP_PLAN_OFFICIAL_CONVERSION',
+      aggregateType: 'GroupPlan', aggregateId: groupPlan.groupPlanId, expectedVersion: 2,
+      payload: { groupPlanId: groupPlan.groupPlanId, explicitRulesetAcknowledged: true },
+    });
+
+    const groupConversionConfirmed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/group-plan-official-conversions/${groupPlanConversionId}/decision`,
+      headers: { authorization: `Bearer ${token}`,
+        'idempotency-key': 'confirm-group-official-api-1', 'if-match': '1' },
+      payload: { decision: 'ACCEPT', explicitRulesetAcknowledged: true },
+    });
+    expect(groupConversionConfirmed.statusCode).toBe(200);
+    expect(groupConversionConfirmed.json()).toMatchObject({ data: { version: 2 } });
+    expect(decideGroupPlanOfficialConversion.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'DECIDE_GROUP_PLAN_OFFICIAL_CONVERSION',
+      aggregateType: 'GroupPlanOfficialConversion', aggregateId: groupPlanConversionId,
+      expectedVersion: 1,
+      payload: { conversionId: groupPlanConversionId, decision: 'ACCEPT' },
+    });
+
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/training-options');
     expect(app.swagger().paths).toHaveProperty(
@@ -2415,6 +3738,7 @@ describe('runtime contract', () => {
     );
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings');
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/select-same');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/withdraw');
     expect(app.swagger().paths).toHaveProperty('/api/v1/me/host-confirmations');
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/host-confirm');
     expect(app.swagger().paths).toHaveProperty('/api/v1/bookings/{bookingId}/host-reject');
@@ -2437,12 +3761,19 @@ describe('runtime contract', () => {
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/end');
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/replace-coach');
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/cancel-after-coach-replacement');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/cancel-official');
     expect(app.swagger().paths).toHaveProperty('/api/v1/sessions/{sessionId}/fail-external');
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans');
     expect(app.swagger().paths).toHaveProperty('/api/v1/group-plans/{groupPlanId}/confirm');
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/group-plans/{groupPlanId}/request-official-conversion',
+    );
+    expect(app.swagger().paths).toHaveProperty(
+      '/api/v1/group-plan-official-conversions/{conversionId}/decision',
+    );
   });
 
-  it('exposes the direct optional Official Challenge flow in a Match chat', async () => {
+  it('[AC-061][AC-062][AC-064][AC-073][AC-172] exposes Challenge creation timers and reschedule flows', async () => {
     const chatId = '0199a1b2-1234-7000-8000-000000001101';
     const challengeId = '0199a1b2-1234-7000-8000-000000001102';
     const challenge: ChallengeProjection = {
@@ -2462,14 +3793,17 @@ describe('runtime contract', () => {
       responseDeadlineAt: '2026-09-10T10:00:00.000Z',
       acceptedAt: null,
       schedulingDeadlineAt: null,
+      userRescheduleCount: 0,
       pairQuietUntil: null,
       viewerRole: 'INITIATOR',
       version: 1,
     };
     const chatProjection: ChatChallengeProjection = {
       challenge: null,
+      mutualRescheduleRequest: null,
       canCreate: true,
       createDenialCode: null,
+      createRetryAt: null,
       policyVersion: 'challenge-mvp-v1',
     };
     const created = vi.fn().mockResolvedValue({
@@ -2494,6 +3828,57 @@ describe('runtime contract', () => {
       aggregateVersion: 2,
       replayed: false,
     });
+    const rescheduled = vi.fn(async (
+      _command: CommandEnvelope<RescheduleChallengeByAthletePayload>,
+      _ids: AthleteChallengeRescheduleEffectIds,
+    ): Promise<ExecutedCommand<ChallengeProjection>> => ({
+      responseStatus: 200,
+      response: _command.payload.confirmForfeit
+        ? {
+            ...acceptedProjection,
+            state: 'RESULT_RECORDED',
+            userRescheduleCount: 2,
+            version: _command.expectedVersion + 1,
+          }
+        : { ...acceptedProjection, userRescheduleCount: 1, version: 3 },
+      eventId: '0199a1b2-1234-7000-8000-000000001108',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
+    const mutualRequestId = '0199a1b2-1234-7000-8000-000000001109';
+    const mutualRequest: MutualChallengeRescheduleRequestProjection = {
+      requestId: mutualRequestId,
+      challengeId,
+      bookingId: null,
+      sessionId: null,
+      proposedByUserId: userId,
+      confirmedByUserId: null,
+      reasonCode: 'SCHEDULE_CHANGED',
+      state: 'PROPOSED',
+      proposedAt: '2026-09-08T12:00:00.000Z',
+      confirmedAt: null,
+      version: 1,
+    };
+    const mutualProposed = vi.fn(async (
+      _command: CommandEnvelope<ProposeMutualChallengeReschedulePayload>,
+      _ids: ProposeMutualChallengeRescheduleEffectIds,
+    ): Promise<ExecutedCommand<MutualChallengeRescheduleRequestProjection>> => ({
+      responseStatus: 201,
+      response: mutualRequest,
+      eventId: '0199a1b2-1234-7000-8000-000000001110',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const mutualConfirmed = vi.fn(async (
+      _command: CommandEnvelope<ConfirmMutualChallengeReschedulePayload>,
+      _ids: ConfirmMutualChallengeRescheduleEffectIds,
+    ): Promise<ExecutedCommand<ChallengeProjection>> => ({
+      responseStatus: 200,
+      response: { ...acceptedProjection, userRescheduleCount: 1, version: 3 },
+      eventId: '0199a1b2-1234-7000-8000-000000001111',
+      aggregateVersion: 3,
+      replayed: false,
+    }));
     const app = await buildApp({
       challenge: {
         auth: new StaticBearerAuthAdapter(token, userId),
@@ -2502,6 +3887,9 @@ describe('runtime contract', () => {
         acceptOptionalChallenge: accepted,
         declineOptionalChallenge: vi.fn(),
         withdrawOptionalChallenge: vi.fn(),
+        rescheduleChallengeByAthlete: rescheduled,
+        proposeMutualChallengeReschedule: mutualProposed,
+        confirmMutualChallengeReschedule: mutualConfirmed,
       },
     });
     apps.push(app);
@@ -2531,6 +3919,8 @@ describe('runtime contract', () => {
       expectedVersion: 0,
       payload: { sourceChatId: chatId },
     });
+    expect(created.mock.calls[0]?.[1].reminderTimerOutboxMessageIds).toHaveLength(2);
+    expect(new Set(created.mock.calls[0]?.[1].reminderTimerOutboxMessageIds).size).toBe(2);
 
     const accept = await app.inject({
       method: 'POST',
@@ -2550,11 +3940,122 @@ describe('runtime contract', () => {
       payload: { challengeId },
     });
 
+    const reschedule = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/reschedule`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-reschedule-api-1',
+        'if-match': '2',
+      },
+      payload: { reasonCode: 'SCHEDULE_CHANGED' },
+    });
+    expect(reschedule.statusCode).toBe(200);
+    expect(reschedule.json()).toMatchObject({
+      data: { state: 'ACCEPTED_UNSCHEDULED', userRescheduleCount: 1, version: 3 },
+    });
+    expect(rescheduled.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+      aggregateType: 'Challenge',
+      aggregateId: challengeId,
+      expectedVersion: 2,
+      payload: {
+        challengeId,
+        reasonCode: 'SCHEDULE_CHANGED',
+        reasonNote: null,
+        confirmForfeit: false,
+      },
+    });
+
+    const limitForfeit = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/reschedule`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-reschedule-limit-forfeit-api-1',
+        'if-match': '4',
+      },
+      payload: { reasonCode: 'OTHER', confirmForfeit: true },
+    });
+    expect(limitForfeit.statusCode).toBe(200);
+    expect(limitForfeit.json()).toMatchObject({
+      data: { state: 'RESULT_RECORDED', userRescheduleCount: 2, version: 5 },
+    });
+    expect(rescheduled.mock.calls[1]?.[0]).toMatchObject({
+      commandType: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+      aggregateId: challengeId,
+      expectedVersion: 4,
+      payload: {
+        challengeId,
+        reasonCode: 'OTHER',
+        reasonNote: null,
+        confirmForfeit: true,
+      },
+    });
+    expect(rescheduled.mock.calls[1]?.[1]).toMatchObject({
+      hostNotificationOutboxMessageId: expect.any(String),
+      resultId: expect.any(String),
+      resultEventId: expect.any(String),
+      cooldownId: expect.any(String),
+      timerOutboxMessageId: expect.any(String),
+    });
+
+    const proposeMutual = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/mutual-reschedules`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-mutual-reschedule-propose-api-1',
+        'if-match': '2',
+      },
+      payload: { reasonCode: 'SCHEDULE_CHANGED' },
+    });
+    expect(proposeMutual.statusCode).toBe(201);
+    expect(proposeMutual.json()).toMatchObject({
+      data: { requestId: mutualRequestId, state: 'PROPOSED', version: 1 },
+    });
+    expect(mutualProposed.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PROPOSE_MUTUAL_CHALLENGE_RESCHEDULE',
+      aggregateType: 'ChallengeMutualReschedule',
+      expectedVersion: 0,
+      payload: {
+        challengeId,
+        challengeVersion: 2,
+        reasonCode: 'SCHEDULE_CHANGED',
+        reasonNote: null,
+      },
+    });
+
+    const confirmMutual = await app.inject({
+      method: 'POST',
+      url: `/api/v1/challenges/${challengeId}/mutual-reschedules/${mutualRequestId}/confirm`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'idempotency-key': 'challenge-mutual-reschedule-confirm-api-1',
+        'if-match': '2',
+      },
+      payload: { requestVersion: 1 },
+    });
+    expect(confirmMutual.statusCode).toBe(200);
+    expect(confirmMutual.json()).toMatchObject({
+      data: { state: 'ACCEPTED_UNSCHEDULED', userRescheduleCount: 1, version: 3 },
+    });
+    expect(mutualConfirmed.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'CONFIRM_MUTUAL_CHALLENGE_RESCHEDULE',
+      aggregateType: 'Challenge',
+      aggregateId: challengeId,
+      expectedVersion: 2,
+      payload: { challengeId, requestId: mutualRequestId, requestVersion: 1 },
+    });
+
     await app.ready();
     expect(app.swagger().paths).toHaveProperty('/api/v1/chats/{chatId}/challenge');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/accept');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/decline');
     expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/withdraw');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/reschedule');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/mutual-reschedules');
+    expect(app.swagger().paths).toHaveProperty('/api/v1/challenges/{challengeId}/mutual-reschedules/{requestId}/confirm');
   });
 });

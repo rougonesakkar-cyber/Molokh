@@ -6,7 +6,9 @@ export const MANDATORY_CHALLENGE_REMINDER_HOURS = [48] as const;
 export const OPTIONAL_CHALLENGE_PAIR_QUIET_HOURS = 48;
 export const OPTIONAL_CHALLENGE_OUTGOING_LIMIT = 3;
 export const ACCEPTED_CHALLENGE_SCHEDULING_DAYS = 14;
+export const CHALLENGE_SCHEDULING_EXTENSION_DAYS = 7;
 export const CHALLENGE_RESULT_REMINDER_HOURS = [2, 12, 24] as const;
+export const MAX_USER_CHALLENGE_RESCHEDULES = 2;
 
 export type ChallengeState =
   | 'AWAITING_RESPONSE'
@@ -42,9 +44,10 @@ export type ChallengeConflictCode =
   | 'PAIR_CHALLENGE_EXISTS'
   | 'PAIR_BLOCKED'
   | 'PAIR_COOLDOWN_ACTIVE'
-  | 'OPTIONAL_INVITATION_LIMIT'
+  | 'OPTIONAL_INVITE_LIMIT'
   | 'OPTIONAL_PAIR_QUIET'
   | 'OFFICIAL_OBLIGATION_LIMIT'
+  | 'YOUTH_OFFICIAL_DISABLED'
   | 'RULESET_ACK_REQUIRED'
   | 'CHALLENGE_NOT_AWAITING_RESPONSE'
   | 'CHALLENGE_INITIATOR_REQUIRED'
@@ -58,13 +61,23 @@ export type ChallengeConflictCode =
   | 'CHALLENGE_SESSION_MISMATCH'
   | 'CHALLENGE_COMPETITIVE_SNAPSHOT_MISSING'
   | 'CHALLENGE_SCHEDULING_DEADLINE_REACHED'
+  | 'CHALLENGE_SCHEDULING_NOT_DUE'
   | 'CHALLENGE_PARTICIPANT_REQUIRED'
-  | 'CHALLENGE_OBLIGATION_MISSING';
+  | 'CHALLENGE_OBLIGATION_MISSING'
+  | 'CHALLENGE_RESCHEDULE_NOT_ALLOWED'
+  | 'CHALLENGE_RESCHEDULE_LIMIT_REACHED'
+  | 'CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED'
+  | 'CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED'
+  | 'CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS'
+  | 'CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED';
 
 export class ChallengeConflictError extends Error {
   readonly code: ChallengeConflictCode;
 
-  constructor(readonly reason: ChallengeConflictCode) {
+  constructor(
+    readonly reason: ChallengeConflictCode,
+    readonly retryAt: string | null = null,
+  ) {
     super(`Official Challenge action is not allowed: ${reason}`);
     this.name = 'ChallengeConflictError';
     this.code = reason;
@@ -107,6 +120,36 @@ export function acceptedChallengeSchedulingDeadline(acceptedAt: Date): Date {
   return new Date(acceptedAt.getTime() + ACCEPTED_CHALLENGE_SCHEDULING_DAYS * 24 * 60 * 60 * 1_000);
 }
 
+export function assertAcceptedChallengeSchedulingCanExpire(input: {
+  readonly state: ChallengeState;
+  readonly schedulingDeadlineAt: Date | null;
+  readonly schedulingExtensionCount: number;
+  readonly occurredAt: Date;
+}): 'EXTEND' | 'EXPIRE_NO_CAPACITY' {
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED');
+  }
+  if (
+    input.schedulingDeadlineAt === null
+    || !Number.isFinite(input.schedulingDeadlineAt.getTime())
+    || !Number.isFinite(input.occurredAt.getTime())
+    || input.occurredAt < input.schedulingDeadlineAt
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_SCHEDULING_NOT_DUE');
+  }
+  if (!Number.isInteger(input.schedulingExtensionCount)
+    || input.schedulingExtensionCount < 0 || input.schedulingExtensionCount > 1) {
+    throw new RangeError('schedulingExtensionCount must be 0 or 1');
+  }
+  return input.schedulingExtensionCount === 0 ? 'EXTEND' : 'EXPIRE_NO_CAPACITY';
+}
+
+export function extendedChallengeSchedulingDeadline(currentDeadlineAt: Date): Date {
+  assertValidDate(currentDeadlineAt, 'currentDeadlineAt');
+  return new Date(currentDeadlineAt.getTime()
+    + CHALLENGE_SCHEDULING_EXTENSION_DAYS * 24 * 60 * 60 * 1_000);
+}
+
 export function challengeResultReminderDeadlines(endedAt: Date): readonly [Date, Date, Date] {
   return CHALLENGE_RESULT_REMINDER_HOURS.map((hours) => plusHours(endedAt, hours)) as unknown as readonly [Date, Date, Date];
 }
@@ -136,6 +179,127 @@ export function assertAcceptedChallengeCanStartBooking(input: {
   if (input.activeObligationCount !== 2) {
     throw new ChallengeConflictError('CHALLENGE_OBLIGATION_MISSING');
   }
+}
+
+export function nextAthleteChallengeRescheduleCount(input: {
+  readonly state: ChallengeState;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly userRescheduleCount: number;
+}): number {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED');
+  }
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (
+    !Number.isSafeInteger(input.userRescheduleCount)
+    || input.userRescheduleCount < 0
+    || input.userRescheduleCount >= MAX_USER_CHALLENGE_RESCHEDULES
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
+  }
+  return input.userRescheduleCount + 1;
+}
+
+export function challengeRescheduleLimitForfeitWinner(input: {
+  readonly state: ChallengeState;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly userRescheduleCount: number;
+  readonly consequencesConfirmed: boolean;
+}): string {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED');
+  }
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (input.userRescheduleCount !== MAX_USER_CHALLENGE_RESCHEDULES) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
+  }
+  if (!input.consequencesConfirmed) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED');
+  }
+  return input.participantUserIds[0] === input.actorUserId
+    ? input.participantUserIds[1]
+    : input.participantUserIds[0];
+}
+
+export function assertMutualChallengeRescheduleCanBeProposed(input: {
+  readonly state: ChallengeState;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly userRescheduleCount: number;
+  readonly requestExistsForCurrentVersion: boolean;
+}): void {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED');
+  }
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (
+    !Number.isSafeInteger(input.userRescheduleCount)
+    || input.userRescheduleCount < 0
+    || input.userRescheduleCount >= MAX_USER_CHALLENGE_RESCHEDULES
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
+  }
+  if (input.requestExistsForCurrentVersion) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS');
+  }
+}
+
+export function nextMutualChallengeRescheduleCount(input: {
+  readonly state: ChallengeState;
+  readonly proposedByUserId: string;
+  readonly confirmedByUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly userRescheduleCount: number;
+}): number {
+  if (
+    !input.participantUserIds.includes(input.proposedByUserId)
+    || !input.participantUserIds.includes(input.confirmedByUserId)
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED');
+  }
+  if (input.proposedByUserId === input.confirmedByUserId) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED');
+  }
+  if (!['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED'].includes(input.state)) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (
+    !Number.isSafeInteger(input.userRescheduleCount)
+    || input.userRescheduleCount < 0
+    || input.userRescheduleCount >= MAX_USER_CHALLENGE_RESCHEDULES
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED');
+  }
+  return input.userRescheduleCount + 1;
+}
+
+export function externalChallengeRescheduleCount(input: {
+  readonly state: ChallengeState;
+  readonly activeObligationCount: number;
+  readonly userRescheduleCount: number;
+}): number {
+  if (input.state !== 'BOOKED') {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  if (input.activeObligationCount !== 2) {
+    throw new ChallengeConflictError('CHALLENGE_OBLIGATION_MISSING');
+  }
+  if (
+    !Number.isSafeInteger(input.userRescheduleCount)
+    || input.userRescheduleCount < 0
+    || input.userRescheduleCount > MAX_USER_CHALLENGE_RESCHEDULES
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  return input.userRescheduleCount;
 }
 
 export function assertChallengeBookingCanBeConfirmed(input: {
@@ -175,6 +339,30 @@ export function effectiveChallengeStakeAtSessionWindow(input: {
     return input.plannedStake;
   }
   return 'NONE';
+}
+
+export function titleChallengeCompetitiveContextIsCurrent(input: {
+  readonly plannedStake: ChallengeStake;
+  readonly participantUserIds: readonly [string, string];
+  readonly championUserId: string | null;
+  readonly contenderUserId: string | null;
+}): boolean {
+  if (input.plannedStake !== 'TITLE') return true;
+  if (input.championUserId === null || input.contenderUserId === null) return false;
+  const participants = new Set(input.participantUserIds);
+  return participants.has(input.championUserId) && participants.has(input.contenderUserId);
+}
+
+export function titleSessionRequiresCompetitiveInvalidation(input: {
+  readonly actualStartAt: string | null;
+  readonly plannedStake: ChallengeStake;
+  readonly participantUserIds: readonly [string, string];
+  readonly championUserId: string | null;
+  readonly contenderUserId: string | null;
+}): boolean {
+  return input.actualStartAt === null
+    && input.plannedStake === 'TITLE'
+    && !titleChallengeCompetitiveContextIsCurrent(input);
 }
 
 export function assertChallengeSessionWindowCanOpen(input: {
@@ -226,6 +414,7 @@ export interface DirectOpenChallengeEligibility {
   readonly pairBlocked: boolean;
   readonly pairCooldownActive: boolean;
   readonly pairQuietActive: boolean;
+  readonly pairQuietUntil?: Date | null;
   readonly livePairChallengeExists: boolean;
   readonly outgoingAwaitingResponseCount: number;
   readonly initiatorStatus: 'ORDINARY' | 'CHAMPION' | 'CONTENDER';
@@ -250,12 +439,17 @@ export function assertDirectOpenChallengeCanBeCreated(
   if (!eligibility.activeMatch) throw new ChallengeConflictError('MATCH_REQUIRED');
   if (eligibility.pairBlocked) throw new ChallengeConflictError('PAIR_BLOCKED');
   if (eligibility.pairCooldownActive) throw new ChallengeConflictError('PAIR_COOLDOWN_ACTIVE');
-  if (eligibility.pairQuietActive) throw new ChallengeConflictError('OPTIONAL_PAIR_QUIET');
+  if (eligibility.pairQuietActive) {
+    throw new ChallengeConflictError(
+      'OPTIONAL_PAIR_QUIET',
+      eligibility.pairQuietUntil?.toISOString() ?? null,
+    );
+  }
   if (eligibility.livePairChallengeExists) {
     throw new ChallengeConflictError('PAIR_CHALLENGE_EXISTS');
   }
   if (eligibility.outgoingAwaitingResponseCount >= OPTIONAL_CHALLENGE_OUTGOING_LIMIT) {
-    throw new ChallengeConflictError('OPTIONAL_INVITATION_LIMIT');
+    throw new ChallengeConflictError('OPTIONAL_INVITE_LIMIT');
   }
   if (
     eligibility.recipientStatus !== 'ORDINARY'

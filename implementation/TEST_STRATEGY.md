@@ -30,6 +30,8 @@ Required gates:
 - terminal states reject ordinary mutation;
 - same command with same idempotency key is observationally equivalent;
 - same idempotency key with changed payload is rejected.
+- universal-client TSX requires explicit control roles, field labels, heading hierarchy and
+  selected/checked/disabled accessibility state; static Web output must declare the pilot locale.
 
 ## 4. Status algebra properties
 
@@ -58,6 +60,8 @@ Mandatory database-level races:
 8. PlatformIncident compensation worker retries;
 9. Appeal/Integrity decision races ordinary finalizer;
 10. Block/Unmatch cleanup races optional Challenge acceptance.
+11. closure request with export races a standalone export request; at most one live payload exists
+    and the closure path reuses it without a duplicate event/timer.
 
 Expected result is not merely one HTTP success: exact aggregate/event/audit/outbox counts and final projection must be asserted.
 
@@ -79,6 +83,9 @@ Boundaries to test at `t-1ms`, `t`, `t+1ms`:
 - phone-change hold;
 - evidence URL/retention;
 - exact PlatformIncident overlap.
+- account closure cancellation at the 30-day boundary and export payload deletion at +48h.
+- personal/service Chat cleanup at retention `t-1ms/t/t+1ms`, including Case preservation,
+  checksum lineage, batch replay and concurrent send/cleanup serialization.
 
 DST tests use Venue IANA timezone for display while business comparisons remain UTC.
 
@@ -151,6 +158,12 @@ In staging/CI simulate:
 - stale mobile client submits prior version.
 
 Business state must remain deterministic and recoverable.
+
+The executable PlatformIncident suite covers AC-195/AC-196 with a real PostgreSQL clock and
+append-only facts: exact partial overlap, no-overlap exclusion, duplicate impact replay, active
+timer suppression, every pausable-deadline adapter, mandatory timeout compensation and PI-05
+only after a zero-candidate rescan. Challenge scheduling separately proves the CH-24 first
+deadline extension and CH-25 second-deadline no-fault cancellation.
 
 Official Session lifecycle integration additionally proves that the scheduled boundary creates
 one immutable competitive snapshot without actual attendance, actual Start creates `CH-13` once,

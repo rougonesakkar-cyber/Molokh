@@ -167,34 +167,116 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - Outbox delivery increment: complete; leased `SKIP LOCKED` claim, bounded retry, crash-safe lease recovery, Graphile job deduplication and Inbox receipt handling are implemented.
 - Timer foundation increment: complete; canonical payload, exact deadline boundary, state/version stale guard, early reschedule and diagnostic-only stale path are implemented. Product handlers register with their owning modules.
 - Notification/observability increment: complete; event-to-inbox projection is atomic and duplicate-safe, notification reads enforce recipient ownership, and API request/correlation/causation IDs propagate through response headers and structured logs.
+- M1 critical-delivery-intent increment: complete. A mandatory in-app projection atomically creates
+  one provider-independent critical-push intent, while SMS requires an explicit database-backed
+  event opt-in and an absent preference means opt-out. Migration `0062` stores no private contact
+  destination, inbox replay and channel uniqueness prevent duplicates, and pending/failing external
+  delivery plus notification reads cannot change the server-owned Challenge deadline. AC-164 passes
+  Worker and real PostgreSQL coverage on the actual mandatory Challenge path without enabling a
+  provider or promising delivery in the client.
 - M1 exit: complete at the platform layer.
 - Story 4 Sprint 1 increment: complete. The 14+ User/AthleteProfile activation, arbitrary display name, private name audit, local replaceable auth adapter, public capability projection, typed API and minimal universal client run end to end. Phone-confirmed but Central-unverified Athletes can use Discovery and ordinary Training but receive an explicit Official Challenge denial.
 - Story 4 verification increment: complete. V-01 start, permission-protected Central FIFO queue and V-02 approval use checklist/version only, store no document/evidence, and immediately recompute Identity/Community capabilities.
-- Story 4 remaining production work: real OTP and rotating session adapter, avatar malware/scan port and account recovery/duplicate cases. These do not block local Story 5 work.
+- Story 4 Home Venue increment: complete. The Athlete can choose any active connected Venue from
+  the universal profile. The versioned/idempotent command changes only Discovery/Slot geography,
+  records event/audit/outbox proof and preserves Membership, status, FIFO and Challenge state.
+- Story 4 authentication/account-access hardening: complete in code. A replaceable OTP transport
+  boundary, five-attempt/10-minute challenge, opaque 15-minute access token, rotating 30-day refresh
+  family, hash-only persistence, reuse-triggered family revocation, logout, trusted-session linkage
+  and the 24-hour pre-change service-response mode now run through Core, PostgreSQL and typed API.
+  Local development exposes its deterministic OTP only outside production; an external SMS provider
+  remains optional and unconfigured. Account recovery and duplicate-account Central cases are also
+  complete. Web refresh is kept in an HttpOnly/SameSite cookie, native refresh in Expo SecureStore,
+  and the universal client restores/rotates the managed session without persisting a Web refresh or
+  access token. Production bootstrap is now fail-closed: it disables all local fixtures/static
+  tokens, requires explicit secrets/pilot IDs/HTTPS origins and rechecks the active Central role
+  from PostgreSQL for every privileged request. The avatar upload/scan provider boundary is also
+  complete and disabled by default: it accepts only allowlisted image metadata, returns no ticket
+  without an adapter and never attaches unscanned media. Remaining Story 4 external work is an
+  actual private object/scan provider and an opt-in OTP delivery provider.
 - Story 5 foundation: complete. One deterministic pilot Venue/Community and active Membership render in the universal client. Database constraints enforce one current Community per Venue, one active competitive Membership per Athlete, immutable configuration ownership and at most one active Primary Admin. Pure Core guards enforce exact Venue/Community/Global role scope.
 - Story 5 Coach increment: complete. RG-01/RG-02 provide an audited/idempotent 72-hour invitation, database-backed Venue scope checks, verified-target guard, invitee-only acceptance, canonical in-app notification outbox and deterministic local Coach walkthrough.
-- Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
-- Story 5 remaining: no local pilot blocker. Production authentication, account recovery and duplicate-account cases remain separate M2 hardening.
+- Story 5 Guest Coach increment: complete. AC-019/RG-06/RG-07 authorize only an active verified
+  non-participant Coach already assigned to one concrete Session. The SESSION RoleGrant never
+  crosses into another Session; cancellation or
+  terminal Result removes DB-authoritative capabilities immediately and the bounded Worker sweep
+  appends the EXPIRED grant/event/audit/outbox history idempotently. The Admin/Coach client explains
+  the exact scope and terminal expiry without inventing a new permission model or persistence table.
+- Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. AC-021 adds a source-immutable pending successor proposal that only the current Primary can create; it changes no capabilities until active global Central approves it through the same RG-10 transfer. Competing proposals/approvals, stale versions and forged envelope roles leave no partial success effects. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
+- Story 5 Community configuration increment: complete. AC-166/CO-06 lets a database-authorized scoped Gym Admin, Primary Admin or Central publish Pair Cooldown only inside 7–30 days. Each change appends an immutable public version and atomically advances the Community pointer/version with event, audit and outbox; existing Challenge/Session snapshots and already-created Cooldowns retain the preceding version while new Challenge snapshots use the current one.
+- Story 5 Membership onboarding increment: complete. Hashed QR/invite activation, self-request,
+  12h Admin reminder, 24h Central escalation, scoped FIFO approval, neutral rejection with a
+  seven-day reapply guard and requester withdrawal now run through Core, API, universal client,
+  Worker and real PostgreSQL. Internal rejection reasons never enter Athlete-facing event or
+  notification payloads.
+- Story 5 remaining: no local pilot blocker. External private object/scan and opt-in OTP providers
+  remain M2 deployment inputs; their fail-closed ports, production role-aware session wiring,
+  recovery and duplicate-account governance are complete.
 - M3 Discovery read increment: complete. A versioned, lexicographic ranking policy exhausts the selected radius before city expansion, highlights inbound interest inside each geography tier, treats sport as a soft signal and uses a stable ID tie-break. PostgreSQL source tables and hard gates exclude self, inactive/paused accounts, cross-age candidates, Block, active suppression and active/archived Match without computing a reliability score. The API and universal client render the second deterministic Athlete.
 - M3 social mutation increment: complete in code. Idempotent Like/Skip commands use a normalized pair lock; mutual Like creates both terminal Like states, exactly one Match and one personal Chat in one transaction. State/version-guarded worker timers expire one-sided Likes after 30 days and Skip suppression after 15 days. The universal client shows only Like/Skip and adds Match after mutual intent.
 - M3 Block/Unmatch increment: complete. Unmatch atomically closes the personal Chat and starts the 15-day pair suppression; directed Block closes any personal Match/contact and withdraws a pending pair Like. Both commands expose and audit the invariant that accepted obligations and status paths are preserved. Unblock never restores the old Match. Core, API, universal client and real PostgreSQL scenarios pass.
-- M3 Chat increment: complete. Match opens a separately versioned Chat event stream; participants can read/send personal text, edit through append-only revisions for 15 minutes, hide only their own view and Report with an immutable evidence snapshot. Service/action payloads are system-owned structured objects, never inferred from message text. The universal client has a dedicated Match-to-Chat route, and Core/API/PostgreSQL tests cover ownership, edit expiry, Report freeze and action-card immutability.
+- M3 Chat and safety increment: complete through AC-152. Match opens a versioned Chat stream and AC-123 keeps ordinary Reports separate from sporting state. AC-124/125 create one protected SafetyCase, close booked physical resources no-fault and pause only the linked Challenge. AC-126 requires an independent Central reviewer and persists one immutable safe replacement decision. AC-127 adds the separate causal `FORFEIT_BY_ENFORCEMENT` path through the existing Result lifecycle. AC-128 adds an immutable `ACCOUNT_RESTRICTION` Enforcement only for an explicitly confirmed serious category; account state becomes `RESTRICTED` atomically, existing obligations/history remain, and a Champion/Contender receives a separate `STATUS_REVIEW` hold without status/version/tenure mutation or automatic succession. AC-129 adds one protected, versioned Enforcement Appeal per Enforcement, strict server FIFO and an independent Central reviewer; submit/start-review never suspend the restriction or hold. AC-130 reuses the same SafetyCase aggregate and blocks a subject from review/decision even with simultaneous scoped Gym Admin and active Central grants. AC-152 adds the independent terminal revoke decision: source Case/decision/sport history stay immutable, account restoration is conditional on no other active restriction, only the linked `STATUS_REVIEW` hold is released, and old Challenge/Booking/Session are never resurrected. AC-181/182 add append-only Appeal/SafetyCase media evidence with locked count/aggregate limits, protected provider references and SYSTEM-only scan transitions; the real provider and disclosure remain disabled. Core/API/client/Worker/PostgreSQL tests cover subject-only submission, server deadlines, reviewer independence, evidence privacy, idempotency, stale versions and atomic rollback.
 - M3 exit: complete for the local pilot.
 - M4 publication increment: complete. Authorized Coach/Gym Admin commands publish personal Slots; only scoped Gym Admin publishes manual GroupOffering records. PostgreSQL enforces non-overlapping active Coach intervals, Core enforces future valid intervals within the Venue horizon, both resources expire through versioned worker timers, and an active Match Chat reads them across connected active Venues. Group cards include the Venue contact snapshot, freshness and explicit capacity disclaimer. A repeatable local script and universal Chat cards prove the live HTTP path.
 - M4 mutual-intent increment: complete. The first Athlete creates a one-hour Slot selection or proposes a GroupPlan; only the peer can confirm. B-02 freezes the exact commercial snapshot while leaving Slot ownership untouched, GP-02 notifies the responsible Venue Admin without promising capacity, and state/version timers close stale paths.
-- M4 host-confirmation increment: complete. Assigned Coach or Venue Admin sees a minimal queue; confirmation atomically claims the Slot, creates one `SCHEDULED` Session and notifies both Athletes. A two-pair race produces exactly one confirmed Booking and one explicit resource-conflict rejection.
+- M4 GroupPlan Official conversion increment: complete. GP-05…GP-08 let either Athlete request an Official conversion only for a mutually confirmed social plan with a frozen authorized Coach. The requester, peer and Coach answer independently; before the third acceptance no Challenge, Session or obligation exists. The final transaction rechecks competitive eligibility and creates one NONE-stake Challenge, GROUP_REFERENCE Slot, confirmed Booking and frozen Official Session while keeping group capacity unreserved. Any required-party decline restores `NOTIFIED` without sporting effects. AC-025/AC-026 pass in Core/API/client/Worker and real PostgreSQL.
+- M4 pre-confirmation withdrawal increment: complete. Either Athlete can cancel a `SELECTING` or `HOST_CONFIRMATION_PENDING` Booking through B-04 after a clear client confirmation. The Booking closes while the Slot stays published; an Official Challenge returns to scheduling without changing its accepted obligations/deadline or creating a Result, loss, Forfeit, Cooldown or reschedule count. Booking-row serialization gives withdrawal and host confirmation exactly one outcome, with idempotent replay, stale-version rejection, audit/event/outbox and peer/host notifications.
+- M4 host-confirmation increment: complete. Assigned Coach or Venue Admin sees a minimal queue; confirmation atomically claims the Slot, creates one `SCHEDULED` Session and notifies both Athletes. A two-pair Slot race produces exactly one confirmed Booking and one explicit resource-conflict rejection. AC-153 additionally serializes confirmations for different overlapping Slots around Athlete row locks: one Session wins, the other returns `ATHLETE_SCHEDULE_CONFLICT`, and no losing Slot is reserved or replaced automatically.
 - M4 Session lifecycle increment: complete. A versioned timer opens the Session window at the scheduled boundary without creating attendance; the assigned non-participant Coach can explicitly Start or atomically Start with first Attendance, record `PRESENT/LATE/NO_SHOW` under configured grace, and End after both facts. Only `ENDED` ordinary Sessions with `PRESENT/LATE` contribute to the derived Training count. Athlete Check-in remains absent.
 - M4 replacement/no-fault increment: complete. A scoped Gym Admin can atomically replace the assigned Coach before actual start only with a free authorized Coach, while immutable time/Venue/commercial terms remain unchanged and both assignment histories are appended. Replacement reissues the versioned window timer so the prior Session version cannot strand the Session. Either Athlete may then close the Session no-fault; Admin/Central may also close a confirmed external operational failure. Booking, Session and Slot close together, participants are notified, and no attendance, Training stat, Forfeit or user reschedule count is created.
 - M4 Gym Admin dashboard read increment: complete. One Venue-scoped query returns Venue publication limits, authorized Coaches, future personal Slots and GroupOfferings, actionable host-confirmation requests and informational GroupPlan interest. The universal client renders these categories separately so group interest cannot be mistaken for capacity or a booking. Typed contract, authorization, API and real PostgreSQL assertions pass.
 - M4 Gym Admin publication UI increment: complete in code. The universal client publishes either a personal Slot with an authorized Coach and optional RUB price or a GroupOffering with sport, label and optional Coach/terms. Venue-local date/time is converted through the Venue timezone, duration stays a simple 60/90-minute choice, server horizon/conflict guards remain authoritative, and successful cards appear immediately without a full reload.
 - M4 Gym Admin mutation increment: complete in code. Venue Admin can edit or reason-withdraw a future Slot/GroupOffering only while it has no active pair intent. Coach/Admin can reason-reject a host request; both Athletes are notified and an Official Challenge returns to scheduling without deadline or obligation reset. Core, typed API, universal UI and PostgreSQL integration scenarios are in place.
 - M4 pilot walkthrough remains a manual release check; the automated Training slice is complete.
-- M5 direct optional Challenge increment: complete. From an active Match, a verified competitive Member may create only an allowed OPEN/NONE invitation. The server freezes Community rules, enforces one live pair Challenge and at most three unanswered outgoing invitations, supports recipient accept/decline and initiator withdrawal, creates both accepted obligations atomically, starts a 14-day scheduling deadline, and expires unanswered invitations after 48 hours no-fault. The universal Chat renders the next action without mixing the invitation with ordinary Training.
+- M5 direct optional Challenge increment: complete through AC-187. From an active Match, a verified competitive Member may create only an allowed OPEN/NONE invitation. PostgreSQL serializes creation per initiator, counts only unanswered OPTIONAL invitations and enforces one live pair Challenge plus the maximum of three. Decline creates an immutable 48-hour pair quiet with exact retry time; expiry adds no quiet and releases the pair immediately. FIFO, mandatory and status paths are excluded from this throttle. The server freezes Community rules, supports recipient accept/decline and initiator withdrawal, creates both accepted obligations atomically, starts a 14-day scheduling deadline, and expires unanswered invitations after 48 hours no-fault. The universal Chat renders the next action without mixing the invitation with ordinary Training.
 - M5 Official Booking increment: complete. Selecting a personal Slot for an accepted Challenge creates an explicitly linked `OFFICIAL_CHALLENGE` Booking and moves Challenge to `BOOKING_PENDING`. Peer selection preserves the frozen commercial snapshot; Venue/Coach confirmation atomically claims the Slot, creates the linked `OFFICIAL_CHALLENGE` Session and moves Challenge to `BOOKED`. Expiry/resource rejection returns it to scheduling without resetting the 14-day deadline or obligations.
+- M5 first Athlete-reschedule increment: complete. CH-22 lets either participant explicitly spend the first of two user reschedules before a confirmed Session. The Challenge returns to `ACCEPTED_UNSCHEDULED`, a pending Booking closes while its Slot remains published, and the original obligations/deadline survive. Counter, initiator, A/B fault, reason and optional Booking lineage commit as one append-only fact with Challenge/Booking events, private audit detail, outbox/timer replacement and peer/host notifications. Exact replay is idempotent, stale versions fail and the shared Booking lock serializes Athlete reschedule, B-04 withdrawal and host confirmation without sporting sanctions.
+- M5 mutual Challenge-reschedule increment: complete. CH-21 keeps a versioned proposal separate
+  from the completed reschedule: the initiator cannot self-confirm, and Challenge/resources/counter
+  remain unchanged until the peer confirms. Confirmation atomically consumes one shared transfer,
+  appends `MUTUAL` with no fault user, closes pending or confirmed pre-start scheduling resources
+  through B-15/SL-06, preserves obligations/deadline and emits audit/event/outbox plus Athlete/Coach
+  notifications without exposing the private reason note. The two-transfer limit, exact replay,
+  stale versions and resource races remain DB-authoritative. AC-062 passes end to end under migration
+  `0061`.
+- M5 external Challenge-reschedule increment: complete. The assigned authorized Coach, scoped Venue
+  Admin or Central may confirm an objective pre-start Coach/Venue failure. The existing Session,
+  B-15 Booking and SL-06 Slot close atomically; Official Challenge returns to
+  `ACCEPTED_UNSCHEDULED` with unchanged obligations, canonical deadline and user counter even when
+  both user reschedules are already spent. One append-only EXTERNAL/no-fault record, CH-21 event,
+  replacement timer, audit and Athlete notifications retain Booking/Session lineage without a
+  Result, loss, Forfeit or Cooldown. AC-063 passes Core/API/client and real PostgreSQL gates.
+- M5 confirmed Official cancellation increment: complete. Before actual start, either Athlete may
+  explicitly accept the sporting consequence and cancel the confirmed Booking/Session. B-14 and
+  CH-12 close Booking, Session and Slot atomically, keep the frozen competitive snapshot and
+  create one administrative `FORFEIT` through the existing Result engine: the cancelling Athlete
+  loses, the peer wins and the normal 48-hour Appeal, provisional status and Cooldown rules apply.
+  The user-reschedule counter and history remain untouched. Exact replay, stale versions,
+  DB-authoritative Athlete permission and races with Start/Result/reschedule are covered through
+  the shared resource locks. AC-065 passes Core/API/client and real PostgreSQL gates.
+- M5 exhausted-reschedule consequence increment: complete. CH-23 keeps the shared counter capped
+  at two and requires a separate explicit client/server confirmation before another culpable
+  Athlete attempt becomes an administrative `FORFEIT`. The peer wins, the normal 48-hour Appeal,
+  provisional status and Cooldown lifecycle starts through the existing Result engine, and a
+  pending Booking closes while its Slot remains published. No third `ChallengeReschedule` fact is
+  written. Booking-first locking serializes host confirmation and other reschedule paths; exact
+  replay, stale version, private reason handling and Coach notification pass AC-064 end to end.
 - M5 Official Session lifecycle increment: complete in code. The scheduled boundary freezes one immutable competitive snapshot but no attendance; Coach Start or first Attendance atomically commits `CH-13` to `IN_SESSION`, and Coach End commits `CH-14` to `RESULT_PENDING`. The outbox carries 2h/12h/24h Result reminder deadlines while ordinary Training remains outside Competition.
-- M5 Result/status increment: complete in code. Authorized Coach Result commits `CH-15`, stores immutable source facts, derives status only from the Session snapshot, applies an immediate provisional transition and status lock, creates a configurable pair Cooldown after decisive loss, and schedules the 48-hour finalizer. Duplicate Result and stale status snapshots fail atomically.
-- M6 Appeal lifecycle increment: complete. Only the eligible Athlete can submit Appeal or irreversibly waive it. Waiver may finalize early; otherwise a state/version-guarded Worker timer commits `CH-17`, releases both obligations and clears the status lock.
-- M6 Central decision increment: complete. An independent active global Central reviewer takes a FIFO item and records one reasoned `UPHOLD`, `REVERSE`, `ANNUL` or `REPEAT` decision. Original Result facts remain immutable; status finalization/compensation, Cooldown invalidation, obligation release or the new 14-day repeat cycle commit atomically with event/audit/outbox history. Typed Central API and the universal Community screen expose only server-authorized actions.
+- M5 Result/status increment: complete in code. Authorized Coach Result commits `CH-15`, stores immutable source facts, derives status only from the Session snapshot, applies an immediate provisional transition and status lock, creates a configurable pair Cooldown after decisive loss, and schedules the 48-hour finalizer. AC-078 permits only a 24-hour server-time append-only score/method metadata revision by the recording or assigned DB-authorized Coach; the source Result, winner/outcome, snapshot, Challenge, status, Cooldown and Appeal deadline stay unchanged, while private before/after values remain outside public payloads. AC-079 proves the correction boundary: exact replay returns the recorded Result, payload reuse is rejected, a new second Result gets `RESULT_ALREADY_RECORDED`, no direct update API/client action exists, and only the separate TC-01 request is offered without mutating Result/snapshot/status/Cooldown/deadline or leaving failed-command effects. AC-202 is explicit: `LATE` remains attendance metadata and cannot synthesize `NO_SHOW`, Forfeit, loss, administrative Result or Cooldown; the assigned Coach can record the ordinary Result against the frozen Session snapshot. AC-203 enforces configured grace, separates Attendance from Coach Result, binds one absence to the present winner plus normal Appeal, and normalizes two absences to `NO_CONTEST` without winner/status/loss/Cooldown. AC-209 keeps post-start Athlete injury/voluntary withdrawal decisive under the frozen Session snapshot: the assigned Coach records the peer winner plus a normalized method, ordinary Appeal/status/Cooldown rules remain in the existing Result engine, personal stoppage cannot become `NO_CONTEST`, and no medical document is requested or stored. AC-210 reserves post-start external no-fault `NO_CONTEST` for normalized equipment, Safety or Venue failure, retains the frozen snapshot and ordinary symmetric Appeal, and creates no winner/loss/status lock/transition/Cooldown or reschedule change. AC-167 closes the MVP media boundary: Result remains fully recordable through a closed media-free contract, while no upload capability, endpoint, persistence, object-storage write or media-bearing event is exposed. Duplicate Result and stale status snapshots fail atomically. AC-140 proves that competing status-bearing Results serialize on the Competition row lock: exactly one Result/status lock/transition/Cooldown/Appeal commits and the loser leaves no partial audit, event, outbox or notification state. AC-143 adds a Central-only, row-locked and version-rechecked rebuild of disposable Competition/Cooldown state plus deterministic StatusTenure derivation; pre-delete and post-replay hashes match without mutating canonical sporting facts. AC-144 verifies complete append-only audit facts for DB-authorized Coach, scoped Gym Admin and assigned Central actions; failed permission and exact replay add no success audit, while private Central explanation remains only in protected state/audit metadata.
+- M6 Technical Correction lifecycle increment: complete for TC-01/TC-02/TC-04/TC-05. An actively authorized
+  recording/assigned Coach or internal Central actor may submit one immutable `SUBMITTED` request
+  with original/proposed outcome and winner. Athlete access, stale versions and concurrent
+  duplicates are rejected; private reason/evidence stays in protected state and audit metadata.
+  Result, status, Cooldown and Appeal do not change, while Central receives a neutral FIFO item.
+  An independent DB-authorized Central reviewer alone may take the versioned request and approve
+  or reject it with a mandatory protected reason. TC-04 preserves the recorded Result and frozen
+  Session facts, appends a separate effective decision, and compensates/reapplies provisional
+  status and Cooldown through the existing deterministic replay rules. An open Athlete Appeal is
+  never closed implicitly. Neutral notifications plus decision/audit/event/outbox effects commit
+  atomically, and either terminal request leaves the active queue. AC-147 passes Core/API/client
+  and real PostgreSQL gates.
+- M6 Appeal lifecycle increment: complete. Only an eligible Athlete can submit Appeal or irreversibly waive it. AC-112 proves that DRAW is fully symmetric: neither Athlete is a winner/loser, both receive the same 48-hour server-window action, and the first concurrent submission alone creates one Appeal plus atomic Result/Challenge `UNDER_APPEAL` transitions without status or Cooldown. AC-122 proves the decisive contour: the sole eligible loser can append one immutable waiver inside the server window, immediately finalize through R-04, release obligations and clear the status lock without rewriting Result/Session facts or invalidating the ordinary Cooldown. AC-121 proves that a QueueEntry submitted during provisional status keeps its server FIFO key, cannot activate through the status lock, and is deterministically reconsidered after finalization or compensation without rewriting `submitted_at`. Exact replay is stable; winner, Coach, outsider, expired, stale and later Appeal attempts leave no partial records. The client derives both Appeal actions from server capabilities and hides both after waiver. Otherwise a state/version-guarded Worker timer commits `CH-17` at the deadline.
+- M6 Central decision increment: complete. An independent active global Central reviewer takes a FIFO item and records one reasoned `UPHOLD`, `REVERSE`, `ANNUL` or `REPEAT` decision. Original Result facts remain immutable; status finalization/compensation, Cooldown invalidation, obligation release or the new 14-day repeat cycle commit atomically with event/audit/outbox history. AC-150 proves that `ANNUL` closes the provisional StatusTenure with compensation lineage, restores the exact pre-Result holder, preserves FIFO submission time and rebuilds the same holder/version/tenure/Cooldown hash from canonical events. Typed Central API and the universal Community screen expose only server-authorized actions.
 - M6 participation/SLA increment: complete. The opponent and assigned Coach may each append one response during 24 hours without blocking Central; the appellant may withdraw before a decision without reopening uniqueness; the assigned reviewer may transparently extend SLA once by 24 or 48 hours with a visible reason. Typed API/UI and PostgreSQL integration cover response, extension, decision and decisive-result withdrawal/finalization.
 - M6 MissingResultReview increment: complete. State/version timers remind Coach at 2 hours,
   escalate to the Venue at 12 hours and open exactly one review at 24 hours. Private Athlete
@@ -219,6 +301,20 @@ This sprint produces a demonstrable Training slice while establishing the same f
   timeout are no-fault, while an already-accepting survivor returns with the original FIFO key.
   The accepted GENESIS service Chat can use the existing personal Slot → mutual selection →
   Venue/Coach confirmation → `OFFICIAL_CHALLENGE` Session path without inventing a social Match.
+- M5 founding GENESIS Result increment: complete. AC-100 carries that accepted pair through the
+  assigned Coach Session and a normal decisive Result. The immutable empty-holder snapshot drives
+  one provisional ST-01 assignment, status lock, two replayable provisional tenures, ordinary
+  Cooldown and the 48-hour Appeal window. R-04 finalization releases both obligations, makes the
+  tenures final, appends C-04, moves the Competition from `FOUNDING_CHALLENGE` to `RUNNING` and
+  preserves the original FIFO timestamps, Result and Session snapshot. Current and deterministic
+  replay projections match after exact-idempotent finalization. AC-101 reuses the same lifecycle
+  for founding `FORFEIT`/`NO_SHOW`: ST-02 assigns only the Champion, C-04 finalizes into
+  `CONTENDER_VACANT_OPEN`, the Contender stays null and the public vacancy opens without assigning
+  a candidate or rewriting FIFO history. AC-105 completes C-05/C-10: an effective DRAW,
+  NO_CONTEST or independent repeat decision advances the existing GENESIS Challenge cycle and
+  returns the same frozen pair to scheduling. Competition phase/status, consumed FIFO identities,
+  obligations and priority remain stable; no new QueueEntry, loss, status transition or Cooldown
+  is created.
 - M5 direct-status FIFO activation increment: complete. The Worker reacts to queue/head-release,
   Result finalization and review-decision events, revalidates the strict oldest eligible entry
   under the Competition lock and atomically creates one `MANDATORY` Contender Challenge plus its
@@ -228,12 +324,18 @@ This sprint produces a demonstrable Training slice while establishing the same f
   records an appealable administrative Forfeit, moves Contender provisionally, starts the normal
   48-hour Result/Appeal window and never fabricates a Session, Venue or Coach. The queue entry is
   consumed only with Challenge creation; stale holder entries are invalidated without loss and a
-  busy status slot is deferred. Core, typed API/client, Worker and PostgreSQL integration pass.
+  busy status slot is deferred. AC-092 proves that three valid submissions remain independently
+  versioned `WAITING` entries in strict server FIFO while that slot is occupied: no Challenge,
+  response clock, Chat, ruleset snapshot, obligation or failed-command side effect is created.
+  Core, typed API/client, Worker and PostgreSQL integration pass.
 - M5 holder-change reconfirmation increment: complete. After a final Result/Appeal/Integrity
   decision, the Worker compares every waiting direct-status entry with the current Contender under
   versioned commands. Migratable entries keep their immutable FIFO key, bind the new holder and
   receive a 24-hour `RECONFIRMATION_REQUIRED` window. The Athlete can reconfirm or leave without
-  loss; a stale-safe timer expires silence. A reconfirming head blocks later entries until it closes,
+  loss; a stale-safe timer expires silence. AC-098 keeps reconciliation frozen behind the
+  provisional status lock and invalidates the former Contender's own `CHAMPION` intent through
+  Q-08 after finalization, preserving its history while creating no reconfirmation, loss, Challenge
+  or Cooldown. A reconfirming head blocks later entries until it closes,
   and successful reconfirmation resumes normal activation. The universal Community screen shows
   the new Contender, exact deadline and two plain actions. Core/API/client/Worker and PostgreSQL
   scenarios AC-095–AC-097 pass.
@@ -249,7 +351,16 @@ This sprint produces a demonstrable Training slice while establishing the same f
   a state/version-guarded promotion timer. A later second candidate makes that timer stale, while
   decline/timeout restarts a fresh solo window for the surviving original FIFO entry. Single
   promotion applies C-03/C-08 without Result, loss or Cooldown. Core/client/Worker and PostgreSQL
-  scenarios AC-093/AC-094 pass.
+  scenarios AC-093/AC-094 pass; AC-102 additionally proves exact-deadline SYSTEM promotion of the
+  sole eligible founder into final Champion with a vacant Contender, immutable FIFO identity and
+  deterministic replay. AC-103 proves the two-candidate C-07/C-09 path: strict FIFO pairing,
+  mutual acceptance, existing Booking/Official Session scheduling and the frozen
+  `GENESIS_CONTENDER` snapshot end in one final Contender while the Champion remains unchanged.
+  Result, Appeal, Cooldown and replay use the ordinary engine. AC-104 proves the parallel C-08 path:
+  after the exact server deadline the
+  only eligible candidate becomes final Contender, the Champion stays unchanged and no sporting
+  Result or Cooldown is created. Canonical replay now orders numeric aggregate versions before the
+  deterministic event-id tie-breaker, including transitions from version 9 to 10 and beyond.
 - M5 confirmed-Training conversion increment: complete. Either Athlete may propose an
   Official conversion before the Session window; both Athletes and the assigned Coach are required,
   the deadline is capped at 72 hours and the existing Training remains the fallback on decline,
@@ -272,8 +383,179 @@ This sprint produces a demonstrable Training slice while establishing the same f
 - The live multi-account walkthrough now covers a confirmed pair Training becoming a BOOKED
   `OFFICIAL_CHALLENGE` after both Athletes and Coach accept, plus Athlete withdrawal followed by
   remaining-Athlete and Coach acceptance of the same Session as `CONFIRMED_SOLO`.
-- Next increment: complete the remaining role-switch walkthrough, then start M7 with the
-  Community pause/closure and Membership lifecycle contour.
+- M7 Community lifecycle increment: complete. Central pause/reactivation and governed permanent
+  closure now preserve confirmed Sessions only by an explicit Closure Plan, archive Memberships
+  without losses and close status without hidden succession or migration.
+- M7 voluntary Membership exit increment: complete. Athlete receives a
+  token-bound 15-minute consequence preview; confirmation atomically closes optional unanswered
+  Challenges no-fault, invalidates the departing Athlete's FIFO intents, applies ST-09/ST-10/ST-14
+  when the Athlete holds status and moves Membership to `LEFT`. For an accepted, not-started
+  Challenge, the same preview discloses and confirmation atomically creates a FINAL administrative
+  Forfeit, immutable voluntary-resignation Appeal waiver and Cooldown, cancels Booking/Session/Slot,
+  releases obligations, and removes any status temporarily assigned to the departing Athlete.
+  Started Sessions stay on the Coach/frozen-ruleset path. Core/API/client and PostgreSQL scenarios
+  AC-106/AC-107/AC-108/AC-109/AC-110 pass.
+- M7 Membership removal governance increment: complete. Scoped Gym Admin removal closes an
+  Ordinary's incomplete Official work no-fault and opens a 48-hour Appeal. An overturned decision
+  creates a new active Membership without resurrecting cancelled work. Champion/Contender removal
+  creates `UNDER_REVIEW` plus `STATUS_REVIEW` ProcessHold; Central confirmation applies audited
+  succession/vacancy without Result or loss. The hold retains Challenge deadlines and prevents a
+  booked Official Session from starting; in-progress/Result-pending Sessions finish before review
+  can open. AC-022/AC-131/AC-132/AC-133/AC-134 pass.
+- M7 Youth consent foundation: complete and disabled by default. Per-Challenge/per-Athlete records,
+  token-scoped external guardian actions, independent two-Youth readiness, privacy-minimized
+  contact storage, API/client flows and acceptance/Booking guards pass. Revocation closes the
+  Official context no-fault; a booked physical Session is held for three explicit Athlete/Athlete/
+  Coach-host decisions and either becomes Training or cancels without Competition effects under
+  migration `0047`. AC-055/AC-149/AC-169/AC-170 are mapped.
+  The server-date 18th-birthday timer now commits exactly one immutable `AgeDivisionChanged`,
+  moves Membership to Adult Ordinary, expires Youth consent/FIFO, releases Youth status without
+  a loss and closes not-started Youth Official work no-fault. A confirmed future Booking reuses
+  B-26; a started Session keeps the field-identical competitive snapshot, Challenge state and
+  obligations. Migration `0048` and PostgreSQL scenarios AC-002/AC-184/AC-185 pass.
+- M7 PlatformIncident increment: complete. PI-01…PI-05 persist objective detection, Central
+  confirmation/rejection, exact resolution window and automatic idempotent reconciliation.
+  Active incidents suppress only registered affected timers. Resolution extends Challenge
+  response/scheduling, Booking selection, queue reconfirmation, conversion confirmation and
+  GENESIS public-window deadlines by exact overlap. An already-fired mandatory timeout retains
+  its immutable Forfeit and receives append-only no-fault Result/status/Cooldown compensation.
+  Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
+  Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
+  one 7-day extension before CH-25 no-capacity cancellation.
+  Acceptance traceability is 214/214 (`196/196 P0`, `17/17 P1`, `1/1 P2`).
+- P2 AC-183 seam: complete. `MULTI_COMMUNITY_DISCIPLINE` remains disabled by default. When
+  explicitly enabled, active competitive Memberships and non-null discipline keys may span
+  Community-scoped Competitions; existing Competition foreign keys isolate status/FIFO/Cooldown,
+  public W/L/D is selected per Competition, one Primary Community anchors Home/Discovery, and the
+  global accepted-Official obligation still rejects a second concurrent commitment. No global rank
+  or universal multi-tenant engine was added.
+- M4 Venue-closure hardening: complete through AC-069. Training-option reads recheck active
+  Venue/Community, active Coach account and current Community-scoped Coach grant before exposing
+  a published Slot; coach overlap remains excluded by the canonical Slot constraint. A confirmed
+  pre-start Official Session at a closed Venue uses the existing external no-fault transaction:
+  Booking/Session/Slot close, the frozen competitive snapshot stays unchanged and the Challenge
+  returns to scheduling without Result, status effects, Cooldown or user reschedule count.
+- M7 Venue verification hardening: complete through AC-145. An active global Central grant is
+  rechecked in PostgreSQL before VE-02 can move a versioned Venue from `PENDING_VERIFICATION` to
+  `ACTIVE`. The command emits exactly one append-only `VenueVerified`; checklist/evidence stay in
+  protected audit metadata, public event/outbox remain neutral, exact replay is idempotent and
+  competing VE-02/VE-03 decisions commit only one outcome. Existing Slot publication rejects the
+  pending Venue and succeeds after verification; verification itself creates no operational data.
+- M5 optional Challenge response-clock increment: complete. CH-06 now publishes independent
+  +12h/+24h state/version-guarded timer messages, projects idempotent recipient-only mandatory
+  reminders and expires exactly at +48h as `EXPIRED_NO_FAULT`. Terminal expiry creates no Result,
+  loss, Cooldown, obligation or pair quiet and releases the pair to the ordinary eligibility path
+  for a later invitation. AC-172 passes Core/API/Worker/PostgreSQL and client-flow checks.
+- M5 Champion-to-Ordinary OPEN increment: complete. AC-073 requires the existing Match and optional
+  response path, then freezes `stake=NONE` when the Session window opens. A decisive Ordinary win
+  remains an immutable official Result with the normal Appeal and pair-rematch Cooldown, while the
+  Champion/Contender projection, status lock and status-tenure history remain unchanged. The Chat
+  explicitly says that the title is not at stake. Core/API/client and real PostgreSQL proofs pass.
+- M7 Membership reapply hardening: complete through AC-176. A rejected self-request preserves its
+  immutable decision and private reason, while the server-owned `reapply_not_before_at` blocks only
+  another self-request with canonical `MEMBERSHIP_REAPPLY_WAIT` and exact `retryAt`. The boundary is
+  inclusive at seven full days. A valid scoped QR/invite keeps the existing M-01 early-entry path;
+  expired, consumed or mismatched tokens cannot bypass DB eligibility. Failed early attempts leave
+  no Membership, timer, success audit, event, outbox or notification.
+- M4 host-confirmation notice hardening: complete through AC-040. Venue notice is constrained to
+  8–48 hours, the Booking keeps its original server deadline when the current Venue configuration
+  changes, and confirmation is allowed only strictly before that boundary. At or after the deadline
+  `HOST_CONFIRMATION_EXPIRED` leaves the Booking pending, Slot `PUBLISHED` and unclaimed, and creates
+  no Session, success audit, event, outbox or notification.
+- M2 Venue authority hardening: complete through AC-204. Ordinary active `GYM_ADMIN` grants retain
+  scoped Slot mutation, while forged command-envelope roles cannot authorize Primary succession or
+  Community/Venue closure. Central transfer revokes the previous grant and inserts the successor in
+  one critical transaction; the unique active-Primary constraint, version guard and exact replay
+  preserve one active Primary plus immutable revoked lineage. Denied commands leave no success
+  audit, event, outbox, notification, grant or closure plan, and Central-only controls remain hidden.
+- M7 Community closure hardening: complete through AC-151. Finalization requires the scheduled
+  versioned Closure Plan, its server effective time and resolution of every retained Session. The
+  atomic terminal transition closes Community/Competition, archives Membership and closes status
+  tenure as `COMMUNITY_CLOSED` without W/L/Succession or history rewrites. Closed-Community guards
+  deny new Challenge, Membership and Slot work; missing/stale/denied commands leave no success
+  audit, event or outbox, while exact replay returns the stored result.
+- M3 Discovery ordering hardening: complete through AC-154. Existing hard gates remove blocked,
+  suppressed, matched and otherwise ineligible candidates before ranking. The public versioned
+  order exhausts `WITHIN_RADIUS` before `CITY_EXPANSION`, prioritizes visible inbound interest only
+  inside a geography tier and uses candidate UUID as the final deterministic tie-break. API/client
+  expose neutral reasons and interest/radius copy without private activity buckets, Safety data or
+  a reliability score.
+- M3 public Athlete profile hardening: complete through AC-165. A DB-authoritative Community/Match
+  context and bilateral Block guard protect the read. Current/history status comes from canonical
+  replay, W/L/D and last-five use effective Result decisions, and attended completed Training is
+  counted without publishing win rate, ordinary partner identity, Safety or administrative data.
+- M3 public Result review projection: complete through AC-213. Existing Result/Appeal state and
+  status replay now expose only `PENDING`/`REVIEWED` neutral markers. Ordinary finalization removes
+  the provisional marker; reversal keeps the source Result immutable, switches W/L/D and last-five
+  to the effective outcome and publishes no statement, evidence, decision reason or score.
+- M5 Champion-to-Contender optional TITLE increment: complete. AC-047 stores an immutable
+  `OPTIONAL_TITLE` queue intent, preserves the shared `(submitted_at, entry_id)` order without a
+  Champion privilege, and creates the TITLE Challenge, service Chat, ruleset snapshot and
+  +12h/+24h/+48h stale-safe response timers only when that entry becomes the strict head. The
+  Contender may decline without Result, Forfeit, status movement or Cooldown; role drift cannot
+  silently reinterpret the saved offer as an Ordinary mandatory Challenge. Migration `0068` adds
+  only the direct-intent mode needed to preserve that meaning.
+- M5 stale TITLE Session invalidation increment: complete. AC-072 makes holder-changing
+  Competition events recheck every not-started booked TITLE Session under the existing row and
+  aggregate locks. SYSTEM closes the Challenge and obligations no-fault, advances the Session so
+  its old start timer becomes stale, and opens exactly one B-26 decision. The physical Booking is
+  held temporarily, remains explicitly non-Training until both Athletes and Coach/host accept,
+  and B-29 cancels Booking/Session/Slot on decline or expiry. No Result, loss, status transition,
+  Cooldown or reschedule count is created. Migration `0069` adds the normalized retention cause.
+- M5 mandatory TITLE response-clock increment: complete. CH-07 publishes a separate +48h
+  state/version-guarded reminder to the current Champion and expires only at the immutable +72h
+  server deadline. The existing administrative Result engine records exactly one `FORFEIT`, swaps
+  Champion/Contender provisionally under the `TITLE` stake, starts Pair Cooldown and the normal
+  48-hour Appeal, while critical PUSH and opt-in-only SMS delivery remain provider-independent.
+  Concurrent duplicate expiry jobs use the same deterministic idempotency scope and aggregate
+  lock, so exactly one Result/status/Cooldown/Appeal lifecycle commits without duplicate audit,
+  events or outbox messages. A manual accept committed before expiry advances the Challenge and
+  turns both a normally late timer and the preflight/command TOCTOU race into a diagnostic stale
+  no-op without a Result or retry loop. AC-053, AC-138 and AC-139 pass Core/Worker/PostgreSQL and
+  client-flow checks.
+- M7 account lifecycle increment: complete. ACR-01…ACR-03 implement self-requested closure,
+  exact 30-day recovery, owner cancellation and reasoned Central execution only after all
+  obligation/status/Session/Membership/role/FIFO blockers reach zero. ADE-01…ADE-03 prepare one
+  private JSON export asynchronously, keep it for exactly 48 hours and then delete only the
+  payload while preserving SHA-256/audit lineage. Closure reuses an existing live export, final
+  public identity is pseudonymized, and immutable sporting history remains. Core/API/client/
+  Worker and PostgreSQL migration `0053` pass.
+- Next increment: complete real-browser 200% zoom plus real-device screen-reader/dynamic-text
+  checks. The release canary and rollback compatibility gates are implemented and fail-closed.
+  External object/scan and OTP delivery are intentionally
+  deferred until provider accounts are selected. Chat payload cleanup is complete; evidence cleanup
+  remains gated on the currently disabled attachment/storage capability.
+- M8 role/pilot walkthrough increment: complete. Athlete, Coach, Gym Admin and Central workspaces
+  expose their scoped actions with destructive controls guarded by explicit reason/confirmation.
+  The walkthrough found a stale Session-window timer gap after Training→Official and pair→solo;
+  the fix also covers Official→Training, adds current-version outbox assertions and migration
+  `0057`, and recovered the existing pilot Sessions to `READY_FOR_COACH` without rewriting history.
+- M8 database-recovery increment: complete locally. A custom-format PostgreSQL backup is validated
+  by archive listing and SHA-256, restore is allowed only into a new `molokh_restore_*` database,
+  critical canonical table counts are compared and the verified rehearsal database is then
+  removed. The runbook separates disaster recovery from code/business rollback.
+- M8 operational-monitor increment: complete locally. One read-only command checks API live/ready,
+  outbox and Graphile delay, overdue Session windows, delayed Coach action, Result/Appeal/Missing
+  Result queues, terminal status locks and verified-backup freshness. Critical findings fail the
+  process; operational warnings can be promoted to failures for scheduled pilot alerts.
+- M8 projection-rebuild increment: complete for the current generated notification projection.
+  The isolated restore rebuilds notification fields in shadow form from canonical outbox events,
+  compares deterministic count/hash plus Inbox receipts and explicitly excludes user-owned
+  `read_at`. No live or canonical history table is truncated.
+- M8 static-accessibility increment: complete. CI parses every client TSX control for explicit
+  role/label/heading and selected/checked/disabled state, shared compact touch targets are at least
+  44 points, and the Web document declares Russian language/title/description. Real VoiceOver,
+  TalkBack, 200% zoom and largest-text device passes remain operational pilot gates.
+- M8 rollback increment: complete. The operator gate compares the target Git revision with every
+  live `platform.schema_migrations` SHA-256, accepts a schema-compatible prior release and rejects
+  a target that predates migration `0057`. Database and sporting history stay forward-only.
+- M8 release-canary increment: complete. Production requires the exact Git SHA; a read-only probe
+  verifies live/ready, runtime identity, security headers, CORS and the protected auth boundary.
+  The local rehearsal accepts the correct artifact SHA and rejects a deliberate mismatch.
+- M8 Chat-retention increment: complete. Migration `0058` plus a daily bounded Worker erase only
+  expired uncaptured payloads, preserve per-revision checksum/time/policy lineage and append one
+  batch audit. Report/Case evidence and service Chat under its three-year term remain untouched;
+  AC-214 passes against PostgreSQL.
 
 ## 5. Work that needs product/external input later
 

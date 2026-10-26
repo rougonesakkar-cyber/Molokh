@@ -34,4 +34,14 @@ describe('timer decision', () => {
       reason: 'VERSION_CHANGED',
     });
   });
+
+  it('[AC-067] reschedules from the current projection deadline after a lifecycle hold', () => {
+    const extendedDeadlineAt = '2026-09-05T22:00:00.000Z';
+    const snapshot = { state: 'PENDING', version: 3, deadlineAt: extendedDeadlineAt };
+    expect(evaluateTimer(payload, snapshot, new Date(payload.deadlineAt))).toEqual({
+      kind: 'NOT_DUE',
+      retryAt: extendedDeadlineAt,
+    });
+    expect(evaluateTimer(payload, snapshot, new Date(extendedDeadlineAt))).toEqual({ kind: 'DUE' });
+  });
 });

@@ -26,7 +26,7 @@ describe('Status queue timer projection', () => {
     )).toThrow('does not match');
   });
 
-  it('[AC-093][AC-094] routes the three-day single-candidate promotion', () => {
+  it('[AC-093][AC-094][AC-102][AC-104] routes the three-day single-candidate promotion', () => {
     const singleTimer = {
       ...timer,
       commandType: 'PROMOTE_SINGLE_GENESIS_CANDIDATE',

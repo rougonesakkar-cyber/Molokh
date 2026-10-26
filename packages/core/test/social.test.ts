@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   assertBlockOwner,
   assertCanEndMatch,
+  assertMatchCanBeArchived,
   assertSameAgeContour,
   discoverySuppressionEndsAt,
   likeExpiresAt,
+  matchInactivityDeadline,
   newLikeState,
   normalizeSocialPair,
   SocialActionDeniedError,
@@ -43,6 +45,18 @@ describe('social policy', () => {
     expect(discoverySuppressionEndsAt(new Date('2026-09-06T10:00:00.000Z')).toISOString()).toBe(
       '2026-09-21T10:00:00.000Z',
     );
+  });
+
+  it('[AC-009] archives Match only at the exact 30-day inactivity boundary', () => {
+    const lastActivityAt = new Date('2026-09-07T10:00:00.000Z');
+    const deadline = matchInactivityDeadline(lastActivityAt);
+    expect(deadline.toISOString()).toBe('2026-10-07T10:00:00.000Z');
+    expect(() => assertMatchCanBeArchived(
+      'ACTIVE', lastActivityAt, new Date('2026-10-07T09:59:59.999Z'),
+    )).toThrowError(expect.objectContaining({ code: 'MATCH_NOT_DUE' }));
+    expect(() => assertMatchCanBeArchived('ACTIVE', lastActivityAt, deadline)).not.toThrow();
+    expect(() => assertMatchCanBeArchived('ARCHIVED', lastActivityAt, deadline))
+      .toThrowError(expect.objectContaining({ code: 'MATCH_NOT_ACTIVE' }));
   });
 
   it('[AC-010][AC-188] ends only a live participant Match and preserves obligations', () => {

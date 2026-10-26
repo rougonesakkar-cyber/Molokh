@@ -44,6 +44,9 @@ export interface CommunityContextProjection {
     readonly communityId: string;
     readonly name: string;
     readonly state: CommunityState;
+    readonly configurationId: string;
+    readonly configurationVersion: number;
+    readonly configurationEffectiveAt: string;
     readonly pairCooldownDays: number;
     readonly noShowGraceMinutes: number;
     readonly rulesetRef: string;
@@ -56,7 +59,14 @@ export interface CommunityContextProjection {
     readonly ageDivision: AgeDivision;
     readonly competitionEnabled: boolean;
     readonly joinPath: 'QR' | 'INVITE' | 'SELF_REQUEST';
+    readonly version: number;
   } | null;
+  readonly membershipReapplyNotBeforeAt: string | null;
+  readonly membershipLatestRejectionReasonCode:
+    | 'CAPACITY_UNAVAILABLE'
+    | 'COMMUNITY_REQUIREMENTS'
+    | 'REQUEST_NOT_APPROVED'
+    | null;
   readonly activeRoleGrants: readonly ActiveRoleGrant[];
   readonly access: CommunityAccessProjection;
 }
@@ -83,6 +93,9 @@ interface CommunityContextRow {
   readonly community_id: string;
   readonly community_name: string;
   readonly community_state: CommunityState;
+  readonly configuration_id: string;
+  readonly configuration_version: number;
+  readonly configuration_effective_at: Date;
   readonly pair_cooldown_days: number;
   readonly no_show_grace_minutes: number;
   readonly ruleset_ref: string;
@@ -93,7 +106,15 @@ interface CommunityContextRow {
   readonly membership_age_division: AgeDivision | null;
   readonly competition_enabled: boolean | null;
   readonly join_path: 'QR' | 'INVITE' | 'SELF_REQUEST' | null;
+  readonly membership_version: string | null;
+  readonly membership_reapply_not_before_at: Date | null;
+  readonly membership_latest_rejection_reason_code:
+    | 'CAPACITY_UNAVAILABLE'
+    | 'COMMUNITY_REQUIREMENTS'
+    | 'REQUEST_NOT_APPROVED'
+    | null;
   readonly has_other_active_competitive_membership: boolean;
+  readonly multi_community_discipline_enabled: boolean;
 }
 
 interface RoleGrantRow {
@@ -153,6 +174,23 @@ export async function ensureLocalPilotCommunity(
       ) on conflict (configuration_id) do nothing
     `.execute(transaction);
     await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, actor_id, actor_type,
+        actor_roles, actor_scope_ids, occurred_at, idempotency_key_hash, payload, metadata
+      ) values (
+        md5('community-created:' || ${fixture.communityId})::uuid,
+        'CommunityCreated', 1, 'Community', ${fixture.communityId}::uuid, 1, 'CO-01',
+        md5('community-created-correlation:' || ${fixture.communityId})::uuid,
+        ${fixture.centralActorId}::uuid, 'SYSTEM', '["CENTRAL_ADMIN"]'::jsonb,
+        '{}'::uuid[], ${fixture.occurredAt}::timestamptz,
+        md5('community-created:' || ${fixture.communityId}),
+        ${JSON.stringify({ communityId: fixture.communityId, venueId: fixture.venueId,
+          bootstrap: true })}::jsonb,
+        ${JSON.stringify({ policyVersion: 'community-lifecycle-mvp-v1', bootstrap: true })}::jsonb
+      ) on conflict do nothing
+    `.execute(transaction);
+    await sql`
       insert into community.community_memberships (
         membership_id, community_id, user_id, age_division, state,
         competition_enabled, join_path, decided_at, decided_by, version
@@ -199,6 +237,9 @@ export async function readCommunityContext(
       community.community_id,
       community.name as community_name,
       community.state as community_state,
+      configuration.configuration_id,
+      configuration.configuration_version,
+      configuration.effective_at as configuration_effective_at,
       configuration.pair_cooldown_days,
       configuration.no_show_grace_minutes,
       configuration.ruleset_ref,
@@ -209,6 +250,27 @@ export async function readCommunityContext(
       membership.age_division as membership_age_division,
       membership.competition_enabled,
       membership.join_path,
+      membership.version::text as membership_version,
+      (
+        select rejected.reapply_not_before_at
+        from community.community_memberships as rejected
+        where rejected.community_id = community.community_id
+          and rejected.user_id = users.user_id
+          and rejected.state = 'REJECTED'
+          and rejected.join_path = 'SELF_REQUEST'
+        order by rejected.decided_at desc nulls last, rejected.created_at desc
+        limit 1
+      ) as membership_reapply_not_before_at,
+      (
+        select rejected.public_rejection_reason_code
+        from community.community_memberships as rejected
+        where rejected.community_id = community.community_id
+          and rejected.user_id = users.user_id
+          and rejected.state = 'REJECTED'
+          and rejected.join_path = 'SELF_REQUEST'
+        order by rejected.decided_at desc nulls last, rejected.created_at desc
+        limit 1
+      ) as membership_latest_rejection_reason_code,
       exists (
         select 1
         from community.community_memberships as other_membership
@@ -216,7 +278,11 @@ export async function readCommunityContext(
           and other_membership.community_id <> community.community_id
           and other_membership.state = 'ACTIVE'
           and other_membership.competition_enabled
-      ) as has_other_active_competitive_membership
+      ) as has_other_active_competitive_membership,
+      coalesce((
+        select flag.enabled from platform.feature_flags as flag
+        where flag.feature_key = 'MULTI_COMMUNITY_DISCIPLINE'
+      ), false) as multi_community_discipline_enabled
     from identity.users as users
     cross join community.communities as community
     join community.venues as venue on venue.venue_id = community.venue_id
@@ -252,12 +318,14 @@ export async function readCommunityContext(
   }));
   const membership =
     row.membership_id && row.membership_state && row.membership_age_division && row.join_path
+      && row.membership_version
       ? {
           membershipId: row.membership_id,
           state: row.membership_state,
           ageDivision: row.membership_age_division,
           competitionEnabled: row.competition_enabled === true,
           joinPath: row.join_path,
+          version: Number(row.membership_version),
         }
       : null;
   const access = projectCommunityAccess({
@@ -269,7 +337,10 @@ export async function readCommunityContext(
     communityId: row.community_id,
     communityState: row.community_state,
     membership,
+    membershipReapplyBlocked:
+      (row.membership_reapply_not_before_at?.getTime() ?? 0) > Date.now(),
     hasOtherActiveCompetitiveMembership: row.has_other_active_competitive_membership,
+    multiCommunityDisciplineEnabled: row.multi_community_discipline_enabled,
     activeRoleGrants,
   });
 
@@ -288,6 +359,9 @@ export async function readCommunityContext(
       communityId: row.community_id,
       name: row.community_name,
       state: row.community_state,
+      configurationId: row.configuration_id,
+      configurationVersion: row.configuration_version,
+      configurationEffectiveAt: row.configuration_effective_at.toISOString(),
       pairCooldownDays: row.pair_cooldown_days,
       noShowGraceMinutes: row.no_show_grace_minutes,
       rulesetRef: row.ruleset_ref,
@@ -295,6 +369,8 @@ export async function readCommunityContext(
       version: Number(row.community_version),
     },
     membership,
+    membershipReapplyNotBeforeAt: row.membership_reapply_not_before_at?.toISOString() ?? null,
+    membershipLatestRejectionReasonCode: row.membership_latest_rejection_reason_code,
     activeRoleGrants,
     access,
   };

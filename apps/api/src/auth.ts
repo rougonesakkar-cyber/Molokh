@@ -1,11 +1,32 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
+
+import type { AuthAccessMode } from '@molokh/core';
 
 export interface AuthenticatedUser {
   readonly userId: string;
+  readonly accessMode: AuthAccessMode;
+  readonly familyId?: string;
+  readonly familyVersion?: number;
 }
 
+export type AuthAccessRequirement = 'FULL' | 'SERVICE_RESPONSE';
+
 export interface AuthAdapter {
-  authenticate(authorization: string | undefined): Promise<AuthenticatedUser | null>;
+  authenticate(
+    authorization: string | undefined,
+    requirement?: AuthAccessRequirement,
+  ): Promise<AuthenticatedUser | null>;
+}
+
+function bearerToken(authorization: string | undefined): string | null {
+  const prefix = 'Bearer ';
+  if (!authorization?.startsWith(prefix)) return null;
+  const token = authorization.slice(prefix.length);
+  return token.length > 0 ? token : null;
+}
+
+export function hashBearerToken(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
 export class StaticBearerAuthAdapter implements AuthAdapter {
@@ -17,14 +38,14 @@ export class StaticBearerAuthAdapter implements AuthAdapter {
   }
 
   async authenticate(authorization: string | undefined): Promise<AuthenticatedUser | null> {
-    const prefix = 'Bearer ';
-    if (!authorization?.startsWith(prefix)) return null;
-    const supplied = Buffer.from(authorization.slice(prefix.length));
+    const token = bearerToken(authorization);
+    if (!token) return null;
+    const supplied = Buffer.from(token);
     const expected = Buffer.from(this.token);
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
       return null;
     }
-    return { userId: this.userId };
+    return { userId: this.userId, accessMode: 'FULL' };
   }
 }
 
@@ -51,15 +72,75 @@ export class StaticBearerAuthRegistryAdapter implements AuthAdapter {
   }
 
   async authenticate(authorization: string | undefined): Promise<AuthenticatedUser | null> {
-    const prefix = 'Bearer ';
-    if (!authorization?.startsWith(prefix)) return null;
-    const supplied = Buffer.from(authorization.slice(prefix.length));
+    const token = bearerToken(authorization);
+    if (!token) return null;
+    const supplied = Buffer.from(token);
     for (const identity of this.identities) {
       const expected = Buffer.from(identity.token);
       if (supplied.length === expected.length && timingSafeEqual(supplied, expected)) {
-        return { userId: identity.userId };
+        return { userId: identity.userId, accessMode: 'FULL' };
       }
     }
     return null;
+  }
+}
+
+export interface DatabaseAuthProjection {
+  readonly userId: string;
+  readonly familyId: string;
+  readonly familyVersion: number;
+  readonly accessMode: AuthAccessMode;
+}
+
+export class DatabaseBearerAuthAdapter implements AuthAdapter {
+  constructor(
+    private readonly authenticateHash: (tokenHash: string) =>
+      Promise<DatabaseAuthProjection | null>,
+  ) {}
+
+  async authenticate(
+    authorization: string | undefined,
+    requirement: AuthAccessRequirement = 'FULL',
+  ): Promise<AuthenticatedUser | null> {
+    const token = bearerToken(authorization);
+    if (!token) return null;
+    const projection = await this.authenticateHash(hashBearerToken(token));
+    if (!projection) return null;
+    if (projection.accessMode === 'SERVICE_RESPONSE_ONLY' && requirement === 'FULL') return null;
+    return { userId: projection.userId, accessMode: projection.accessMode,
+      familyId: projection.familyId, familyVersion: projection.familyVersion };
+  }
+}
+
+export class CompositeAuthAdapter implements AuthAdapter {
+  constructor(private readonly adapters: readonly AuthAdapter[]) {
+    if (adapters.length === 0) throw new RangeError('At least one auth adapter is required');
+  }
+
+  async authenticate(
+    authorization: string | undefined,
+    requirement: AuthAccessRequirement = 'FULL',
+  ): Promise<AuthenticatedUser | null> {
+    for (const adapter of this.adapters) {
+      const authenticated = await adapter.authenticate(authorization, requirement);
+      if (authenticated) return authenticated;
+    }
+    return null;
+  }
+}
+
+export class AuthorizedAuthAdapter implements AuthAdapter {
+  constructor(
+    private readonly delegate: AuthAdapter,
+    private readonly authorize: (authenticated: AuthenticatedUser) => Promise<boolean>,
+  ) {}
+
+  async authenticate(
+    authorization: string | undefined,
+    requirement: AuthAccessRequirement = 'FULL',
+  ): Promise<AuthenticatedUser | null> {
+    const authenticated = await this.delegate.authenticate(authorization, requirement);
+    if (!authenticated) return null;
+    return await this.authorize(authenticated) ? authenticated : null;
   }
 }

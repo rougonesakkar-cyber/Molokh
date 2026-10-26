@@ -137,7 +137,7 @@ Every trace carries `request_id`, `correlation_id`, `causation_id`, actor and ag
 
 ## 11. Deployment shape
 
-MVP environments: local, preview/test, staging, production. Each environment owns independent database, keys and notification credentials. Local/CI use Docker Compose. Pilot web/API/worker run on one Linux VM behind Caddy; production PostgreSQL moves to a managed service in a Russian region before live pilot. Production migrations are forward-only, reviewed and observable. Rollback of business history uses compensating commands, not database restore or destructive migration.
+MVP environments: local, preview/test, staging, production. Each environment owns independent database, keys and notification credentials. Local/CI use Docker Compose. Pilot web/API/worker run on one Linux VM behind Caddy; production PostgreSQL moves to a managed service in a Russian region before live pilot. Production API configuration is fail-closed: `DATABASE_URL`, two independent token secrets, pilot Community/Competition IDs, `PUBLIC_WEB_URL`, an HTTPS CORS allowlist and immutable `RELEASE_SHA` are mandatory; local fixtures and static bearer tokens are unavailable. Production migrations are forward-only, reviewed and observable. Rollback of business history uses compensating commands, not database restore or destructive migration.
 
 ## 12. Deliberately deferred architecture
 

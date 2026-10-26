@@ -123,6 +123,7 @@ function ReviewCard({ review, token, onUpdated }: {
               <Pressable
                 key={outcome}
                 accessibilityRole="button"
+                accessibilityState={{ disabled, selected: claim === outcome }}
                 disabled={disabled}
                 onPress={() => setClaim(outcome)}
                 style={[styles.option, claim === outcome && styles.optionSelected]}
@@ -226,6 +227,7 @@ function ReviewCard({ review, token, onUpdated }: {
                   <Pressable
                     key={coach.userId}
                     accessibilityRole="button"
+                    accessibilityState={{ disabled, selected: selectedCoachId === coach.userId }}
                     disabled={disabled}
                     onPress={() => setSelectedCoachId(coach.userId)}
                     style={[styles.option, selectedCoachId === coach.userId && styles.optionSelected]}

@@ -1,11 +1,13 @@
 import {
   ApiErrorSchema,
   RecordSessionResultBodySchema,
+  ReviseResultMetadataBodySchema,
   ResultCommandResponseSchema,
   ResultResponseSchema,
   SubmitResultAppealBodySchema,
   WaiveResultAppealBodySchema,
   type RecordSessionResultBody,
+  type ReviseResultMetadataBody,
   type ResultCommandResponse,
   type ResultResponse,
   type SubmitResultAppealBody,
@@ -15,6 +17,8 @@ import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core'
 import type {
   ExecutedCommand,
   RecordSessionResultPayload,
+  ResultMetadataRevisionEffectIds,
+  ReviseResultMetadataPayload,
   ResultEffectIds,
   ResultProjection,
   SubmitResultAppealPayload,
@@ -42,6 +46,10 @@ export interface ResultRouteDependencies {
   readonly recordSessionResult: (
     command: CommandEnvelope<RecordSessionResultPayload>,
     ids: ResultEffectIds,
+  ) => Promise<ExecutedCommand<ResultProjection>>;
+  readonly reviseResultMetadata: (
+    command: CommandEnvelope<ReviseResultMetadataPayload>,
+    ids: ResultMetadataRevisionEffectIds,
   ) => Promise<ExecutedCommand<ResultProjection>>;
   readonly submitResultAppeal: (
     command: CommandEnvelope<SubmitResultAppealPayload>,
@@ -110,12 +118,13 @@ function envelope<T>(input: {
 
 function finalizationIds(): Pick<
   ResultEffectIds,
-  'challengeEventId' | 'statusFinalizationId' | 'statusEventId'
+  'challengeEventId' | 'statusFinalizationId' | 'statusEventId' | 'genesisEventId'
   | 'notificationOutboxMessageId' | 'notificationIds'
 > {
   return {
     challengeEventId: newUuidV7(), statusFinalizationId: newUuidV7(),
-    statusEventId: newUuidV7(), notificationOutboxMessageId: newUuidV7(),
+    statusEventId: newUuidV7(), genesisEventId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7()],
   };
 }
@@ -187,6 +196,49 @@ export async function registerResultRoutes(
         timerOutboxMessageId: newUuidV7(), notificationOutboxMessageId: newUuidV7(),
         missingResultReviewEventId: newUuidV7(),
         notificationIds: [newUuidV7(), newUuidV7()],
+      });
+      await reply.status(executed.responseStatus).send(
+        commandResponse(executed, requestContext(request).requestId),
+      );
+    },
+  );
+
+  app.post<{
+    Body: ReviseResultMetadataBody; Headers: ResultHeaders; Params: ResultParams;
+  }>(
+    '/api/v1/results/:resultId/metadata-revisions',
+    {
+      schema: {
+        operationId: 'reviseResultMetadata',
+        params: Type.Object({ resultId: Type.String({ format: 'uuid' }) }, { additionalProperties: false }),
+        body: ReviseResultMetadataBodySchema,
+        response: { 201: ResultCommandResponseSchema, 400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema, 409: ApiErrorSchema, 422: ApiErrorSchema },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const key = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const revisionId = idempotentResourceId(
+        'ResultMetadataRevision', request.params.resultId, `${authenticated.userId}:${key}`,
+      );
+      const payload: ReviseResultMetadataPayload = {
+        resultId: request.params.resultId,
+        ...(request.body.methodCode !== undefined ? { methodCode: request.body.methodCode } : {}),
+        ...(request.body.methodText !== undefined ? { methodText: request.body.methodText } : {}),
+        ...(request.body.scorePayload !== undefined ? { scorePayload: request.body.scorePayload } : {}),
+        ...(request.body.methodPayload !== undefined ? { methodPayload: request.body.methodPayload } : {}),
+      };
+      const executed = await dependencies.reviseResultMetadata(envelope({
+        actorUserId: authenticated.userId, actorRole: 'COACH', aggregateType: 'Result',
+        aggregateId: request.params.resultId, commandType: 'REVISE_RESULT_METADATA',
+        idempotencyKey: key, expectedVersion: expectedVersion(request.headers['if-match']),
+        payload, request,
+      }), {
+        revisionId, eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
       });
       await reply.status(executed.responseStatus).send(
         commandResponse(executed, requestContext(request).requestId),

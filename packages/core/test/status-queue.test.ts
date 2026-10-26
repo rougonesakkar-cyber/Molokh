@@ -30,6 +30,7 @@ const eligible = {
   contenderUserId: null,
   hasLiveEntry: false,
   pairCooldownActive: false,
+  pairChallengeExists: false,
 } as const;
 
 describe('status queue policy', () => {
@@ -38,10 +39,11 @@ describe('status queue policy', () => {
       kind: 'GENESIS_CANDIDATE',
       targetStatus: 'CHAMPION',
       boundHolderUserId: null,
+      directChallengeMode: null,
     });
   });
 
-  it('routes an Ordinary member toward the current Contender in a running Competition', () => {
+  it('[AC-045][AC-057] routes only an eligible Ordinary member toward the current Contender', () => {
     expect(assertStatusQueueEntryCanBeSubmitted({
       ...eligible,
       competitionPhase: 'RUNNING',
@@ -50,7 +52,20 @@ describe('status queue policy', () => {
       kind: 'DIRECT_STATUS',
       targetStatus: 'CONTENDER',
       boundHolderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      directChallengeMode: 'MANDATORY_CONTENDER',
     });
+    expect(() => assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      membershipActive: false,
+    })).toThrowError('MEMBERSHIP_NOT_ACTIVE');
+    expect(() => assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      pairCooldownActive: true,
+    })).toThrowError('PAIR_COOLDOWN_ACTIVE');
   });
 
   it('AC-090 breaks an identical server-time tie deterministically by entry id', () => {
@@ -77,18 +92,38 @@ describe('status queue policy', () => {
     })).toThrowError(StatusQueueConflictError);
   });
 
-  it('does not let a holder or duplicate live intent enter the queue', () => {
+  it('[AC-047] lets Champion offer an optional TITLE only through the ordinary FIFO', () => {
+    expect(assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      actorStatus: 'CHAMPION',
+    })).toEqual({
+      kind: 'DIRECT_STATUS',
+      targetStatus: 'CONTENDER',
+      boundHolderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      directChallengeMode: 'OPTIONAL_TITLE',
+    });
     expect(() => assertStatusQueueEntryCanBeSubmitted({
       ...eligible,
-      actorStatus: 'CHAMPION',
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      actorStatus: 'CONTENDER',
     })).toThrowError('ALREADY_STATUS_HOLDER');
     expect(() => assertStatusQueueEntryCanBeSubmitted({
       ...eligible,
       hasLiveEntry: true,
     })).toThrowError('LIVE_QUEUE_ENTRY_EXISTS');
+    expect(() => assertStatusQueueEntryCanBeSubmitted({
+      ...eligible,
+      competitionPhase: 'RUNNING',
+      contenderUserId: '0199a1b2-1234-7000-8000-000000000002',
+      actorStatus: 'CHAMPION',
+      pairChallengeExists: true,
+    })).toThrowError('PAIR_CHALLENGE_EXISTS');
   });
 
-  it('activates only the strict FIFO head against the still-current Contender', () => {
+  it('[AC-048][AC-092] activates only the strict FIFO head against the still-current Contender', () => {
     const activation = {
       state: 'WAITING' as const,
       kind: 'DIRECT_STATUS' as const,
@@ -113,16 +148,34 @@ describe('status queue policy', () => {
     })).toThrowError('BOUND_HOLDER_CHANGED');
   });
 
-  it('[AC-095][AC-096][AC-097] preserves FIFO while a new Contender is reconfirmed for 24 hours', () => {
+  it('[AC-095][AC-096][AC-097][AC-098] preserves FIFO and invalidates a former Contender TITLE intent', () => {
     const requestedAt = new Date('2026-09-28T12:00:00.000Z');
     const deadline = statusQueueReconfirmationDeadline(requestedAt);
     expect(deadline.toISOString()).toBe('2026-09-29T12:00:00.000Z');
+    expect(assertStatusQueueReconfirmationCanBeRequested({
+      state: 'WAITING',
+      kind: 'DIRECT_STATUS',
+      targetStatus: 'CONTENDER',
+      initiatorUserId: 'challenger',
+      boundHolderUserId: 'contender-a',
+      currentContenderUserId: 'contender-b',
+    })).toBe('REQUEST_RECONFIRMATION');
+    expect(assertStatusQueueReconfirmationCanBeRequested({
+      state: 'WAITING',
+      kind: 'DIRECT_STATUS',
+      targetStatus: 'CHAMPION',
+      initiatorUserId: 'contender-a',
+      boundHolderUserId: 'champion',
+      currentContenderUserId: 'contender-b',
+    })).toBe('INVALIDATE_FORMER_CONTENDER_TITLE_INTENT');
     expect(() => assertStatusQueueReconfirmationCanBeRequested({
       state: 'WAITING',
       kind: 'DIRECT_STATUS',
-      boundHolderUserId: 'contender-a',
+      targetStatus: 'CHAMPION',
+      initiatorUserId: 'contender-b',
+      boundHolderUserId: 'champion',
       currentContenderUserId: 'contender-b',
-    })).not.toThrow();
+    })).toThrowError('QUEUE_RECONFIRMATION_NOT_REQUIRED');
     const reconfirmation = {
       state: 'RECONFIRMATION_REQUIRED' as const,
       actorUserId: 'challenger',
@@ -191,7 +244,7 @@ describe('status queue policy', () => {
     })).not.toThrow();
   });
 
-  it('[AC-093][AC-094] promotes one unchanged GENESIS candidate only after three days', () => {
+  it('[AC-093][AC-094][AC-102][AC-104] promotes one unchanged GENESIS candidate only after three days', () => {
     const singleSinceAt = new Date('2026-09-28T12:00:00.000Z');
     const deadline = genesisSingleCandidateDeadline(singleSinceAt);
     expect(deadline.toISOString()).toBe('2026-10-01T12:00:00.000Z');

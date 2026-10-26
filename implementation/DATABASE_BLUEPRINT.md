@@ -29,16 +29,29 @@ Schemas are organizational boundaries inside one database, not permission to cre
 - `account_verifications`
 - `account_access_cases`
 - `duplicate_account_cases`
+- `duplicate_account_case_users`
+- `duplicate_account_processes`
 - `duplicate_account_aliases`
 - `trusted_sessions`
+- `user_sensitive_action_holds`
 - `display_name_audit`
+- `age_division_transitions`
+- `account_closure_requests`
+- `account_data_exports`
 
 Critical constraints:
 
 - partial unique verified normalized phone;
 - age 14+ activation check at command layer plus database-consistent birth date;
 - duplicate alias cannot self-reference;
-- one unresolved access/duplicate case per configured subject scope.
+- one unresolved access/duplicate case per configured subject scope;
+- phone-change approval creates one exact 24-hour sensitive-action hold; trusted old sessions
+  remain service-response-only until the hold expires and are then revoked;
+- duplicate review stores every affected status/obligation and its explicit disposition;
+  choosing a canonical User never rewrites sporting history or transfers status;
+- one immutable `YOUTH→ADULT` transition per User; its timer aggregate advances only `0→1`.
+- one live `REQUESTED` closure and one live `REQUESTED/READY` data export per User;
+- closure pseudonymization event is immutable; export expiry nulls payload but preserves SHA-256.
 
 ### social
 
@@ -75,17 +88,25 @@ Critical constraints:
 - one active Community per Venue in MVP;
 - one active competitive Membership per User under feature policy;
 - one active PRIMARY_ADMIN grant per Venue;
-- configuration rows immutable after effective publication.
+- Guest Coach authority uses the existing `role_grants` row with `COACH/SESSION`; authorization
+  and terminal expiry append versioned event/audit/outbox lineage instead of widening Community
+  scope or deleting the historical grant;
+- configuration rows immutable after effective publication;
+- changing Pair Cooldown appends a new row and atomically switches only the current Community
+  pointer/version; existing Challenge/Session snapshots and created Cooldowns retain the old ID.
 
 ### scheduling
 
 - `slots`
 - `group_offerings`
 - `group_plans`
+- `group_plan_official_conversions`
+- `group_plan_conversion_confirmations`
 - `bookings`
 - `booking_commercial_snapshots`
 - `booking_official_conversions`
 - `booking_conversion_confirmations`
+- `booking_training_retentions`
 - `booking_training_retention_confirmations`
 - `booking_coach_replacements`
 - `booking_host_rejections`
@@ -99,6 +120,8 @@ Critical constraints:
 - optional Venue resource exclusion;
 - commercial snapshot immutable after mutual selection;
 - one live Official conversion per Booking and one immutable decision per required role;
+- one live Official conversion per GroupPlan and one immutable Athlete-low/Athlete-high/Coach decision;
+- one retention process per booked Official lineage and one immutable decision per Athlete/Coach-host role;
 - Booking/Session Coach assignment updated in one transaction.
 
 Example exclusion shape:
@@ -113,14 +136,25 @@ exclude using gist (
 Migration `0016_scheduling_publication.sql` implements `slots`, `group_offerings`, the active
 Coach exclusion, publication indexes and structured commercial/contact fields. Migrations
 `0017`–`0018` add pair-owned Booking intent, informational GroupPlan, one-live-intent indexes
-and database guards for immutable commercial/offering snapshots. Migration
+and database guards for immutable commercial/offering snapshots. B-04 reuses these rows: a locked
+pre-confirmation Booking becomes `CANCELLED`, its Slot is never mutated, and a linked Challenge
+returns to `ACCEPTED_UNSCHEDULED` in the same event/audit/outbox transaction. The shared Booking
+row lock serializes this withdrawal with host confirmation. Migration
 `0019_booking_confirmation_session.sql` adds ordinary Sessions; host confirmation claims the
 Slot and creates exactly one Session in the same transaction. `0020_session_lifecycle.sql`
 aligns it with the formal state machine: it starts as `SCHEDULED`, receives
 `window_opened_at` from a versioned server timer, and only then becomes `READY_FOR_COACH`.
+Before the claim, the command locks both Athlete identity rows in stable UUID order and checks
+their active Session ranges with half-open interval semantics. Concurrent confirmations for
+different Slots that share an Athlete therefore serialize without deadlock; a loser receives
+`ATHLETE_SCHEDULE_CONFLICT`, and its Slot/Booking remain unmodified.
 That migration also adds immutable-per-Athlete Attendance facts and separate actual start/end
 timestamps. `0021_backfill_session_window_timers.sql` schedules timers for Sessions confirmed
-before the lifecycle increment was deployed.
+before the lifecycle increment was deployed. `0057_reissue_current_session_window_timers.sql`
+repairs any still-`SCHEDULED` Session whose current version has no matching window timer. Normal
+Training→Official, pair→solo and Official→Training commits publish that replacement timer in the
+same transaction as the version-changing Session event, so the migration is recovery rather than
+the steady-state mechanism.
 
 `0022_coach_replacement_and_no_fault_cancellation.sql` adds append-only Booking and Session
 Coach assignment history plus explicit cancellation actor/reason timestamps. Replacement keeps
@@ -138,6 +172,19 @@ facts. The original Appeal deadlines remain source facts; projections expose the
 effective due date. One `(Appeal,responder)` response, one withdrawal and one reasoned 24h/48h
 extension are database-enforced for the pilot.
 
+`0047_booking_training_retention.sql` records the B-26…B-29 bridge after a booked Official
+Challenge closes before start. It preserves the original Challenge ID outside the converted
+Booking/Session, requires three immutable role decisions, and bounds `PENDING` by the earlier of
+one hour or scheduled start. Confirmation converts purpose to `TRAINING`; decline/expiry cancels
+the physical resources without Competition effects.
+
+`0048_age_division_transition.sql` stores one append-only transition per User and backfills one
+UTC 18th-birthday timer for every existing Youth Identity with event lineage. The command moves
+Identity and current Membership to Adult, closes not-started Youth Official work no-fault,
+expires consent and affected FIFO, releases Youth status without a Result/loss/Cooldown and opens
+B-26 for an eligible confirmed future Booking. Started Sessions, competitive snapshots,
+Challenges and obligations are intentionally excluded from those pre-start mutations.
+
 `0023_competition_challenge_foundation.sql` creates the first Competition contour and direct
 optional Challenge persistence: immutable ruleset snapshots and acknowledgments, one live
 Challenge per pair, one globally active accepted obligation per Athlete, append-only optional
@@ -147,6 +194,15 @@ decline quiet periods and the pair-cooldown seam used by later Result processing
 and Session. Database checks require `TRAINING` rows to have no Challenge and
 `OFFICIAL_CHALLENGE` rows to have one; an index permits only one active Slot request per
 Challenge while retaining rejected/expired Booking history.
+
+`0060_challenge_reschedules.sql` adds the bounded `user_reschedule_count` (`0..2`) and immutable
+`challenge_reschedules` facts. Each row records initiator, A/B/MUTUAL/EXTERNAL attribution,
+private optional reason text, timestamp and optional Booking lineage. CH-22 locks a live Booking
+before its Challenge, atomically cancels that Booking, increments the Challenge version/count and
+reissues the original scheduling-deadline timer; the Slot and active obligations are not mutated.
+At the database-enforced limit, CH-23 reuses the same counter and Result tables without a migration:
+explicit consequence confirmation creates the administrative `FORFEIT`, leaves the counter at two,
+closes an optional pending Booking and deliberately inserts no third `challenge_reschedules` row.
 
 `0025_official_session_competitive_snapshot.sql` creates the one-per-Session immutable
 competitive snapshot. It records both planned and scheduled-boundary effective stakes together
@@ -158,6 +214,9 @@ updated or deleted.
 facts, Appeal/waiver records, append-only provisional status transitions and append-only
 finalization proofs. It also links decisive Results to pair Cooldown, locks Competition status
 while the 48-hour Appeal window is open and indexes both the finalization timer and Central queue.
+The same tables support B-14 without another migration: an explicit pre-start Athlete cancellation
+creates the constrained administrative `FORFEIT` through the Result engine, while Session/Booking
+lineage and any already-frozen competitive snapshot remain immutable in event/audit history.
 
 `0027_central_appeal_decisions.sql` adds independent review start metadata, immutable Appeal
 decisions and immutable status-transition compensations. Source Result fields remain protected;
@@ -179,6 +238,44 @@ Competition carries at most one active integrity hold. Challenge obligations gai
 cycle number so an eligible post-Final repeat creates a new cycle without deleting the released
 history of the previous one.
 
+`0063_technical_correction_requests.sql` adds the pre-Final TC-01 contour without changing the
+Result schema. Each request freezes source Result version, original/proposed outcome and winner,
+normalized category, requester, server time and protected reason/evidence reference. A partial
+unique index permits one `SUBMITTED/UNDER_REVIEW` request per Result, a FIFO index serves Central,
+and triggers protect source facts from update and every request from deletion. Result, status,
+Cooldown and Appeal tables are not mutated by request creation.
+
+`0064_technical_correction_review.sql` adds the minimal TC-02/TC-05 lifecycle fields: assigned
+reviewer, review start, protected decision reason and decision time. Database checks bind their
+presence to `UNDER_REVIEW` and `REJECTED`; source proposal facts remain trigger-protected. The
+existing aggregate lock, versioned events and row lock serialize start/reject commands, while the
+partial FIFO index naturally removes terminal rejections from the active Central queue.
+
+`0065_technical_correction_approval.sql` adds append-only TC-04 decisions and status-compensation
+facts. The source Result, request proposal and Session snapshot remain immutable; recorded and
+effective outcome/winner are stored separately. Approval reuses the Competition row lock and
+existing deterministic transition rules, preserves or invalidates/creates the pair Cooldown from
+the effective decisive outcome, and keeps the original Result Appeal clock/version intact. Both
+new tables reject update/delete, and private decision text remains outside event/outbox payloads.
+
+`0066_result_metadata_revisions.sql` adds the append-only AC-078 score/method correction journal.
+
+`0067_group_plan_official_conversion.sql` assigns an optional authorized Coach to a
+GroupOffering and adds the versioned GP-05…GP-08 conversion aggregate plus immutable per-role
+confirmation facts. A partial unique index permits one live conversion per GroupPlan; Challenge,
+Booking and Session references are required only for terminal `CONVERTED` state.
+Each row stores source/result version lineage, protected before/after metadata, the DB-authorized
+Coach and server time. A Result aggregate version advances, but recorded winner/outcome, source
+metadata, Session snapshot, Challenge, status, Cooldown and Appeal clocks are never overwritten.
+The table rejects update/delete and orders revisions deterministically by Result version.
+
+AC-143 adds no storage table: the current MVP treats Competition holder columns and
+`pair_cooldowns` as replaceable materialized state, while StatusTenure is a deterministic view of
+the immutable Competition event stream. The Central-only rebuild takes the Competition row lock,
+rechecks the canonical aggregate version after the lock, derives all three projections, replaces
+only disposable rows and verifies a SHA-256 projection hash in the same transaction. Exact replay
+is idempotent; canonical Results, decisions, snapshots, transitions and events remain untouched.
+
 `0032_status_queue_foundation.sql` aligns the Competition phase vocabulary with the canonical
 state machine and creates `challenge_queue_entries`. A partial unique index permits only one live
 intent per Athlete/target, while the partial FIFO index fixes ordering to immutable server
@@ -194,7 +291,10 @@ a Discovery Match; ordinary training Bookings still require their real Match lin
 must reference either a real Match or an Official Challenge. `0036_administrative_forfeit_context.sql`
 permits a mandatory-response Forfeit Result and its status transition without inventing a Session,
 competitive snapshot, Venue, Coach or recorder; Session-origin Results retain all of those required
-facts. Both forms remain immutable, appealable and auditable.
+facts. The same immutable path selects `CONTENDER_TRANSFERRED` or `TITLE_TRANSFERRED` from the
+Challenge stake/current holders; a separate versioned +48h timer projects only the recipient
+reminder and provider-independent delivery intents before the +72h expiry. Both forms remain
+immutable, appealable and auditable.
 
 `0037_voluntary_status_release.sql` adds the two-step Champion/Contender status-only release.
 The PREVIEWED row freezes the current holders, status version, exact ST-09/ST-10/ST-14 consequence
@@ -240,6 +340,9 @@ Critical constraints:
 - `actual_start_at` requires Session state IN_PROGRESS/ENDED;
 - READY has `window_opened_at` but no actual start;
 - unique attendance per Session/Athlete;
+- `LATE` stores `arrival_at` with no absence reason and has no Result/Cooldown side effect;
+- `NO_SHOW` is accepted only after the snapshotted Community grace; Attendance alone has no
+  Competition side effect;
 - no overlapping confirmed/READY/IN_PROGRESS Session ranges for one Athlete.
 
 ### competition
@@ -291,6 +394,8 @@ create index queue_fifo_idx
 - `appeal_responses`
 - `appeal_waivers`
 - `technical_correction_requests`
+- `technical_correction_decisions`
+- `technical_correction_status_compensations`
 - `missing_result_reviews`
 - `missing_result_statements`
 - `missing_result_venue_confirmations`
@@ -302,9 +407,13 @@ Critical constraints:
 
 - one effective Result per Challenge cycle/context;
 - original outcome columns immutable after insert;
+- one `NO_SHOW` Attendance constrains the Result to the present Athlete as winner; two constrain it
+  to `NO_CONTEST`, whose null winner/loser creates neither status transition nor Cooldown;
+- `LATE` remains attendance metadata and never constrains the ordinary sporting Result;
 - one Appeal history per Result/appellant;
 - waiver unique per Result/User;
 - one open IntegrityCase per Final Result;
+- one open TechnicalCorrectionRequest per provisional Result;
 - Integrity evidence/source facts, decision and status compensation are append-only;
 - correction uses IntegrityDecision plus deterministic replay, never update of source Result;
 - one Competition integrity hold points to the case currently under review;
@@ -316,18 +425,26 @@ Critical constraints:
 ### governance
 
 - `moderation_cases`
-- `enforcements`
-- `enforcement_appeals`
+- `safety_case_decisions` — one immutable Central remedy per reviewed SafetyCase; protected reason, replacement, causal-Forfeit or serious-category restriction lineage
+- `enforcements` — source-immutable `ACCOUNT_RESTRICTION` fact linked directly to one SafetyCase decision and exact seven-day Appeal deadline; only append-only EN-03 revocation metadata may terminally advance it
+- `enforcement_appeals` — one source-immutable protected statement per Enforcement; versioned EA-01/EA-02 assignment in strict server FIFO and protected terminal EA-04 revoke decision
 - `youth_challenge_consents`
-- `evidence_attachments`
+- `evidence_attachments` — source-immutable Appeal/SafetyCase media facts with protected object/checksum/encryption references and one guarded SYSTEM scan transition
 - `evidence_disclosures`
 - `membership_removal_decisions`
 
 Critical constraints:
 
 - reviewer conflict checks stored and enforced in command layer;
+- SafetyCase reviewer assignment is versioned; safe release updates the linked Challenge and hold atomically while the decision row remains append-only;
+- confirmed serious-category restriction atomically appends Enforcement, changes only account state to `RESTRICTED`, preserves Membership/obligations/history and adds `STATUS_REVIEW` only when the subject is the current Champion or Contender;
+- Enforcement Appeal submit/start-review never mutates the immutable Enforcement or releases `STATUS_REVIEW`; the statement remains protected while public event/outbox/notification payloads contain only neutral identity/state fields;
 - one consent per Challenge/Youth Athlete/policy version;
-- evidence count/aggregate size enforced transactionally before upload intent;
+- Youth consent persists only a token-keyed contact hash/mask plus consent audit hash; the raw delivery
+  destination is transient outbox data and guardian accounts/documents remain absent;
+- evidence eligibility is preflighted before an upload intent and count/aggregate size is rechecked transactionally under the parent scope lock before canonical attachment creation;
+- at most five canonical attachments and 100 MB per scope; only allowlisted image/audio/video up to 60 seconds can enter `PENDING_SCAN`;
+- only SYSTEM can advance `PENDING_SCAN` to `AVAILABLE` or `QUARANTINED`; non-Central users can access only their own AVAILABLE originals and no public event/outbox contains storage secrets;
 - disclosure references exact safe derivative/version/recipient/expiry;
 - raw identity documents and Result attachments have no tables/endpoints.
 
@@ -340,8 +457,10 @@ Critical constraints:
 - `scheduled_jobs`
 - `notifications`
 - `notification_preferences`
+- `notification_delivery_intents`
 - `platform_incidents`
 - `incident_impacts`
+- `incident_timeout_compensations`
 - `system_configuration_versions`
 
 Critical constraints:
@@ -349,8 +468,38 @@ Critical constraints:
 - unique event ID and idempotency key per command scope;
 - unique consumer/event InboxReceipt;
 - one IncidentImpact per incident/aggregate/deadline kind;
+- immutable timeout compensation linked to the source timeout event, Result, optional status
+  transition, exact replay hash and compensating event;
 - append-only audit/domain-event permissions;
 - outbox inserted in the same transaction as business change.
+
+Optional OPEN Challenge creation uses the existing outbox and notification tables without another
+migration: one expiry timer and two reminder timers all reference the immutable `ChallengeCreated`
+event. The reminder projector locks and rechecks Challenge state/version before inserting a unique
+recipient/event/render-key notification, so duplicate delivery is idempotent and a stale timer
+cannot notify after a terminal or accepted transition.
+
+Migration `0062_notification_delivery_intents.sql` keeps canonical in-app notification storage
+separate from replaceable external delivery. Every projected `MANDATORY` notification creates one
+unique provider-independent `CRITICAL/PUSH` intent. An `SMS` intent is created only by a
+database-authoritative explicit `event_sms_opt_in=true`; a missing preference row is opt-out.
+Intents store no address, phone, e-mail or provider payload. Inbox replay plus
+`unique(notification_id, channel)` makes delivery creation idempotent, and delivery/read state has
+no write path to business deadlines or aggregates.
+
+Migrations `0049`–`0052` materialize the incident contour. Pausable deadlines remain on their
+own aggregates and are updated under the same optimistic version lock as their
+`IncidentImpact`: Challenge response/scheduling, Booking selection, status-queue reconfirmation,
+Training-conversion confirmation and persisted GENESIS `single_candidate_deadline_at`.
+`competition.challenges.scheduling_extension_count` is constrained to `0..1`, making CH-24's
+single seven-day extension and CH-25's later no-capacity cancellation database-observable.
+
+Migration `0053_account_closure_export_retention.sql` adds versioned retention policies,
+`identity.account_closure_requests` and `identity.account_data_exports`. Closure and optional
+export request commit atomically; an existing live export is reused. Worker preparation stores a
+private JSONB snapshot and schedules exact +48h expiry. Expiry nulls only `export_payload`, while
+SHA-256, policy version, domain event and audit lineage remain. Final closure locks the User and
+request, rechecks every blocker and pseudonymizes public identity in the same transaction as U-04.
 
 ## 4. Event envelope columns
 
@@ -381,8 +530,49 @@ Payload schemas live in code/version registry. Sensitive payload is separated/en
 - Result/CompetitionEvent/StatusTenure/AuditEvent: indefinite for sporting integrity;
 - evidence payload deletion preserves minimal checksum/audit metadata;
 - account closure pseudonymizes public identity after 30-day recovery while preserving lineage.
+- account-export payload: 48 hours after READY; checksum and audit/event lineage remain.
+
+Migration `0058_chat_payload_retention.sql` makes revision payloads independently erasable while
+retaining SHA-256, deletion time and the exact policy version. The daily Worker uses whole-Chat
+last activity, locks eligible Chat/message/revision rows, skips every message captured by a moderation
+report and cleans at most 500 rows per class/run. Personal and Challenge-service payloads therefore
+follow their 12-month/3-year policies without deleting message identity, Case evidence or audit and
+sporting history.
+
+Migration `0059_membership_invites.sql` stores only SHA-256 invite-token digests. Venue QR and
+direct invite resources have an explicit expiry, optional use limit and atomic use counter; raw
+tokens never enter domain events, audit metadata, projections or API responses.
+
+Migration `0060_challenge_reschedules.sql` keeps a user-supplied reason note only in the protected
+append-only row and audit metadata. Public domain/outbox/notification payloads receive the bounded
+reason category, never the note.
+
+Migration `0078_primary_admin_successor_proposals.sql` stores one source-immutable pending
+successor proposal per Venue. The proposal carries protected normalized reasons and changes no
+RoleGrant. Central approval appends decision lineage and reuses the existing Venue-locked RG-10
+transfer, so the unique active-Primary constraint and the ordinary Gym Admin grants remain the
+authority source.
+
+Migration `0079_multi_community_discipline_policy.sql` keeps the future policy disabled by
+default. It replaces the single-active-competitive-Membership partial index with a user-row-locked
+policy trigger, gates non-null `discipline_key`, and validates that the single
+`athlete_profiles.primary_community_id` is an active competitive Membership whose Venue owns the
+Home preference. Existing Competition foreign keys continue to isolate status transitions,
+tenures, queue entries, Cooldowns and Results; the user-wide active obligation unique index remains
+the cross-scope safety boundary. Public profile statistics require an explicit selected Competition
+scope and expose no global rank.
+
+Membership rejection uses the original `community_memberships` privacy split: the Athlete-facing
+projection, event and notification contain only a neutral public category and the seven-day
+`reapply_not_before_at`; the internal reason code and optional Case reference remain in the private
+row/audit path. Request withdrawal moves only the PENDING record to `LEFT` and creates no loss,
+cooldown or reapply delay.
 
 Use time partitioning only after measured volume. Early partitioning is appropriate for `audit_events`, `domain_events`, `outbox_messages` and `notifications`, not every aggregate table.
+
+`athlete_profiles.home_venue_id` is a preference pointer, not Competition ownership. A versioned
+Home Venue change writes one Identity event/audit/outbox line and leaves Membership, status tenure,
+FIFO entries, Challenge and sporting history untouched; those remain scoped by Community.
 
 ## 6. Migration rules
 

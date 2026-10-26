@@ -37,6 +37,9 @@
 | perform service response during phone-change hold | OWN trusted old session | as Athlete | as Athlete | support view only | — | existing obligation only; no resignation/closure/security/profile-sensitive action |
 | confirm account-access incident | provide facts | provide facts | provide Venue facts | CENTRAL only | may attach monitoring | exact inability window/affected obligation; scoped no-fault review, not blanket cancellation |
 | open/resolve duplicate review | provide response | provide response | provide scoped facts | CENTRAL only | may flag signals | canonical+per-process disposition; no auto merge/status transfer; no document upload |
+| request/cancel own account closure | OWN | OWN | OWN | support view only | — | cancel strictly before +30d; request never bypasses active obligations |
+| execute account closure | — | — | — | CENTRAL only | — | recovery elapsed; zero obligation/status/Session/Membership/role/FIFO blockers; reason/audit required |
+| request/download own data export | OWN | OWN | OWN | — | prepares/expires only | one live export; private payload available 48h after ready; checksum/audit retained |
 | view public profile | G | G | G | CENTRAL | — | privacy, Block; Community list or Match context |
 | view birth date/verification audit | OWN | — | — | CENTRAL need-to-know | future provider: opaque outcome only | no document evidence in MVP; sensitive scope/audit |
 | Like | OWN | OWN as Athlete | OWN as Athlete | — | — | Discovery only, same age, no Block/suppression/Match |

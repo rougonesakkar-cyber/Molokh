@@ -1,25 +1,40 @@
 import {
   ApiErrorSchema,
+  AthleteChallengeRescheduleBodySchema,
   ChallengeCommandResponseSchema,
   ChatChallengeResponseSchema,
+  ConfirmMutualChallengeRescheduleBodySchema,
   CreateDirectChallengeBodySchema,
+  MutualChallengeRescheduleRequestResponseSchema,
   RespondToChallengeBodySchema,
+  ScheduleMutationReasonBodySchema,
   type ChallengeCommandResponse,
+  type AthleteChallengeRescheduleBody,
   type ChatChallengeResponse,
+  type ConfirmMutualChallengeRescheduleBody,
   type CreateDirectChallengeBody,
   type RespondToChallengeBody,
+  type ScheduleMutationReasonBody,
+  type MutualChallengeRescheduleRequestResponse,
 } from '@molokh/contracts';
 import { InvalidCommandEnvelopeError, type CommandEnvelope } from '@molokh/core';
 import type {
   AcceptChallengeEffectIds,
+  AthleteChallengeRescheduleEffectIds,
   ChallengeEffectIds,
   ChallengeProjection,
   ChatChallengeProjection,
+  ConfirmMutualChallengeRescheduleEffectIds,
+  ConfirmMutualChallengeReschedulePayload,
   CreateChallengeEffectIds,
   CreateDirectChallengePayload,
   DeclineChallengeEffectIds,
   ExecutedCommand,
+  MutualChallengeRescheduleRequestProjection,
+  ProposeMutualChallengeRescheduleEffectIds,
+  ProposeMutualChallengeReschedulePayload,
   RespondToChallengePayload,
+  RescheduleChallengeByAthletePayload,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from 'typebox';
@@ -36,6 +51,7 @@ interface ChallengeHeaders {
 
 interface ChatParams { readonly chatId: string }
 interface ChallengeParams { readonly challengeId: string }
+interface MutualRescheduleParams extends ChallengeParams { readonly requestId: string }
 
 export interface ChallengeRouteDependencies {
   readonly auth: AuthAdapter;
@@ -58,6 +74,18 @@ export interface ChallengeRouteDependencies {
   readonly withdrawOptionalChallenge: (
     command: CommandEnvelope<RespondToChallengePayload>,
     ids: ChallengeEffectIds,
+  ) => Promise<ExecutedCommand<ChallengeProjection>>;
+  readonly rescheduleChallengeByAthlete: (
+    command: CommandEnvelope<RescheduleChallengeByAthletePayload>,
+    ids: AthleteChallengeRescheduleEffectIds,
+  ) => Promise<ExecutedCommand<ChallengeProjection>>;
+  readonly proposeMutualChallengeReschedule: (
+    command: CommandEnvelope<ProposeMutualChallengeReschedulePayload>,
+    ids: ProposeMutualChallengeRescheduleEffectIds,
+  ) => Promise<ExecutedCommand<MutualChallengeRescheduleRequestProjection>>;
+  readonly confirmMutualChallengeReschedule: (
+    command: CommandEnvelope<ConfirmMutualChallengeReschedulePayload>,
+    ids: ConfirmMutualChallengeRescheduleEffectIds,
   ) => Promise<ExecutedCommand<ChallengeProjection>>;
 }
 
@@ -102,10 +130,44 @@ function basicIds(): ChallengeEffectIds {
   };
 }
 
+function athleteRescheduleIds(): AthleteChallengeRescheduleEffectIds {
+  return {
+    ...basicIds(),
+    rescheduleId: newUuidV7(),
+    bookingEventId: newUuidV7(),
+    bookingOutboxMessageId: newUuidV7(),
+    hostNotificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7()],
+  };
+}
+
+function mutualRescheduleConfirmIds(): ConfirmMutualChallengeRescheduleEffectIds {
+  return {
+    ...basicIds(),
+    rescheduleId: newUuidV7(),
+    requestEventId: newUuidV7(),
+    bookingEventId: newUuidV7(),
+    slotEventId: newUuidV7(),
+    sessionEventId: newUuidV7(),
+    bookingOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+  };
+}
+
 function commandResponse(
   executed: ExecutedCommand<ChallengeProjection>,
   requestId: string,
 ): ChallengeCommandResponse {
+  return {
+    data: executed.response,
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  };
+}
+
+function mutualRequestResponse(
+  executed: ExecutedCommand<MutualChallengeRescheduleRequestProjection>,
+  requestId: string,
+): MutualChallengeRescheduleRequestResponse {
   return {
     data: executed.response,
     meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
@@ -118,9 +180,11 @@ function commandEnvelope(
   commandType: string,
   idempotencyKey: string,
   version: number,
-  payload: RespondToChallengePayload | CreateDirectChallengePayload,
+  payload: RespondToChallengePayload | CreateDirectChallengePayload
+    | RescheduleChallengeByAthletePayload | ConfirmMutualChallengeReschedulePayload,
   request: FastifyRequest,
-): CommandEnvelope<RespondToChallengePayload | CreateDirectChallengePayload> {
+): CommandEnvelope<RespondToChallengePayload | CreateDirectChallengePayload
+  | RescheduleChallengeByAthletePayload | ConfirmMutualChallengeReschedulePayload> {
   const context = requestContext(request);
   return {
     commandId: newUuidV7(),
@@ -153,7 +217,8 @@ export async function registerChallengeRoutes(
       },
     },
     async (request, reply): Promise<ChatChallengeResponse | undefined> => {
-      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization, 'SERVICE_RESPONSE');
       if (!authenticated) {
         await reply.status(401).send(unauthorized(request));
         return;
@@ -198,9 +263,186 @@ export async function registerChallengeRoutes(
         serviceChatEventId: newUuidV7(),
         rulesetSnapshotId: newUuidV7(),
         acknowledgmentId: newUuidV7(),
+        reminderTimerOutboxMessageIds: [newUuidV7(), newUuidV7()],
       };
       const executed = await dependencies.createDirectOpenChallenge(command, ids);
       await reply.status(executed.responseStatus).send(commandResponse(executed, requestContext(request).requestId));
+    },
+  );
+
+  app.post<{
+    Body: AthleteChallengeRescheduleBody;
+    Headers: ChallengeHeaders;
+    Params: ChallengeParams;
+  }>(
+    '/api/v1/challenges/:challengeId/reschedule',
+    {
+      schema: {
+        operationId: 'rescheduleChallengeByAthlete',
+        params: Type.Object(
+          { challengeId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: AthleteChallengeRescheduleBodySchema,
+        response: {
+          200: ChallengeCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const key = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const command = commandEnvelope(
+        authenticated.userId,
+        request.params.challengeId,
+        'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+        key,
+        expectedVersion(request.headers['if-match'], 1),
+        {
+          challengeId: request.params.challengeId,
+          reasonCode: request.body.reasonCode,
+          reasonNote: request.body.reasonNote ?? null,
+          confirmForfeit: request.body.confirmForfeit ?? false,
+        },
+        request,
+      ) as CommandEnvelope<RescheduleChallengeByAthletePayload>;
+      const executed = await dependencies.rescheduleChallengeByAthlete(
+        command,
+        athleteRescheduleIds(),
+      );
+      await reply.status(executed.responseStatus).send(
+        commandResponse(executed, requestContext(request).requestId),
+      );
+    },
+  );
+
+  app.post<{
+    Body: ScheduleMutationReasonBody;
+    Headers: ChallengeHeaders;
+    Params: ChallengeParams;
+  }>(
+    '/api/v1/challenges/:challengeId/mutual-reschedules',
+    {
+      schema: {
+        operationId: 'proposeMutualChallengeReschedule',
+        params: Type.Object(
+          { challengeId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: ScheduleMutationReasonBodySchema,
+        response: {
+          201: MutualChallengeRescheduleRequestResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const key = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const requestId = idempotentResourceId(
+        authenticated.userId,
+        key,
+        'challenge-mutual-reschedule',
+      );
+      const context = requestContext(request);
+      const command: CommandEnvelope<ProposeMutualChallengeReschedulePayload> = {
+        commandId: newUuidV7(),
+        commandType: 'PROPOSE_MUTUAL_CHALLENGE_RESCHEDULE',
+        idempotencyKey: key,
+        actor: { type: 'USER', id: authenticated.userId, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'ChallengeMutualReschedule',
+        aggregateId: requestId,
+        expectedVersion: 0,
+        correlationId: context.correlationId,
+        causationId: context.causationId,
+        requestId: context.requestId,
+        source: 'api',
+        payloadVersion: 1,
+        payload: {
+          challengeId: request.params.challengeId,
+          challengeVersion: expectedVersion(request.headers['if-match'], 1),
+          reasonCode: request.body.reasonCode,
+          reasonNote: request.body.reasonNote ?? null,
+        },
+      };
+      const executed = await dependencies.proposeMutualChallengeReschedule(command, basicIds());
+      await reply.status(executed.responseStatus).send(
+        mutualRequestResponse(executed, context.requestId),
+      );
+    },
+  );
+
+  app.post<{
+    Body: ConfirmMutualChallengeRescheduleBody;
+    Headers: ChallengeHeaders;
+    Params: MutualRescheduleParams;
+  }>(
+    '/api/v1/challenges/:challengeId/mutual-reschedules/:requestId/confirm',
+    {
+      schema: {
+        operationId: 'confirmMutualChallengeReschedule',
+        params: Type.Object(
+          {
+            challengeId: Type.String({ format: 'uuid' }),
+            requestId: Type.String({ format: 'uuid' }),
+          },
+          { additionalProperties: false },
+        ),
+        body: ConfirmMutualChallengeRescheduleBodySchema,
+        response: {
+          200: ChallengeCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const key = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const command = commandEnvelope(
+        authenticated.userId,
+        request.params.challengeId,
+        'CONFIRM_MUTUAL_CHALLENGE_RESCHEDULE',
+        key,
+        expectedVersion(request.headers['if-match'], 1),
+        {
+          challengeId: request.params.challengeId,
+          requestId: request.params.requestId,
+          requestVersion: request.body.requestVersion,
+        },
+        request,
+      ) as CommandEnvelope<ConfirmMutualChallengeReschedulePayload>;
+      const executed = await dependencies.confirmMutualChallengeReschedule(
+        command,
+        mutualRescheduleConfirmIds(),
+      );
+      await reply.status(executed.responseStatus).send(
+        commandResponse(executed, requestContext(request).requestId),
+      );
     },
   );
 
@@ -224,7 +466,10 @@ export async function registerChallengeRoutes(
         },
       },
       async (request, reply): Promise<undefined> => {
-        const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+        const authenticated = await dependencies.auth.authenticate(
+          request.headers.authorization,
+          suffix === 'accept' || suffix === 'decline' ? 'SERVICE_RESPONSE' : 'FULL',
+        );
         if (!authenticated) {
           await reply.status(401).send(unauthorized(request));
           return;

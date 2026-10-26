@@ -1,35 +1,62 @@
 import {
+  IdentityPermissionDeniedError,
   InvalidCommandEnvelopeError,
   type CommandEnvelope,
   type IdentityProjection,
 } from '@molokh/core';
 import {
   ApiErrorSchema,
+  AvatarUploadTicketResponseSchema,
   ChangeDisplayNameBodySchema,
+  ChangeHomeVenueBodySchema,
   ChangeSportsBodySchema,
+  HomeVenueCommandResponseSchema,
+  HomeVenueSettingsResponseSchema,
   IdentityCommandResponseSchema,
   MeResponseSchema,
+  PublicAthleteProfileResponseSchema,
+  RequestAvatarUploadBodySchema,
+  type AvatarUploadTicketResponse,
   type ChangeDisplayNameBody,
+  type ChangeHomeVenueBody,
   type ChangeSportsBody,
+  type HomeVenueCommandResponse,
+  type HomeVenueSettingsResponse,
   type IdentityCommandResponse,
   type IdentityProjectionContract,
   type MeResponse,
+  type PublicAthleteProfileResponse,
+  type RequestAvatarUploadBody,
 } from '@molokh/contracts';
 import type {
   ChangeDisplayNamePayload,
+  ChangeHomeVenuePayload,
   ChangeSportsPayload,
   ExecutedCommand,
+  HomeVenueSelectionProjection,
+  HomeVenueSettingsProjection,
   IdentityEffectIds,
+  PublicAthleteProfileProjection,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import type { AuthAdapter, AuthenticatedUser } from './auth.js';
+import {
+  AvatarMediaUnavailableError,
+  DisabledAvatarMediaAdapter,
+  type AvatarMediaPort,
+} from './avatar-media.js';
 import { requestContext } from './request-context.js';
 import { newUuidV7 } from './uuid-v7.js';
 
 export interface IdentityRouteDependencies {
   readonly auth: AuthAdapter;
   readonly readMe: (userId: string) => Promise<IdentityProjection | null>;
+  readonly readPublicProfile?: (
+    viewerUserId: string,
+    subjectUserId: string,
+    competitionId?: string,
+  ) => Promise<PublicAthleteProfileProjection | null>;
   readonly changeDisplayName: (
     command: CommandEnvelope<ChangeDisplayNamePayload>,
     ids: IdentityEffectIds,
@@ -38,6 +65,14 @@ export interface IdentityRouteDependencies {
     command: CommandEnvelope<ChangeSportsPayload>,
     ids: IdentityEffectIds,
   ) => Promise<ExecutedCommand<IdentityProjection>>;
+  readonly readHomeVenueSettings: (
+    userId: string,
+  ) => Promise<HomeVenueSettingsProjection | null>;
+  readonly changeHomeVenue: (
+    command: CommandEnvelope<ChangeHomeVenuePayload>,
+    ids: IdentityEffectIds,
+  ) => Promise<ExecutedCommand<HomeVenueSelectionProjection>>;
+  readonly avatarMedia?: AvatarMediaPort;
 }
 
 interface IdentityHeaders {
@@ -78,10 +113,27 @@ export function contractIdentity(identity: IdentityProjection): IdentityProjecti
   };
 }
 
+function contractPublicAthleteProfile(
+  profile: PublicAthleteProfileProjection,
+): PublicAthleteProfileResponse['data'] {
+  return {
+    ...profile,
+    currentStatuses: profile.currentStatuses.map((status) => ({ ...status })),
+    statusHistory: profile.statusHistory.map((tenure) => ({ ...tenure })),
+    officialRecord: { ...profile.officialRecord },
+    recentOfficialResults: profile.recentOfficialResults.map((result) => ({ ...result })),
+    selectedCompetitionScope: profile.selectedCompetitionScope
+      ? { ...profile.selectedCompetitionScope }
+      : null,
+    competitionScopes: profile.competitionScopes.map((scope) => ({ ...scope })),
+  };
+}
+
 export async function registerIdentityRoutes(
   app: FastifyInstance,
   dependencies: IdentityRouteDependencies,
 ): Promise<void> {
+  const avatarMedia = dependencies.avatarMedia ?? new DisabledAvatarMediaAdapter();
   app.get<{ Headers: IdentityHeaders }>(
     '/api/v1/me',
     {
@@ -107,6 +159,70 @@ export async function registerIdentityRoutes(
       }
       return {
         data: contractIdentity(identity),
+        meta: { requestId: requestContext(request).requestId },
+      };
+    },
+  );
+
+  if (dependencies.readPublicProfile) app.get<{
+    Params: { readonly userId: string };
+    Querystring: { readonly competitionId?: string };
+    Headers: IdentityHeaders;
+  }>(
+    '/api/v1/athletes/:userId/profile',
+    {
+      schema: {
+        operationId: 'readPublicAthleteProfile',
+        params: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['userId'],
+          properties: { userId: { type: 'string', format: 'uuid' } },
+        },
+        querystring: {
+          type: 'object', additionalProperties: false,
+          properties: { competitionId: { type: 'string', format: 'uuid' } },
+        },
+        response: {
+          200: PublicAthleteProfileResponseSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          404: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<PublicAthleteProfileResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      let profile: PublicAthleteProfileProjection | null;
+      try {
+        profile = await dependencies.readPublicProfile!(
+          authenticated.userId,
+          request.params.userId,
+          request.query.competitionId,
+        );
+      } catch (error) {
+        if (!(error instanceof IdentityPermissionDeniedError)) throw error;
+        await reply.status(403).send({
+          code: 'PROFILE_NOT_VISIBLE',
+          message: 'This public profile is not available in the current context',
+          requestId: requestContext(request).requestId,
+        });
+        return;
+      }
+      if (!profile) {
+        await reply.status(404).send({
+          code: 'IDENTITY_NOT_FOUND',
+          message: 'Identity was not found',
+          requestId: requestContext(request).requestId,
+        });
+        return;
+      }
+      return {
+        data: contractPublicAthleteProfile(profile),
         meta: { requestId: requestContext(request).requestId },
       };
     },
@@ -237,6 +353,122 @@ export async function registerIdentityRoutes(
           replayed: executed.replayed,
         },
       };
+    },
+  );
+
+  app.get<{ Headers: IdentityHeaders }>(
+    '/api/v1/me/home-venue',
+    {
+      schema: {
+        operationId: 'readMyHomeVenueSettings',
+        response: {
+          200: HomeVenueSettingsResponseSchema,
+          401: ApiErrorSchema,
+          404: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<HomeVenueSettingsResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const settings = await dependencies.readHomeVenueSettings(authenticated.userId);
+      if (!settings) {
+        await reply.status(404).send({ code: 'IDENTITY_NOT_FOUND',
+          message: 'Identity was not found', requestId: requestContext(request).requestId });
+        return;
+      }
+      return { data: { ...settings, options: settings.options.map((option) => ({ ...option })) },
+        meta: { requestId: requestContext(request).requestId } };
+    },
+  );
+
+  app.patch<{
+    Body: ChangeHomeVenueBody;
+    Headers: IdentityHeaders;
+  }>(
+    '/api/v1/me/home-venue',
+    {
+      schema: {
+        operationId: 'changeMyHomeVenue',
+        body: ChangeHomeVenueBodySchema,
+        response: {
+          200: HomeVenueCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          404: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<HomeVenueCommandResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const idempotencyKey = request.headers['idempotency-key']?.trim();
+      if (!idempotencyKey) throw new InvalidCommandEnvelopeError('Idempotency-Key');
+      const context = requestContext(request);
+      const executed = await dependencies.changeHomeVenue({
+        commandId: newUuidV7(), commandType: 'CHANGE_HOME_VENUE', idempotencyKey,
+        actor: { type: 'USER', id: authenticated.userId, roles: ['ATHLETE'], scopeIds: [] },
+        aggregateType: 'User', aggregateId: authenticated.userId,
+        expectedVersion: expectedVersion(request.headers['if-match']),
+        correlationId: context.correlationId, causationId: context.causationId,
+        requestId: context.requestId, source: 'api', payloadVersion: 1,
+        payload: { venueId: request.body.venueId },
+      }, { eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7() });
+      return { data: { ...executed.response }, meta: { requestId: context.requestId,
+        eventId: executed.eventId, replayed: executed.replayed } };
+    },
+  );
+
+  app.post<{
+    Body: RequestAvatarUploadBody;
+    Headers: IdentityHeaders;
+  }>(
+    '/api/v1/me/avatar-uploads',
+    {
+      schema: {
+        operationId: 'requestMyAvatarUpload',
+        body: RequestAvatarUploadBodySchema,
+        response: {
+          201: AvatarUploadTicketResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          503: ApiErrorSchema,
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: 60_000 } },
+    },
+    async (request, reply): Promise<AvatarUploadTicketResponse | undefined> => {
+      const authenticated = await actor(request, dependencies);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return;
+      }
+      const idempotencyKey = request.headers['idempotency-key']?.trim();
+      if (!idempotencyKey) throw new InvalidCommandEnvelopeError('Idempotency-Key');
+      try {
+        const ticket = await avatarMedia.beginUpload({
+          userId: authenticated.userId,
+          idempotencyKey,
+          mimeType: request.body.mimeType,
+          sizeBytes: request.body.sizeBytes,
+          sha256: request.body.sha256,
+        });
+        void reply.status(201);
+        return { data: ticket, meta: { requestId: requestContext(request).requestId } };
+      } catch (error) {
+        if (!(error instanceof AvatarMediaUnavailableError)) throw error;
+        await reply.status(503).send({ code: error.code, message: error.message,
+          requestId: requestContext(request).requestId });
+        return;
+      }
     },
   );
 }

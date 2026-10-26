@@ -1,4 +1,4 @@
-export type ActorType = 'USER' | 'SYSTEM' | 'PROVIDER';
+export type ActorType = 'USER' | 'SYSTEM' | 'PROVIDER' | 'EXTERNAL';
 export type CommandSource = 'api' | 'scheduler' | 'admin';
 
 export interface ActorSnapshot {

@@ -3,9 +3,11 @@ export const MAX_SLOT_HORIZON_DAYS = 30;
 export const BOOKING_SELECTION_TTL_MILLISECONDS = 60 * 60 * 1_000;
 export const OFFICIAL_CONVERSION_TTL_HOURS = 72;
 export const SOLO_CONTINUATION_TTL_MINUTES = 60;
+export const TRAINING_RETENTION_TTL_MINUTES = 60;
 
 export type SchedulingConflictCode =
   | 'COACH_CONFLICT'
+  | 'ATHLETE_SCHEDULE_CONFLICT'
   | 'SLOT_UNAVAILABLE'
   | 'OFFERING_UNAVAILABLE'
   | 'PAIR_REQUEST_EXISTS'
@@ -13,16 +15,36 @@ export type SchedulingConflictCode =
   | 'ACTOR_ALREADY_SELECTED'
   | 'SELECTION_EXPIRED'
   | 'HOST_CONFIRMATION_EXPIRED'
+  | 'BOOKING_WITHDRAWAL_NOT_ALLOWED'
   | 'COMMERCIAL_TERMS_CHANGED'
   | 'SESSION_NOT_READY'
   | 'SESSION_NOT_IN_PROGRESS'
   | 'SESSION_OPERATION_WINDOW_CLOSED'
+  | 'COMPETITION_STATUS_REVIEW_HOLD'
   | 'ATTENDANCE_ALREADY_RECORDED'
   | 'ATTENDANCE_INCOMPLETE'
   | 'NO_SHOW_TOO_EARLY'
   | 'COACH_REPLACEMENT_UNAVAILABLE'
   | 'COACH_REPLACEMENT_NOT_REJECTABLE'
   | 'EXTERNAL_FAILURE_NOT_ALLOWED'
+  | 'SAFETY_CANCELLATION_NOT_ALLOWED'
+  | 'SAFETY_CASE_NOT_SUBMITTED'
+  | 'SAFETY_CASE_NOT_UNDER_REVIEW'
+  | 'SAFETY_CASE_REVIEWER_CONFLICT'
+  | 'SAFETY_CASE_REVIEWER_MISMATCH'
+  | 'SAFETY_CASE_REPLACEMENT_UNAVAILABLE'
+  | 'SAFETY_CASE_CAUSAL_LINK_REQUIRED'
+  | 'SAFETY_CASE_SERIOUS_CATEGORY_REQUIRED'
+  | 'SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED'
+  | 'SAFETY_CASE_SUBJECT_INVALID'
+  | 'SAFETY_CASE_SUBJECT_NOT_ACTIVE'
+  | 'ENFORCEMENT_APPEAL_NOT_ALLOWED'
+  | 'ENFORCEMENT_APPEAL_WINDOW_CLOSED'
+  | 'ENFORCEMENT_APPEAL_ALREADY_EXISTS'
+  | 'ENFORCEMENT_APPEAL_NOT_SUBMITTED'
+  | 'ENFORCEMENT_APPEAL_REVIEWER_CONFLICT'
+  | 'ENFORCEMENT_APPEAL_CANNOT_BE_REVOKED'
+  | 'OFFICIAL_CANCELLATION_NOT_ALLOWED'
   | 'SCHEDULE_HAS_ACTIVE_INTENT'
   | 'SCHEDULE_MUTATION_NOT_ALLOWED'
   | 'OFFICIAL_CONVERSION_NOT_ALLOWED'
@@ -37,7 +59,15 @@ export type SchedulingConflictCode =
   | 'SOLO_CONTINUATION_NOT_PENDING'
   | 'SOLO_CONTINUATION_ACTOR_NOT_REQUIRED'
   | 'SOLO_CONTINUATION_ALREADY_DECIDED'
-  | 'SOLO_CONTINUATION_EXPIRED';
+  | 'SOLO_CONTINUATION_EXPIRED'
+  | 'TRAINING_RETENTION_NOT_ALLOWED'
+  | 'TRAINING_RETENTION_NOT_PENDING'
+  | 'TRAINING_RETENTION_ACTOR_NOT_REQUIRED'
+  | 'TRAINING_RETENTION_ALREADY_DECIDED'
+  | 'TRAINING_RETENTION_EXPIRED'
+  | 'COMPETITIVE_SESSION_NOT_INVALIDATABLE'
+  | 'COMPETITIVE_CONTEXT_CURRENT'
+  | 'COMPETITIVE_CONTEXT_INVALID';
 
 export type ScheduleMutationReasonCode =
   | 'COACH_UNAVAILABLE'
@@ -204,7 +234,8 @@ export function hostConfirmationDeadline(input: {
   }
   if (
     !Number.isSafeInteger(input.minimumBookingNoticeHours) ||
-    input.minimumBookingNoticeHours < 1
+    input.minimumBookingNoticeHours < 8 ||
+    input.minimumBookingNoticeHours > 48
   ) {
     throw new SchedulingValidationError('minimumBookingNoticeHours');
   }
@@ -233,6 +264,27 @@ export function assertHostConfirmationWindow(input: {
   }
   if (input.occurredAt >= deadline) {
     throw new SchedulingConflictError('HOST_CONFIRMATION_EXPIRED');
+  }
+}
+
+export function assertBookingRequestCanBeWithdrawn(input: {
+  readonly state: string;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+}): void {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  if (!['SELECTING', 'HOST_CONFIRMATION_PENDING'].includes(input.state)) {
+    throw new SchedulingConflictError('BOOKING_WITHDRAWAL_NOT_ALLOWED');
+  }
+}
+
+export function assertAthleteScheduleAvailable(input: {
+  readonly hasOverlappingConfirmedSession: boolean;
+}): void {
+  if (input.hasOverlappingConfirmedSession) {
+    throw new SchedulingConflictError('ATHLETE_SCHEDULE_CONFLICT');
   }
 }
 
@@ -281,6 +333,30 @@ export function assertTrainingOfficialConversionCanBeRequested(input: {
     || input.windowOpenedAt !== null
     || input.actualStartAt !== null
     || !input.actorIsAthlete
+  ) {
+    throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_ALLOWED');
+  }
+  if (input.hasLiveConversion) {
+    throw new SchedulingConflictError('OFFICIAL_CONVERSION_ALREADY_EXISTS');
+  }
+  return officialConversionDeadline({
+    occurredAt: input.occurredAt,
+    scheduledStartAt: input.scheduledStartAt,
+  });
+}
+
+export function assertGroupPlanOfficialConversionCanBeRequested(input: {
+  readonly groupPlanState: string;
+  readonly actorIsAthlete: boolean;
+  readonly coachAssigned: boolean;
+  readonly hasLiveConversion: boolean;
+  readonly scheduledStartAt: string;
+  readonly occurredAt: Date;
+}): Date {
+  if (
+    input.groupPlanState !== 'NOTIFIED'
+    || !input.actorIsAthlete
+    || !input.coachAssigned
   ) {
     throw new SchedulingConflictError('OFFICIAL_CONVERSION_NOT_ALLOWED');
   }
@@ -372,6 +448,32 @@ export function assertTrainingParticipantCanCancel(input: {
   });
 }
 
+export function officialCancellationWinner(input: {
+  readonly bookingState: string;
+  readonly bookingPurpose: string;
+  readonly challengeState: string | null;
+  readonly sessionState: SessionState;
+  readonly actualStartAt: string | null;
+  readonly actorUserId: string;
+  readonly participantUserIds: readonly [string, string];
+  readonly resultExists: boolean;
+}): string {
+  if (!input.participantUserIds.includes(input.actorUserId)) {
+    throw new SchedulingPermissionDeniedError();
+  }
+  if (
+    input.bookingState !== 'CONFIRMED_PAIR'
+    || input.bookingPurpose !== 'OFFICIAL_CHALLENGE'
+    || input.challengeState !== 'BOOKED'
+    || !['SCHEDULED', 'READY_FOR_COACH'].includes(input.sessionState)
+    || input.actualStartAt !== null
+    || input.resultExists
+  ) {
+    throw new SchedulingConflictError('OFFICIAL_CANCELLATION_NOT_ALLOWED');
+  }
+  return input.participantUserIds.find((userId) => userId !== input.actorUserId)!;
+}
+
 export function assertSoloContinuationDecisionCanBeRecorded(input: {
   readonly state: SoloContinuationState;
   readonly actorRequired: boolean;
@@ -405,6 +507,83 @@ export function assertSoloContinuationCanExpire(input: {
   const deadline = validDate(input.deadlineAt, 'deadlineAt');
   if (!Number.isFinite(input.occurredAt.getTime()) || input.occurredAt < deadline) {
     throw new SchedulingConflictError('SOLO_CONTINUATION_EXPIRED');
+  }
+}
+
+export type TrainingRetentionState = 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'EXPIRED';
+export type TrainingRetentionRequiredRole = 'ATHLETE_LOW' | 'ATHLETE_HIGH' | 'COACH_OR_HOST';
+
+export function trainingRetentionDeadline(input: {
+  readonly occurredAt: Date;
+  readonly scheduledStartAt: string;
+}): Date {
+  const scheduledStartAt = validDate(input.scheduledStartAt, 'scheduledStartAt');
+  if (!Number.isFinite(input.occurredAt.getTime()) || scheduledStartAt <= input.occurredAt) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_ALLOWED');
+  }
+  return new Date(Math.min(
+    scheduledStartAt.getTime(),
+    input.occurredAt.getTime() + TRAINING_RETENTION_TTL_MINUTES * 60 * 1_000,
+  ));
+}
+
+export function assertOfficialTrainingRetentionCanBeOffered(input: {
+  readonly bookingState: string;
+  readonly bookingPurpose: string;
+  readonly sessionState: SessionState;
+  readonly actualStartAt: string | null;
+  readonly slotState: string;
+  readonly scheduledStartAt: string;
+  readonly occurredAt: Date;
+}): Date {
+  if (
+    input.bookingState !== 'CONFIRMED_PAIR'
+    || input.bookingPurpose !== 'OFFICIAL_CHALLENGE'
+    || input.sessionState !== 'SCHEDULED'
+    || input.actualStartAt !== null
+    || input.slotState !== 'BOOKED'
+  ) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_ALLOWED');
+  }
+  return trainingRetentionDeadline({
+    occurredAt: input.occurredAt,
+    scheduledStartAt: input.scheduledStartAt,
+  });
+}
+
+export function assertTrainingRetentionDecisionCanBeRecorded(input: {
+  readonly state: TrainingRetentionState;
+  readonly actorRequired: boolean;
+  readonly actorAlreadyDecided: boolean;
+  readonly deadlineAt: string;
+  readonly occurredAt: Date;
+}): void {
+  if (input.state !== 'PENDING') {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_PENDING');
+  }
+  if (!input.actorRequired) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_ACTOR_NOT_REQUIRED');
+  }
+  if (input.actorAlreadyDecided) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_ALREADY_DECIDED');
+  }
+  const deadline = validDate(input.deadlineAt, 'deadlineAt');
+  if (!Number.isFinite(input.occurredAt.getTime()) || input.occurredAt >= deadline) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_EXPIRED');
+  }
+}
+
+export function assertTrainingRetentionCanExpire(input: {
+  readonly state: TrainingRetentionState;
+  readonly deadlineAt: string;
+  readonly occurredAt: Date;
+}): void {
+  if (input.state !== 'PENDING') {
+    throw new SchedulingConflictError('TRAINING_RETENTION_NOT_PENDING');
+  }
+  const deadline = validDate(input.deadlineAt, 'deadlineAt');
+  if (!Number.isFinite(input.occurredAt.getTime()) || input.occurredAt < deadline) {
+    throw new SchedulingConflictError('TRAINING_RETENTION_EXPIRED');
   }
 }
 
@@ -595,6 +774,382 @@ export function assertExternalSessionFailureCanBeCommitted(input: {
   ) {
     throw new SchedulingConflictError('EXTERNAL_FAILURE_NOT_ALLOWED');
   }
+}
+
+export type SafetyCancellationReasonCode =
+  | 'THREAT'
+  | 'HARASSMENT'
+  | 'UNSAFE_CONDUCT'
+  | 'OTHER_SAFETY';
+
+const safetyCancellationReasonCodes = new Set<SafetyCancellationReasonCode>([
+  'THREAT',
+  'HARASSMENT',
+  'UNSAFE_CONDUCT',
+  'OTHER_SAFETY',
+]);
+
+export function assertSafetyCancellationCanBeSubmitted(input: {
+  readonly sessionState: SessionState;
+  readonly sessionPurpose: string;
+  readonly bookingState: string;
+  readonly challengeState: string | null;
+  readonly actualStartAt: string | null;
+  readonly resultExists: boolean;
+  readonly explicitConfirmation: boolean;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly actorIsOperational: boolean;
+  readonly actorIsAssignedCoach: boolean;
+  readonly reporterPolicy: 'PARTICIPANT_OR_OPERATIONAL' | 'ASSIGNED_COACH_ONLY';
+  readonly reasonCode: string;
+}): SafetyCancellationReasonCode {
+  const reporterIsAthlete = input.athleteUserIds.includes(input.reporterUserId);
+  if (
+    !input.explicitConfirmation
+    || input.sessionPurpose !== 'OFFICIAL_CHALLENGE'
+    || input.bookingState !== 'CONFIRMED_PAIR'
+    || input.challengeState !== 'BOOKED'
+    || !['SCHEDULED', 'READY_FOR_COACH'].includes(input.sessionState)
+    || input.actualStartAt !== null
+    || input.resultExists
+    || (!reporterIsAthlete && !input.actorIsOperational)
+    || (input.reporterPolicy === 'ASSIGNED_COACH_ONLY' && !input.actorIsAssignedCoach)
+    || !input.athleteUserIds.includes(input.subjectUserId)
+    || input.reporterUserId === input.subjectUserId
+    || (reporterIsAthlete
+      && input.subjectUserId === input.reporterUserId)
+  ) {
+    throw new SchedulingConflictError('SAFETY_CANCELLATION_NOT_ALLOWED');
+  }
+  if (!safetyCancellationReasonCodes.has(input.reasonCode as SafetyCancellationReasonCode)) {
+    throw new SchedulingValidationError('reasonCode');
+  }
+  return input.reasonCode as SafetyCancellationReasonCode;
+}
+
+export type SafetyReplacementRemedy =
+  | 'REPLACE_COACH'
+  | 'REPLACE_VENUE'
+  | 'REPLACE_COACH_AND_VENUE';
+
+export type SafetyAccountRestrictionCategory =
+  | 'VIOLENCE'
+  | 'FRAUD'
+  | 'IDENTITY_ABUSE'
+  | 'ILLEGAL_USE';
+
+export type SafetyCaseRemedy =
+  | SafetyReplacementRemedy
+  | 'FORFEIT_BY_ENFORCEMENT'
+  | 'ACCOUNT_RESTRICTION';
+
+export function assertSafetyCaseReviewerIndependent(input: {
+  readonly reviewerUserId: string;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly assignedCoachUserId: string;
+  readonly reviewerIsInterestedVenueAdmin: boolean;
+}): void {
+  if (
+    input.reviewerUserId === input.reporterUserId
+    || input.reviewerUserId === input.subjectUserId
+    || input.athleteUserIds.includes(input.reviewerUserId)
+    || input.reviewerUserId === input.assignedCoachUserId
+    || input.reviewerIsInterestedVenueAdmin
+  ) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_CONFLICT');
+  }
+}
+
+export function assertSafetyCaseReviewCanStart(input: {
+  readonly state: string;
+  readonly actorIsCentral: boolean;
+  readonly reviewerUserId: string;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly assignedCoachUserId: string;
+  readonly reviewerIsInterestedVenueAdmin: boolean;
+}): void {
+  if (!input.actorIsCentral) throw new SchedulingPermissionDeniedError();
+  if (input.state !== 'SUBMITTED') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_SUBMITTED');
+  }
+  assertSafetyCaseReviewerIndependent(input);
+}
+
+export function normalizeSafetyCaseReleaseDecision(input: {
+  readonly state: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly remedyCode: string;
+  readonly replacementCoachUserId: string | null;
+  readonly replacementVenueId: string | null;
+  readonly replacementCoachAvailable: boolean;
+  readonly replacementVenueAvailable: boolean;
+  readonly reason: string;
+}): {
+  readonly remedyCode: SafetyReplacementRemedy;
+  readonly replacementCoachUserId: string | null;
+  readonly replacementVenueId: string | null;
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_MISMATCH');
+  }
+  const remedyCodes = new Set<SafetyReplacementRemedy>([
+    'REPLACE_COACH', 'REPLACE_VENUE', 'REPLACE_COACH_AND_VENUE',
+  ]);
+  if (!remedyCodes.has(input.remedyCode as SafetyReplacementRemedy)) {
+    throw new SchedulingValidationError('remedyCode');
+  }
+  const remedyCode = input.remedyCode as SafetyReplacementRemedy;
+  const needsCoach = remedyCode === 'REPLACE_COACH' || remedyCode === 'REPLACE_COACH_AND_VENUE';
+  const needsVenue = remedyCode === 'REPLACE_VENUE' || remedyCode === 'REPLACE_COACH_AND_VENUE';
+  if (
+    needsCoach !== (input.replacementCoachUserId !== null)
+    || needsVenue !== (input.replacementVenueId !== null)
+    || (needsCoach && !input.replacementCoachAvailable)
+    || (needsVenue && !input.replacementVenueAvailable)
+  ) {
+    throw new SchedulingConflictError('SAFETY_CASE_REPLACEMENT_UNAVAILABLE');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 1000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return {
+    remedyCode,
+    replacementCoachUserId: input.replacementCoachUserId,
+    replacementVenueId: input.replacementVenueId,
+    reason,
+  };
+}
+
+export function normalizeSafetyEnforcementDecision(input: {
+  readonly state: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly caseReasonCode: string;
+  readonly causalLinkConfirmed: boolean;
+  readonly consequencesConfirmed: boolean;
+  readonly reason: string;
+}): {
+  readonly remedyCode: 'FORFEIT_BY_ENFORCEMENT';
+  readonly loserUserId: string;
+  readonly winnerUserId: string;
+  readonly enforcementReasonCode: SafetyCancellationReasonCode;
+  readonly causalLinkCode: 'SUBJECT_CAUSED_SESSION_FAILURE';
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_MISMATCH');
+  }
+  if (!input.athleteUserIds.includes(input.subjectUserId)) {
+    throw new SchedulingConflictError('SAFETY_CASE_SUBJECT_INVALID');
+  }
+  if (!safetyCancellationReasonCodes.has(input.caseReasonCode as SafetyCancellationReasonCode)) {
+    throw new SchedulingValidationError('caseReasonCode');
+  }
+  if (!input.causalLinkConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_CAUSAL_LINK_REQUIRED');
+  }
+  if (!input.consequencesConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 1000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return {
+    remedyCode: 'FORFEIT_BY_ENFORCEMENT',
+    loserUserId: input.subjectUserId,
+    winnerUserId: input.athleteUserIds[0] === input.subjectUserId
+      ? input.athleteUserIds[1]
+      : input.athleteUserIds[0],
+    enforcementReasonCode: input.caseReasonCode as SafetyCancellationReasonCode,
+    causalLinkCode: 'SUBJECT_CAUSED_SESSION_FAILURE',
+    reason,
+  };
+}
+
+const safetyAccountRestrictionCategories = new Set<SafetyAccountRestrictionCategory>([
+  'VIOLENCE', 'FRAUD', 'IDENTITY_ABUSE', 'ILLEGAL_USE',
+]);
+
+export function normalizeSafetyAccountRestrictionDecision(input: {
+  readonly state: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewerUserId: string;
+  readonly subjectUserId: string;
+  readonly athleteUserIds: readonly [string, string];
+  readonly categoryCode: string | null;
+  readonly seriousCategoryConfirmed: boolean;
+  readonly consequencesConfirmed: boolean;
+  readonly reason: string;
+}): {
+  readonly remedyCode: 'ACCOUNT_RESTRICTION';
+  readonly subjectUserId: string;
+  readonly categoryCode: SafetyAccountRestrictionCategory;
+  readonly reason: string;
+} {
+  if (input.state !== 'UNDER_REVIEW') {
+    throw new SchedulingConflictError('SAFETY_CASE_NOT_UNDER_REVIEW');
+  }
+  if (input.assignedReviewerUserId !== input.reviewerUserId) {
+    throw new SchedulingConflictError('SAFETY_CASE_REVIEWER_MISMATCH');
+  }
+  if (!input.athleteUserIds.includes(input.subjectUserId)) {
+    throw new SchedulingConflictError('SAFETY_CASE_SUBJECT_INVALID');
+  }
+  if (
+    input.categoryCode === null
+    || !safetyAccountRestrictionCategories.has(
+      input.categoryCode as SafetyAccountRestrictionCategory,
+    )
+  ) {
+    throw new SchedulingValidationError('restrictionCategoryCode');
+  }
+  if (!input.seriousCategoryConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_SERIOUS_CATEGORY_REQUIRED');
+  }
+  if (!input.consequencesConfirmed) {
+    throw new SchedulingConflictError('SAFETY_CASE_CONSEQUENCES_NOT_CONFIRMED');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 1000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return {
+    remedyCode: 'ACCOUNT_RESTRICTION',
+    subjectUserId: input.subjectUserId,
+    categoryCode: input.categoryCode as SafetyAccountRestrictionCategory,
+    reason,
+  };
+}
+
+export function normalizeEnforcementAppealSubmission(input: {
+  readonly actorUserId: string;
+  readonly subjectUserId: string;
+  readonly accountState: string;
+  readonly enforcementType: string;
+  readonly enforcementState: string;
+  readonly appealDeadlineAt: Date;
+  readonly occurredAt: Date;
+  readonly appealExists: boolean;
+  readonly statement: string;
+}): string {
+  if (
+    input.actorUserId !== input.subjectUserId
+    || input.accountState !== 'RESTRICTED'
+    || input.enforcementType !== 'ACCOUNT_RESTRICTION'
+    || input.enforcementState !== 'ACTIVE'
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_NOT_ALLOWED');
+  }
+  if (input.occurredAt > input.appealDeadlineAt) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_WINDOW_CLOSED');
+  }
+  if (input.appealExists) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_ALREADY_EXISTS');
+  }
+  const statement = input.statement.trim();
+  if (statement.length < 10 || statement.length > 2000) {
+    throw new SchedulingValidationError('statement');
+  }
+  return statement;
+}
+
+export function assertEnforcementAppealReviewCanStart(input: {
+  readonly state: string;
+  readonly actorIsCentral: boolean;
+  readonly reviewerUserId: string;
+  readonly subjectUserId: string;
+  readonly originalDecisionMakerUserId: string;
+  readonly reporterUserId: string;
+}): void {
+  if (!input.actorIsCentral) throw new SchedulingPermissionDeniedError();
+  if (input.state !== 'SUBMITTED') {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_NOT_SUBMITTED');
+  }
+  if (
+    input.reviewerUserId === input.subjectUserId
+    || input.reviewerUserId === input.originalDecisionMakerUserId
+    || input.reviewerUserId === input.reporterUserId
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_REVIEWER_CONFLICT');
+  }
+}
+
+export function normalizeEnforcementAppealRevocation(input: {
+  readonly state: string;
+  readonly enforcementType: string;
+  readonly enforcementState: string;
+  readonly accountState: string;
+  readonly actorIsCentral: boolean;
+  readonly reviewerUserId: string;
+  readonly assignedReviewerUserId: string | null;
+  readonly subjectUserId: string;
+  readonly originalDecisionMakerUserId: string;
+  readonly reporterUserId: string;
+  readonly reason: string;
+}): string {
+  if (!input.actorIsCentral) throw new SchedulingPermissionDeniedError();
+  if (
+    input.state !== 'UNDER_REVIEW'
+    || input.enforcementType !== 'ACCOUNT_RESTRICTION'
+    || input.enforcementState !== 'ACTIVE'
+    || input.accountState !== 'RESTRICTED'
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_CANNOT_BE_REVOKED');
+  }
+  if (
+    input.assignedReviewerUserId !== input.reviewerUserId
+    || input.reviewerUserId === input.subjectUserId
+    || input.reviewerUserId === input.originalDecisionMakerUserId
+    || input.reviewerUserId === input.reporterUserId
+  ) {
+    throw new SchedulingConflictError('ENFORCEMENT_APPEAL_REVIEWER_CONFLICT');
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 10 || reason.length > 2000) {
+    throw new SchedulingValidationError('reason');
+  }
+  return reason;
+}
+
+export function safetyRestrictionSubjectStatus(input: {
+  readonly subjectUserId: string;
+  readonly championUserId: string | null;
+  readonly contenderUserId: string | null;
+}): 'CHAMPION' | 'CONTENDER' | null {
+  if (input.championUserId === input.subjectUserId) return 'CHAMPION';
+  if (input.contenderUserId === input.subjectUserId) return 'CONTENDER';
+  return null;
+}
+
+export function extendSchedulingDeadlineForSafetyHold(input: {
+  readonly schedulingDeadlineAt: string;
+  readonly holdStartedAt: string;
+  readonly releasedAt: Date;
+}): Date {
+  const deadline = validDate(input.schedulingDeadlineAt, 'schedulingDeadlineAt');
+  const startedAt = validDate(input.holdStartedAt, 'holdStartedAt');
+  if (!Number.isFinite(input.releasedAt.getTime()) || input.releasedAt < startedAt) {
+    throw new SchedulingValidationError('releasedAt');
+  }
+  return new Date(deadline.getTime() + input.releasedAt.getTime() - startedAt.getTime());
 }
 
 export function attendanceCountsAsCompletedTraining(status: AttendanceStatus): boolean {

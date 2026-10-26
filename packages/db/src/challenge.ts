@@ -2,7 +2,9 @@ import {
   CHALLENGE_POLICY_VERSION,
   RESULT_POLICY_VERSION,
   ChallengeConflictError,
+  YouthConsentConflictError,
   acceptedChallengeSchedulingDeadline,
+  assertAcceptedChallengeSchedulingCanExpire,
   assertDirectOpenChallengeCanBeCreated,
   assertOptionalChallengeCanBeAccepted,
   assertOptionalChallengeCanBeDeclined,
@@ -10,7 +12,14 @@ import {
   assertOptionalChallengeCanBeWithdrawn,
   assertMandatoryChallengeCanBeDeclined,
   assertMandatoryChallengeCanBeExpired,
+  assertMutualChallengeRescheduleCanBeProposed,
+  assertExpectedVersion,
+  challengeRescheduleLimitForfeitWinner,
+  nextAthleteChallengeRescheduleCount,
+  nextMutualChallengeRescheduleCount,
+  normalizeScheduleMutationReason,
   deriveProvisionalStatusTransition,
+  extendedChallengeSchedulingDeadline,
   normalizeSocialPair,
   optionalChallengePairQuietEndsAt,
   optionalChallengeReminderDeadlines,
@@ -19,12 +28,19 @@ import {
   type ChallengeConflictCode,
   type ChallengeState,
   type CommandEnvelope,
+  type ScheduleMutationReasonCode,
   type TimerAggregateSnapshot,
 } from '@molokh/core';
 import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { Database } from './index.js';
 import { executeCriticalCommand, type ExecutedCommand } from './platform-command.js';
+import { assertNoActivePlatformIncidentForTimer } from './platform-incident.js';
+import { recordAdministrativeForfeit } from './result.js';
+import {
+  assertYouthChallengeConsentReady,
+  assertYouthOfficialAvailableForUsers,
+} from './youth-consent.js';
 
 export interface CreateDirectChallengePayload {
   readonly sourceChatId: string;
@@ -37,6 +53,30 @@ export interface RespondToChallengePayload {
 
 export interface ExpireOptionalChallengePayload {
   readonly challengeId: string;
+}
+
+export interface ExpireChallengeSchedulingPayload {
+  readonly challengeId: string;
+}
+
+export interface RescheduleChallengeByAthletePayload {
+  readonly challengeId: string;
+  readonly reasonCode: ScheduleMutationReasonCode;
+  readonly reasonNote: string | null;
+  readonly confirmForfeit?: boolean;
+}
+
+export interface ProposeMutualChallengeReschedulePayload {
+  readonly challengeId: string;
+  readonly challengeVersion: number;
+  readonly reasonCode: ScheduleMutationReasonCode;
+  readonly reasonNote: string | null;
+}
+
+export interface ConfirmMutualChallengeReschedulePayload {
+  readonly challengeId: string;
+  readonly requestId: string;
+  readonly requestVersion: number;
 }
 
 export interface ChallengeEffectIds {
@@ -55,11 +95,39 @@ export interface ChallengeEffectIds {
   readonly notificationIds?: readonly [string, string];
 }
 
+export interface ExpireChallengeSchedulingEffectIds extends ChallengeEffectIds {
+  readonly bookingEventId: string;
+  readonly bookingOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string];
+}
+
+export interface AthleteChallengeRescheduleEffectIds extends ChallengeEffectIds {
+  readonly rescheduleId: string;
+  readonly bookingEventId: string;
+  readonly bookingOutboxMessageId: string;
+  readonly hostNotificationOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string];
+}
+
+export interface ProposeMutualChallengeRescheduleEffectIds extends ChallengeEffectIds {}
+
+export interface ConfirmMutualChallengeRescheduleEffectIds
+  extends Omit<ChallengeEffectIds, 'notificationIds'> {
+  readonly rescheduleId: string;
+  readonly requestEventId: string;
+  readonly bookingEventId: string;
+  readonly slotEventId: string;
+  readonly sessionEventId: string;
+  readonly bookingOutboxMessageId: string;
+  readonly notificationIds: readonly [string, string, string];
+}
+
 export interface CreateChallengeEffectIds extends ChallengeEffectIds {
   readonly serviceChatId: string;
   readonly serviceChatEventId: string;
   readonly rulesetSnapshotId: string;
   readonly acknowledgmentId: string;
+  readonly reminderTimerOutboxMessageIds: readonly [string, string];
 }
 
 export interface AcceptChallengeEffectIds extends ChallengeEffectIds {
@@ -88,15 +156,32 @@ export interface ChallengeProjection {
   readonly responseDeadlineAt: string;
   readonly acceptedAt: string | null;
   readonly schedulingDeadlineAt: string | null;
+  readonly userRescheduleCount: number;
   readonly pairQuietUntil: string | null;
   readonly viewerRole: 'INITIATOR' | 'RECIPIENT';
   readonly version: number;
 }
 
+export interface MutualChallengeRescheduleRequestProjection {
+  readonly requestId: string;
+  readonly challengeId: string;
+  readonly bookingId: string | null;
+  readonly sessionId: string | null;
+  readonly proposedByUserId: string;
+  readonly confirmedByUserId: string | null;
+  readonly reasonCode: ScheduleMutationReasonCode;
+  readonly state: 'PROPOSED' | 'CONFIRMED';
+  readonly proposedAt: string;
+  readonly confirmedAt: string | null;
+  readonly version: number;
+}
+
 export interface ChatChallengeProjection {
   readonly challenge: ChallengeProjection | null;
+  readonly mutualRescheduleRequest: MutualChallengeRescheduleRequestProjection | null;
   readonly canCreate: boolean;
   readonly createDenialCode: ChallengeConflictCode | null;
+  readonly createRetryAt: string | null;
   readonly policyVersion: typeof CHALLENGE_POLICY_VERSION;
 }
 
@@ -161,9 +246,44 @@ interface ChallengeRow {
   readonly response_deadline_at: Date;
   readonly accepted_at: Date | null;
   readonly scheduling_deadline_at: Date | null;
+  readonly scheduling_extension_count: number;
+  readonly user_reschedule_count: number;
   readonly quiet_until: Date | null;
   readonly cycle_no: number;
   readonly version: string;
+}
+
+interface MutualChallengeRescheduleRequestRow {
+  readonly request_id: string;
+  readonly challenge_id: string;
+  readonly booking_id: string | null;
+  readonly session_id: string | null;
+  readonly proposed_by_user_id: string;
+  readonly confirmed_by_user_id: string | null;
+  readonly reason_code: ScheduleMutationReasonCode;
+  readonly reason_note: string | null;
+  readonly state: 'PROPOSED' | 'CONFIRMED';
+  readonly challenge_version_at_proposal: string;
+  readonly booking_version_at_proposal: string | null;
+  readonly session_version_at_proposal: string | null;
+  readonly slot_version_at_proposal: string | null;
+  readonly proposed_at: Date;
+  readonly confirmed_at: Date | null;
+  readonly version: string;
+}
+
+interface MutualChallengeRescheduleResourceRow {
+  readonly booking_id: string;
+  readonly booking_state: string;
+  readonly booking_version: string;
+  readonly slot_id: string;
+  readonly slot_state: string;
+  readonly slot_version: string;
+  readonly session_id: string | null;
+  readonly session_state: string | null;
+  readonly session_version: string | null;
+  readonly actual_start_at: Date | null;
+  readonly coach_user_id: string;
 }
 
 interface CreationContext {
@@ -175,6 +295,7 @@ interface CreationContext {
   readonly pairBlocked: boolean;
   readonly pairCooldownActive: boolean;
   readonly pairQuietActive: boolean;
+  readonly pairQuietUntil: Date | null;
   readonly livePairChallengeExists: boolean;
 }
 
@@ -186,6 +307,7 @@ interface AdministrativeForfeitContextRow {
   readonly contender_user_id: string | null;
   readonly status_lock_result_id: string | null;
   readonly integrity_hold_case_id: string | null;
+  readonly status_review_hold_active: boolean;
   readonly pair_cooldown_days: number;
 }
 
@@ -233,6 +355,17 @@ async function lockSocialPair(
   `.execute(transaction);
 }
 
+async function lockOptionalChallengeInitiator(
+  transaction: Transaction<Database>,
+  initiatorUserId: string,
+): Promise<void> {
+  await sql`
+    select pg_advisory_xact_lock(hashtextextended(
+      ${`OptionalChallengeInitiator:${initiatorUserId}`}, 0
+    ))
+  `.execute(transaction);
+}
+
 function participantStatus(
   competition: CompetitionContextRow,
   userId: string,
@@ -263,8 +396,27 @@ function projection(row: ChallengeRow, viewerUserId: string): ChallengeProjectio
     responseDeadlineAt: row.response_deadline_at.toISOString(),
     acceptedAt: row.accepted_at?.toISOString() ?? null,
     schedulingDeadlineAt: row.scheduling_deadline_at?.toISOString() ?? null,
+    userRescheduleCount: row.user_reschedule_count,
     pairQuietUntil: row.quiet_until?.toISOString() ?? null,
     viewerRole: viewerUserId === row.initiator_user_id ? 'INITIATOR' : 'RECIPIENT',
+    version: Number(row.version),
+  };
+}
+
+function mutualRescheduleRequestProjection(
+  row: MutualChallengeRescheduleRequestRow,
+): MutualChallengeRescheduleRequestProjection {
+  return {
+    requestId: row.request_id,
+    challengeId: row.challenge_id,
+    bookingId: row.booking_id,
+    sessionId: row.session_id,
+    proposedByUserId: row.proposed_by_user_id,
+    confirmedByUserId: row.confirmed_by_user_id,
+    reasonCode: row.reason_code,
+    state: row.state,
+    proposedAt: row.proposed_at.toISOString(),
+    confirmedAt: row.confirmed_at?.toISOString() ?? null,
     version: Number(row.version),
   };
 }
@@ -359,6 +511,7 @@ async function creationContext(
   database: Kysely<Database> | Transaction<Database>,
   sourceChatId: string,
   actorUserId: string,
+  occurredAt?: Date,
 ): Promise<CreationContext> {
   const match = await matchContext(database, sourceChatId, actorUserId);
   const recipientUserId = otherParticipant(match, actorUserId);
@@ -371,11 +524,14 @@ async function creationContext(
       readonly pair_blocked: boolean;
       readonly pair_cooldown_active: boolean;
       readonly pair_quiet_active: boolean;
+      readonly pair_quiet_until: Date | null;
       readonly live_pair_challenge_exists: boolean;
     }>`
       select
         (select count(*)::text from competition.challenges
-          where initiator_user_id = ${actorUserId}::uuid and state = 'AWAITING_RESPONSE') as outgoing_count,
+          where initiator_user_id = ${actorUserId}::uuid
+            and response_policy = 'OPTIONAL'
+            and state = 'AWAITING_RESPONSE') as outgoing_count,
         exists (select 1 from social.blocks
           where state = 'ACTIVE' and (
             (blocker_user_id = ${match.pair_low_id}::uuid and blocked_user_id = ${match.pair_high_id}::uuid)
@@ -388,7 +544,13 @@ async function creationContext(
         exists (select 1 from competition.optional_pair_quiet_periods
           where competition_id = ${competition.competition_id}::uuid
             and pair_low_id = ${match.pair_low_id}::uuid and pair_high_id = ${match.pair_high_id}::uuid
-            and ends_at > clock_timestamp()) as pair_quiet_active,
+            and ends_at > coalesce(${occurredAt?.toISOString() ?? null}::timestamptz,
+              clock_timestamp())) as pair_quiet_active,
+        (select max(ends_at) from competition.optional_pair_quiet_periods
+          where competition_id = ${competition.competition_id}::uuid
+            and pair_low_id = ${match.pair_low_id}::uuid and pair_high_id = ${match.pair_high_id}::uuid
+            and ends_at > coalesce(${occurredAt?.toISOString() ?? null}::timestamptz,
+              clock_timestamp())) as pair_quiet_until,
         exists (select 1 from competition.challenges
           where competition_id = ${competition.competition_id}::uuid
             and pair_low_id = ${match.pair_low_id}::uuid and pair_high_id = ${match.pair_high_id}::uuid
@@ -407,6 +569,7 @@ async function creationContext(
     pairBlocked: count.pair_blocked,
     pairCooldownActive: count.pair_cooldown_active,
     pairQuietActive: count.pair_quiet_active,
+    pairQuietUntil: count.pair_quiet_until,
     livePairChallengeExists: count.live_pair_challenge_exists,
   };
 }
@@ -426,11 +589,30 @@ function assertCreationContext(context: CreationContext): void {
     pairBlocked: context.pairBlocked,
     pairCooldownActive: context.pairCooldownActive,
     pairQuietActive: context.pairQuietActive,
+    pairQuietUntil: context.pairQuietUntil,
     livePairChallengeExists: context.livePairChallengeExists,
     outgoingAwaitingResponseCount: context.outgoingAwaitingResponseCount,
     initiatorStatus: participantStatus(context.competition, context.initiator.user_id),
     recipientStatus: participantStatus(context.competition, context.recipient.user_id),
   });
+}
+
+async function assertCreationYouthPolicy(
+  database: Kysely<Database> | Transaction<Database>,
+  context: CreationContext,
+): Promise<void> {
+  try {
+    await assertYouthOfficialAvailableForUsers(database, [
+      context.match.pair_low_id,
+      context.match.pair_high_id,
+    ]);
+  } catch (error) {
+    if (error instanceof YouthConsentConflictError
+      && error.code === 'YOUTH_OFFICIAL_DISABLED') {
+      throw new ChallengeConflictError('YOUTH_OFFICIAL_DISABLED');
+    }
+    throw error;
+  }
 }
 
 async function challengeRow(
@@ -447,7 +629,9 @@ async function challengeRow(
       challenge.response_policy, challenge.stake, challenge.state,
       challenge.ruleset_snapshot_id, snapshot.ruleset_ref, snapshot.ruleset_ack_mode,
       challenge.response_deadline_at, challenge.accepted_at,
-      challenge.scheduling_deadline_at, challenge.cycle_no,
+      challenge.scheduling_deadline_at, challenge.scheduling_extension_count,
+      challenge.user_reschedule_count,
+      challenge.cycle_no,
       (select max(quiet.ends_at) from competition.optional_pair_quiet_periods as quiet
         where quiet.source_challenge_id = challenge.challenge_id) as quiet_until,
       challenge.version::text as version
@@ -462,6 +646,128 @@ async function challengeRow(
   const row = result.rows[0];
   if (!row) throw new ChallengeConflictError('PAIR_CHALLENGE_EXISTS');
   return row;
+}
+
+async function mutualRescheduleRequestRow(
+  database: Kysely<Database> | Transaction<Database>,
+  requestId: string,
+  lock = false,
+): Promise<MutualChallengeRescheduleRequestRow | null> {
+  const result = await sql<MutualChallengeRescheduleRequestRow>`
+    select request_id, challenge_id, booking_id, session_id,
+      proposed_by_user_id, confirmed_by_user_id, reason_code, reason_note, state,
+      challenge_version_at_proposal::text, booking_version_at_proposal::text,
+      session_version_at_proposal::text, slot_version_at_proposal::text,
+      proposed_at, confirmed_at, version::text
+    from competition.challenge_mutual_reschedule_requests
+    where request_id = ${requestId}::uuid
+    ${lock ? sql`for update` : sql``}
+  `.execute(database);
+  return result.rows[0] ?? null;
+}
+
+async function currentMutualRescheduleRequest(
+  database: Kysely<Database> | Transaction<Database>,
+  challengeId: string,
+  challengeVersion: number,
+): Promise<MutualChallengeRescheduleRequestRow | null> {
+  const result = await sql<MutualChallengeRescheduleRequestRow>`
+    select request_id, challenge_id, booking_id, session_id,
+      proposed_by_user_id, confirmed_by_user_id, reason_code, reason_note, state,
+      challenge_version_at_proposal::text, booking_version_at_proposal::text,
+      session_version_at_proposal::text, slot_version_at_proposal::text,
+      proposed_at, confirmed_at, version::text
+    from competition.challenge_mutual_reschedule_requests
+    where challenge_id = ${challengeId}::uuid
+      and challenge_version_at_proposal = ${challengeVersion}
+      and state = 'PROPOSED'
+    limit 1
+  `.execute(database);
+  return result.rows[0] ?? null;
+}
+
+async function mutualRescheduleResourceForUpdate(
+  transaction: Transaction<Database>,
+  challengeId: string,
+  state: ChallengeState,
+): Promise<MutualChallengeRescheduleResourceRow | null> {
+  if (state === 'ACCEPTED_UNSCHEDULED') return null;
+  if (state === 'BOOKING_PENDING') {
+    const result = await sql<MutualChallengeRescheduleResourceRow>`
+      select booking.booking_id, booking.state as booking_state,
+        booking.version::text as booking_version,
+        slot.slot_id, slot.state as slot_state, slot.version::text as slot_version,
+        null::uuid as session_id, null::text as session_state,
+        null::text as session_version, null::timestamptz as actual_start_at,
+        (booking.commercial_terms_snapshot ->> 'coachUserId')::uuid as coach_user_id
+      from scheduling.bookings booking
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where booking.challenge_id = ${challengeId}::uuid
+        and booking.state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+      order by booking.created_at desc, booking.booking_id desc
+      limit 1
+      for update of booking
+    `.execute(transaction);
+    return result.rows[0] ?? null;
+  }
+  if (state === 'BOOKED') {
+    const result = await sql<MutualChallengeRescheduleResourceRow>`
+      select booking.booking_id, booking.state as booking_state,
+        booking.version::text as booking_version,
+        slot.slot_id, slot.state as slot_state, slot.version::text as slot_version,
+        session.session_id, session.state as session_state,
+        session.version::text as session_version, session.actual_start_at,
+        session.coach_user_id
+      from scheduling.sessions session
+      join scheduling.bookings booking on booking.booking_id = session.booking_id
+      join scheduling.slots slot on slot.slot_id = booking.slot_id
+      where session.challenge_id = ${challengeId}::uuid
+        and booking.challenge_id = ${challengeId}::uuid
+        and booking.state = 'CONFIRMED_PAIR'
+        and session.state in ('SCHEDULED', 'READY_FOR_COACH')
+        and session.actual_start_at is null
+        and slot.state = 'BOOKED'
+      order by session.created_at desc, session.session_id desc
+      limit 1
+      for update of session, booking, slot
+    `.execute(transaction);
+    return result.rows[0] ?? null;
+  }
+  return null;
+}
+
+async function assertChallengeCompetitionOperational(
+  database: Kysely<Database> | Transaction<Database>,
+  competitionId: string,
+): Promise<void> {
+  const result = await sql<{
+    readonly competition_availability: string;
+    readonly community_state: string;
+    readonly status_review_hold_active: boolean;
+  }>`
+    select competition.availability as competition_availability,
+      community.state as community_state,
+      exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competition.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      ) as status_review_hold_active
+    from competition.competitions as competition
+    join community.communities as community
+      on community.community_id = competition.community_id
+    where competition.competition_id = ${competitionId}::uuid
+  `.execute(database);
+  const state = result.rows[0];
+  if (state?.community_state !== 'ACTIVE') {
+    throw new ChallengeConflictError('COMMUNITY_NOT_ACTIVE');
+  }
+  if (state.competition_availability !== 'ACTIVE') {
+    throw new ChallengeConflictError('COMPETITION_NOT_ACTIVE');
+  }
+  if (state.status_review_hold_active) {
+    throw new ChallengeConflictError('COMPETITION_NOT_ACTIVE');
+  }
 }
 
 export async function readChatChallenge(
@@ -487,21 +793,32 @@ export async function readChatChallenge(
   `.execute(database);
   const latestId = latestResult.rows[0]?.challenge_id;
   const latest = latestId ? projection(await challengeRow(database, latestId), viewerUserId) : null;
+  const mutualRequest = latest
+    ? await currentMutualRescheduleRequest(database, latest.challengeId, latest.version)
+    : null;
   let createDenialCode: ChallengeConflictCode | null = null;
+  let createRetryAt: string | null = null;
   if (access.scope === 'CHALLENGE_SERVICE') {
     createDenialCode = 'PAIR_CHALLENGE_EXISTS';
   } else {
     try {
-      assertCreationContext(await creationContext(database, sourceChatId, viewerUserId));
+      const creation = await creationContext(database, sourceChatId, viewerUserId);
+      assertCreationContext(creation);
+      await assertCreationYouthPolicy(database, creation);
     } catch (error) {
       if (!(error instanceof ChallengeConflictError)) throw error;
       createDenialCode = error.code;
+      createRetryAt = error.retryAt;
     }
   }
   return {
     challenge: latest,
+    mutualRescheduleRequest: mutualRequest
+      ? mutualRescheduleRequestProjection(mutualRequest)
+      : null,
     canCreate: createDenialCode === null,
     createDenialCode,
+    createRetryAt,
     policyVersion: CHALLENGE_POLICY_VERSION,
   };
 }
@@ -520,9 +837,16 @@ export async function createDirectOpenChallenge(
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const preliminaryMatch = await matchContext(transaction, command.payload.sourceChatId, command.actor.id!);
+      await lockOptionalChallengeInitiator(transaction, command.actor.id!);
       await lockSocialPair(transaction, preliminaryMatch.pair_low_id, preliminaryMatch.pair_high_id);
-      const creation = await creationContext(transaction, command.payload.sourceChatId, command.actor.id!);
+      const creation = await creationContext(
+        transaction,
+        command.payload.sourceChatId,
+        command.actor.id!,
+        context.occurredAt,
+      );
       assertCreationContext(creation);
+      await assertCreationYouthPolicy(transaction, creation);
       const responseDeadline = optionalChallengeResponseDeadline(context.occurredAt);
       const reminderDeadlines = optionalChallengeReminderDeadlines(context.occurredAt);
       const pair = normalizeSocialPair(creation.initiator.user_id, creation.recipient.user_id);
@@ -621,7 +945,6 @@ export async function createDirectOpenChallenge(
             topic: 'competition.challenge.created.v1',
             payload: {
               challengeId: response.challengeId,
-              reminderDeadlines: reminderDeadlines.map((deadlineAt) => deadlineAt.toISOString()),
               timer: {
                 commandType: 'EXPIRE_OPTIONAL_CHALLENGE',
                 aggregateType: 'Challenge',
@@ -634,6 +957,27 @@ export async function createDirectOpenChallenge(
               },
             },
           },
+          ...reminderDeadlines.map((deadlineAt, index) => ({
+            messageId: ids.reminderTimerOutboxMessageIds[index]!,
+            topic: index === 0
+              ? 'competition.challenge.optional-response-reminder-12h-timer.v1'
+              : 'competition.challenge.optional-response-reminder-24h-timer.v1',
+            payload: {
+              challengeId: response.challengeId,
+              timer: {
+                commandType: index === 0
+                  ? 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H'
+                  : 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H',
+                aggregateType: 'Challenge',
+                aggregateId: response.challengeId,
+                expectedState: 'AWAITING_RESPONSE',
+                expectedVersion: response.version,
+                deadlineAt: deadlineAt.toISOString(),
+                policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${response.challengeId}:optional-response-reminder-${index === 0 ? '12h' : '24h'}:v${response.version}`,
+              },
+            },
+          })),
           {
             messageId: ids.notificationOutboxMessageId,
             topic: 'notification.in_app.v1',
@@ -736,6 +1080,12 @@ export async function acceptOptionalChallenge(
         throw new ChallengeConflictError('PAIR_BLOCKED');
       }
       if (pairSafety.rows[0]?.pair_cooldown_active) throw new ChallengeConflictError('PAIR_COOLDOWN_ACTIVE');
+      await assertYouthChallengeConsentReady(
+        transaction,
+        row.challenge_id,
+        [row.pair_low_id, row.pair_high_id],
+        context.occurredAt,
+      );
       const schedulingDeadline = acceptedChallengeSchedulingDeadline(context.occurredAt);
       await sql`
         update competition.challenges
@@ -743,6 +1093,12 @@ export async function acceptOptionalChallenge(
           scheduling_deadline_at = ${schedulingDeadline.toISOString()}::timestamptz,
           version = ${context.nextVersion}, updated_at = ${context.occurredAt.toISOString()}::timestamptz
         where challenge_id = ${row.challenge_id}::uuid and state = 'AWAITING_RESPONSE'
+      `.execute(transaction);
+      await sql`
+        update governance.youth_challenge_consents
+        set expires_at = ${schedulingDeadline.toISOString()}::timestamptz,
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid and state = 'GRANTED'
       `.execute(transaction);
       await sql`
         insert into competition.challenge_ruleset_acknowledgments (
@@ -768,7 +1124,7 @@ export async function acceptOptionalChallenge(
         event: { eventId: ids.eventId, eventName: 'ChallengeAccepted', schemaVersion: 1, transitionId: 'CH-02', payload: { challengeId: response.challengeId, acceptedAt: response.acceptedAt, schedulingDeadlineAt: response.schedulingDeadlineAt, participants: [row.pair_low_id, row.pair_high_id] }, metadata: { policyVersion: CHALLENGE_POLICY_VERSION, rulesetSnapshotId: row.ruleset_snapshot_id } },
         audit: { auditId: ids.auditId, action: row.response_policy === 'MANDATORY' ? 'ACCEPT_MANDATORY_CHALLENGE' : 'ACCEPT_OPTIONAL_CHALLENGE', transitionId: 'CH-02', reasonCode: null, beforeState: row.state, afterState: 'ACCEPTED_UNSCHEDULED', metadata: { schedulingDeadlineAt: response.schedulingDeadlineAt } },
         outbox: [
-          { messageId: ids.outboxMessageId, topic: 'competition.challenge.accepted.v1', payload: { challengeId: response.challengeId, timer: { commandType: 'EXPIRE_CHALLENGE_SCHEDULING', deadlineAt: response.schedulingDeadlineAt, expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: response.version } } },
+          { messageId: ids.outboxMessageId, topic: 'competition.challenge.accepted.v1', payload: { challengeId: response.challengeId, timer: { commandType: 'EXPIRE_CHALLENGE_SCHEDULING', aggregateType: 'Challenge', aggregateId: response.challengeId, deadlineAt: response.schedulingDeadlineAt, expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: response.version, policyVersion: CHALLENGE_POLICY_VERSION, idempotencyKey: `challenge:${response.challengeId}:expire-scheduling:v${response.version}` } } },
           { messageId: ids.notificationOutboxMessageId, topic: 'notification.in_app.v1', payload: { notifications: [{ notificationId: ids.notificationId, recipientUserId: row.initiator_user_id, category: 'MANDATORY', renderKey: row.response_policy === 'MANDATORY' ? 'challenge.mandatory-accepted' : 'challenge.optional-accepted', actionTarget: { type: 'CHALLENGE', challengeId: response.challengeId }, payload: { recipientDisplayName: row.recipient_display_name }, deadlineAt: response.schedulingDeadlineAt }] } },
         ],
       };
@@ -832,6 +1188,12 @@ async function recordMandatoryResponseForfeit(input: {
       competition.status_version::text as status_version,
       competition.champion_user_id, competition.contender_user_id,
       competition.status_lock_result_id, competition.integrity_hold_case_id,
+      exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competition.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      ) as status_review_hold_active,
       competition.phase, competition.availability,
       community.state = 'ACTIVE' as community_active,
       configuration.pair_cooldown_days
@@ -843,20 +1205,31 @@ async function recordMandatoryResponseForfeit(input: {
     for update of competition
   `.execute(transaction);
   const competition = competitionResult.rows[0];
+  const stake = row.stake === 'TITLE'
+    ? 'TITLE'
+    : row.stake === 'CONTENDER'
+      ? 'CONTENDER'
+      : null;
+  const participantsMatchCurrentStatus = stake === 'TITLE'
+    ? competition?.contender_user_id === row.initiator_user_id
+      && competition.champion_user_id === row.recipient_user_id
+    : competition?.contender_user_id === row.recipient_user_id
+      && competition.champion_user_id !== row.initiator_user_id;
   if (
     !competition
+    || stake === null
     || competition.phase !== 'RUNNING'
     || competition.availability !== 'ACTIVE'
     || !competition.community_active
     || competition.integrity_hold_case_id !== null
+    || competition.status_review_hold_active
     || competition.status_lock_result_id !== null
-    || competition.contender_user_id !== row.recipient_user_id
-    || competition.champion_user_id === row.initiator_user_id
+    || !participantsMatchCurrentStatus
   ) {
     throw new ChallengeConflictError('COMPETITION_NOT_ACTIVE');
   }
   const transition = deriveProvisionalStatusTransition({
-    stake: 'CONTENDER',
+    stake,
     outcomeCode: 'FORFEIT',
     winnerUserId: row.initiator_user_id,
     loserUserId: row.recipient_user_id,
@@ -866,16 +1239,20 @@ async function recordMandatoryResponseForfeit(input: {
       statusVersion: Number(competition.status_version),
     },
   });
-  if (!transition.locksStatus || transition.type !== 'CONTENDER_TRANSFERRED') {
+  const expectedTransitionType = stake === 'TITLE'
+    ? 'TITLE_TRANSFERRED'
+    : 'CONTENDER_TRANSFERRED';
+  if (!transition.locksStatus || transition.type !== expectedTransitionType) {
     throw new ChallengeConflictError('PAIR_MATRIX_DENIED');
   }
   const appealDeadlineAt = resultAppealDeadline(occurredAt);
   const reasonCode = reason === 'DECLINED'
     ? 'MANDATORY_RESPONSE_DECLINED'
     : 'MANDATORY_RESPONSE_EXPIRED';
+  const recipientStatus = stake === 'TITLE' ? 'Champion' : 'Contender';
   const comment = reason === 'DECLINED'
-    ? 'The current Contender explicitly declined the mandatory status Challenge.'
-    : 'The current Contender did not answer the mandatory status Challenge before its deadline.';
+    ? `The current ${recipientStatus} explicitly declined the mandatory status Challenge.`
+    : `The current ${recipientStatus} did not answer the mandatory status Challenge before its deadline.`;
   const preStatus = {
     championUserId: transition.before.championUserId,
     contenderUserId: transition.before.contenderUserId,
@@ -971,7 +1348,7 @@ async function recordMandatoryResponseForfeit(input: {
     coachUserId: null,
     appealDeadlineAt: appealDeadlineAt.toISOString(),
     preStatus,
-    stake: 'CONTENDER',
+    stake,
   };
   return {
     response,
@@ -1174,6 +1551,863 @@ export async function withdrawOptionalChallenge(
   });
 }
 
+export async function rescheduleChallengeByAthlete(
+  database: Kysely<Database>,
+  command: CommandEnvelope<RescheduleChallengeByAthletePayload>,
+  ids: AthleteChallengeRescheduleEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ChallengeProjection>> {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'Challenge'
+    || command.aggregateId !== command.payload.challengeId
+    || command.commandType !== 'RESCHEDULE_CHALLENGE_BY_ATHLETE'
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+  }
+  const actorUserId = command.actor.id;
+  const reason = normalizeScheduleMutationReason(command.payload);
+  return executeCriticalCommand(database, {
+    command: { ...command, payload: { ...command.payload, ...reason } },
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const bookingResult = await sql<{
+        readonly booking_id: string;
+        readonly chat_id: string;
+        readonly slot_id: string;
+        readonly state: 'SELECTING' | 'HOST_CONFIRMATION_PENDING';
+        readonly coach_user_id: string | null;
+        readonly version: string;
+      }>`
+        select booking_id, chat_id, slot_id, state,
+          commercial_terms_snapshot ->> 'coachUserId' as coach_user_id,
+          version::text as version
+        from scheduling.bookings
+        where challenge_id = ${command.aggregateId}::uuid
+          and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        order by created_at desc, booking_id desc
+        limit 1
+        for update
+      `.execute(transaction);
+      const booking = bookingResult.rows[0] ?? null;
+      const row = await challengeRow(transaction, command.aggregateId, true);
+      if (!row.scheduling_deadline_at) {
+        throw new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED');
+      }
+      if (
+        (row.state === 'BOOKING_PENDING' && booking === null)
+        || (row.state === 'ACCEPTED_UNSCHEDULED' && booking !== null)
+      ) {
+        throw new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING');
+      }
+      await assertChallengeCompetitionOperational(transaction, row.competition_id);
+      if (row.user_reschedule_count === 2) {
+        const winnerUserId = challengeRescheduleLimitForfeitWinner({
+          state: row.state,
+          actorUserId,
+          participantUserIds: [row.pair_low_id, row.pair_high_id],
+          userRescheduleCount: row.user_reschedule_count,
+          consequencesConfirmed: command.payload.confirmForfeit === true,
+        });
+        const required = administrativeForfeitIds(ids);
+        if (!ids.notificationOutboxMessageId) {
+          throw new TypeError('Result notification outbox ID is required');
+        }
+        if (booking) {
+          await sql`
+            update scheduling.bookings
+            set state = 'CANCELLED', cancelled_at = ${context.occurredAt.toISOString()}::timestamptz,
+              cancel_actor = ${command.actor.id}::uuid,
+              cancel_reason = 'CHALLENGE_RESCHEDULE_LIMIT_FORFEIT',
+              version = version + 1,
+              updated_at = ${context.occurredAt.toISOString()}::timestamptz
+            where booking_id = ${booking.booking_id}::uuid
+              and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+          `.execute(transaction);
+        }
+        const forfeit = await recordAdministrativeForfeit(
+          transaction,
+          {
+            challengeId: row.challenge_id,
+            loserUserId: actorUserId,
+            recordedByUserId: actorUserId,
+            reasonCode: 'RESCHEDULE_LIMIT_EXCEEDED',
+            comment: 'The Athlete confirmed another culpable reschedule after using both allowances.',
+            sourceSessionId: null,
+            sourceCoachUserId: booking?.coach_user_id ?? null,
+            notificationRecipientUserIds: [row.pair_low_id, row.pair_high_id],
+            occurredAt: context.occurredAt,
+            expectedChallengeState: row.state as 'ACCEPTED_UNSCHEDULED' | 'BOOKING_PENDING',
+          },
+          {
+            resultId: required.resultId,
+            resultEventId: required.resultEventId,
+            statusTransitionId: required.statusTransitionId,
+            statusEventId: required.statusEventId,
+            cooldownId: required.cooldownId,
+            cooldownEventId: required.cooldownEventId,
+            resultOutboxMessageId: required.timerOutboxMessageId,
+            notificationOutboxMessageId: ids.notificationOutboxMessageId,
+            notificationIds: required.notificationIds,
+          },
+        );
+        const response = projection(
+          await challengeRow(transaction, row.challenge_id),
+          actorUserId,
+        );
+        return {
+          responseStatus: 200,
+          response,
+          event: {
+            eventId: ids.eventId,
+            eventName: 'RescheduleLimitForfeit',
+            schemaVersion: 1,
+            transitionId: 'CH-23',
+            payload: {
+              challengeId: row.challenge_id,
+              resultId: forfeit.resultId,
+              bookingId: booking?.booking_id ?? null,
+              initiatedByUserId: actorUserId,
+              winnerUserId,
+              loserUserId: actorUserId,
+              reasonCode: reason.reasonCode,
+              userRescheduleCount: row.user_reschedule_count,
+              appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+            },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          },
+          relatedEvents: [
+            ...(booking ? [{
+              eventId: ids.bookingEventId,
+              eventName: 'BookingRequestWithdrawn',
+              schemaVersion: 1,
+              aggregateType: 'Booking',
+              aggregateId: booking.booking_id,
+              aggregateVersion: Number(booking.version) + 1,
+              transitionId: 'B-04',
+              payload: {
+                bookingId: booking.booking_id,
+                slotId: booking.slot_id,
+                withdrawnByUserId: actorUserId,
+                previousState: booking.state,
+                cause: 'CHALLENGE_RESCHEDULE_LIMIT_FORFEIT',
+              },
+              metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+            }] : []),
+            ...forfeit.relatedEvents,
+          ],
+          audit: {
+            auditId: ids.auditId,
+            action: 'RESCHEDULE_LIMIT_FORFEIT',
+            transitionId: 'CH-23',
+            reasonCode: reason.reasonCode,
+            beforeState: row.state,
+            afterState: 'RESULT_RECORDED',
+            metadata: {
+              resultId: forfeit.resultId,
+              bookingId: booking?.booking_id ?? null,
+              initiatedByUserId: actorUserId,
+              winnerUserId,
+              loserUserId: actorUserId,
+              reasonNote: reason.reasonNote,
+              userRescheduleCount: row.user_reschedule_count,
+              statusTransitionType: forfeit.statusTransitionType,
+            },
+          },
+          outbox: [
+            {
+              messageId: ids.outboxMessageId,
+              topic: 'competition.challenge.reschedule-limit-forfeit.v1',
+              payload: {
+                challengeId: row.challenge_id,
+                resultId: forfeit.resultId,
+                bookingId: booking?.booking_id ?? null,
+                initiatedByUserId: actorUserId,
+                winnerUserId,
+                loserUserId: actorUserId,
+                reasonCode: reason.reasonCode,
+                userRescheduleCount: row.user_reschedule_count,
+                appealDeadlineAt: forfeit.appealDeadlineAt.toISOString(),
+              },
+            },
+            ...forfeit.outbox,
+            ...(booking ? [{
+              messageId: ids.bookingOutboxMessageId,
+              topic: 'scheduling.booking.request-withdrawn.v1',
+              sourceEventId: ids.bookingEventId,
+              payload: {
+                bookingId: booking.booking_id,
+                chatId: booking.chat_id,
+                slotId: booking.slot_id,
+                cause: 'CHALLENGE_RESCHEDULE_LIMIT_FORFEIT',
+              },
+            }] : []),
+            ...(booking?.coach_user_id ? [{
+              messageId: ids.hostNotificationOutboxMessageId,
+              topic: 'notification.in_app.v1',
+              sourceEventId: ids.bookingEventId,
+              payload: {
+                notifications: [{
+                  notificationId: ids.notificationId,
+                  recipientUserId: booking.coach_user_id,
+                  category: 'SERVICE',
+                  renderKey: 'challenge.reschedule-limit-forfeit-host',
+                  actionTarget: { type: 'BOOKING', bookingId: booking.booking_id },
+                  payload: {
+                    challengeId: row.challenge_id,
+                    bookingId: booking.booking_id,
+                    resultId: forfeit.resultId,
+                    outcomeCode: 'FORFEIT',
+                  },
+                  deadlineAt: null,
+                }],
+              },
+            }] : []),
+          ],
+        };
+      }
+      const nextCount = nextAthleteChallengeRescheduleCount({
+        state: row.state,
+        actorUserId,
+        participantUserIds: [row.pair_low_id, row.pair_high_id],
+        userRescheduleCount: row.user_reschedule_count,
+      });
+      if (booking) {
+        await sql`
+          update scheduling.bookings
+          set state = 'CANCELLED', version = version + 1,
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where booking_id = ${booking.booking_id}::uuid
+            and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        `.execute(transaction);
+      }
+      const faultAttribution = command.actor.id === row.pair_low_id ? 'A' : 'B';
+      await sql`
+        insert into competition.challenge_reschedules (
+          reschedule_id, challenge_id, booking_id, initiated_by_user_id,
+          fault_attribution, fault_user_id, reason_code, reason_note, created_at
+        ) values (
+          ${ids.rescheduleId}::uuid, ${row.challenge_id}::uuid,
+          ${booking?.booking_id ?? null}::uuid, ${command.actor.id}::uuid,
+          ${faultAttribution}, ${command.actor.id}::uuid,
+          ${reason.reasonCode}, ${reason.reasonNote},
+          ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        update competition.challenges
+        set state = 'ACCEPTED_UNSCHEDULED',
+          user_reschedule_count = ${nextCount}, version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid
+          and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+      `.execute(transaction);
+      const response = projection({
+        ...row,
+        state: 'ACCEPTED_UNSCHEDULED',
+        user_reschedule_count: nextCount,
+        version: String(context.nextVersion),
+      }, command.actor.id!);
+      const peerUserId = command.actor.id === row.pair_low_id
+        ? row.pair_high_id
+        : row.pair_low_id;
+      const notifications = [
+        {
+          notificationId: ids.notificationIds[0],
+          recipientUserId: peerUserId,
+          category: 'MANDATORY',
+          renderKey: 'challenge.rescheduled-by-athlete',
+          actionTarget: { type: 'CHALLENGE', challengeId: row.challenge_id },
+          payload: {
+            challengeId: row.challenge_id,
+            userRescheduleCount: nextCount,
+            reasonCode: reason.reasonCode,
+          },
+          deadlineAt: row.scheduling_deadline_at.toISOString(),
+        },
+        ...(booking?.coach_user_id
+          ? [{
+              notificationId: ids.notificationIds[1],
+              recipientUserId: booking.coach_user_id,
+              category: 'SERVICE',
+              renderKey: 'booking.host-request-cancelled-by-challenge-reschedule',
+              actionTarget: { type: 'BOOKING', bookingId: booking.booking_id },
+              payload: {
+                challengeId: row.challenge_id,
+                bookingId: booking.booking_id,
+                slotId: booking.slot_id,
+              },
+              deadlineAt: null,
+            }]
+          : []),
+      ];
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'ChallengeRescheduledByAthlete',
+          schemaVersion: 1,
+          transitionId: 'CH-22',
+          payload: {
+            challengeId: row.challenge_id,
+            rescheduleId: ids.rescheduleId,
+            bookingId: booking?.booking_id ?? null,
+            initiatedByUserId: command.actor.id,
+            faultAttribution,
+            reasonCode: reason.reasonCode,
+            userRescheduleCount: nextCount,
+            schedulingDeadlineAt: row.scheduling_deadline_at.toISOString(),
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        },
+        ...(booking
+          ? {
+              relatedEvents: [{
+                eventId: ids.bookingEventId,
+                eventName: 'BookingRequestWithdrawn',
+                schemaVersion: 1,
+                aggregateType: 'Booking',
+                aggregateId: booking.booking_id,
+                aggregateVersion: Number(booking.version) + 1,
+                transitionId: 'B-04',
+                payload: {
+                  bookingId: booking.booking_id,
+                  slotId: booking.slot_id,
+                  withdrawnByUserId: command.actor.id,
+                  previousState: booking.state,
+                  cause: 'ATHLETE_CHALLENGE_RESCHEDULE',
+                },
+                metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+              }],
+            }
+          : {}),
+        audit: {
+          auditId: ids.auditId,
+          action: 'RESCHEDULE_CHALLENGE_BY_ATHLETE',
+          transitionId: 'CH-22',
+          reasonCode: reason.reasonCode,
+          beforeState: row.state,
+          afterState: 'ACCEPTED_UNSCHEDULED',
+          metadata: {
+            rescheduleId: ids.rescheduleId,
+            bookingId: booking?.booking_id ?? null,
+            reasonNote: reason.reasonNote,
+            faultAttribution,
+            userRescheduleCount: nextCount,
+            schedulingDeadlineAt: row.scheduling_deadline_at.toISOString(),
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'competition.challenge.rescheduled-by-athlete.v1',
+            payload: {
+              challengeId: row.challenge_id,
+              rescheduleId: ids.rescheduleId,
+              bookingId: booking?.booking_id ?? null,
+              initiatedByUserId: command.actor.id,
+              reasonCode: reason.reasonCode,
+              userRescheduleCount: nextCount,
+              timer: {
+                commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+                aggregateType: 'Challenge',
+                aggregateId: row.challenge_id,
+                deadlineAt: row.scheduling_deadline_at!.toISOString(),
+                expectedState: 'ACCEPTED_UNSCHEDULED',
+                expectedVersion: context.nextVersion,
+                policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${row.challenge_id}:expire-scheduling:v${context.nextVersion}`,
+              },
+            },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: { notifications },
+          },
+          ...(booking
+            ? [{
+                messageId: ids.bookingOutboxMessageId,
+                topic: 'scheduling.booking.request-withdrawn.v1',
+                sourceEventId: ids.bookingEventId,
+                payload: {
+                  bookingId: booking.booking_id,
+                  chatId: booking.chat_id,
+                  slotId: booking.slot_id,
+                  cause: 'ATHLETE_CHALLENGE_RESCHEDULE',
+                },
+              }]
+            : []),
+        ],
+      };
+    },
+  });
+}
+
+export async function proposeMutualChallengeReschedule(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ProposeMutualChallengeReschedulePayload>,
+  ids: ProposeMutualChallengeRescheduleEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<MutualChallengeRescheduleRequestProjection>> {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'ChallengeMutualReschedule'
+    || command.commandType !== 'PROPOSE_MUTUAL_CHALLENGE_RESCHEDULE'
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+  }
+  const reason = normalizeScheduleMutationReason(command.payload);
+  return executeCriticalCommand(database, {
+    command: { ...command, payload: { ...command.payload, ...reason } },
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const preliminary = await challengeRow(transaction, command.payload.challengeId);
+      const resource = await mutualRescheduleResourceForUpdate(
+        transaction,
+        preliminary.challenge_id,
+        preliminary.state,
+      );
+      const row = await challengeRow(transaction, preliminary.challenge_id, true);
+      assertExpectedVersion(Number(row.version), command.payload.challengeVersion);
+      const existing = await currentMutualRescheduleRequest(
+        transaction,
+        row.challenge_id,
+        Number(row.version),
+      );
+      assertMutualChallengeRescheduleCanBeProposed({
+        state: row.state,
+        actorUserId: command.actor.id!,
+        participantUserIds: [row.pair_low_id, row.pair_high_id],
+        userRescheduleCount: row.user_reschedule_count,
+        requestExistsForCurrentVersion: existing !== null,
+      });
+      if (!row.scheduling_deadline_at) {
+        throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+      }
+      if (
+        (row.state === 'ACCEPTED_UNSCHEDULED' && resource !== null)
+        || (row.state === 'BOOKING_PENDING'
+          && (!resource || resource.session_id !== null
+            || !['SELECTING', 'HOST_CONFIRMATION_PENDING'].includes(resource.booking_state)))
+        || (row.state === 'BOOKED'
+          && (!resource || resource.session_id === null || resource.booking_state !== 'CONFIRMED_PAIR'
+            || !['SCHEDULED', 'READY_FOR_COACH'].includes(resource.session_state ?? '')
+            || resource.actual_start_at !== null || resource.slot_state !== 'BOOKED'))
+      ) {
+        throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+      }
+      await assertChallengeCompetitionOperational(transaction, row.competition_id);
+      await sql`
+        insert into competition.challenge_mutual_reschedule_requests (
+          request_id, challenge_id, booking_id, session_id, proposed_by_user_id,
+          confirmed_by_user_id, reason_code, reason_note, state,
+          challenge_version_at_proposal, booking_version_at_proposal,
+          session_version_at_proposal, slot_version_at_proposal,
+          proposed_at, confirmed_at, version, created_at, updated_at
+        ) values (
+          ${command.aggregateId}::uuid, ${row.challenge_id}::uuid,
+          ${resource?.booking_id ?? null}::uuid, ${resource?.session_id ?? null}::uuid,
+          ${command.actor.id}::uuid, null, ${reason.reasonCode}, ${reason.reasonNote},
+          'PROPOSED', ${Number(row.version)},
+          ${resource ? Number(resource.booking_version) : null},
+          ${resource?.session_version ? Number(resource.session_version) : null},
+          ${resource?.session_id ? Number(resource.slot_version) : null},
+          ${context.occurredAt.toISOString()}::timestamptz, null, 1,
+          ${context.occurredAt.toISOString()}::timestamptz,
+          ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      const inserted = await mutualRescheduleRequestRow(transaction, command.aggregateId);
+      if (!inserted) {
+        throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+      }
+      const response = mutualRescheduleRequestProjection(inserted);
+      const peerUserId = command.actor.id === row.pair_low_id
+        ? row.pair_high_id
+        : row.pair_low_id;
+      return {
+        responseStatus: 201,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'ChallengeRescheduleProposed',
+          schemaVersion: 1,
+          transitionId: null,
+          payload: {
+            requestId: response.requestId,
+            challengeId: response.challengeId,
+            bookingId: response.bookingId,
+            sessionId: response.sessionId,
+            proposedByUserId: response.proposedByUserId,
+            reasonCode: response.reasonCode,
+            challengeVersionAtProposal: Number(row.version),
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        },
+        audit: {
+          auditId: ids.auditId,
+          action: 'PROPOSE_MUTUAL_CHALLENGE_RESCHEDULE',
+          transitionId: null,
+          reasonCode: reason.reasonCode,
+          beforeState: null,
+          afterState: 'PROPOSED',
+          metadata: {
+            challengeId: row.challenge_id,
+            bookingId: response.bookingId,
+            sessionId: response.sessionId,
+            reasonNote: reason.reasonNote,
+            challengeVersionAtProposal: Number(row.version),
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'competition.challenge.mutual-reschedule-proposed.v1',
+            payload: {
+              requestId: response.requestId,
+              challengeId: response.challengeId,
+              bookingId: response.bookingId,
+              sessionId: response.sessionId,
+              proposedByUserId: response.proposedByUserId,
+              reasonCode: response.reasonCode,
+            },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: {
+              notifications: [{
+                notificationId: ids.notificationId,
+                recipientUserId: peerUserId,
+                category: 'MANDATORY',
+                renderKey: 'challenge.mutual-reschedule-proposed',
+                actionTarget: { type: 'CHALLENGE', challengeId: row.challenge_id },
+                payload: {
+                  requestId: response.requestId,
+                  challengeId: row.challenge_id,
+                  reasonCode: response.reasonCode,
+                },
+                deadlineAt: row.scheduling_deadline_at!.toISOString(),
+              }],
+            },
+          },
+        ],
+      };
+    },
+  });
+}
+
+export async function confirmMutualChallengeReschedule(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ConfirmMutualChallengeReschedulePayload>,
+  ids: ConfirmMutualChallengeRescheduleEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ChallengeProjection>> {
+  if (
+    !command.actor.id
+    || command.aggregateType !== 'Challenge'
+    || command.aggregateId !== command.payload.challengeId
+    || command.commandType !== 'CONFIRM_MUTUAL_CHALLENGE_RESCHEDULE'
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+  }
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const request = await mutualRescheduleRequestRow(
+        transaction,
+        command.payload.requestId,
+        true,
+      );
+      if (
+        !request
+        || request.challenge_id !== command.aggregateId
+        || request.state !== 'PROPOSED'
+      ) {
+        throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+      }
+      assertExpectedVersion(Number(request.version), command.payload.requestVersion);
+      const preliminary = await challengeRow(transaction, command.aggregateId);
+      const resource = await mutualRescheduleResourceForUpdate(
+        transaction,
+        preliminary.challenge_id,
+        preliminary.state,
+      );
+      const row = await challengeRow(transaction, command.aggregateId, true);
+      const nextCount = nextMutualChallengeRescheduleCount({
+        state: row.state,
+        proposedByUserId: request.proposed_by_user_id,
+        confirmedByUserId: command.actor.id!,
+        participantUserIds: [row.pair_low_id, row.pair_high_id],
+        userRescheduleCount: row.user_reschedule_count,
+      });
+      if (
+        !row.scheduling_deadline_at
+        || Number(request.challenge_version_at_proposal) !== Number(row.version)
+        || request.booking_id !== (resource?.booking_id ?? null)
+        || request.session_id !== (resource?.session_id ?? null)
+        || Number(request.booking_version_at_proposal ?? 0)
+          !== Number(resource?.booking_version ?? 0)
+        || Number(request.session_version_at_proposal ?? 0)
+          !== Number(resource?.session_version ?? 0)
+        || Number(request.slot_version_at_proposal ?? 0)
+          !== Number(resource?.session_id ? resource.slot_version : 0)
+      ) {
+        throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+      }
+      if (
+        (row.state === 'ACCEPTED_UNSCHEDULED' && resource !== null)
+        || (row.state === 'BOOKING_PENDING'
+          && (!resource || resource.session_id !== null
+            || !['SELECTING', 'HOST_CONFIRMATION_PENDING'].includes(resource.booking_state)))
+        || (row.state === 'BOOKED'
+          && (!resource || resource.session_id === null || resource.booking_state !== 'CONFIRMED_PAIR'
+            || !['SCHEDULED', 'READY_FOR_COACH'].includes(resource.session_state ?? '')
+            || resource.actual_start_at !== null || resource.slot_state !== 'BOOKED'))
+      ) {
+        throw new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_NOT_ALLOWED');
+      }
+      await assertChallengeCompetitionOperational(transaction, row.competition_id);
+      await sql`
+        update competition.challenge_mutual_reschedule_requests
+        set state = 'CONFIRMED', confirmed_by_user_id = ${command.actor.id}::uuid,
+          confirmed_at = ${context.occurredAt.toISOString()}::timestamptz,
+          version = 2, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where request_id = ${request.request_id}::uuid and state = 'PROPOSED' and version = 1
+      `.execute(transaction);
+      if (resource?.session_id) {
+        await sql`
+          update scheduling.sessions
+          set state = 'CANCELLED', cancelled_at = ${context.occurredAt.toISOString()}::timestamptz,
+            cancelled_by = ${command.actor.id}::uuid,
+            cancellation_reason_code = 'MUTUAL_CHALLENGE_RESCHEDULE',
+            version = version + 1, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where session_id = ${resource.session_id}::uuid
+            and state in ('SCHEDULED', 'READY_FOR_COACH') and actual_start_at is null
+        `.execute(transaction);
+        await sql`
+          update scheduling.slots
+          set state = 'CANCELLED', version = version + 1,
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where slot_id = ${resource.slot_id}::uuid and state = 'BOOKED'
+        `.execute(transaction);
+      }
+      if (resource) {
+        await sql`
+          update scheduling.bookings
+          set state = 'CANCELLED', cancelled_at = ${context.occurredAt.toISOString()}::timestamptz,
+            cancel_actor = ${command.actor.id}::uuid,
+            cancel_reason = 'MUTUAL_CHALLENGE_RESCHEDULE',
+            version = version + 1, updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where booking_id = ${resource.booking_id}::uuid
+            and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING', 'CONFIRMED_PAIR')
+        `.execute(transaction);
+      }
+      await sql`
+        insert into competition.challenge_reschedules (
+          reschedule_id, challenge_id, booking_id, initiated_by_user_id,
+          fault_attribution, fault_user_id, reason_code, reason_note, created_at
+        ) values (
+          ${ids.rescheduleId}::uuid, ${row.challenge_id}::uuid,
+          ${resource?.booking_id ?? null}::uuid, ${request.proposed_by_user_id}::uuid,
+          'MUTUAL', null, ${request.reason_code}, ${request.reason_note},
+          ${context.occurredAt.toISOString()}::timestamptz
+        )
+      `.execute(transaction);
+      await sql`
+        update competition.challenges
+        set state = 'ACCEPTED_UNSCHEDULED', user_reschedule_count = ${nextCount},
+          version = ${context.nextVersion},
+          updated_at = ${context.occurredAt.toISOString()}::timestamptz
+        where challenge_id = ${row.challenge_id}::uuid
+          and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED')
+      `.execute(transaction);
+      const response = projection({
+        ...row,
+        state: 'ACCEPTED_UNSCHEDULED',
+        user_reschedule_count: nextCount,
+        version: String(context.nextVersion),
+      }, command.actor.id!);
+      const bookingVersion = resource ? Number(resource.booking_version) + 1 : null;
+      const sessionVersion = resource?.session_version
+        ? Number(resource.session_version) + 1
+        : null;
+      const slotVersion = resource?.session_id ? Number(resource.slot_version) + 1 : null;
+      const relatedEvents = [
+        {
+          eventId: ids.requestEventId,
+          eventName: 'ChallengeRescheduled',
+          schemaVersion: 1,
+          aggregateType: 'ChallengeMutualReschedule',
+          aggregateId: request.request_id,
+          aggregateVersion: 2,
+          transitionId: 'CH-21',
+          payload: {
+            requestId: request.request_id,
+            challengeId: row.challenge_id,
+            proposedByUserId: request.proposed_by_user_id,
+            confirmedByUserId: command.actor.id,
+            faultAttribution: 'MUTUAL',
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        },
+        ...(resource ? [{
+          eventId: ids.bookingEventId,
+          eventName: 'BookingCancelledNoFault',
+          schemaVersion: 1,
+          aggregateType: 'Booking',
+          aggregateId: resource.booking_id,
+          aggregateVersion: bookingVersion!,
+          transitionId: resource.session_id ? 'B-15' : 'B-04',
+          payload: {
+            bookingId: resource.booking_id,
+            challengeId: row.challenge_id,
+            cause: 'MUTUAL',
+            userRescheduleCounted: true,
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        }] : []),
+        ...(resource?.session_id ? [
+          {
+            eventId: ids.sessionEventId,
+            eventName: 'SessionCancelled',
+            schemaVersion: 1,
+            aggregateType: 'Session',
+            aggregateId: resource.session_id,
+            aggregateVersion: sessionVersion!,
+            transitionId: 'S-04',
+            payload: { sessionId: resource.session_id, cause: 'MUTUAL_CHALLENGE_RESCHEDULE' },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          },
+          {
+            eventId: ids.slotEventId,
+            eventName: 'SlotBookingCancelled',
+            schemaVersion: 1,
+            aggregateType: 'Slot',
+            aggregateId: resource.slot_id,
+            aggregateVersion: slotVersion!,
+            transitionId: 'SL-06',
+            payload: { slotId: resource.slot_id, cause: 'MUTUAL_CHALLENGE_RESCHEDULE' },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          },
+        ] : []),
+      ];
+      const notificationRecipients = [
+        row.pair_low_id,
+        row.pair_high_id,
+        ...(resource ? [resource.coach_user_id] : []),
+      ];
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: 'ChallengeRescheduled',
+          schemaVersion: 1,
+          transitionId: 'CH-21',
+          payload: {
+            challengeId: row.challenge_id,
+            requestId: request.request_id,
+            rescheduleId: ids.rescheduleId,
+            bookingId: resource?.booking_id ?? null,
+            sessionId: resource?.session_id ?? null,
+            proposedByUserId: request.proposed_by_user_id,
+            confirmedByUserId: command.actor.id,
+            faultAttribution: 'MUTUAL',
+            reasonCode: request.reason_code,
+            userRescheduleCount: nextCount,
+            schedulingDeadlineAt: row.scheduling_deadline_at.toISOString(),
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        },
+        relatedEvents,
+        audit: {
+          auditId: ids.auditId,
+          action: 'CONFIRM_MUTUAL_CHALLENGE_RESCHEDULE',
+          transitionId: 'CH-21',
+          reasonCode: request.reason_code,
+          beforeState: row.state,
+          afterState: 'ACCEPTED_UNSCHEDULED',
+          metadata: {
+            requestId: request.request_id,
+            rescheduleId: ids.rescheduleId,
+            bookingId: resource?.booking_id ?? null,
+            sessionId: resource?.session_id ?? null,
+            reasonNote: request.reason_note,
+            faultAttribution: 'MUTUAL',
+            userRescheduleCount: nextCount,
+          },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: 'competition.challenge.rescheduled.v1',
+            payload: {
+              challengeId: row.challenge_id,
+              requestId: request.request_id,
+              rescheduleId: ids.rescheduleId,
+              bookingId: resource?.booking_id ?? null,
+              sessionId: resource?.session_id ?? null,
+              proposedByUserId: request.proposed_by_user_id,
+              confirmedByUserId: command.actor.id,
+              faultAttribution: 'MUTUAL',
+              reasonCode: request.reason_code,
+              userRescheduleCount: nextCount,
+              timer: {
+                commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+                aggregateType: 'Challenge',
+                aggregateId: row.challenge_id,
+                deadlineAt: row.scheduling_deadline_at.toISOString(),
+                expectedState: 'ACCEPTED_UNSCHEDULED',
+                expectedVersion: context.nextVersion,
+                policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${row.challenge_id}:expire-scheduling:v${context.nextVersion}`,
+              },
+            },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: {
+              notifications: notificationRecipients.map((recipientUserId, index) => ({
+                notificationId: ids.notificationIds[index]!,
+                recipientUserId,
+                category: 'MANDATORY',
+                renderKey: 'challenge.mutual-reschedule-confirmed',
+                actionTarget: { type: 'CHALLENGE', challengeId: row.challenge_id },
+                payload: {
+                  requestId: request.request_id,
+                  challengeId: row.challenge_id,
+                  bookingId: resource?.booking_id ?? null,
+                  sessionId: resource?.session_id ?? null,
+                  reasonCode: request.reason_code,
+                  userRescheduleCount: nextCount,
+                },
+                deadlineAt: row.scheduling_deadline_at!.toISOString(),
+              })),
+            },
+          },
+          ...(resource ? [{
+            messageId: ids.bookingOutboxMessageId,
+            topic: 'scheduling.booking.cancelled-no-fault.v1',
+            sourceEventId: ids.bookingEventId,
+            payload: {
+              bookingId: resource.booking_id,
+              sessionId: resource.session_id,
+              slotId: resource.slot_id,
+              cause: 'MUTUAL_CHALLENGE_RESCHEDULE',
+              userRescheduleCounted: true,
+            },
+          }] : []),
+        ],
+      };
+    },
+  });
+}
+
 export async function readChallengeTimerSnapshot(
   database: Kysely<Database>,
   challengeId: string,
@@ -1181,19 +2415,363 @@ export async function readChallengeTimerSnapshot(
   const result = await sql<{
     readonly state: ChallengeState;
     readonly version: string;
-    readonly response_deadline_at: Date;
+    readonly effective_deadline_at: Date | null;
   }>`
-    select state, version::text as version, response_deadline_at
-    from competition.challenges
-    where challenge_id = ${challengeId}::uuid
+    select challenge.state, challenge.version::text as version,
+      case
+        when community.state = 'PAUSED' or competition.availability = 'PAUSED'
+          or exists (
+            select 1 from competition.process_holds as process_hold
+            where process_hold.aggregate_type = 'COMPETITION'
+              and process_hold.aggregate_id = competition.competition_id
+              and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+          )
+          or exists (
+            select 1 from competition.process_holds as challenge_hold
+            where challenge_hold.aggregate_type = 'CHALLENGE'
+              and challenge_hold.aggregate_id = challenge.challenge_id
+              and challenge_hold.reason = 'SAFETY'
+              and challenge_hold.state = 'ACTIVE'
+              and challenge_hold.deadline_policy = 'PAUSE'
+          )
+          then greatest(
+            case
+              when challenge.state = 'AWAITING_RESPONSE' then challenge.response_deadline_at
+              when challenge.state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+                then challenge.scheduling_deadline_at
+              else null
+            end,
+            clock_timestamp() + interval '5 minutes'
+          )
+        when challenge.state = 'AWAITING_RESPONSE' then challenge.response_deadline_at
+        when challenge.state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+          then challenge.scheduling_deadline_at
+        else null
+      end as effective_deadline_at
+    from competition.challenges as challenge
+    join competition.competitions as competition
+      on competition.competition_id = challenge.competition_id
+    join community.communities as community
+      on community.community_id = competition.community_id
+    where challenge.challenge_id = ${challengeId}::uuid
   `.execute(database);
   const row = result.rows[0];
   return row
     ? {
         state: row.state,
         version: Number(row.version),
+        ...(row.effective_deadline_at
+          ? { deadlineAt: row.effective_deadline_at.toISOString() }
+          : {}),
       }
     : { state: 'MISSING', version: 0 };
+}
+
+export async function readOptionalChallengeReminderTimerSnapshot(
+  database: Kysely<Database>,
+  challengeId: string,
+): Promise<TimerAggregateSnapshot> {
+  const result = await sql<{ readonly state: ChallengeState; readonly version: string }>`
+    select state, version::text as version
+    from competition.challenges
+    where challenge_id = ${challengeId}::uuid
+  `.execute(database);
+  const row = result.rows[0];
+  return row ? { state: row.state, version: Number(row.version) }
+    : { state: 'MISSING', version: 0 };
+}
+
+export async function projectPendingOptionalChallengeReminder(
+  database: Kysely<Database>,
+  challengeId: string,
+  expectedVersion: number,
+  kind: '12H' | '24H',
+  notificationId: string,
+): Promise<number> {
+  return database.transaction().execute(async (transaction) => {
+    const current = await challengeRow(transaction, challengeId, true);
+    if (
+      current.response_policy !== 'OPTIONAL'
+      || current.state !== 'AWAITING_RESPONSE'
+      || Number(current.version) !== expectedVersion
+    ) return 0;
+    const source = await sql<{ readonly event_id: string }>`
+      select event_id from platform.domain_events
+      where aggregate_type = 'Challenge' and aggregate_id = ${challengeId}::uuid
+        and aggregate_version = 1 and event_name = 'ChallengeCreated'
+      limit 1
+    `.execute(transaction);
+    const sourceEventId = source.rows[0]?.event_id;
+    if (!sourceEventId) throw new ChallengeConflictError('PAIR_CHALLENGE_EXISTS');
+    const inserted = await sql<{ readonly notification_id: string }>`
+      insert into platform.notifications (
+        notification_id, recipient_user_id, source_event_id, category, render_key,
+        action_target, payload, deadline_at
+      ) values (
+        ${notificationId}::uuid, ${current.recipient_user_id}::uuid,
+        ${sourceEventId}::uuid, 'MANDATORY',
+        ${kind === '12H' ? 'challenge.optional-response-reminder-12h' :
+          'challenge.optional-response-reminder-24h'},
+        ${JSON.stringify({ type: 'CHAT', chatId: current.source_chat_id })}::jsonb,
+        ${JSON.stringify({ challengeId: current.challenge_id })}::jsonb,
+        ${current.response_deadline_at.toISOString()}::timestamptz
+      ) on conflict (recipient_user_id, source_event_id, render_key) do nothing
+      returning notification_id
+    `.execute(transaction);
+    return inserted.rows.length;
+  });
+}
+
+export async function projectPendingMandatoryChallengeReminder(
+  database: Kysely<Database>,
+  challengeId: string,
+  expectedVersion: number,
+  notificationId: string,
+): Promise<number> {
+  return database.transaction().execute(async (transaction) => {
+    const current = await challengeRow(transaction, challengeId, true);
+    if (
+      current.response_policy !== 'MANDATORY'
+      || current.state !== 'AWAITING_RESPONSE'
+      || Number(current.version) !== expectedVersion
+    ) return 0;
+    const source = await sql<{ readonly event_id: string }>`
+      select event_id from platform.domain_events
+      where aggregate_type = 'Challenge' and aggregate_id = ${challengeId}::uuid
+        and aggregate_version = 1 and event_name = 'ChallengeCreated'
+      limit 1
+    `.execute(transaction);
+    const sourceEventId = source.rows[0]?.event_id;
+    if (!sourceEventId) throw new ChallengeConflictError('PAIR_CHALLENGE_EXISTS');
+    const inserted = await sql<{ readonly notification_id: string }>`
+      insert into platform.notifications (
+        notification_id, recipient_user_id, source_event_id, category, render_key,
+        action_target, payload, deadline_at
+      ) values (
+        ${notificationId}::uuid, ${current.recipient_user_id}::uuid,
+        ${sourceEventId}::uuid, 'MANDATORY', 'challenge.mandatory-response-reminder-48h',
+        ${JSON.stringify({ type: 'CHAT', chatId: current.source_chat_id })}::jsonb,
+        ${JSON.stringify({ challengeId: current.challenge_id })}::jsonb,
+        ${current.response_deadline_at.toISOString()}::timestamptz
+      ) on conflict (recipient_user_id, source_event_id, render_key) do nothing
+      returning notification_id
+    `.execute(transaction);
+    if (inserted.rows.length === 0) return 0;
+    await sql`
+      insert into platform.notification_delivery_intents (
+        delivery_intent_id, notification_id, source_event_id, recipient_user_id,
+        channel, delivery_class
+      ) values (
+        md5(${notificationId} || ':PUSH')::uuid, ${notificationId}::uuid,
+        ${sourceEventId}::uuid, ${current.recipient_user_id}::uuid, 'PUSH', 'CRITICAL'
+      ) on conflict (notification_id, channel) do nothing
+    `.execute(transaction);
+    await sql`
+      insert into platform.notification_delivery_intents (
+        delivery_intent_id, notification_id, source_event_id, recipient_user_id,
+        channel, delivery_class
+      )
+      select md5(${notificationId} || ':SMS')::uuid, ${notificationId}::uuid,
+        ${sourceEventId}::uuid, ${current.recipient_user_id}::uuid, 'SMS', 'CRITICAL'
+      from platform.notification_preferences
+      where user_id = ${current.recipient_user_id}::uuid and event_sms_opt_in = true
+      on conflict (notification_id, channel) do nothing
+    `.execute(transaction);
+    return 1;
+  });
+}
+
+export async function expireChallengeScheduling(
+  database: Kysely<Database>,
+  command: CommandEnvelope<ExpireChallengeSchedulingPayload>,
+  ids: ExpireChallengeSchedulingEffectIds,
+  now?: () => Date,
+): Promise<ExecutedCommand<ChallengeProjection>> {
+  if (
+    command.actor.type !== 'SYSTEM'
+    || command.actor.id !== null
+    || command.aggregateType !== 'Challenge'
+    || command.aggregateId !== command.payload.challengeId
+    || command.commandType !== 'EXPIRE_CHALLENGE_SCHEDULING'
+  ) {
+    throw new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED');
+  }
+  return executeCriticalCommand(database, {
+    command,
+    ...(now ? { now } : {}),
+    mutate: async (transaction, context) => {
+      const row = await challengeRow(transaction, command.aggregateId, true);
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
+      const outcome = assertAcceptedChallengeSchedulingCanExpire({
+        state: row.state,
+        schedulingDeadlineAt: row.scheduling_deadline_at,
+        schedulingExtensionCount: row.scheduling_extension_count,
+        occurredAt: context.occurredAt,
+      });
+      const bookingResult = await sql<{
+        readonly booking_id: string;
+        readonly state: string;
+        readonly version: string;
+      }>`
+        select booking_id, state, version::text
+        from scheduling.bookings
+        where challenge_id = ${row.challenge_id}::uuid
+          and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        order by created_at desc, booking_id desc
+        limit 1
+        for update
+      `.execute(transaction);
+      const booking = bookingResult.rows[0] ?? null;
+      const occurredAt = context.occurredAt.toISOString();
+      const extendedDeadline = outcome === 'EXTEND'
+        ? extendedChallengeSchedulingDeadline(row.scheduling_deadline_at!)
+        : null;
+      if (extendedDeadline) {
+        await sql`
+          update competition.challenges
+          set state = 'ACCEPTED_UNSCHEDULED',
+            scheduling_deadline_at = ${extendedDeadline.toISOString()}::timestamptz,
+            scheduling_extension_count = 1, version = ${context.nextVersion},
+            updated_at = ${occurredAt}::timestamptz
+          where challenge_id = ${row.challenge_id}::uuid
+            and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+            and scheduling_extension_count = 0
+        `.execute(transaction);
+      } else {
+        await sql`
+          update competition.challenges
+          set state = 'CANCELLED_NO_FAULT', decided_at = ${occurredAt}::timestamptz,
+            version = ${context.nextVersion}, updated_at = ${occurredAt}::timestamptz
+          where challenge_id = ${row.challenge_id}::uuid
+            and state in ('ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING')
+            and scheduling_extension_count = 1
+        `.execute(transaction);
+        await sql`
+          update competition.challenge_participant_obligations
+          set released_at = ${occurredAt}::timestamptz,
+            release_reason = 'NO_CAPACITY_AFTER_SCHEDULING_EXTENSION'
+          where challenge_id = ${row.challenge_id}::uuid and released_at is null
+        `.execute(transaction);
+      }
+      if (booking) {
+        await sql`
+          update scheduling.bookings
+          set state = 'CANCELLED', cancelled_at = ${occurredAt}::timestamptz,
+            cancel_actor = null, cancel_reason = 'CHALLENGE_SCHEDULING_DEADLINE',
+            version = version + 1, updated_at = ${occurredAt}::timestamptz
+          where booking_id = ${booking.booking_id}::uuid
+            and state in ('SELECTING', 'HOST_CONFIRMATION_PENDING')
+        `.execute(transaction);
+      }
+      const response = projection(
+        await challengeRow(transaction, row.challenge_id),
+        row.initiator_user_id,
+      );
+      return {
+        responseStatus: 200,
+        response,
+        event: {
+          eventId: ids.eventId,
+          eventName: extendedDeadline
+            ? 'ChallengeSchedulingExtended'
+            : 'ChallengeCancelledNoCapacity',
+          schemaVersion: 1,
+          transitionId: extendedDeadline ? 'CH-24' : 'CH-25',
+          payload: {
+            challengeId: row.challenge_id,
+            bookingId: booking?.booking_id ?? null,
+            reason: extendedDeadline ? 'SCHEDULING_OPTIONS_EXPANDED' : 'NO_CAPACITY',
+            schedulingDeadlineAt: extendedDeadline?.toISOString() ?? null,
+            noForfeit: true,
+          },
+          metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+        },
+        ...(booking ? {
+          relatedEvents: [{
+            eventId: ids.bookingEventId,
+            eventName: 'BookingCancelledNoFault',
+            schemaVersion: 1,
+            aggregateType: 'Booking',
+            aggregateId: booking.booking_id,
+            aggregateVersion: Number(booking.version) + 1,
+            transitionId: null,
+            payload: {
+              bookingId: booking.booking_id,
+              challengeId: row.challenge_id,
+              reason: 'CHALLENGE_SCHEDULING_DEADLINE',
+              noForfeit: true,
+            },
+            metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
+          }],
+        } : {}),
+        audit: {
+          auditId: ids.auditId,
+          action: 'EXPIRE_CHALLENGE_SCHEDULING',
+          transitionId: extendedDeadline ? 'CH-24' : 'CH-25',
+          reasonCode: extendedDeadline ? 'SCHEDULING_OPTIONS_EXPANDED' : 'NO_CAPACITY',
+          beforeState: row.state,
+          afterState: extendedDeadline ? 'ACCEPTED_UNSCHEDULED' : 'CANCELLED_NO_FAULT',
+          metadata: { bookingId: booking?.booking_id ?? null,
+            schedulingDeadlineAt: extendedDeadline?.toISOString() ?? null, noForfeit: true },
+        },
+        outbox: [
+          {
+            messageId: ids.outboxMessageId,
+            topic: extendedDeadline
+              ? 'competition.challenge.scheduling-extended.v1'
+              : 'competition.challenge.cancelled-no-capacity.v1',
+            payload: {
+              challengeId: row.challenge_id,
+              competitionId: row.competition_id,
+              bookingId: booking?.booking_id ?? null,
+              ...(extendedDeadline ? { timer: {
+                commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+                aggregateType: 'Challenge', aggregateId: row.challenge_id,
+                expectedState: 'ACCEPTED_UNSCHEDULED', expectedVersion: context.nextVersion,
+                deadlineAt: extendedDeadline.toISOString(), policyVersion: CHALLENGE_POLICY_VERSION,
+                idempotencyKey: `challenge:${row.challenge_id}:expire-scheduling:v${context.nextVersion}`,
+              } } : {}),
+              noForfeit: true,
+            },
+          },
+          ...(booking ? [{
+            messageId: ids.bookingOutboxMessageId,
+            topic: 'scheduling.booking.cancelled-no-fault.v1',
+            sourceEventId: ids.bookingEventId,
+            payload: {
+              bookingId: booking.booking_id,
+              challengeId: row.challenge_id,
+              reason: 'CHALLENGE_SCHEDULING_DEADLINE',
+              noForfeit: true,
+            },
+          }] : []),
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            payload: {
+              notifications: [row.pair_low_id, row.pair_high_id].map(
+                (recipientUserId, index) => ({
+                  notificationId: ids.notificationIds[index]!,
+                  recipientUserId,
+                  category: 'MANDATORY',
+                  renderKey: extendedDeadline
+                    ? 'challenge.scheduling-extended'
+                    : 'challenge.cancelled-no-capacity',
+                  actionTarget: { type: 'CHAT', chatId: row.source_chat_id },
+                  payload: { challengeId: row.challenge_id, noForfeit: true },
+                  deadlineAt: extendedDeadline?.toISOString() ?? null,
+                }),
+              ),
+            },
+          },
+        ],
+      };
+    },
+  });
 }
 
 export async function expireOptionalChallenge(
@@ -1207,6 +2785,7 @@ export async function expireOptionalChallenge(
     || command.actor.id !== null
     || command.aggregateType !== 'Challenge'
     || command.aggregateId !== command.payload.challengeId
+    || !['EXPIRE_OPTIONAL_CHALLENGE', 'EXPIRE_MANDATORY_CHALLENGE'].includes(command.commandType)
   ) {
     throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
   }
@@ -1215,7 +2794,16 @@ export async function expireOptionalChallenge(
     ...(now ? { now } : {}),
     mutate: async (transaction, context) => {
       const row = await challengeRow(transaction, command.aggregateId, true);
+      await assertNoActivePlatformIncidentForTimer(transaction, {
+        commandType: command.commandType,
+        aggregateId: command.aggregateId,
+        occurredAt: context.occurredAt,
+      });
+      await assertChallengeCompetitionOperational(transaction, row.competition_id);
       if (row.response_policy === 'MANDATORY') {
+        if (command.commandType !== 'EXPIRE_MANDATORY_CHALLENGE') {
+          throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
+        }
         assertMandatoryChallengeCanBeExpired(
           row.state,
           row.response_deadline_at,
@@ -1235,6 +2823,9 @@ export async function expireOptionalChallenge(
       if (row.response_policy !== 'OPTIONAL') {
         throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
       }
+      if (command.commandType !== 'EXPIRE_OPTIONAL_CHALLENGE') {
+        throw new ChallengeConflictError('CHALLENGE_NOT_AWAITING_RESPONSE');
+      }
       assertOptionalChallengeCanBeExpired(row.state, row.response_deadline_at, context.occurredAt);
       await sql`
         update competition.challenges
@@ -1251,7 +2842,7 @@ export async function expireOptionalChallenge(
         response,
         event: {
           eventId: ids.eventId,
-          eventName: 'ChallengeExpiredNoFault',
+          eventName: 'ChallengeResponseExpired',
           schemaVersion: 1,
           transitionId: 'CH-06',
           payload: { challengeId: row.challenge_id, noLoss: true, pairQuietCreated: false },
@@ -1289,6 +2880,23 @@ export async function ensureLocalPilotCompetition(
         'FOUNDING_OPEN', 'ACTIVE', 1, ${fixture.occurredAt}::timestamptz,
         ${fixture.occurredAt}::timestamptz
       ) on conflict (competition_id) do nothing
+    `.execute(transaction);
+    await sql`
+      insert into platform.domain_events (
+        event_id, event_name, event_version, aggregate_type, aggregate_id,
+        aggregate_version, transition_id, correlation_id, actor_id, actor_type,
+        actor_roles, actor_scope_ids, occurred_at, idempotency_key_hash, payload, metadata
+      ) values (
+        md5('competition-created:' || ${fixture.competitionId})::uuid,
+        'CompetitionCreated', 1, 'Competition', ${fixture.competitionId}::uuid, 1, null,
+        md5('competition-created-correlation:' || ${fixture.competitionId})::uuid,
+        ${fixture.centralActorId}::uuid, 'SYSTEM', '["CENTRAL_ADMIN"]'::jsonb,
+        '{}'::uuid[], ${fixture.occurredAt}::timestamptz,
+        md5('competition-created:' || ${fixture.competitionId}),
+        ${JSON.stringify({ competitionId: fixture.competitionId,
+          communityId: fixture.communityId, ageDivision: 'ADULT', bootstrap: true })}::jsonb,
+        ${JSON.stringify({ policyVersion: 'community-lifecycle-mvp-v1', bootstrap: true })}::jsonb
+      ) on conflict do nothing
     `.execute(transaction);
     for (const membership of fixture.memberships) {
       await sql`

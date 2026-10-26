@@ -48,7 +48,7 @@ describe('Discovery hard gates and transparent ordering', () => {
     });
   });
 
-  it('[AC-012] exhausts radius before city expansion and uses stable visible signals', () => {
+  it('[AC-012][AC-154] exhausts radius before city expansion and uses stable visible signals', () => {
     const candidates: DiscoveryRankSignals[] = [
       {
         candidateUserId: 'outside-inbound',
@@ -77,13 +77,39 @@ describe('Discovery hard gates and transparent ordering', () => {
         recentActivityBucket: 0,
         responseSpeedBucket: 0,
       },
+      {
+        candidateUserId: 'inside-tie-b',
+        geographyTier: 'WITHIN_RADIUS',
+        inboundLike: false,
+        sportOverlap: 'NONE',
+        distanceKm: 8,
+        recentActivityBucket: 0,
+        responseSpeedBucket: 0,
+      },
+      {
+        candidateUserId: 'inside-tie-a',
+        geographyTier: 'WITHIN_RADIUS',
+        inboundLike: false,
+        sportOverlap: 'NONE',
+        distanceKm: 8,
+        recentActivityBucket: 0,
+        responseSpeedBucket: 0,
+      },
     ];
 
     expect(DISCOVERY_RANKING_CONFIG_VERSION).toBe('discovery-mvp-v1');
-    expect(rankDiscoveryCandidates(candidates).map((candidate) => candidate.candidateUserId)).toEqual([
+    const ranked = rankDiscoveryCandidates(candidates).map((candidate) => candidate.candidateUserId);
+    expect(ranked).toEqual([
       'inside-inbound',
       'inside-secondary',
+      'inside-tie-a',
+      'inside-tie-b',
       'outside-inbound',
+    ]);
+    expect(rankDiscoveryCandidates(candidates).map((candidate) => candidate.candidateUserId))
+      .toEqual(ranked);
+    expect(candidates.map((candidate) => candidate.candidateUserId)).toEqual([
+      'outside-inbound', 'inside-secondary', 'inside-inbound', 'inside-tie-b', 'inside-tie-a',
     ]);
   });
 });

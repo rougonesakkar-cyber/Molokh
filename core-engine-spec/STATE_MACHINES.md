@@ -218,9 +218,12 @@ States: `SCHEDULED`, `READY_FOR_COACH`, `IN_PROGRESS`, `ENDED`, `CANCELLED`.
 | S-08 | SCHEDULED/READY_FOR_COACH | `REPLACE_COACH_FROM_BOOKING` / SYSTEM | B-31 committed; new Coach valid; no actual start; if window open, within operational grace | same state | `SessionCoachReplaced` | append assignment revision; preserve competitive snapshot when already open | actual start/grace | no |
 | S-09 | READY_FOR_COACH | `START_SESSION` / assigned/guest COACH | authorized non-participant Coach; competitive snapshot exists; within operational window | IN_PROGRESS | `SessionStarted` | set actual_start_at; Challenge→IN_SESSION; enable attendance/result path | operational window | no |
 | S-10 | READY_FOR_COACH | `RECORD_FIRST_ATTENDANCE` / assigned/guest COACH | S-09 guards plus valid Attendance payload | IN_PROGRESS | `SessionStarted`, `AttendanceRecorded` | atomically set actual start and first attendance; Challenge→IN_SESSION | operational window | no |
-| S-11 | READY_FOR_COACH | `FAIL_COACH_OR_VENUE` / ADMIN/CENTRAL or SYSTEM from confirmed operation | no actual start; Coach/Venue failed; equivalent replacement unavailable by grace | CANCELLED | `SessionFailedExternal`, `BookingCancelledNoFault` | Official Challenge returns scheduling with EXTERNAL cause/no user count; Training closes no-fault; repeated Venue failure opens operational Case | configured grace/review | yes |
+| S-11 | READY_FOR_COACH | `FAIL_COACH_OR_VENUE` / assigned COACH, scoped ADMIN, CENTRAL or SYSTEM from confirmed operation | no actual start; Coach/Venue failed; equivalent replacement unavailable by grace | CANCELLED | `SessionFailedExternal`, `BookingCancelledNoFault` | Official Challenge returns scheduling with EXTERNAL cause/no user count; Training closes no-fault; repeated Venue failure opens operational Case | configured grace/review | yes |
+| S-12 | SCHEDULED | `CONVERT_PAIR_TO_SOLO` / SYSTEM after B-12 | remaining Athlete and Coach confirmed; before actual start | SCHEDULED | `SessionConvertedToSolo` | retain time/Coach; only confirmed Athlete remains active; no Competition effect | min(1h,start) | no |
+| S-13 | SCHEDULED | `CONVERT_OFFICIAL_TO_TRAINING` / SYSTEM after B-28 | both Athletes and Coach/host confirmed; before actual start | SCHEDULED | `SessionConvertedToTraining` | clear live Challenge link; retain immutable lineage through retention record; no Competition effect | min(1h,start) | no |
 
 Stakes замораживаются в S-02 на logical `scheduled_start_at`; это не `actual_start_at`. Actual start фиксируется только S-09/S-10, а `recorded_at` отражает момент Coach/system commit (`ASSUMPTION A-05`).
+S-07, S-08 while still `SCHEDULED`, S-12 and S-13 advance the Session version and therefore atomically reissue the scheduled-window timer with that new exact version. The previous job is intentionally stale; the replacement preserves the original logical boundary.
 
 ## 11. Competition phase и availability
 
@@ -461,6 +464,26 @@ States: `ACTIVE`, `RESTRICTED`, `CLOSED`.
 
 Account closure follows the OQ-207 policy: 30-day recovery, then public pseudonymization with immutable competition/audit history preserved. Raw `DELETE User` is prohibited.
 
+### 22.1. Account closure request
+
+States: `REQUESTED`, `CANCELLED`, `EXECUTED`.
+
+| ID | From | Command / actor | Guards | To | Event | Side effects | Timeout | Terminal outcome |
+|---|---|---|---|---|---|---|---|---|
+| ACR-01 | — | `REQUEST_ACCOUNT_CLOSURE` / OWN User | User not CLOSED; no other live request | REQUESTED | `AccountClosureRequested` | record policy version and recovery_until=+30d; request or reuse one live self-export when selected | 30d recovery | no |
+| ACR-02 | REQUESTED | `CANCEL_ACCOUNT_CLOSURE` / OWN User | strictly before recovery_until | CANCELLED | `AccountClosureCancelled` | retain any independently prepared export until its own retention deadline | — | yes |
+| ACR-03 | REQUESTED | `CLOSE_ACCOUNT` / CENTRAL | recovery elapsed; no accepted obligation, held status, active Session/Membership/role/FIFO entry; reason required | EXECUTED | `AccountClosureExecuted` | apply U-04 atomically; revoke current verification/session projection; preserve minimized lineage | — | yes |
+
+### 22.2. Account data export
+
+States: `REQUESTED`, `READY`, `EXPIRED`.
+
+| ID | From | Command / actor | Guards | To | Event | Side effects | Timeout | Terminal outcome |
+|---|---|---|---|---|---|---|---|---|
+| ADE-01 | — | `REQUEST_ACCOUNT_EXPORT` / OWN User | User not CLOSED; no live export | REQUESTED | `AccountDataExportRequested` | enqueue asynchronous preparation; closure flow reuses an existing live export | worker | no |
+| ADE-02 | REQUESTED | `PREPARE_ACCOUNT_EXPORT` / SYSTEM | exact state/version | READY | `AccountDataExportPrepared` | store private JSON payload and SHA-256; schedule expiry at ready_at+48h | 48h | no |
+| ADE-03 | READY | `EXPIRE_ACCOUNT_EXPORT` / SYSTEM | expires_at reached; exact state/version | EXPIRED | `AccountDataExportExpired` | delete payload; retain checksum, policy version and audit/event lineage | — | yes |
+
 ## 23. Venue and Community
 
 ### 23.1. Venue
@@ -487,6 +510,7 @@ States: `ACTIVE`, `PAUSED`, `CLOSING`, `CLOSED`.
 | CO-03 | PAUSED | `REACTIVATE_COMMUNITY` / CENTRAL | cause resolved | ACTIVE | `CommunityReactivated` | CA-02; extend pausable deadlines | — | no |
 | CO-04 | ACTIVE/PAUSED | `SCHEDULE_COMMUNITY_CLOSURE` / CENTRAL | versioned Closure Plan; future effective_at unless emergency; confirmed Session dispositions recorded | CLOSING | `CommunityClosureScheduled` | execute CA-03 for each Competition; notify members; no-fault close pending/unconfirmed processes; retain only plan-approved safe confirmed Sessions | effective_at/plan | no |
 | CO-05 | CLOSING | `FINALIZE_COMMUNITY_CLOSURE` / CENTRAL or SYSTEM | effective_at reached; retained Session Result/Appeal paths resolved or explicitly transferred to archival service path | CLOSED | `CommunityClosed` | C-11 Competitions; M-11 Memberships; close status tenures without W/L/Succession; preserve history | plan completion | yes |
+| CO-06 | ACTIVE/PAUSED | `CHANGE_COMMUNITY_PAIR_COOLDOWN` / scoped GYM_ADMIN, PRIMARY_ADMIN or CENTRAL | active role/account; expected Community version; changed integer 7–30d | state unchanged | `CommunityConfigurationChanged` | append immutable public configuration version and switch current pointer; existing Challenge/Session/Result/Cooldown snapshots unchanged | — | no |
 
 ## 24. Block and pair suppression
 
@@ -532,6 +556,11 @@ States: `ACTIVE`, `HIDDEN_BY_MODERATION`. User-local deletion is a visibility pr
 | MSG-03 | ACTIVE/HIDDEN_BY_MODERATION | `DELETE_FOR_SELF` / participant | message belongs to participant Chat | same | `ChatMessageHiddenForUser` | upsert own visibility row only; other copies/audit unchanged | — | no |
 | MSG-04 | ACTIVE | `REPORT_MESSAGE` / participant | open report allowed; reporter != sender | ACTIVE | `ChatMessageReported` | freeze edit; copy original/revisions to Case evidence; hide reporter identity | — | no |
 | MSG-05 | ACTIVE | `HIDE_MESSAGE_FOR_ALL` / CENTRAL | decided Case; reason; reviewer no conflict | HIDDEN_BY_MODERATION | `ChatMessageHiddenByModeration` | remove from participant projections; retain originals in Case/audit | — | yes logical |
+
+Retention cleanup is a storage lifecycle, not a user-visible ChatMessage state transition. After
+the effective 12-month personal or 3-year service inactivity period, an uncaptured revision payload
+is removed in a bounded audited batch. Its SHA-256, deletion time and policy version remain; a
+message/report captured by a Case is excluded and canonical business/audit history is untouched.
 
 ## 26. StatusTenure lifecycle
 

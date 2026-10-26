@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACCEPTED_CHALLENGE_SCHEDULING_DAYS,
+  CHALLENGE_SCHEDULING_EXTENSION_DAYS,
   ChallengeConflictError,
   assertAcceptedChallengeCanStartBooking,
+  assertAcceptedChallengeSchedulingCanExpire,
   assertChallengeBookingCanBeConfirmed,
   assertChallengeSessionCanEnd,
   assertChallengeSessionCanStart,
@@ -15,10 +17,18 @@ import {
   assertOptionalChallengeCanBeDeclined,
   assertOptionalChallengeCanBeExpired,
   assertOptionalChallengeCanBeWithdrawn,
+  extendedChallengeSchedulingDeadline,
   challengeResultReminderDeadlines,
+  challengeRescheduleLimitForfeitWinner,
   effectiveChallengeStakeAtSessionWindow,
+  titleChallengeCompetitiveContextIsCurrent,
+  titleSessionRequiresCompetitiveInvalidation,
   mandatoryChallengeReminderDeadlines,
   mandatoryChallengeResponseDeadline,
+  assertMutualChallengeRescheduleCanBeProposed,
+  externalChallengeRescheduleCount,
+  nextAthleteChallengeRescheduleCount,
+  nextMutualChallengeRescheduleCount,
   optionalChallengePairQuietEndsAt,
   optionalChallengeReminderDeadlines,
   optionalChallengeResponseDeadline,
@@ -45,7 +55,7 @@ const eligible = {
 };
 
 describe('Official Challenge policy', () => {
-  it('uses transparent 12h/24h reminders, 48h response and 14d scheduling deadlines', () => {
+  it('[AC-172] uses transparent 12h/24h reminders, 48h response and 14d scheduling deadlines', () => {
     const startedAt = new Date('2026-09-08T10:00:00.000Z');
     expect(optionalChallengeReminderDeadlines(startedAt).map((value) => value.toISOString())).toEqual([
       '2026-09-08T22:00:00.000Z',
@@ -61,15 +71,22 @@ describe('Official Challenge policy', () => {
     ]);
   });
 
-  it('gives the current Contender 72 hours to answer a mandatory FIFO Challenge', () => {
+  it('[AC-046][AC-053] gives Champion a 48h reminder and enforces the 72h TITLE deadline', () => {
     const createdAt = new Date('2026-09-08T10:00:00.000Z');
     expect(mandatoryChallengeReminderDeadlines(createdAt).map((value) => value.toISOString())).toEqual([
       '2026-09-10T10:00:00.000Z',
     ]);
-    expect(mandatoryChallengeResponseDeadline(createdAt).toISOString()).toBe('2026-09-11T10:00:00.000Z');
+    const deadline = mandatoryChallengeResponseDeadline(createdAt);
+    expect(deadline.toISOString()).toBe('2026-09-11T10:00:00.000Z');
+    expect(() => assertMandatoryChallengeCanBeExpired(
+      'AWAITING_RESPONSE', deadline, new Date('2026-09-11T09:59:59.999Z'),
+    )).toThrowError(new ChallengeConflictError('CHALLENGE_RESPONSE_NOT_DUE'));
+    expect(() => assertMandatoryChallengeCanBeExpired(
+      'AWAITING_RESPONSE', deadline, deadline,
+    )).not.toThrow();
   });
 
-  it('allows an Ordinary or Champion to invite an Ordinary only through an active Match', () => {
+  it('[AC-042][AC-043][AC-049][AC-073] enforces the direct OPEN pair matrix without putting Champion status at stake', () => {
     expect(() => assertDirectOpenChallengeCanBeCreated(eligible)).not.toThrow();
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, initiatorStatus: 'CHAMPION' })).not.toThrow();
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, activeMatch: false })).toThrowError(
@@ -78,12 +95,42 @@ describe('Official Challenge policy', () => {
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, recipientStatus: 'CHAMPION' })).toThrowError(
       new ChallengeConflictError('PAIR_MATRIX_DENIED'),
     );
+    expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, initiatorStatus: 'CONTENDER' })).toThrowError(
+      new ChallengeConflictError('PAIR_MATRIX_DENIED'),
+    );
+    expect(effectiveChallengeStakeAtSessionWindow({
+      plannedStake: 'NONE',
+      participantUserIds: ['champion', 'ordinary'],
+      championUserId: 'champion',
+      contenderUserId: 'someone-else',
+    })).toBe('NONE');
   });
 
-  it('caps unanswered optional invitations without treating them as accepted obligations', () => {
+  it('[AC-045][AC-056][AC-057] rejects inactive Membership, live-pair duplication and pair Cooldown', () => {
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      initiatorMembershipActive: false,
+    })).toThrowError(new ChallengeConflictError('MEMBERSHIP_NOT_ACTIVE'));
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      livePairChallengeExists: true,
+    })).toThrowError(new ChallengeConflictError('PAIR_CHALLENGE_EXISTS'));
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      pairCooldownActive: true,
+    })).toThrowError(new ChallengeConflictError('PAIR_COOLDOWN_ACTIVE'));
+  });
+
+  it('[AC-187] caps unanswered optional invitations and exposes pair-quiet retry time', () => {
     expect(() => assertDirectOpenChallengeCanBeCreated({ ...eligible, outgoingAwaitingResponseCount: 3 })).toThrowError(
-      new ChallengeConflictError('OPTIONAL_INVITATION_LIMIT'),
+      new ChallengeConflictError('OPTIONAL_INVITE_LIMIT'),
     );
+    const retryAt = new Date('2026-09-10T10:00:00.000Z');
+    expect(() => assertDirectOpenChallengeCanBeCreated({
+      ...eligible,
+      pairQuietActive: true,
+      pairQuietUntil: retryAt,
+    })).toThrowError(new ChallengeConflictError('OPTIONAL_PAIR_QUIET', retryAt.toISOString()));
   });
 
   it('accepts only a timely recipient response with required acknowledgement and no active obligation', () => {
@@ -171,6 +218,88 @@ describe('Official Challenge policy', () => {
     })).toThrowError(new ChallengeConflictError('CHALLENGE_OBLIGATION_MISSING'));
   });
 
+  it('[AC-061] counts only a participant reschedule before confirmed Booking', () => {
+    const input = {
+      state: 'BOOKING_PENDING' as const,
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const,
+      userRescheduleCount: 0,
+    };
+    expect(nextAthleteChallengeRescheduleCount(input)).toBe(1);
+    expect(nextAthleteChallengeRescheduleCount({
+      ...input, state: 'ACCEPTED_UNSCHEDULED', actorUserId: 'athlete-b',
+    })).toBe(1);
+    expect(() => nextAthleteChallengeRescheduleCount({
+      ...input, actorUserId: 'outsider',
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED'));
+    expect(() => nextAthleteChallengeRescheduleCount({
+      ...input, state: 'BOOKED',
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED'));
+    expect(() => nextAthleteChallengeRescheduleCount({
+      ...input, userRescheduleCount: 2,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
+  });
+
+  it('[AC-064] requires explicit consequences before the third culpable reschedule forfeits', () => {
+    const input = {
+      state: 'BOOKING_PENDING' as const,
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const,
+      userRescheduleCount: 2,
+      consequencesConfirmed: true,
+    };
+    expect(challengeRescheduleLimitForfeitWinner(input)).toBe('athlete-b');
+    expect(() => challengeRescheduleLimitForfeitWinner({
+      ...input, consequencesConfirmed: false,
+    })).toThrowError(
+      new ChallengeConflictError('CHALLENGE_RESCHEDULE_FORFEIT_CONFIRMATION_REQUIRED'),
+    );
+    expect(() => challengeRescheduleLimitForfeitWinner({
+      ...input, actorUserId: 'outsider',
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_PARTICIPANT_REQUIRED'));
+    expect(() => challengeRescheduleLimitForfeitWinner({
+      ...input, userRescheduleCount: 1,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
+  });
+
+  it('[AC-062] counts a mutual reschedule only after the peer confirms', () => {
+    const proposal = {
+      state: 'BOOKED' as const,
+      actorUserId: 'athlete-a',
+      participantUserIds: ['athlete-a', 'athlete-b'] as const,
+      userRescheduleCount: 0,
+      requestExistsForCurrentVersion: false,
+    };
+    expect(() => assertMutualChallengeRescheduleCanBeProposed(proposal)).not.toThrow();
+    expect(() => assertMutualChallengeRescheduleCanBeProposed({
+      ...proposal, requestExistsForCurrentVersion: true,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_REQUEST_EXISTS'));
+    expect(nextMutualChallengeRescheduleCount({
+      state: 'BOOKED', proposedByUserId: 'athlete-a', confirmedByUserId: 'athlete-b',
+      participantUserIds: proposal.participantUserIds, userRescheduleCount: 0,
+    })).toBe(1);
+    expect(() => nextMutualChallengeRescheduleCount({
+      state: 'BOOKED', proposedByUserId: 'athlete-a', confirmedByUserId: 'athlete-a',
+      participantUserIds: proposal.participantUserIds, userRescheduleCount: 0,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_MUTUAL_RESCHEDULE_PEER_REQUIRED'));
+    expect(() => nextMutualChallengeRescheduleCount({
+      state: 'BOOKED', proposedByUserId: 'athlete-a', confirmedByUserId: 'athlete-b',
+      participantUserIds: proposal.participantUserIds, userRescheduleCount: 2,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_LIMIT_REACHED'));
+  });
+
+  it('[AC-063] keeps the user counter unchanged for an external booked-Session failure', () => {
+    expect(externalChallengeRescheduleCount({
+      state: 'BOOKED', activeObligationCount: 2, userRescheduleCount: 2,
+    })).toBe(2);
+    expect(() => externalChallengeRescheduleCount({
+      state: 'IN_SESSION', activeObligationCount: 2, userRescheduleCount: 1,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_RESCHEDULE_NOT_ALLOWED'));
+    expect(() => externalChallengeRescheduleCount({
+      state: 'BOOKED', activeObligationCount: 1, userRescheduleCount: 1,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_OBLIGATION_MISSING'));
+  });
+
   it('confirms only the Booking currently owned by the accepted Challenge', () => {
     expect(() => assertChallengeBookingCanBeConfirmed({
       state: 'BOOKING_PENDING',
@@ -182,7 +311,36 @@ describe('Official Challenge policy', () => {
     })).toThrowError(new ChallengeConflictError('CHALLENGE_BOOKING_NOT_PENDING'));
   });
 
-  it('freezes the effective stake from status holders at the Session window', () => {
+  it('expires accepted scheduling only at its stored deadline and without a participant action', () => {
+    const deadline = new Date('2026-09-22T11:00:00.000Z');
+    expect(assertAcceptedChallengeSchedulingCanExpire({
+      state: 'BOOKING_PENDING',
+      schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 0,
+      occurredAt: deadline,
+    })).toBe('EXTEND');
+    expect(assertAcceptedChallengeSchedulingCanExpire({
+      state: 'ACCEPTED_UNSCHEDULED', schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 1, occurredAt: deadline,
+    })).toBe('EXPIRE_NO_CAPACITY');
+    expect(CHALLENGE_SCHEDULING_EXTENSION_DAYS).toBe(7);
+    expect(extendedChallengeSchedulingDeadline(deadline).toISOString())
+      .toBe('2026-09-29T11:00:00.000Z');
+    expect(() => assertAcceptedChallengeSchedulingCanExpire({
+      state: 'ACCEPTED_UNSCHEDULED',
+      schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 0,
+      occurredAt: new Date('2026-09-22T10:59:59.999Z'),
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_SCHEDULING_NOT_DUE'));
+    expect(() => assertAcceptedChallengeSchedulingCanExpire({
+      state: 'BOOKED',
+      schedulingDeadlineAt: deadline,
+      schedulingExtensionCount: 0,
+      occurredAt: deadline,
+    })).toThrowError(new ChallengeConflictError('CHALLENGE_NOT_ACCEPTED'));
+  });
+
+  it('[AC-073] freezes the effective stake from status holders at the Session window', () => {
     const base = {
       plannedStake: 'NONE' as const,
       participantUserIds: ['athlete-a', 'athlete-b'] as const,
@@ -205,6 +363,38 @@ describe('Official Challenge policy', () => {
       championUserId: 'athlete-a',
       contenderUserId: 'someone-else',
     })).toBe('NONE');
+  });
+
+  it('[AC-072] detects a stale planned TITLE context before the Session window', () => {
+    const base = {
+      plannedStake: 'TITLE' as const,
+      participantUserIds: ['champion', 'contender'] as const,
+      championUserId: 'champion',
+      contenderUserId: 'contender',
+    };
+    expect(titleChallengeCompetitiveContextIsCurrent(base)).toBe(true);
+    expect(titleChallengeCompetitiveContextIsCurrent({
+      ...base,
+      contenderUserId: 'new-contender',
+    })).toBe(false);
+    expect(titleChallengeCompetitiveContextIsCurrent({
+      ...base,
+      championUserId: null,
+    })).toBe(false);
+    expect(titleChallengeCompetitiveContextIsCurrent({
+      ...base,
+      plannedStake: 'NONE',
+    })).toBe(true);
+    expect(titleSessionRequiresCompetitiveInvalidation({
+      ...base,
+      contenderUserId: 'new-contender',
+      actualStartAt: null,
+    })).toBe(true);
+    expect(titleSessionRequiresCompetitiveInvalidation({
+      ...base,
+      contenderUserId: 'new-contender',
+      actualStartAt: '2026-10-02T10:00:00.000Z',
+    })).toBe(false);
   });
 
   it('requires a booked obligated Challenge and its immutable snapshot before actual Start', () => {

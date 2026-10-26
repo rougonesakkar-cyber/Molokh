@@ -63,6 +63,7 @@ interface StatusReleaseContextRow {
   readonly champion_user_id: string | null;
   readonly contender_user_id: string | null;
   readonly account_active: boolean;
+  readonly sensitive_action_held: boolean;
   readonly membership_active: boolean;
   readonly has_active_obligation: boolean;
   readonly has_blocking_live_challenge: boolean;
@@ -107,9 +108,17 @@ async function releaseContext(
     select competitive.competition_id, competitive.version::text as competition_version,
       competitive.status_version::text as status_version, competitive.phase,
       competitive.availability,
-      competitive.integrity_hold_case_id is not null as integrity_hold_active,
+      (competitive.integrity_hold_case_id is not null or exists (
+        select 1 from competition.process_holds as process_hold
+        where process_hold.aggregate_type = 'COMPETITION'
+          and process_hold.aggregate_id = competitive.competition_id
+          and process_hold.reason = 'STATUS_REVIEW' and process_hold.state = 'ACTIVE'
+      )) as integrity_hold_active,
       competitive.champion_user_id, competitive.contender_user_id,
       athlete.account_state = 'ACTIVE' as account_active,
+      exists (select 1 from identity.user_sensitive_action_holds as sensitive_hold
+        where sensitive_hold.user_id = athlete.user_id and sensitive_hold.state = 'ACTIVE')
+        as sensitive_action_held,
       exists (
         select 1 from community.community_memberships as membership
         where membership.community_id = competitive.community_id
@@ -206,6 +215,7 @@ function assertContextEligible(row: StatusReleaseContextRow | null): asserts row
     integrityHoldActive: row.integrity_hold_active,
     hasActiveObligation: row.has_active_obligation,
     hasBlockingLiveChallenge: row.has_blocking_live_challenge,
+    sensitiveActionHeld: row.sensitive_action_held,
   });
 }
 
@@ -368,7 +378,8 @@ export async function confirmStatusRelease(
       const migratedResult = await sql<{ readonly queue_entry_id: string }>`
         update competition.challenge_queue_entries
         set target_status = ${targetStatus}, kind = 'GENESIS_CANDIDATE', state = 'WAITING',
-          bound_holder_user_id = null, reconfirmation_deadline_at = null,
+          bound_holder_user_id = null, direct_challenge_mode = null,
+          reconfirmation_deadline_at = null,
           updated_at = ${context.occurredAt.toISOString()}::timestamptz
         where competition_id = ${competitive.competition_id}::uuid
           and kind = 'DIRECT_STATUS'

@@ -64,6 +64,7 @@ export interface AppealEffectIds {
   readonly statusCompensationId?: string;
   readonly statusEventId?: string;
   readonly cooldownEventId?: string;
+  readonly genesisEventId?: string;
   readonly notificationOutboxMessageId?: string;
   readonly notificationIds?: readonly string[];
 }
@@ -170,6 +171,7 @@ interface AppealRow {
   readonly challenge_version: string;
   readonly cycle_no: number;
   readonly competition_id: string;
+  readonly competition_phase: string;
   readonly competition_version: string;
   readonly competition_status_version: string;
   readonly current_champion_user_id: string | null;
@@ -231,12 +233,20 @@ async function appealRows(
       appeal.version::text as appeal_version,
       result.state as result_state, result.version::text as result_version,
       result.appeal_deadline_at,
-      result.recorded_outcome_code, result.winner_user_id, result.loser_user_id,
+      coalesce(correction_decision.effective_outcome_code,
+        result.recorded_outcome_code) as recorded_outcome_code,
+      case when correction_decision.decision_id is not null
+        then correction_decision.effective_winner_user_id
+        else result.winner_user_id end as winner_user_id,
+      case when correction_decision.decision_id is not null
+        then correction_decision.effective_loser_user_id
+        else result.loser_user_id end as loser_user_id,
       decision.effective_outcome_code, decision.effective_winner_user_id,
       challenge.pair_low_id, challenge.pair_high_id, result.coach_user_id,
       challenge.state as challenge_state, challenge.version::text as challenge_version,
       challenge.cycle_no,
-      competition.competition_id, competition.version::text as competition_version,
+      competition.competition_id, competition.phase as competition_phase,
+      competition.version::text as competition_version,
       competition.status_version::text as competition_status_version,
       competition.champion_user_id as current_champion_user_id,
       competition.contender_user_id as current_contender_user_id,
@@ -259,6 +269,8 @@ async function appealRows(
     left join competition.pair_cooldowns as cooldown
       on cooldown.source_result_id = result.result_id and cooldown.invalidated_at is null
     left join competition.appeal_decisions as decision on decision.appeal_id = appeal.appeal_id
+    left join competition.technical_correction_decisions as correction_decision
+      on correction_decision.result_id = result.result_id
     left join competition.appeal_sla_extensions as extension on extension.appeal_id = appeal.appeal_id
     left join competition.appeal_withdrawals as withdrawal on withdrawal.appeal_id = appeal.appeal_id
     where (${appealId ?? null}::uuid is null or appeal.appeal_id = ${appealId ?? null}::uuid)
@@ -890,10 +902,24 @@ export async function decideAppeal(
         where result_id = ${row.result_id}::uuid and state = 'UNDER_APPEAL'
       `.execute(transaction);
 
-      const schedulingDeadlineAt = normalized.decision === 'REPEAT'
+      const genesisStake = ['GENESIS_CHAMPION', 'GENESIS_CONTENDER']
+        .includes(row.effective_stake);
+      const genesisRepeat = genesisStake && (
+        normalized.decision === 'REPEAT'
+        || (normalized.decision === 'UPHOLD'
+          && ['DRAW', 'NO_CONTEST'].includes(normalized.effectiveOutcomeCode))
+      );
+      const repeatScheduling = normalized.decision === 'REPEAT' || genesisRepeat;
+      const schedulingDeadlineAt = repeatScheduling
         ? acceptedChallengeSchedulingDeadline(context.occurredAt)
         : null;
-      if (normalized.decision === 'REPEAT') {
+      const genesisPhase = row.effective_stake === 'GENESIS_CHAMPION'
+        ? 'FOUNDING_CHALLENGE'
+        : 'CONTENDER_GENESIS';
+      if (genesisRepeat && row.competition_phase !== genesisPhase) {
+        throw new ResultConflictError('COMPETITION_STATUS_SNAPSHOT_STALE');
+      }
+      if (repeatScheduling) {
         await sql`
           update competition.challenges
           set state = 'ACCEPTED_UNSCHEDULED', cycle_no = cycle_no + 1,
@@ -1008,7 +1034,6 @@ export async function decideAppeal(
             payload: {
               compensationId: statusIds.statusCompensationId,
               compensatesTransitionId: row.transition_id, decisionId: required.decisionId,
-              reason: normalized.reason,
               from: { championUserId: row.current_champion_user_id, contenderUserId: row.current_contender_user_id },
               to: { championUserId: toChampion, contenderUserId: toContender },
               correctedTransitionType: correctedType, statusVersion: competitionStatusVersion,
@@ -1034,6 +1059,36 @@ export async function decideAppeal(
         });
       }
 
+      if (genesisRepeat) {
+        const genesisEventId = requiredIds(ids, ['genesisEventId'] as const).genesisEventId;
+        const currentCompetitionVersion = Number(row.competition_version)
+          + Number(row.transition_id !== null);
+        const genesisAggregateVersion = currentCompetitionVersion + 1;
+        await sql`
+          update competition.competitions
+          set version = ${genesisAggregateVersion},
+            updated_at = ${context.occurredAt.toISOString()}::timestamptz
+          where competition_id = ${row.competition_id}::uuid
+            and version = ${currentCompetitionVersion}
+        `.execute(transaction);
+        relatedEvents.push({
+          eventId: genesisEventId,
+          eventName: 'GenesisRepeatRequired', schemaVersion: 1,
+          aggregateType: 'Competition', aggregateId: row.competition_id,
+          aggregateVersion: genesisAggregateVersion,
+          transitionId: row.effective_stake === 'GENESIS_CHAMPION' ? 'C-05' : 'C-10',
+          payload: {
+            competitionId: row.competition_id, challengeId: row.challenge_id,
+            resultId: row.result_id, appealId: row.appeal_id,
+            decisionId: required.decisionId, stake: row.effective_stake,
+            fromPhase: genesisPhase, toPhase: genesisPhase,
+            cycleNo: row.cycle_no + 1,
+            schedulingDeadlineAt: schedulingDeadlineAt!.toISOString(),
+          },
+          metadata: { policyVersion: RESULT_POLICY_VERSION },
+        });
+      }
+
       relatedEvents.unshift(
         {
           eventId: required.resultEventId,
@@ -1051,23 +1106,23 @@ export async function decideAppeal(
             effectiveOutcomeCode: normalized.decision === 'ANNUL' || normalized.decision === 'REPEAT'
               ? null : normalized.effectiveOutcomeCode,
             effectiveWinnerUserId: normalized.effectiveWinnerUserId,
-            reason: normalized.reason, compensationMode: normalized.compensationMode,
+            compensationMode: normalized.compensationMode,
           },
           metadata: { policyVersion: RESULT_POLICY_VERSION },
         },
         {
           eventId: required.challengeEventId,
-          eventName: normalized.decision === 'REPEAT' ? 'RepeatSessionOrdered'
+          eventName: repeatScheduling ? 'RepeatSessionOrdered'
             : normalized.decision === 'UPHOLD' ? 'AppealUpheld'
               : normalized.decision === 'REVERSE' ? 'ResultReversed' : 'ResultAnnulled',
           schemaVersion: 1, aggregateType: 'Challenge', aggregateId: row.challenge_id,
           aggregateVersion: challengeNextVersion,
-          transitionId: normalized.decision === 'UPHOLD' ? 'CH-18'
-            : normalized.decision === 'REPEAT' ? 'CH-20' : 'CH-19',
+          transitionId: repeatScheduling ? 'CH-20'
+            : normalized.decision === 'UPHOLD' ? 'CH-18' : 'CH-19',
           payload: {
             challengeId: row.challenge_id, resultId: row.result_id,
             appealId: row.appeal_id, decisionId: required.decisionId,
-            cycleNo: normalized.decision === 'REPEAT' ? row.cycle_no + 1 : row.cycle_no,
+            cycleNo: repeatScheduling ? row.cycle_no + 1 : row.cycle_no,
             schedulingDeadlineAt: schedulingDeadlineAt?.toISOString() ?? null,
           },
           metadata: { policyVersion: CHALLENGE_POLICY_VERSION },
@@ -1088,7 +1143,7 @@ export async function decideAppeal(
           payload: {
             appealId: row.appeal_id, resultId: row.result_id, decisionId: required.decisionId,
             reviewerUserId: command.actor.id, decision: normalized.decision,
-            reason: normalized.reason, originalOutcomeCode: row.recorded_outcome_code,
+            originalOutcomeCode: row.recorded_outcome_code,
             effectiveOutcomeCode: normalized.decision === 'ANNUL' || normalized.decision === 'REPEAT'
               ? null : normalized.effectiveOutcomeCode,
             decidedAt: context.occurredAt.toISOString(),
@@ -1133,7 +1188,6 @@ export async function decideAppeal(
                 actionTarget: { type: 'RESULT', resultId: row.result_id },
                 payload: {
                   appealId: row.appeal_id, decision: normalized.decision,
-                  reason: normalized.reason,
                   schedulingDeadlineAt: schedulingDeadlineAt?.toISOString() ?? null,
                 },
                 deadlineAt: null,

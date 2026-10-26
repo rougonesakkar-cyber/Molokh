@@ -2,17 +2,22 @@ import {
   ApiErrorSchema,
   BookingOfficialConversionCommandResponseSchema,
   BookingSoloContinuationCommandResponseSchema,
+  BookingTrainingRetentionCommandResponseSchema,
+  DecideBookingTrainingRetentionBodySchema,
   DecideBookingSoloContinuationBodySchema,
   DecideBookingOfficialConversionBodySchema,
+  DecideGroupPlanOfficialConversionBodySchema,
   BookingIntentCommandResponseSchema,
   ConfirmBookingHostBodySchema,
   ConfirmGroupPlanBodySchema,
   GroupOfferingCommandResponseSchema,
   GroupPlanCommandResponseSchema,
+  GroupPlanOfficialConversionCommandResponseSchema,
   HostConfirmationCommandResponseSchema,
   HostRejectionCommandResponseSchema,
   HostConfirmationQueueResponseSchema,
   MySessionsResponseSchema,
+  MyGroupPlanOfficialConversionsResponseSchema,
   ProposeGroupPlanBodySchema,
   PublishGroupOfferingBodySchema,
   PublishSlotBodySchema,
@@ -20,9 +25,12 @@ import {
   ScheduleMutationReasonBodySchema,
   RecordAttendanceBodySchema,
   RequestBookingOfficialConversionBodySchema,
+  RequestGroupPlanOfficialConversionBodySchema,
   RequestTrainingParticipantCancellationBodySchema,
   ReplaceSessionCoachBodySchema,
   FailSessionExternalBodySchema,
+  ReportSafetyAndCancelSessionBodySchema,
+  SafetyCancellationCommandResponseSchema,
   SelectSameSlotBodySchema,
   SelectSlotBodySchema,
   SlotCommandResponseSchema,
@@ -36,8 +44,11 @@ import {
   type BookingIntentCommandResponse,
   type BookingOfficialConversionCommandResponse,
   type BookingSoloContinuationCommandResponse,
+  type BookingTrainingRetentionCommandResponse,
+  type DecideBookingTrainingRetentionBody,
   type DecideBookingSoloContinuationBody,
   type DecideBookingOfficialConversionBody,
+  type DecideGroupPlanOfficialConversionBody,
   type BookingIntentContract,
   type ConfirmBookingHostBody,
   type ConfirmGroupPlanBody,
@@ -45,11 +56,13 @@ import {
   type GroupOfferingContract,
   type GroupPlanCommandResponse,
   type GroupPlanContract,
+  type GroupPlanOfficialConversionCommandResponse,
   type HostConfirmationCommandResponse,
   type HostConfirmationContract,
   type HostRejectionCommandResponse,
   type HostConfirmationQueueResponse,
   type MySessionsResponse,
+  type MyGroupPlanOfficialConversionsResponse,
   type ProposeGroupPlanBody,
   type PublishGroupOfferingBody,
   type PublishSlotBody,
@@ -57,9 +70,12 @@ import {
   type ScheduleMutationReasonBody,
   type RecordAttendanceBody,
   type RequestBookingOfficialConversionBody,
+  type RequestGroupPlanOfficialConversionBody,
   type RequestTrainingParticipantCancellationBody,
   type ReplaceSessionCoachBody,
   type FailSessionExternalBody,
+  type ReportSafetyAndCancelSessionBody,
+  type SafetyCancellationCommandResponse,
   type SelectSameSlotBody,
   type SelectSlotBody,
   type SlotCommandResponse,
@@ -78,11 +94,18 @@ import type {
   ExecutedCommand,
   BookingOfficialConversionEffectIds,
   BookingOfficialConversionProjection,
+  GroupPlanOfficialConversionEffectIds,
+  GroupPlanOfficialConversionProjection,
   BookingSoloContinuationEffectIds,
   BookingSoloContinuationProjection,
+  BookingTrainingRetentionEffectIds,
+  BookingTrainingRetentionProjection,
   BookingIntentProjection,
+  BookingWithdrawalEffectIds,
   DecideBookingOfficialConversionPayload,
+  DecideGroupPlanOfficialConversionPayload,
   DecideBookingSoloContinuationPayload,
+  DecideBookingTrainingRetentionPayload,
   ConfirmBookingHostPayload,
   ConfirmGroupPlanPayload,
   GroupOfferingProjection,
@@ -95,6 +118,7 @@ import type {
   MySessionsProjection,
   PublishGroupOfferingPayload,
   RequestBookingOfficialConversionPayload,
+  RequestGroupPlanOfficialConversionPayload,
   RequestTrainingParticipantCancellationPayload,
   PublishSlotPayload,
   RejectBookingHostPayload,
@@ -106,7 +130,11 @@ import type {
   SlotProjection,
   EndSessionPayload,
   CancelAfterCoachReplacementPayload,
+  CancelOfficialSessionByAthletePayload,
   FailSessionExternalPayload,
+  ReportSafetyAndCancelSessionPayload,
+  SafetyCancellationEffectIds,
+  SafetyCancellationProjection,
   RecordAttendancePayload,
   ReplaceSessionCoachPayload,
   SessionEffectIds,
@@ -117,6 +145,7 @@ import type {
   UpdateSlotPayload,
   VenueAdminDashboardProjection,
   WithdrawGroupOfferingPayload,
+  WithdrawBookingRequestPayload,
   WithdrawSlotPayload,
 } from '@molokh/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -168,6 +197,10 @@ interface SoloContinuationParams {
   readonly continuationId: string;
 }
 
+interface TrainingRetentionParams {
+  readonly retentionId: string;
+}
+
 export interface SchedulingRouteDependencies {
   readonly auth: AuthAdapter;
   readonly readTrainingOptions: (
@@ -205,6 +238,10 @@ export interface SchedulingRouteDependencies {
   readonly selectSameSlot: (
     command: CommandEnvelope<SelectSameSlotPayload>,
     ids: PairIntentNotificationEffectIds,
+  ) => Promise<ExecutedCommand<BookingIntentProjection>>;
+  readonly withdrawBookingRequest: (
+    command: CommandEnvelope<WithdrawBookingRequestPayload>,
+    ids: BookingWithdrawalEffectIds,
   ) => Promise<ExecutedCommand<BookingIntentProjection>>;
   readonly readHostConfirmationQueue: (
     actorUserId: string,
@@ -246,10 +283,18 @@ export interface SchedulingRouteDependencies {
     command: CommandEnvelope<CancelAfterCoachReplacementPayload>,
     ids: SessionEffectIds,
   ) => Promise<ExecutedCommand<SessionLifecycleProjection>>;
+  readonly cancelOfficialSessionByAthlete: (
+    command: CommandEnvelope<CancelOfficialSessionByAthletePayload>,
+    ids: SessionEffectIds,
+  ) => Promise<ExecutedCommand<SessionLifecycleProjection>>;
   readonly failSessionExternal: (
     command: CommandEnvelope<FailSessionExternalPayload>,
     ids: SessionEffectIds,
   ) => Promise<ExecutedCommand<SessionLifecycleProjection>>;
+  readonly reportSafetyAndCancelSession: (
+    command: CommandEnvelope<ReportSafetyAndCancelSessionPayload>,
+    ids: SafetyCancellationEffectIds,
+  ) => Promise<ExecutedCommand<SafetyCancellationProjection>>;
   readonly requestBookingOfficialConversion: (
     command: CommandEnvelope<RequestBookingOfficialConversionPayload>,
     ids: BookingOfficialConversionEffectIds,
@@ -266,6 +311,10 @@ export interface SchedulingRouteDependencies {
     command: CommandEnvelope<DecideBookingSoloContinuationPayload>,
     ids: BookingSoloContinuationEffectIds,
   ) => Promise<ExecutedCommand<BookingSoloContinuationProjection>>;
+  readonly decideBookingTrainingRetention: (
+    command: CommandEnvelope<DecideBookingTrainingRetentionPayload>,
+    ids: BookingTrainingRetentionEffectIds,
+  ) => Promise<ExecutedCommand<BookingTrainingRetentionProjection>>;
   readonly proposeGroupPlan: (
     command: CommandEnvelope<ProposeGroupPlanPayload>,
     ids: PairIntentNotificationEffectIds,
@@ -274,6 +323,17 @@ export interface SchedulingRouteDependencies {
     command: CommandEnvelope<ConfirmGroupPlanPayload>,
     ids: PairIntentNotificationEffectIds,
   ) => Promise<ExecutedCommand<GroupPlanProjection>>;
+  readonly listGroupPlanOfficialConversionsForViewer: (
+    actorUserId: string,
+  ) => Promise<readonly GroupPlanOfficialConversionProjection[]>;
+  readonly requestGroupPlanOfficialConversion: (
+    command: CommandEnvelope<RequestGroupPlanOfficialConversionPayload>,
+    ids: GroupPlanOfficialConversionEffectIds,
+  ) => Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>>;
+  readonly decideGroupPlanOfficialConversion: (
+    command: CommandEnvelope<DecideGroupPlanOfficialConversionPayload>,
+    ids: GroupPlanOfficialConversionEffectIds,
+  ) => Promise<ExecutedCommand<GroupPlanOfficialConversionProjection>>;
 }
 
 function unauthorized(request: FastifyRequest) {
@@ -351,6 +411,18 @@ function hostConfirmationEffectIds(
   };
 }
 
+function bookingWithdrawalEffectIds(): BookingWithdrawalEffectIds {
+  return {
+    eventId: newUuidV7(),
+    auditId: newUuidV7(),
+    outboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7()],
+    notificationOutboxMessageId: newUuidV7(),
+    challengeEventId: newUuidV7(),
+    challengeOutboxMessageId: newUuidV7(),
+  };
+}
+
 function hostRejectionEffectIds(): HostRejectionEffectIds {
   return {
     eventId: newUuidV7(),
@@ -390,6 +462,33 @@ function sessionEffectIds(input?: {
     competitiveSnapshotId: newUuidV7(),
     challengeEventId: newUuidV7(),
     challengeOutboxMessageId: newUuidV7(),
+    rescheduleId: newUuidV7(),
+  };
+}
+
+function officialCancellationEffectIds(): SessionEffectIds {
+  return {
+    ...sessionEffectIds(),
+    resultId: newUuidV7(),
+    resultEventId: newUuidV7(),
+    statusTransitionId: newUuidV7(),
+    statusEventId: newUuidV7(),
+    cooldownId: newUuidV7(),
+    cooldownEventId: newUuidV7(),
+    resultOutboxMessageId: newUuidV7(),
+    resultNotificationOutboxMessageId: newUuidV7(),
+    resultNotificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+  };
+}
+
+function safetyCancellationEffectIds(): SafetyCancellationEffectIds {
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    bookingEventId: newUuidV7(), slotEventId: newUuidV7(), challengeEventId: newUuidV7(),
+    caseId: newUuidV7(), caseEventId: newUuidV7(), caseOutboxMessageId: newUuidV7(),
+    holdId: newUuidV7(), holdEventId: newUuidV7(), holdOutboxMessageId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7(), newUuidV7()],
   };
 }
 
@@ -420,7 +519,47 @@ function bookingOfficialConversionEffectIds(input: {
       idempotentResourceId('conversion-obligation-high', input.aggregateId, seed),
     ],
     bookingEventId: newUuidV7(), sessionEventId: newUuidV7(),
+    sessionTimerOutboxMessageId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
+  };
+}
+
+function groupPlanOfficialConversionEffectIds(input: {
+  readonly aggregateId: string;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly conversionId?: string;
+}): GroupPlanOfficialConversionEffectIds {
+  const seed = `${input.actorId}:${input.idempotencyKey}`;
+  const conversionId = input.conversionId
+    ?? idempotentResourceId('group-plan-official-conversion', input.aggregateId, seed);
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    conversionId,
+    conversionEventId: newUuidV7(),
+    confirmationId: idempotentResourceId('group-conversion-confirmation', conversionId, input.actorId),
+    timerOutboxMessageId: newUuidV7(), groupPlanEventId: newUuidV7(),
+    challengeId: idempotentResourceId('group-conversion-challenge', conversionId, seed),
+    challengeEventId: newUuidV7(),
+    serviceChatId: idempotentResourceId('group-conversion-chat', conversionId, seed),
+    serviceChatEventId: newUuidV7(),
+    rulesetSnapshotId: idempotentResourceId('group-conversion-ruleset', conversionId, seed),
+    acknowledgmentIds: [
+      idempotentResourceId('group-conversion-ack-low', conversionId, seed),
+      idempotentResourceId('group-conversion-ack-high', conversionId, seed),
+    ],
+    obligationIds: [
+      idempotentResourceId('group-conversion-obligation-low', conversionId, seed),
+      idempotentResourceId('group-conversion-obligation-high', conversionId, seed),
+    ],
+    slotId: idempotentResourceId('group-conversion-slot', conversionId, seed),
+    slotEventId: newUuidV7(),
+    bookingId: idempotentResourceId('group-conversion-booking', conversionId, seed),
+    bookingEventId: newUuidV7(),
+    sessionId: idempotentResourceId('group-conversion-session', conversionId, seed),
+    sessionEventId: newUuidV7(), sessionTimerOutboxMessageId: newUuidV7(),
+    groupPlanTimerOutboxMessageId: newUuidV7(), notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
   };
 }
@@ -441,6 +580,7 @@ function bookingSoloContinuationEffectIds(input: {
     ),
     bookingEventId: newUuidV7(),
     sessionEventId: newUuidV7(),
+    sessionTimerOutboxMessageId: newUuidV7(),
     slotEventId: newUuidV7(),
     conversionEventId: newUuidV7(),
     conversionQueueEventId: newUuidV7(),
@@ -448,6 +588,22 @@ function bookingSoloContinuationEffectIds(input: {
     timerOutboxMessageId: newUuidV7(),
     notificationOutboxMessageId: newUuidV7(),
     notificationIds: [newUuidV7(), newUuidV7()],
+  };
+}
+
+function bookingTrainingRetentionEffectIds(input: {
+  readonly aggregateId: string;
+  readonly actorId: string;
+}): BookingTrainingRetentionEffectIds {
+  return {
+    eventId: newUuidV7(), auditId: newUuidV7(), outboxMessageId: newUuidV7(),
+    confirmationId: idempotentResourceId(
+      'training-retention-confirmation', input.aggregateId, input.actorId,
+    ),
+    bookingEventId: newUuidV7(), sessionEventId: newUuidV7(),
+    sessionTimerOutboxMessageId: newUuidV7(), slotEventId: newUuidV7(),
+    notificationOutboxMessageId: newUuidV7(),
+    notificationIds: [newUuidV7(), newUuidV7(), newUuidV7()],
   };
 }
 
@@ -562,6 +718,12 @@ function sessionContract(session: SessionLifecycleProjection): SessionLifecycleC
           confirmations: session.soloContinuation.confirmations.map((item) => ({ ...item })),
         }
       : null,
+    trainingRetention: session.trainingRetention
+      ? {
+          ...session.trainingRetention,
+          confirmations: session.trainingRetention.confirmations.map((item) => ({ ...item })),
+        }
+      : null,
     athleteUserIds: [...session.athleteUserIds] as [string, string],
     athleteDisplayNames: [...session.athleteDisplayNames] as [string, string],
     activeAthleteUserIds: [...session.activeAthleteUserIds],
@@ -577,6 +739,16 @@ function sessionCommandResponse(
 ): SessionCommandResponse {
   return {
     data: sessionContract(executed.response),
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  };
+}
+
+function safetyCancellationCommandResponse(
+  executed: ExecutedCommand<SafetyCancellationProjection>,
+  requestId: string,
+): SafetyCancellationCommandResponse {
+  return {
+    data: executed.response,
     meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
   };
 }
@@ -607,12 +779,38 @@ function bookingSoloContinuationCommandResponse(
   };
 }
 
+function bookingTrainingRetentionCommandResponse(
+  executed: ExecutedCommand<BookingTrainingRetentionProjection>,
+  requestId: string,
+): BookingTrainingRetentionCommandResponse {
+  return {
+    data: {
+      ...executed.response,
+      confirmations: executed.response.confirmations.map((item) => ({ ...item })),
+    },
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  };
+}
+
 function groupPlanCommandResponse(
   executed: ExecutedCommand<GroupPlanProjection>,
   requestId: string,
 ): GroupPlanCommandResponse {
   return {
     data: groupPlanContract(executed.response),
+    meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
+  };
+}
+
+function groupPlanOfficialConversionCommandResponse(
+  executed: ExecutedCommand<GroupPlanOfficialConversionProjection>,
+  requestId: string,
+): GroupPlanOfficialConversionCommandResponse {
+  return {
+    data: {
+      ...executed.response,
+      confirmations: executed.response.confirmations.map((item) => ({ ...item })),
+    },
     meta: { requestId, eventId: executed.eventId, replayed: executed.replayed },
   };
 }
@@ -683,6 +881,66 @@ export async function registerSchedulingRoutes(
         data: sessionContract(session),
         meta: { requestId: requestContext(request).requestId },
       };
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: TrainingRetentionParams;
+    Body: DecideBookingTrainingRetentionBody;
+  }>(
+    '/api/v1/booking-training-retentions/:retentionId/decision',
+    {
+      schema: {
+        operationId: 'decideBookingTrainingRetention',
+        params: Type.Object(
+          { retentionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: DecideBookingTrainingRetentionBodySchema,
+        response: {
+          200: BookingTrainingRetentionCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<BookingTrainingRetentionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.decideBookingTrainingRetention(
+        {
+          commandId: newUuidV7(),
+          commandType: 'DECIDE_BOOKING_TRAINING_RETENTION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'BookingTrainingRetention',
+          aggregateId: request.params.retentionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId,
+          causationId: context.causationId,
+          requestId: context.requestId,
+          source: 'api',
+          payloadVersion: 1,
+          payload: {
+            retentionId: request.params.retentionId,
+            decision: request.body.decision,
+          },
+        },
+        bookingTrainingRetentionEffectIds({
+          aggregateId: request.params.retentionId,
+          actorId: authenticated.userId,
+        }),
+      );
+      reply.status(executed.responseStatus);
+      return bookingTrainingRetentionCommandResponse(executed, context.requestId);
     },
   );
 
@@ -1237,6 +1495,161 @@ export async function registerSchedulingRoutes(
   app.post<{
     Headers: SchedulingHeaders;
     Params: SessionParams;
+    Body: SessionActionBody;
+  }>(
+    '/api/v1/sessions/:sessionId/cancel-official',
+    {
+      schema: {
+        operationId: 'cancelOfficialSessionByAthlete',
+        params: Type.Object(
+          { sessionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: SessionActionBodySchema,
+        response: {
+          200: SessionCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SessionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.cancelOfficialSessionByAthlete(
+        {
+          commandId: newUuidV7(), commandType: 'CANCEL_OFFICIAL_BY_ATHLETE',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'Session', aggregateId: request.params.sessionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: { sessionId: request.params.sessionId },
+        },
+        officialCancellationEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return sessionCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: SessionParams;
+    Body: ReportSafetyAndCancelSessionBody;
+  }>(
+    '/api/v1/sessions/:sessionId/safety-report',
+    {
+      schema: {
+        operationId: 'reportSafetyAndCancelSession',
+        params: Type.Object(
+          { sessionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: ReportSafetyAndCancelSessionBodySchema,
+        response: {
+          200: SafetyCancellationCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SafetyCancellationCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.reportSafetyAndCancelSession(
+        {
+          commandId: newUuidV7(), commandType: 'REPORT_SAFETY_AND_CANCEL',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'Session', aggregateId: request.params.sessionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: { sessionId: request.params.sessionId, ...request.body },
+        },
+        safetyCancellationEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return safetyCancellationCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: SessionParams;
+    Body: ReportSafetyAndCancelSessionBody;
+  }>(
+    '/api/v1/sessions/:sessionId/refuse-unsafe',
+    {
+      schema: {
+        operationId: 'refuseUnsafeSession',
+        params: Type.Object(
+          { sessionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: ReportSafetyAndCancelSessionBodySchema,
+        response: {
+          200: SafetyCancellationCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+          422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<SafetyCancellationCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.reportSafetyAndCancelSession(
+        {
+          commandId: newUuidV7(), commandType: 'REFUSE_UNSAFE_SESSION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'Session', aggregateId: request.params.sessionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: { sessionId: request.params.sessionId, ...request.body },
+        },
+        safetyCancellationEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return safetyCancellationCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: SessionParams;
     Body: FailSessionExternalBody;
   }>(
     '/api/v1/sessions/:sessionId/fail-external',
@@ -1270,7 +1683,7 @@ export async function registerSchedulingRoutes(
       const executed = await dependencies.failSessionExternal(
         {
           commandId: newUuidV7(), commandType: 'FAIL_SESSION_EXTERNAL', idempotencyKey,
-          actor: { type: 'USER', id: authenticated.userId, roles: ['GYM_ADMIN'], scopeIds: [] },
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
           aggregateType: 'Session', aggregateId: request.params.sessionId,
           expectedVersion: requireExistingVersion(request.headers['if-match']),
           correlationId: context.correlationId, causationId: context.causationId,
@@ -1518,6 +1931,67 @@ export async function registerSchedulingRoutes(
   app.post<{
     Headers: SchedulingHeaders;
     Params: BookingParams;
+    Body: SessionActionBody;
+  }>(
+    '/api/v1/bookings/:bookingId/withdraw',
+    {
+      schema: {
+        operationId: 'withdrawBookingSlotRequest',
+        params: Type.Object(
+          { bookingId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: SessionActionBodySchema,
+        response: {
+          200: BookingIntentCommandResponseSchema,
+          400: ApiErrorSchema,
+          401: ApiErrorSchema,
+          403: ApiErrorSchema,
+          409: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<BookingIntentCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(
+        request.headers.authorization,
+      );
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.withdrawBookingRequest(
+        {
+          commandId: newUuidV7(),
+          commandType: 'WITHDRAW_SLOT_REQUEST',
+          idempotencyKey,
+          actor: {
+            type: 'USER',
+            id: authenticated.userId,
+            roles: ['ATHLETE'],
+            scopeIds: [],
+          },
+          aggregateType: 'Booking',
+          aggregateId: request.params.bookingId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId,
+          causationId: context.causationId,
+          requestId: context.requestId,
+          source: 'api',
+          payloadVersion: 1,
+          payload: { bookingId: request.params.bookingId },
+        },
+        bookingWithdrawalEffectIds(),
+      );
+      reply.status(executed.responseStatus);
+      return bookingIntentCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: BookingParams;
     Body: ConfirmBookingHostBody;
   }>(
     '/api/v1/bookings/:bookingId/host-confirm',
@@ -1745,6 +2219,143 @@ export async function registerSchedulingRoutes(
     },
   );
 
+  app.get<{ Headers: SchedulingHeaders }>(
+    '/api/v1/me/group-plan-official-conversions',
+    {
+      schema: {
+        operationId: 'listMyGroupPlanOfficialConversions',
+        response: { 200: MyGroupPlanOfficialConversionsResponseSchema, 401: ApiErrorSchema },
+      },
+    },
+    async (request, reply): Promise<MyGroupPlanOfficialConversionsResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      return {
+        data: (await dependencies.listGroupPlanOfficialConversionsForViewer(authenticated.userId))
+          .map((conversion) => ({
+            ...conversion,
+            confirmations: conversion.confirmations.map((item) => ({ ...item })),
+          })),
+        meta: { requestId: requestContext(request).requestId },
+      };
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: GroupPlanParams;
+    Body: RequestGroupPlanOfficialConversionBody;
+  }>(
+    '/api/v1/group-plans/:groupPlanId/request-official-conversion',
+    {
+      schema: {
+        operationId: 'requestGroupPlanOfficialConversion',
+        params: Type.Object(
+          { groupPlanId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: RequestGroupPlanOfficialConversionBodySchema,
+        response: {
+          201: GroupPlanOfficialConversionCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema,
+          409: ApiErrorSchema, 422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<GroupPlanOfficialConversionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const ids = groupPlanOfficialConversionEffectIds({
+        aggregateId: request.params.groupPlanId,
+        actorId: authenticated.userId,
+        idempotencyKey,
+      });
+      const executed = await dependencies.requestGroupPlanOfficialConversion(
+        {
+          commandId: newUuidV7(), commandType: 'REQUEST_GROUP_PLAN_OFFICIAL_CONVERSION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'GroupPlan', aggregateId: request.params.groupPlanId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: {
+            groupPlanId: request.params.groupPlanId,
+            explicitRulesetAcknowledged: request.body.explicitRulesetAcknowledged ?? false,
+          },
+        },
+        ids,
+      );
+      reply.status(executed.responseStatus);
+      return groupPlanOfficialConversionCommandResponse(executed, context.requestId);
+    },
+  );
+
+  app.post<{
+    Headers: SchedulingHeaders;
+    Params: ConversionParams;
+    Body: DecideGroupPlanOfficialConversionBody;
+  }>(
+    '/api/v1/group-plan-official-conversions/:conversionId/decision',
+    {
+      schema: {
+        operationId: 'decideGroupPlanOfficialConversion',
+        params: Type.Object(
+          { conversionId: Type.String({ format: 'uuid' }) },
+          { additionalProperties: false },
+        ),
+        body: DecideGroupPlanOfficialConversionBodySchema,
+        response: {
+          200: GroupPlanOfficialConversionCommandResponseSchema,
+          400: ApiErrorSchema, 401: ApiErrorSchema, 403: ApiErrorSchema,
+          409: ApiErrorSchema, 422: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply): Promise<GroupPlanOfficialConversionCommandResponse | undefined> => {
+      const authenticated = await dependencies.auth.authenticate(request.headers.authorization);
+      if (!authenticated) {
+        await reply.status(401).send(unauthorized(request));
+        return undefined;
+      }
+      const idempotencyKey = requiredIdempotencyKey(request.headers['idempotency-key']);
+      const context = requestContext(request);
+      const executed = await dependencies.decideGroupPlanOfficialConversion(
+        {
+          commandId: newUuidV7(), commandType: 'DECIDE_GROUP_PLAN_OFFICIAL_CONVERSION',
+          idempotencyKey,
+          actor: { type: 'USER', id: authenticated.userId, roles: [], scopeIds: [] },
+          aggregateType: 'GroupPlanOfficialConversion',
+          aggregateId: request.params.conversionId,
+          expectedVersion: requireExistingVersion(request.headers['if-match']),
+          correlationId: context.correlationId, causationId: context.causationId,
+          requestId: context.requestId, source: 'api', payloadVersion: 1,
+          payload: {
+            conversionId: request.params.conversionId,
+            decision: request.body.decision,
+            explicitRulesetAcknowledged: request.body.explicitRulesetAcknowledged ?? false,
+          },
+        },
+        groupPlanOfficialConversionEffectIds({
+          aggregateId: request.params.conversionId,
+          conversionId: request.params.conversionId,
+          actorId: authenticated.userId,
+          idempotencyKey,
+        }),
+      );
+      reply.status(executed.responseStatus);
+      return groupPlanOfficialConversionCommandResponse(executed, context.requestId);
+    },
+  );
+
   app.post<{
     Headers: SchedulingHeaders;
     Params: VenueParams;
@@ -1871,6 +2482,7 @@ export async function registerSchedulingRoutes(
             classLabel: request.body.classLabel,
             startAt: request.body.startAt,
             endAt: request.body.endAt,
+            coachUserId: request.body.coachUserId ?? null,
             coachDisplayName: request.body.coachDisplayName ?? null,
             priceText: request.body.priceText ?? null,
             externalInfoUrl: request.body.externalInfoUrl ?? null,
@@ -2064,6 +2676,7 @@ export async function registerSchedulingRoutes(
             classLabel: request.body.classLabel,
             startAt: request.body.startAt,
             endAt: request.body.endAt,
+            coachUserId: request.body.coachUserId ?? null,
             coachDisplayName: request.body.coachDisplayName ?? null,
             priceText: request.body.priceText ?? null,
             externalInfoUrl: request.body.externalInfoUrl ?? null,

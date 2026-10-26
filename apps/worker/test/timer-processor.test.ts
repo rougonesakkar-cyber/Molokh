@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PlatformIncidentConflictError, VersionConflictError } from '@molokh/core';
 
 import { processTimer } from '../src/timer-processor.js';
 
@@ -54,10 +55,62 @@ describe('timer processor', () => {
     expect(test.recordStaleDiagnostic).toHaveBeenCalledOnce();
   });
 
+  it('[AC-138] turns an accept-vs-expiry compare-and-set race into a stale no-op', async () => {
+    const test = options('PENDING', 3, payload.deadlineAt);
+    const loadSnapshot = test.value.handlers.EXPIRE_PROBE.loadSnapshot;
+    loadSnapshot
+      .mockResolvedValueOnce({ state: 'PENDING', version: 3 })
+      .mockResolvedValueOnce({ state: 'ACCEPTED', version: 4 });
+    test.execute.mockRejectedValueOnce(new VersionConflictError(3, 4));
+
+    await expect(processTimer(payload, test.value)).resolves.toEqual({
+      kind: 'STALE',
+      reason: 'STATE_CHANGED',
+      actualState: 'ACCEPTED',
+      actualVersion: 4,
+    });
+    expect(test.execute).toHaveBeenCalledOnce();
+    expect(loadSnapshot).toHaveBeenCalledTimes(2);
+    expect(test.reschedule).not.toHaveBeenCalled();
+    expect(test.recordStaleDiagnostic).toHaveBeenCalledOnce();
+  });
+
   it('reschedules an early delivery at the canonical deadline', async () => {
     const test = options('PENDING', 3, '2026-09-05T11:59:59.999Z');
     await expect(processTimer(payload, test.value)).resolves.toMatchObject({ kind: 'NOT_DUE' });
     expect(test.reschedule).toHaveBeenCalledWith(payload, new Date(payload.deadlineAt));
     expect(test.execute).not.toHaveBeenCalled();
+  });
+
+  it('reschedules an incident-suppressed timer without loading or executing the aggregate', async () => {
+    const test = options('PENDING', 3, payload.deadlineAt);
+    const loadSnapshot = test.value.handlers.EXPIRE_PROBE.loadSnapshot;
+    const value = {
+      ...test.value,
+      readIncidentSuppression: vi.fn().mockResolvedValue({
+        retryAt: '2026-09-05T12:05:00.000Z',
+      }),
+    };
+    await expect(processTimer(payload, value)).resolves.toEqual({
+      kind: 'NOT_DUE', retryAt: '2026-09-05T12:05:00.000Z',
+    });
+    expect(test.reschedule).toHaveBeenCalledWith(
+      payload, new Date('2026-09-05T12:05:00.000Z'),
+    );
+    expect(loadSnapshot).not.toHaveBeenCalled();
+    expect(test.execute).not.toHaveBeenCalled();
+  });
+
+  it('reschedules when the transactional incident recheck wins the race', async () => {
+    const test = options('PENDING', 3, payload.deadlineAt);
+    test.execute.mockRejectedValueOnce(
+      new PlatformIncidentConflictError('PLATFORM_INCIDENT_TIMEOUT_SUPPRESSED'),
+    );
+    await expect(processTimer(payload, test.value)).resolves.toEqual({
+      kind: 'NOT_DUE', retryAt: '2026-09-05T12:05:00.000Z',
+    });
+    expect(test.reschedule).toHaveBeenCalledWith(
+      payload, new Date('2026-09-05T12:05:00.000Z'),
+    );
   });
 });

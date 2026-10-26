@@ -3,29 +3,47 @@ import { randomUUID } from 'node:crypto';
 import {
   SchedulingConflictError,
   StatusQueueConflictError,
+  InvalidRoleGrantTransitionError,
+  VersionConflictError,
   type CommandEnvelope,
   type TimerCommandPayload,
 } from '@molokh/core';
 import {
   activateBookingOfficialConversionFromQueue,
   invalidateActiveBookingOfficialConversion,
+  invalidateCompetitiveSession,
   invalidateBookingOfficialConversionFromQueue,
   activateStatusQueueHead,
   claimInboxEvent,
   claimOutboxBatch,
+  cleanupExpiredChatPayloads,
   createDatabase,
+  archiveInactiveMatch,
   expireDiscoverySuppression,
   expireBookingIntent,
   expireBookingOfficialConversion,
   expireBookingSoloContinuation,
+  expireBookingTrainingRetention,
+  expireAccountExport,
+  prepareAccountExport,
+  expirePhoneChangeSecurityHold,
   expireGroupOffering,
   expireGroupPlan,
+  expireGroupPlanOfficialConversion,
   expireOptionalChallenge,
+  expireChallengeScheduling,
   expireGenesisChallenge,
   expireLike,
   finalizeResult,
+  recordEvidenceScan,
+  expireGuestCoachGrant,
   expireSlot,
   expireStatusQueueReconfirmation,
+  applyChallengeResponseIncidentImpact,
+  applyPausableDeadlineIncidentImpact,
+  compensateMandatoryChallengeTimeout,
+  compensatePlatformIncidentImpacts,
+  transitionYouthToAdult,
   markOutboxPublished,
   remindMissingResultCoach,
   escalateMissingResultAdmin,
@@ -33,6 +51,9 @@ import {
   openSessionWindow,
   outboxRetryDelayMilliseconds,
   projectNotificationBatch,
+  projectPendingMandatoryChallengeReminder,
+  projectPendingMembershipNotification,
+  projectPendingOptionalChallengeReminder,
   promoteSingleGenesisCandidate,
   readDiscoverySuppressionTimerSnapshot,
   readBookingIntentTimerSnapshot,
@@ -41,17 +62,31 @@ import {
   readInvalidBookingOfficialConversionCandidate,
   readBookingOfficialConversionTimerSnapshot,
   readBookingSoloContinuationTimerSnapshot,
+  readBookingTrainingRetentionTimerSnapshot,
+  readAccountExportTimerSnapshot,
+  readAccountAccessTimerSnapshot,
   readGroupOfferingTimerSnapshot,
   readGroupPlanTimerSnapshot,
+  readGroupPlanOfficialConversionTimerSnapshot,
+  listExpirableGuestCoachGrants,
+  listInvalidPlannedTitleSessions,
   readLikeTimerSnapshot,
+  readMatchTimerSnapshot,
+  readMembershipTimerSnapshot,
   readResultTimerSnapshot,
   readMissingResultChallengeTimerSnapshot,
+  readPlatformIncidentTimerSuppression,
+  listChallengeResponseIncidentImpactCandidates,
+  listPausableDeadlineImpactCandidates,
+  listMandatoryTimeoutCompensationCandidates,
   readSessionTimerSnapshot,
   readChallengeTimerSnapshot,
+  readOptionalChallengeReminderTimerSnapshot,
   readSlotTimerSnapshot,
   readStatusQueueActivationCandidate,
   readStatusQueueReconciliationCandidates,
   readStatusQueueTimerSnapshot,
+  readAgeDivisionTransitionTimerSnapshot,
   readVacancyQueueReconciliationCandidate,
   reconcileVacancyQueue,
   requestStatusQueueReconfirmation,
@@ -60,21 +95,35 @@ import {
   type ExpireBookingIntentPayload,
   type ExpireBookingOfficialConversionPayload,
   type InvalidateActiveBookingOfficialConversionPayload,
+  type InvalidateCompetitiveSessionPayload,
   type ExpireBookingSoloContinuationPayload,
+  type ExpireBookingTrainingRetentionPayload,
+  type ExpireAccountExportPayload,
+  type PrepareAccountExportPayload,
+  type ExpirePhoneChangeHoldPayload,
   type ExpireGroupOfferingPayload,
   type ExpireGroupPlanPayload,
+  type ExpireGroupPlanOfficialConversionPayload,
   type ExpireLikePayload,
+  type ExpireInactiveMatchPayload,
   type FinalizeResultPayload,
+  type ExpireGuestCoachPayload,
   type ExpireSlotPayload,
   type OpenSessionWindowPayload,
   type ExpireOptionalChallengePayload,
+  type ExpireChallengeSchedulingPayload,
   type ExpireGenesisChallengePayload,
   type ActivateStatusQueueHeadPayload,
   type ExpireStatusQueueReconfirmationPayload,
+  type ApplyIncidentDeadlineImpactPayload,
+  type ApplyPausableDeadlineImpactPayload,
+  type CompensateMandatoryTimeoutPayload,
+  type CompensatePlatformIncidentPayload,
   type MissingResultTimerPayload,
   type RequestStatusQueueReconfirmationPayload,
   type PromoteSingleGenesisCandidatePayload,
   type ReconcileVacancyQueuePayload,
+  type TransitionToAdultPayload,
 } from '@molokh/db';
 import { makeWorkerUtils, run } from 'graphile-worker';
 import pino from 'pino';
@@ -82,6 +131,7 @@ import pino from 'pino';
 import { startOutboxPolling } from './outbox-dispatcher.js';
 import { parseNotificationProjection } from './notification-projection.js';
 import { socialTimerFromOutbox } from './social-timers.js';
+import { membershipTimerFromOutbox } from './membership-timers.js';
 import { schedulingTimerFromOutbox } from './scheduling-timers.js';
 import { challengeTimerFromOutbox } from './challenge-timers.js';
 import { resultTimerFromOutbox } from './result-timers.js';
@@ -89,6 +139,20 @@ import { missingResultTimerFromOutbox } from './missing-result-timers.js';
 import { statusQueueTimerFromOutbox } from './status-queue-timers.js';
 import { createTaskList } from './tasks.js';
 import { processTimer } from './timer-processor.js';
+import { identityTimerFromOutbox } from './identity-timers.js';
+import { incidentTimerFromOutbox } from './incident-timers.js';
+import {
+  accountExportIdFromRequestedOutbox,
+  accountLifecycleTimerFromOutbox,
+} from './account-lifecycle.js';
+import { accountAccessTimerFromOutbox } from './account-access.js';
+import {
+  platformIncidentIdFromResolvedOutbox,
+  reconcilePlatformIncidentEffects,
+} from './platform-incident-reconciliation.js';
+import {
+  competitionIdFromCompetitiveSessionEvent,
+} from './competitive-context-reconciliation.js';
 
 const production = process.env.NODE_ENV === 'production';
 const connectionString =
@@ -114,6 +178,35 @@ const scheduleTimer = async (payload: TimerCommandPayload, runAt: Date) => {
   });
 };
 
+const expireTerminalGuestCoachGrants = async (): Promise<void> => {
+  const candidates = await listExpirableGuestCoachGrants(database, 100, new Date());
+  for (const candidate of candidates) {
+    const command: CommandEnvelope<ExpireGuestCoachPayload> = {
+      commandId: randomUUID(), commandType: 'EXPIRE_GUEST_COACH',
+      idempotencyKey: `guest-coach-expiry:${candidate.grantId}:v${candidate.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'RoleGrant', aggregateId: candidate.grantId,
+      expectedVersion: candidate.version, correlationId: randomUUID(), causationId: null,
+      requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+      payload: {
+        grantId: candidate.grantId, sessionId: candidate.sessionId, reason: candidate.reason,
+      },
+    };
+    try {
+      await expireGuestCoachGrant(database, command, {
+        eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+        notificationId: randomUUID(),
+      });
+    } catch (error) {
+      if (error instanceof InvalidRoleGrantTransitionError || error instanceof VersionConflictError) {
+        logger.info({ grantId: candidate.grantId }, 'stale Guest Coach expiry ignored');
+        continue;
+      }
+      throw error;
+    }
+  }
+};
+
 const statusQueueActivationTopics = new Set([
   'competition.status-queue.submitted.v1',
   'competition.status-queue.head-released.v1',
@@ -125,6 +218,56 @@ const statusQueueActivationTopics = new Set([
   'competition.integrity-case.decided.v1',
   'scheduling.booking.official-conversion-closed.v1',
 ]);
+
+const reconcileInvalidCompetitiveSessions = async (
+  competitionId: string,
+  causationId: string,
+): Promise<void> => {
+  const candidates = await listInvalidPlannedTitleSessions(database, competitionId, 100);
+  for (const candidate of candidates) {
+    const command: CommandEnvelope<InvalidateCompetitiveSessionPayload> = {
+      commandId: randomUUID(),
+      commandType: 'INVALIDATE_COMPETITIVE_CONTEXT',
+      idempotencyKey: `session:${candidate.sessionId}:invalidate-competitive-context:v${candidate.version}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'Session',
+      aggregateId: candidate.sessionId,
+      expectedVersion: candidate.version,
+      correlationId: randomUUID(),
+      causationId,
+      requestId: randomUUID(),
+      source: 'scheduler',
+      payloadVersion: 1,
+      payload: { sessionId: candidate.sessionId },
+    };
+    try {
+      await invalidateCompetitiveSession(database, command, {
+        eventId: randomUUID(),
+        auditId: randomUUID(),
+        outboxMessageId: randomUUID(),
+        challengeEventId: randomUUID(),
+        challengeOutboxMessageId: randomUUID(),
+        bookingEventId: randomUUID(),
+        slotEventId: randomUUID(),
+        retentionId: randomUUID(),
+        retentionEventId: randomUUID(),
+        retentionOutboxMessageId: randomUUID(),
+        retentionTimerOutboxMessageId: randomUUID(),
+        notificationOutboxMessageId: randomUUID(),
+        notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+      });
+    } catch (error) {
+      if (error instanceof SchedulingConflictError || error instanceof VersionConflictError) {
+        logger.info(
+          { competitionId, sessionId: candidate.sessionId },
+          'stale competitive Session invalidation ignored',
+        );
+        continue;
+      }
+      throw error;
+    }
+  }
+};
 
 const statusQueueHolderChangeTopics = new Set([
   'competition.result.finalized.v1',
@@ -352,6 +495,7 @@ const activateWaitingStatusHead = async (
       acknowledgmentId: randomUUID(),
       pairedQueueEventId: randomUUID(),
       timerOutboxMessageId: randomUUID(),
+      optionalReminderTimerOutboxMessageIds: [randomUUID(), randomUUID()],
       staleQueueEventId: randomUUID(),
       staleQueueOutboxMessageId: randomUUID(),
       notificationOutboxMessageId: randomUUID(),
@@ -440,6 +584,61 @@ const executeLikeExpiry = async (payload: TimerCommandPayload) => {
     auditId: randomUUID(),
     outboxMessageId: randomUUID(),
   });
+};
+
+const executeInactiveMatchExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireInactiveMatchPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_INACTIVE_MATCH',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Match',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { matchId: payload.aggregateId },
+  };
+  await archiveInactiveMatch(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    chatEventId: randomUUID(),
+  });
+};
+
+const executeMembershipRequestNotification = async (payload: TimerCommandPayload) => {
+  const kind = payload.commandType === 'REMIND_MEMBERSHIP_REQUEST'
+    ? 'REMINDER'
+    : 'ESCALATION';
+  await projectPendingMembershipNotification(
+    database,
+    payload.aggregateId,
+    kind,
+    Array.from({ length: 20 }, () => randomUUID()),
+  );
+};
+
+const executeOptionalChallengeReminder = async (payload: TimerCommandPayload) => {
+  await projectPendingOptionalChallengeReminder(
+    database,
+    payload.aggregateId,
+    payload.expectedVersion,
+    payload.commandType === 'REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H' ? '12H' : '24H',
+    randomUUID(),
+  );
+};
+
+const executeMandatoryChallengeReminder = async (payload: TimerCommandPayload) => {
+  await projectPendingMandatoryChallengeReminder(
+    database,
+    payload.aggregateId,
+    payload.expectedVersion,
+    randomUUID(),
+  );
 };
 
 const executeSuppressionExpiry = async (payload: TimerCommandPayload) => {
@@ -622,6 +821,34 @@ const executeOptionalChallengeExpiry = async (payload: TimerCommandPayload) => {
   });
 };
 
+const executeChallengeSchedulingExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireChallengeSchedulingPayload> = {
+    commandId: randomUUID(),
+    commandType: 'EXPIRE_CHALLENGE_SCHEDULING',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'Challenge',
+    aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion,
+    correlationId: randomUUID(),
+    causationId: null,
+    requestId: randomUUID(),
+    source: 'scheduler',
+    payloadVersion: 1,
+    payload: { challengeId: payload.aggregateId },
+  };
+  await expireChallengeScheduling(database, command, {
+    eventId: randomUUID(),
+    auditId: randomUUID(),
+    outboxMessageId: randomUUID(),
+    notificationId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID()],
+    bookingEventId: randomUUID(),
+    bookingOutboxMessageId: randomUUID(),
+  });
+};
+
 const executeGenesisChallengeExpiry = async (payload: TimerCommandPayload) => {
   const command: CommandEnvelope<ExpireGenesisChallengePayload> = {
     commandId: randomUUID(),
@@ -718,6 +945,24 @@ const executeBookingOfficialConversionExpiry = async (payload: TimerCommandPaylo
   });
 };
 
+const executeGroupPlanOfficialConversionExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireGroupPlanOfficialConversionPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_GROUP_PLAN_OFFICIAL_CONVERSION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'GroupPlanOfficialConversion', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { conversionId: payload.aggregateId },
+  };
+  await expireGroupPlanOfficialConversion(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+    groupPlanEventId: randomUUID(), groupPlanTimerOutboxMessageId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+  });
+};
+
 const executeBookingSoloContinuationExpiry = async (payload: TimerCommandPayload) => {
   const command: CommandEnvelope<ExpireBookingSoloContinuationPayload> = {
     commandId: randomUUID(),
@@ -746,6 +991,68 @@ const executeBookingSoloContinuationExpiry = async (payload: TimerCommandPayload
   });
 };
 
+const executeBookingTrainingRetentionExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireBookingTrainingRetentionPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_BOOKING_TRAINING_RETENTION',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'BookingTrainingRetention', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { retentionId: payload.aggregateId },
+  };
+  await expireBookingTrainingRetention(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+    bookingEventId: randomUUID(), sessionEventId: randomUUID(), slotEventId: randomUUID(),
+    notificationOutboxMessageId: randomUUID(),
+    notificationIds: [randomUUID(), randomUUID(), randomUUID()],
+  });
+};
+
+const executeAccountExportExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpireAccountExportPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_ACCOUNT_EXPORT',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AccountDataExport', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { exportId: payload.aggregateId },
+  };
+  await expireAccountExport(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+  });
+};
+
+const executeAccountAccessHoldExpiry = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<ExpirePhoneChangeHoldPayload> = {
+    commandId: randomUUID(), commandType: 'EXPIRE_SECURITY_HOLD',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AccountAccessCase', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(), causationId: null,
+    requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+    payload: { caseId: payload.aggregateId },
+  };
+  await expirePhoneChangeSecurityHold(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+  });
+};
+
+const prepareRequestedAccountExport = async (exportId: string, causationId: string) => {
+  const command: CommandEnvelope<PrepareAccountExportPayload> = {
+    commandId: randomUUID(), commandType: 'PREPARE_ACCOUNT_EXPORT',
+    idempotencyKey: `account-export:${exportId}:prepare:v1`,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AccountDataExport', aggregateId: exportId, expectedVersion: 1,
+    correlationId: randomUUID(), causationId, requestId: randomUUID(),
+    source: 'scheduler', payloadVersion: 1, payload: { exportId },
+  };
+  await prepareAccountExport(database, command, {
+    eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+  });
+};
+
 const executeResultFinalization = async (payload: TimerCommandPayload) => {
   const command: CommandEnvelope<FinalizeResultPayload> = {
     commandId: randomUUID(),
@@ -769,6 +1076,7 @@ const executeResultFinalization = async (payload: TimerCommandPayload) => {
     challengeEventId: randomUUID(),
     statusFinalizationId: randomUUID(),
     statusEventId: randomUUID(),
+    genesisEventId: randomUUID(),
     notificationOutboxMessageId: randomUUID(),
     notificationIds: [randomUUID(), randomUUID()],
   });
@@ -799,14 +1107,162 @@ const executeMissingResultTimer = async (payload: TimerCommandPayload) => {
   }
 };
 
+const executeAgeDivisionTransition = async (payload: TimerCommandPayload) => {
+  const command: CommandEnvelope<TransitionToAdultPayload> = {
+    commandId: randomUUID(), commandType: 'TRANSITION_TO_ADULT',
+    idempotencyKey: payload.idempotencyKey,
+    actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+    aggregateType: 'AgeDivisionTransition', aggregateId: payload.aggregateId,
+    expectedVersion: payload.expectedVersion, correlationId: randomUUID(),
+    causationId: null, requestId: randomUUID(), source: 'scheduler',
+    payloadVersion: 1, payload: { userId: payload.aggregateId },
+  };
+  await transitionYouthToAdult(database, command, {
+    transitionId: randomUUID(), eventId: randomUUID(), auditId: randomUUID(),
+    outboxMessageId: randomUUID(), notificationOutboxMessageId: randomUUID(),
+    notificationId: randomUUID(),
+    relatedEventIds: Array.from({ length: 100 }, () => randomUUID()),
+    retentionIds: Array.from({ length: 20 }, () => randomUUID()),
+    retentionTimerOutboxMessageIds: Array.from({ length: 20 }, () => randomUUID()),
+    statusOutboxMessageIds: Array.from({ length: 20 }, () => randomUUID()),
+  });
+};
+
+const reconcileResolvedPlatformIncident = async (
+  incidentId: string,
+  causationId: string,
+): Promise<void> => {
+  const correlationId = randomUUID();
+  const result = await reconcilePlatformIncidentEffects({
+    listChallengeResponseCandidates: () =>
+      listChallengeResponseIncidentImpactCandidates(database, incidentId),
+    applyChallengeResponseImpact: async (candidate) => {
+      const command: CommandEnvelope<ApplyIncidentDeadlineImpactPayload> = {
+        commandId: randomUUID(),
+        commandType: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT',
+        idempotencyKey: `incident:${incidentId}:challenge:${candidate.challengeId}:response`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: candidate.challengeId,
+        expectedVersion: candidate.version, correlationId, causationId,
+        requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+        payload: { incidentId, challengeId: candidate.challengeId,
+          deadlineKind: 'CHALLENGE_RESPONSE', surface: candidate.surface },
+      };
+      await applyChallengeResponseIncidentImpact(database, command, {
+        impactId: randomUUID(), eventId: randomUUID(), auditId: randomUUID(),
+        outboxMessageId: randomUUID(),
+      });
+    },
+    listPausableCandidates: () =>
+      listPausableDeadlineImpactCandidates(database, incidentId),
+    applyPausableImpact: async (candidate) => {
+      const command: CommandEnvelope<ApplyPausableDeadlineImpactPayload> = {
+        commandId: randomUUID(),
+        commandType: 'APPLY_PLATFORM_INCIDENT_DEADLINE_IMPACT',
+        idempotencyKey: `incident:${incidentId}:${candidate.deadlineKind}:${candidate.aggregateId}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: candidate.aggregateType, aggregateId: candidate.aggregateId,
+        expectedVersion: candidate.version, correlationId, causationId,
+        requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+        payload: { incidentId, deadlineKind: candidate.deadlineKind,
+          surface: candidate.surface },
+      };
+      await applyPausableDeadlineIncidentImpact(database, command, {
+        impactId: randomUUID(), eventId: randomUUID(), auditId: randomUUID(),
+        outboxMessageId: randomUUID(),
+      });
+    },
+    listMandatoryTimeoutCandidates: () =>
+      listMandatoryTimeoutCompensationCandidates(database, incidentId),
+    applyMandatoryTimeoutCompensation: async (candidate) => {
+      const command: CommandEnvelope<CompensateMandatoryTimeoutPayload> = {
+        commandId: randomUUID(),
+        commandType: 'COMPENSATE_MANDATORY_CHALLENGE_TIMEOUT',
+        idempotencyKey: `incident:${incidentId}:challenge:${candidate.challengeId}:timeout:${candidate.resultId}`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'Challenge', aggregateId: candidate.challengeId,
+        expectedVersion: candidate.version, correlationId, causationId,
+        requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+        payload: { incidentId, challengeId: candidate.challengeId,
+          resultId: candidate.resultId },
+      };
+      await compensateMandatoryChallengeTimeout(database, command, {
+        impactId: randomUUID(), compensationId: randomUUID(), eventId: randomUUID(),
+        auditId: randomUUID(), outboxMessageId: randomUUID(), resultEventId: randomUUID(),
+        competitionEventId: randomUUID(), cooldownEventId: randomUUID(),
+      });
+    },
+    completeIncident: async () => {
+      const command: CommandEnvelope<CompensatePlatformIncidentPayload> = {
+        commandId: randomUUID(), commandType: 'COMPENSATE_INCIDENT_IMPACTS',
+        idempotencyKey: `incident:${incidentId}:complete`,
+        actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+        aggregateType: 'PlatformIncident', aggregateId: incidentId, expectedVersion: 3,
+        correlationId, causationId, requestId: randomUUID(), source: 'scheduler',
+        payloadVersion: 1, payload: { incidentId },
+      };
+      await compensatePlatformIncidentImpacts(database, command, {
+        eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID(),
+      });
+    },
+  });
+  logger.info({ incidentId, ...result }, 'platform incident effects reconciled');
+};
+
 const taskList = createTaskList({
   onRuntimeProbe: (message) => logger.info({ message }, 'runtime probe'),
+  onEvidenceScan: async (payload) => {
+    await recordEvidenceScan(database, {
+      commandId: randomUUID(), commandType: 'RECORD_EVIDENCE_SCAN',
+      idempotencyKey: `evidence-scan:${payload.attachmentId}:v${payload.expectedVersion}`,
+      actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
+      aggregateType: 'EvidenceAttachment', aggregateId: payload.attachmentId,
+      expectedVersion: payload.expectedVersion, correlationId: randomUUID(),
+      causationId: null, requestId: randomUUID(), source: 'scheduler', payloadVersion: 1,
+      payload: { attachmentId: payload.attachmentId, outcome: payload.outcome,
+        reasonCode: payload.reasonCode, scanProviderReference: payload.scanProviderReference },
+    }, { eventId: randomUUID(), auditId: randomUUID(), outboxMessageId: randomUUID() });
+  },
+  onChatRetentionCleanup: async () => {
+    for (const recordClass of ['PERSONAL_CHAT', 'SERVICE_CHAT'] as const) {
+      const result = await cleanupExpiredChatPayloads(database, recordClass, {
+        runId: randomUUID(), auditId: randomUUID(), requestId: randomUUID(),
+      });
+      logger.info(result, 'Chat retention cleanup completed');
+    }
+  },
+  onGuestCoachExpirySweep: expireTerminalGuestCoachGrants,
   onTimer: async (payload) => {
     await processTimer(payload, {
       handlers: {
+        TRANSITION_TO_ADULT: {
+          loadSnapshot: (timer) =>
+            readAgeDivisionTransitionTimerSnapshot(database, timer.aggregateId),
+          execute: executeAgeDivisionTransition,
+        },
+        EXPIRE_ACCOUNT_EXPORT: {
+          loadSnapshot: (timer) => readAccountExportTimerSnapshot(database, timer.aggregateId),
+          execute: executeAccountExportExpiry,
+        },
+        EXPIRE_SECURITY_HOLD: {
+          loadSnapshot: (timer) => readAccountAccessTimerSnapshot(database, timer.aggregateId),
+          execute: executeAccountAccessHoldExpiry,
+        },
         EXPIRE_LIKE: {
           loadSnapshot: (timer) => readLikeTimerSnapshot(database, timer.aggregateId),
           execute: executeLikeExpiry,
+        },
+        EXPIRE_INACTIVE_MATCH: {
+          loadSnapshot: (timer) => readMatchTimerSnapshot(database, timer.aggregateId),
+          execute: executeInactiveMatchExpiry,
+        },
+        REMIND_MEMBERSHIP_REQUEST: {
+          loadSnapshot: (timer) => readMembershipTimerSnapshot(database, timer.aggregateId),
+          execute: executeMembershipRequestNotification,
+        },
+        ESCALATE_MEMBERSHIP_REQUEST: {
+          loadSnapshot: (timer) => readMembershipTimerSnapshot(database, timer.aggregateId),
+          execute: executeMembershipRequestNotification,
         },
         EXPIRE_DISCOVERY_SUPPRESSION: {
           loadSnapshot: (timer) =>
@@ -846,6 +1302,21 @@ const taskList = createTaskList({
             readChallengeTimerSnapshot(database, timer.aggregateId),
           execute: executeOptionalChallengeExpiry,
         },
+        REMIND_OPTIONAL_CHALLENGE_RESPONSE_12H: {
+          loadSnapshot: (timer) =>
+            readOptionalChallengeReminderTimerSnapshot(database, timer.aggregateId),
+          execute: executeOptionalChallengeReminder,
+        },
+        REMIND_OPTIONAL_CHALLENGE_RESPONSE_24H: {
+          loadSnapshot: (timer) =>
+            readOptionalChallengeReminderTimerSnapshot(database, timer.aggregateId),
+          execute: executeOptionalChallengeReminder,
+        },
+        REMIND_MANDATORY_CHALLENGE_RESPONSE_48H: {
+          loadSnapshot: (timer) =>
+            readOptionalChallengeReminderTimerSnapshot(database, timer.aggregateId),
+          execute: executeMandatoryChallengeReminder,
+        },
         EXPIRE_MANDATORY_CHALLENGE: {
           loadSnapshot: (timer) =>
             readChallengeTimerSnapshot(database, timer.aggregateId),
@@ -855,6 +1326,11 @@ const taskList = createTaskList({
           loadSnapshot: (timer) =>
             readChallengeTimerSnapshot(database, timer.aggregateId),
           execute: executeGenesisChallengeExpiry,
+        },
+        EXPIRE_CHALLENGE_SCHEDULING: {
+          loadSnapshot: (timer) =>
+            readChallengeTimerSnapshot(database, timer.aggregateId),
+          execute: executeChallengeSchedulingExpiry,
         },
         EXPIRE_STATUS_QUEUE_RECONFIRMATION: {
           loadSnapshot: (timer) =>
@@ -871,10 +1347,20 @@ const taskList = createTaskList({
             readBookingOfficialConversionTimerSnapshot(database, timer.aggregateId),
           execute: executeBookingOfficialConversionExpiry,
         },
+        EXPIRE_GROUP_PLAN_OFFICIAL_CONVERSION: {
+          loadSnapshot: (timer) =>
+            readGroupPlanOfficialConversionTimerSnapshot(database, timer.aggregateId),
+          execute: executeGroupPlanOfficialConversionExpiry,
+        },
         EXPIRE_BOOKING_SOLO_CONTINUATION: {
           loadSnapshot: (timer) =>
             readBookingSoloContinuationTimerSnapshot(database, timer.aggregateId),
           execute: executeBookingSoloContinuationExpiry,
+        },
+        EXPIRE_BOOKING_TRAINING_RETENTION: {
+          loadSnapshot: (timer) =>
+            readBookingTrainingRetentionTimerSnapshot(database, timer.aggregateId),
+          execute: executeBookingTrainingRetentionExpiry,
         },
         FINALIZE_RESULT: {
           loadSnapshot: (timer) => readResultTimerSnapshot(database, timer.aggregateId),
@@ -894,6 +1380,8 @@ const taskList = createTaskList({
         },
       },
       now: () => new Date(),
+      readIncidentSuppression: (timer) =>
+        readPlatformIncidentTimerSuppression(database, timer, new Date()),
       reschedule: scheduleTimer,
       recordStaleDiagnostic: async (timer, decision) => {
         logger.info(
@@ -916,6 +1404,8 @@ const taskList = createTaskList({
       logger.info(
         {
           createdCount: result.createdCount,
+          createdPushIntentCount: result.createdPushIntentCount,
+          createdSmsIntentCount: result.createdSmsIntentCount,
           eventId: message.eventId,
           messageId: message.messageId,
           replayed: result.replayed,
@@ -923,6 +1413,21 @@ const taskList = createTaskList({
         'notification inbox projection handled',
       );
       return;
+    }
+    const incidentId = platformIncidentIdFromResolvedOutbox(message.topic, message.payload);
+    if (incidentId) {
+      await reconcileResolvedPlatformIncident(incidentId, message.eventId);
+    }
+    const requestedExportId = accountExportIdFromRequestedOutbox(message.topic, message.payload);
+    if (requestedExportId) {
+      await prepareRequestedAccountExport(requestedExportId, message.eventId);
+    }
+    const competitiveCompetitionId = competitionIdFromCompetitiveSessionEvent(
+      message.topic,
+      message.payload,
+    );
+    if (competitiveCompetitionId) {
+      await reconcileInvalidCompetitiveSessions(competitiveCompetitionId, message.eventId);
     }
     const competitionId = competitionIdFromOutbox(message.topic, message.payload);
     if (competitionId) {
@@ -953,6 +1458,7 @@ const taskList = createTaskList({
 const runner = await run({
   connectionString,
   concurrency: 2,
+  crontab: '15 3 * * * cleanup_chat_payloads\n* * * * * expire_guest_coach_grants',
   pollInterval: 1_000,
   taskList,
 });
@@ -979,6 +1485,11 @@ const outboxPolling = startOutboxPolling({
   deliver: async (message) => {
     const socialTimer = socialTimerFromOutbox(message.topic, message.payload);
     const timer = socialTimer
+      ?? membershipTimerFromOutbox(message.topic, message.payload)
+      ?? incidentTimerFromOutbox(message.topic, message.payload)
+      ?? accountAccessTimerFromOutbox(message.topic, message.payload)
+      ?? accountLifecycleTimerFromOutbox(message.topic, message.payload)
+      ?? identityTimerFromOutbox(message.topic, message.payload)
       ?? schedulingTimerFromOutbox(message.topic, message.payload)
       ?? challengeTimerFromOutbox(message.topic, message.payload)
       ?? statusQueueTimerFromOutbox(message.topic, message.payload)

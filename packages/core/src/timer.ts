@@ -12,6 +12,11 @@ export interface TimerCommandPayload {
 export interface TimerAggregateSnapshot {
   readonly state: string;
   readonly version: number;
+  /**
+   * Current projection deadline. A lifecycle hold may move a deadline after the
+   * timer message was scheduled; the worker must trust this value when present.
+   */
+  readonly deadlineAt?: string;
 }
 
 export type TimerDecision =
@@ -78,9 +83,7 @@ export function evaluateTimer(
   snapshot: TimerAggregateSnapshot,
   now: Date,
 ): TimerDecision {
-  const deadline = Date.parse(payload.deadlineAt);
   if (!Number.isFinite(now.getTime())) throw new RangeError('Timer clock must be valid');
-  if (now.getTime() < deadline) return { kind: 'NOT_DUE', retryAt: payload.deadlineAt };
   if (snapshot.state !== payload.expectedState) {
     return {
       kind: 'STALE',
@@ -97,5 +100,9 @@ export function evaluateTimer(
       actualVersion: snapshot.version,
     };
   }
+  const effectiveDeadlineAt = snapshot.deadlineAt ?? payload.deadlineAt;
+  const deadline = Date.parse(effectiveDeadlineAt);
+  if (!Number.isFinite(deadline)) throw new RangeError('Timer snapshot deadline must be valid');
+  if (now.getTime() < deadline) return { kind: 'NOT_DUE', retryAt: effectiveDeadlineAt };
   return { kind: 'DUE' };
 }

@@ -4,6 +4,7 @@ import {
   assertCanEditMessage,
   assertCanReportMessage,
   assertChatAcceptsPayload,
+  normalizeChatReportReasonCode,
   normalizePersonalMessageText,
   normalizeSocialPair,
   type ChatMessagePayloadType,
@@ -20,6 +21,7 @@ import {
   type ExecutedCommand,
   type RelatedDomainEventDraft,
 } from './platform-command.js';
+import { matchTimerPayload } from './social.js';
 
 export interface PersonalTextContent {
   readonly kind: 'PERSONAL_TEXT';
@@ -99,6 +101,8 @@ export interface ReportedMessageProjection {
   readonly messageId: string;
   readonly reportId: string;
   readonly state: 'PENDING_CENTRAL';
+  readonly caseId: string;
+  readonly caseState: 'SUBMITTED';
   readonly reportedAt: string;
   readonly version: number;
 }
@@ -127,6 +131,53 @@ export interface HideChatMessageEffectIds {
 
 export interface ReportChatMessageEffectIds extends HideChatMessageEffectIds {
   readonly reportId: string;
+  readonly caseId: string;
+  readonly caseEventId: string;
+  readonly caseOutboxMessageId: string;
+  readonly notificationId: string;
+  readonly notificationOutboxMessageId: string;
+}
+
+export interface CentralModerationCaseProjection {
+  readonly caseId: string;
+  readonly caseType: 'REPORT' | 'SAFETY';
+  readonly state: 'SUBMITTED' | 'TRIAGED' | 'UNDER_REVIEW' | 'DECIDED' | 'CLOSED';
+  readonly reportId: string | null;
+  readonly chatId: string;
+  readonly messageId: string | null;
+  readonly reporterUserId: string;
+  readonly subjectUserId: string;
+  readonly reasonCode: string;
+  readonly evidenceSnapshot: Readonly<Record<string, unknown>> | null;
+  readonly challengeId: string | null;
+  readonly bookingId: string | null;
+  readonly sessionId: string | null;
+  readonly initialDueAt: string | null;
+  readonly finalDueAt: string | null;
+  readonly assignedReviewerUserId: string | null;
+  readonly reviewStartedAt: string | null;
+  readonly challengeVersion: number | null;
+  readonly schedulingDeadlineAt: string | null;
+  readonly holdId: string | null;
+  readonly holdState: 'ACTIVE' | 'RELEASED' | null;
+  readonly holdStartedAt: string | null;
+  readonly holdVersion: number | null;
+  readonly originalCoachUserId: string | null;
+  readonly originalVenueId: string | null;
+  readonly viewerCanStartReview: boolean;
+  readonly viewerCanResolve: boolean;
+  readonly viewerHasReviewerConflict: boolean;
+  readonly replacementCoachOptions: readonly {
+    readonly userId: string;
+    readonly displayName: string;
+    readonly venueId: string;
+  }[];
+  readonly replacementVenueOptions: readonly {
+    readonly venueId: string;
+    readonly displayName: string;
+  }[];
+  readonly submittedAt: string;
+  readonly version: number;
 }
 
 interface ChatRow {
@@ -137,6 +188,7 @@ interface ChatRow {
   readonly match_id: string | null;
   readonly match_state: 'ACTIVE' | 'ARCHIVED' | 'UNMATCHED' | 'BLOCKED' | null;
   readonly match_version: string | null;
+  readonly match_last_activity_at: Date | null;
 }
 
 interface MessageRow {
@@ -256,7 +308,8 @@ async function lockedChat(
     select
       chat.chat_id, chat.scope, chat.state, chat.version::text as version,
       matched.match_id, matched.state as match_state,
-      matched.version::text as match_version
+      matched.version::text as match_version,
+      matched.last_activity_at as match_last_activity_at
     from social.chats as chat
     left join social.matches as matched on matched.chat_id = chat.chat_id
     where chat.chat_id = ${chatId}::uuid
@@ -285,6 +338,9 @@ export async function sendChatMessage(
       await lockParticipantPair(transaction, participants);
       const chat = await lockedChat(transaction, command.payload.chatId);
       const type = payloadType(content);
+      if (command.actor.type === 'EXTERNAL') {
+        throw new ChatActionDeniedError('CHAT_PARTICIPANT_REQUIRED');
+      }
       assertChatAcceptsPayload(chat.scope, chat.state, type, command.actor.type);
       if (command.actor.type === 'USER') {
         if (!command.actor.id) throw new ChatActionDeniedError('CHAT_PARTICIPANT_REQUIRED');
@@ -321,6 +377,7 @@ export async function sendChatMessage(
       `.execute(transaction);
 
       const relatedEvents: RelatedDomainEventDraft[] = [];
+      let inactivityTimer: ReturnType<typeof matchTimerPayload> | null = null;
       if (chat.match_id) {
         if (chat.match_state === 'ARCHIVED') {
           const matchVersion = Number(chat.match_version) + 1;
@@ -361,6 +418,11 @@ export async function sendChatMessage(
               metadata: { policyVersion: CHAT_POLICY_VERSION },
             },
           );
+          inactivityTimer = matchTimerPayload(
+            chat.match_id,
+            matchVersion,
+            context.occurredAt,
+          );
         } else {
           await sql`
             update social.matches
@@ -368,6 +430,13 @@ export async function sendChatMessage(
                 updated_at = ${context.occurredAt.toISOString()}::timestamptz
             where match_id = ${chat.match_id}::uuid and state = 'ACTIVE'
           `.execute(transaction);
+          if (chat.match_state === 'ACTIVE' && chat.match_version !== null) {
+            inactivityTimer = matchTimerPayload(
+              chat.match_id,
+              Number(chat.match_version),
+              context.occurredAt,
+            );
+          }
         }
       }
 
@@ -416,6 +485,7 @@ export async function sendChatMessage(
               chatId: chat.chat_id,
               senderUserId: command.actor.id,
               payloadType: type,
+              ...(inactivityTimer ? { timer: inactivityTimer } : {}),
             },
           },
         ],
@@ -461,6 +531,7 @@ export async function readChatMessages(
          and visibility.user_id = ${viewerUserId}::uuid
         where message.chat_id = ${chatId}::uuid
           and message.state = 'ACTIVE'
+          and revision.payload is not null
           and visibility.message_id is null
           and (message.created_at, message.message_id) < (
             select created_at, message_id from social.chat_messages where message_id = ${cursor}::uuid
@@ -484,6 +555,7 @@ export async function readChatMessages(
          and visibility.user_id = ${viewerUserId}::uuid
         where message.chat_id = ${chatId}::uuid
           and message.state = 'ACTIVE'
+          and revision.payload is not null
           and visibility.message_id is null
         order by message.created_at desc, message.message_id desc
         limit ${pageSize + 1}
@@ -696,10 +768,7 @@ export async function reportChatMessage(
   ) {
     throw new ChatActionDeniedError('CHAT_PARTICIPANT_REQUIRED');
   }
-  const reasonCode = command.payload.reasonCode.trim();
-  if (!reasonCode || reasonCode.length > 80) {
-    throw new ChatActionDeniedError('REPORT_REASON_INVALID');
-  }
+  const reasonCode = normalizeChatReportReasonCode(command.payload.reasonCode);
   return executeCriticalCommand<ReportChatMessagePayload, ReportedMessageProjection>(database, {
     command: { ...command, payload: { ...command.payload, reasonCode } },
     ...(now ? { now } : {}),
@@ -748,6 +817,30 @@ export async function reportChatMessage(
           ${context.occurredAt.toISOString()}::timestamptz
         )
       `.execute(transaction);
+      const centralRecipient = await sql<{ readonly user_id: string }>`
+        select user_id
+        from community.role_grants
+        where role = 'CENTRAL_ADMIN' and scope_type = 'GLOBAL' and scope_id is null
+          and state = 'ACTIVE' and (expires_at is null or expires_at > clock_timestamp())
+          and user_id <> ${command.actor.id}::uuid
+        order by authorized_at, user_id
+        limit 1
+      `.execute(transaction);
+      const centralRecipientUserId = centralRecipient.rows[0]?.user_id;
+      if (!centralRecipientUserId) {
+        throw new ChatActionDeniedError('MODERATION_CENTRAL_UNAVAILABLE');
+      }
+      await sql`
+        insert into governance.moderation_cases (
+          case_id, case_type, state, report_id, chat_id, message_id,
+          reporter_user_id, subject_user_id, reason_code, submitted_at, version
+        ) values (
+          ${ids.caseId}::uuid, 'REPORT', 'SUBMITTED', ${ids.reportId}::uuid,
+          ${row.chat_id}::uuid, ${row.message_id}::uuid, ${command.actor.id}::uuid,
+          ${row.sender_user_id}::uuid, ${reasonCode},
+          ${context.occurredAt.toISOString()}::timestamptz, 1
+        )
+      `.execute(transaction);
       await sql`
         update social.chat_messages
         set reported_at = ${context.occurredAt.toISOString()}::timestamptz,
@@ -762,6 +855,8 @@ export async function reportChatMessage(
           messageId: row.message_id,
           reportId: ids.reportId,
           state: 'PENDING_CENTRAL',
+          caseId: ids.caseId,
+          caseState: 'SUBMITTED',
           reportedAt: context.occurredAt.toISOString(),
           version: context.nextVersion,
         },
@@ -773,6 +868,25 @@ export async function reportChatMessage(
           payload: { messageId: row.message_id, chatId: row.chat_id, reportId: ids.reportId },
           metadata: { policyVersion: CHAT_POLICY_VERSION },
         },
+        relatedEvents: [{
+          eventId: ids.caseEventId,
+          eventName: 'ModerationCaseSubmitted',
+          schemaVersion: 1,
+          transitionId: 'MC-01',
+          aggregateType: 'ModerationCase',
+          aggregateId: ids.caseId,
+          aggregateVersion: 1,
+          payload: {
+            caseId: ids.caseId,
+            caseType: 'REPORT',
+            state: 'SUBMITTED',
+            reportId: ids.reportId,
+            chatId: row.chat_id,
+            messageId: row.message_id,
+            reasonCode,
+          },
+          metadata: { policyVersion: CHAT_POLICY_VERSION },
+        }],
         audit: {
           auditId: ids.auditId,
           action: 'REPORT_CHAT_MESSAGE',
@@ -780,7 +894,15 @@ export async function reportChatMessage(
           reasonCode,
           beforeState: 'ACTIVE',
           afterState: 'ACTIVE_REPORTED',
-          metadata: { messageId: row.message_id, chatId: row.chat_id, reportId: ids.reportId },
+          metadata: {
+            messageId: row.message_id,
+            chatId: row.chat_id,
+            reportId: ids.reportId,
+            caseId: ids.caseId,
+            reporterUserId: command.actor.id,
+            subjectUserId: row.sender_user_id,
+            evidenceSnapshot,
+          },
         },
         outbox: [
           {
@@ -788,8 +910,200 @@ export async function reportChatMessage(
             topic: 'moderation.chat-message.reported.v1',
             payload: { messageId: row.message_id, chatId: row.chat_id, reportId: ids.reportId },
           },
+          {
+            messageId: ids.caseOutboxMessageId,
+            topic: 'governance.moderation-case.submitted.v1',
+            sourceEventId: ids.caseEventId,
+            payload: {
+              caseId: ids.caseId,
+              caseType: 'REPORT',
+              state: 'SUBMITTED',
+              reportId: ids.reportId,
+              chatId: row.chat_id,
+              messageId: row.message_id,
+              reasonCode,
+            },
+          },
+          {
+            messageId: ids.notificationOutboxMessageId,
+            topic: 'notification.in_app.v1',
+            sourceEventId: ids.caseEventId,
+            payload: {
+              notifications: [{
+                notificationId: ids.notificationId,
+                recipientUserId: centralRecipientUserId,
+                category: 'SERVICE',
+                renderKey: 'moderation.report-submitted',
+                actionTarget: { type: 'MODERATION_CASE', caseId: ids.caseId },
+                payload: { caseId: ids.caseId, caseType: 'REPORT', state: 'SUBMITTED' },
+                deadlineAt: null,
+              }],
+            },
+          },
         ],
       };
     },
+  });
+}
+
+export async function listModerationCasesForCentral(
+  database: Kysely<Database>,
+  centralUserId: string,
+): Promise<CentralModerationCaseProjection[]> {
+  const grant = await sql<{ readonly allowed: boolean }>`select exists (
+    select 1 from community.role_grants
+    where user_id = ${centralUserId}::uuid and role = 'CENTRAL_ADMIN'
+      and scope_type = 'GLOBAL' and scope_id is null and state = 'ACTIVE'
+      and (expires_at is null or expires_at > clock_timestamp())
+  ) as allowed`.execute(database);
+  if (grant.rows[0]?.allowed !== true) {
+    throw new ChatActionDeniedError('MODERATION_CENTRAL_REQUIRED');
+  }
+  const result = await sql<{
+    readonly case_id: string;
+    readonly case_type: 'REPORT' | 'SAFETY';
+    readonly state: CentralModerationCaseProjection['state'];
+    readonly report_id: string | null;
+    readonly chat_id: string;
+    readonly message_id: string | null;
+    readonly reporter_user_id: string;
+    readonly subject_user_id: string;
+    readonly reason_code: string;
+    readonly evidence_snapshot: Readonly<Record<string, unknown>> | null;
+    readonly challenge_id: string | null;
+    readonly booking_id: string | null;
+    readonly session_id: string | null;
+    readonly initial_due_at: Date | null;
+    readonly final_due_at: Date | null;
+    readonly assigned_reviewer_user_id: string | null;
+    readonly review_started_at: Date | null;
+    readonly challenge_version: string | null;
+    readonly scheduling_deadline_at: Date | null;
+    readonly hold_id: string | null;
+    readonly hold_state: 'ACTIVE' | 'RELEASED' | null;
+    readonly hold_started_at: Date | null;
+    readonly hold_version: string | null;
+    readonly pair_low_id: string | null;
+    readonly pair_high_id: string | null;
+    readonly coach_user_id: string | null;
+    readonly venue_id: string | null;
+    readonly reviewer_is_venue_admin: boolean;
+    readonly submitted_at: Date;
+    readonly version: string;
+  }>`
+    select moderation_case.case_id, moderation_case.case_type, moderation_case.state,
+      moderation_case.report_id, moderation_case.chat_id, moderation_case.message_id,
+      moderation_case.reporter_user_id, moderation_case.subject_user_id,
+      moderation_case.reason_code, report.evidence_snapshot,
+      moderation_case.challenge_id, moderation_case.booking_id,
+      moderation_case.session_id, moderation_case.initial_due_at,
+      moderation_case.final_due_at,
+      moderation_case.assigned_reviewer_user_id, moderation_case.review_started_at,
+      challenge.version::text as challenge_version, challenge.scheduling_deadline_at,
+      process_hold.hold_id, process_hold.state as hold_state,
+      process_hold.started_at as hold_started_at,
+      process_hold.version::text as hold_version,
+      session.pair_low_id, session.pair_high_id, session.coach_user_id, session.venue_id,
+      exists (
+        select 1 from community.role_grants role_grant
+        where role_grant.user_id = ${centralUserId}::uuid
+          and role_grant.role in ('PRIMARY_ADMIN', 'GYM_ADMIN')
+          and role_grant.scope_type = 'VENUE' and role_grant.scope_id = session.venue_id
+          and role_grant.state = 'ACTIVE'
+          and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+      ) as reviewer_is_venue_admin,
+      moderation_case.submitted_at, moderation_case.version::text
+    from governance.moderation_cases moderation_case
+    left join social.chat_message_reports report on report.report_id = moderation_case.report_id
+    left join scheduling.sessions session on session.session_id = moderation_case.session_id
+    left join competition.challenges challenge
+      on challenge.challenge_id = moderation_case.challenge_id
+    left join competition.process_holds process_hold
+      on process_hold.moderation_case_id = moderation_case.case_id
+      and process_hold.reason = 'SAFETY'
+    where moderation_case.state in ('SUBMITTED', 'TRIAGED', 'UNDER_REVIEW')
+    order by moderation_case.submitted_at, moderation_case.case_id
+  `.execute(database);
+  const coachOptions = await sql<{
+    readonly user_id: string;
+    readonly display_name: string;
+    readonly venue_id: string;
+  }>`
+    select distinct coach.user_id, coach.display_name, community.venue_id
+    from identity.users coach
+    join community.role_grants role_grant on role_grant.user_id = coach.user_id
+    join community.communities community on community.community_id = role_grant.scope_id
+    join community.venues venue on venue.venue_id = community.venue_id
+    where coach.account_state = 'ACTIVE'
+      and role_grant.role = 'COACH' and role_grant.scope_type = 'COMMUNITY'
+      and role_grant.state = 'ACTIVE'
+      and (role_grant.expires_at is null or role_grant.expires_at > clock_timestamp())
+      and community.state = 'ACTIVE' and venue.state = 'ACTIVE'
+    order by coach.display_name, coach.user_id, community.venue_id
+  `.execute(database);
+  const venueOptions = await sql<{
+    readonly venue_id: string;
+    readonly display_name: string;
+  }>`
+    select distinct venue.venue_id, venue.display_name
+    from community.venues venue
+    join community.communities community on community.venue_id = venue.venue_id
+    where venue.state = 'ACTIVE' and community.state = 'ACTIVE'
+    order by venue.display_name, venue.venue_id
+  `.execute(database);
+  return result.rows.map((row) => {
+    const viewerHasReviewerConflict = row.case_type === 'SAFETY' && (
+      centralUserId === row.reporter_user_id
+      || centralUserId === row.subject_user_id
+      || centralUserId === row.pair_low_id
+      || centralUserId === row.pair_high_id
+      || centralUserId === row.coach_user_id
+      || row.reviewer_is_venue_admin
+    );
+    return {
+      caseId: row.case_id,
+      caseType: row.case_type,
+      state: row.state,
+      reportId: row.report_id,
+      chatId: row.chat_id,
+      messageId: row.message_id,
+      reporterUserId: row.reporter_user_id,
+      subjectUserId: row.subject_user_id,
+      reasonCode: row.reason_code,
+      evidenceSnapshot: row.evidence_snapshot,
+      challengeId: row.challenge_id,
+      bookingId: row.booking_id,
+      sessionId: row.session_id,
+      initialDueAt: row.initial_due_at?.toISOString() ?? null,
+      finalDueAt: row.final_due_at?.toISOString() ?? null,
+      assignedReviewerUserId: row.assigned_reviewer_user_id,
+      reviewStartedAt: row.review_started_at?.toISOString() ?? null,
+      challengeVersion: row.challenge_version === null ? null : Number(row.challenge_version),
+      schedulingDeadlineAt: row.scheduling_deadline_at?.toISOString() ?? null,
+      holdId: row.hold_id,
+      holdState: row.hold_state,
+      holdStartedAt: row.hold_started_at?.toISOString() ?? null,
+      holdVersion: row.hold_version === null ? null : Number(row.hold_version),
+      originalCoachUserId: row.coach_user_id,
+      originalVenueId: row.venue_id,
+      viewerCanStartReview: row.case_type === 'SAFETY' && row.state === 'SUBMITTED'
+        && !viewerHasReviewerConflict,
+      viewerCanResolve: row.case_type === 'SAFETY' && row.state === 'UNDER_REVIEW'
+        && row.assigned_reviewer_user_id === centralUserId
+        && !viewerHasReviewerConflict,
+      viewerHasReviewerConflict,
+      replacementCoachOptions: row.case_type === 'SAFETY'
+        ? coachOptions.rows.map((option) => ({
+            userId: option.user_id, displayName: option.display_name, venueId: option.venue_id,
+          }))
+        : [],
+      replacementVenueOptions: row.case_type === 'SAFETY'
+        ? venueOptions.rows.map((option) => ({
+            venueId: option.venue_id, displayName: option.display_name,
+          }))
+        : [],
+      submittedAt: row.submitted_at.toISOString(),
+      version: Number(row.version),
+    };
   });
 }

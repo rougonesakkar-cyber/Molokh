@@ -1,0 +1,36 @@
+diff --git a/lib/parse.js b/lib/parse.js
+index 3a6988e629f52aee6609dc5ec290a5e9ff47cecb..3f4d045be9dc6197613b44ee989b876ee8711ed9 100644
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -2,6 +2,11 @@
+ 
+ const stringify = require('./stringify');
+ 
++// Recursive compile/expand walkers consume one stack frame per nested brace.
++// Keep the parser-produced AST below a conservative, fixed upper bound so an
++// untrusted pattern cannot exhaust the Node.js call stack (CVE-2026-93687).
++const MAX_DEPTH = 100;
++
+ /**
+  * Constants
+  */
+@@ -35,6 +40,9 @@ const parse = (input, options = {}) => {
+ 
+   const opts = options || {};
+   const max = typeof opts.maxLength === 'number' ? Math.min(MAX_LENGTH, opts.maxLength) : MAX_LENGTH;
++  const maxDepth = Number.isSafeInteger(opts.maxDepth) && opts.maxDepth >= 0
++    ? Math.min(MAX_DEPTH, opts.maxDepth)
++    : MAX_DEPTH;
+   if (input.length > max) {
+     throw new SyntaxError(`Input length (${input.length}), exceeds max characters (${max})`);
+   }
+@@ -196,6 +204,9 @@ const parse = (input, options = {}) => {
+ 
+     if (value === CHAR_LEFT_CURLY_BRACE) {
+       depth++;
++      if (depth > maxDepth) {
++        throw new SyntaxError(`Input depth (${depth}), exceeds max brace depth (${maxDepth})`);
++      }
+ 
+       const dollar = prev.value && prev.value.slice(-1) === '$' || block.dollar === true;
+       const brace = {

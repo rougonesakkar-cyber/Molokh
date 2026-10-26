@@ -7,6 +7,8 @@ export function socialTimerFromOutbox(
   const expected =
     topic === 'social.like.created.v1'
       ? { aggregateType: 'Like', commandType: 'EXPIRE_LIKE' }
+      : topic === 'social.match.created.v1' || topic === 'chat.message.sent.v1'
+        ? { aggregateType: 'Match', commandType: 'EXPIRE_INACTIVE_MATCH' }
       : topic === 'social.pair.suppressed.v1'
         ? {
             aggregateType: 'DiscoveryPairSuppression',
@@ -14,6 +16,12 @@ export function socialTimerFromOutbox(
           }
         : null;
   if (!expected) return null;
+  if (
+    topic === 'chat.message.sent.v1'
+    && (typeof payload !== 'object' || payload === null || !('timer' in payload))
+  ) {
+    return null;
+  }
   if (typeof payload !== 'object' || payload === null || !('timer' in payload)) {
     throw new TypeError('Social outbox payload must contain a timer');
   }

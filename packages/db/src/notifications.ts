@@ -24,6 +24,8 @@ export interface NotificationDraft {
 export interface NotificationProjectionResult {
   readonly replayed: boolean;
   readonly createdCount: number;
+  readonly createdPushIntentCount: number;
+  readonly createdSmsIntentCount: number;
 }
 
 function assertNonEmpty(value: string, field: string): void {
@@ -62,9 +64,16 @@ export async function projectNotificationBatch(
     `.execute(transaction);
 
     if (receipt.rows.length === 0) {
-      return { replayed: true, createdCount: 0 };
+      return {
+        replayed: true,
+        createdCount: 0,
+        createdPushIntentCount: 0,
+        createdSmsIntentCount: 0,
+      };
     }
 
+    let createdPushIntentCount = 0;
+    let createdSmsIntentCount = 0;
     for (const draft of drafts) {
       await sql`
         insert into platform.notifications (
@@ -87,9 +96,61 @@ export async function projectNotificationBatch(
           ${draft.deadlineAt}::timestamptz
         )
       `.execute(transaction);
+
+      if (draft.category !== 'MANDATORY') continue;
+
+      const pushIntent = await sql<{ readonly delivery_intent_id: string }>`
+        insert into platform.notification_delivery_intents (
+          delivery_intent_id,
+          notification_id,
+          source_event_id,
+          recipient_user_id,
+          channel,
+          delivery_class
+        ) values (
+          md5(${draft.notificationId} || ':PUSH')::uuid,
+          ${draft.notificationId}::uuid,
+          ${sourceEventId}::uuid,
+          ${draft.recipientUserId}::uuid,
+          'PUSH',
+          'CRITICAL'
+        )
+        on conflict (notification_id, channel) do nothing
+        returning delivery_intent_id
+      `.execute(transaction);
+      createdPushIntentCount += pushIntent.rows.length;
+
+      const smsIntent = await sql<{ readonly delivery_intent_id: string }>`
+        insert into platform.notification_delivery_intents (
+          delivery_intent_id,
+          notification_id,
+          source_event_id,
+          recipient_user_id,
+          channel,
+          delivery_class
+        )
+        select
+          md5(${draft.notificationId} || ':SMS')::uuid,
+          ${draft.notificationId}::uuid,
+          ${sourceEventId}::uuid,
+          ${draft.recipientUserId}::uuid,
+          'SMS',
+          'CRITICAL'
+        from platform.notification_preferences
+        where user_id = ${draft.recipientUserId}::uuid
+          and event_sms_opt_in = true
+        on conflict (notification_id, channel) do nothing
+        returning delivery_intent_id
+      `.execute(transaction);
+      createdSmsIntentCount += smsIntent.rows.length;
     }
 
-    return { replayed: false, createdCount: drafts.length };
+    return {
+      replayed: false,
+      createdCount: drafts.length,
+      createdPushIntentCount,
+      createdSmsIntentCount,
+    };
   });
 }
 
