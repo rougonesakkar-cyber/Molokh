@@ -66,6 +66,8 @@ import {
   changeCommunityPairCooldown,
   changeSports,
   changePrimaryAdmin,
+  proposePrimaryAdminSuccessor,
+  approvePrimaryAdminSuccessor,
   decideAppeal,
   blockUser,
   archiveInactiveMatch,
@@ -106,6 +108,7 @@ import {
   markNotificationRead,
   listPendingVerifications,
   listPendingCoachInvites,
+  listPrimaryAdminSuccessorProposals,
   listPendingMemberships,
   listModerationCasesForCentral,
   listAppealsForCentral,
@@ -2535,6 +2538,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         social.matches,
         social.likes,
         community.community_pause_intervals,
+        community.primary_admin_successor_proposals,
         community.role_grants,
         community.membership_invites,
         community.community_memberships,
@@ -4348,7 +4352,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(['ACTIVE', 'CLOSED']).toContain(raceState.rows[0]?.state);
   });
 
-  it('[AC-018][AC-204] governs Venue Admin scope and atomic Primary succession', async () => {
+  it('[AC-018][AC-021][AC-204] governs Venue Admin scope and atomic Primary succession', async () => {
     const thirdAdmin = testId(354);
     await sql`
       insert into identity.users (
@@ -4783,6 +4787,25 @@ describePostgres('PostgreSQL critical command transaction', () => {
       deniedPrimaryEffects,
     )).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
 
+    const deniedProposalId = testId(379);
+    const deniedProposalEffects = {
+      eventId: testId(380), auditId: testId(381), outboxMessageId: testId(382),
+    };
+    await expect(proposePrimaryAdminSuccessor(database, {
+      commandId: testId(378), commandType: 'PROPOSE_PRIMARY_ADMIN_SUCCESSOR',
+      idempotencyKey: 'primary-proposal-forged-primary',
+      actor: {
+        type: 'USER', id: thirdAdmin, roles: ['PRIMARY_ADMIN'], scopeIds: [ids.venue],
+      },
+      aggregateType: 'PrimaryAdminSuccessorProposal', aggregateId: deniedProposalId,
+      expectedVersion: 0, correlationId: ids.identityCorrelation, causationId: null,
+      requestId: ids.identityRequest, source: 'admin', payloadVersion: 1,
+      payload: {
+        userId: ids.roleUnverified, venueId: ids.venue,
+        reasonCode: 'PRIVATE_SUCCESSION_REASON',
+      },
+    }, deniedProposalEffects)).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+
     const deniedClosureIds = {
       planId: testId(372), eventId: testId(373), auditId: testId(374),
       outboxMessageId: testId(375), notificationOutboxMessageId: testId(376),
@@ -4817,17 +4840,25 @@ describePostgres('PostgreSQL critical command transaction', () => {
       readonly notifications: string;
       readonly grants: string;
       readonly closure_plans: string;
+      readonly proposals: string;
     }>`
       select
         (select count(*)::text from platform.domain_events
-          where event_id in (${deniedPrimaryEffects.eventId}::uuid, ${deniedClosureIds.eventId}::uuid)) as events,
+          where event_id in (
+            ${deniedPrimaryEffects.eventId}::uuid, ${deniedClosureIds.eventId}::uuid,
+            ${deniedProposalEffects.eventId}::uuid
+          )) as events,
         (select count(*)::text from platform.audit_events
-          where audit_id in (${deniedPrimaryEffects.auditId}::uuid, ${deniedClosureIds.auditId}::uuid)) as audits,
+          where audit_id in (
+            ${deniedPrimaryEffects.auditId}::uuid, ${deniedClosureIds.auditId}::uuid,
+            ${deniedProposalEffects.auditId}::uuid
+          )) as audits,
         (select count(*)::text from platform.outbox_messages
           where message_id in (
             ${deniedPrimaryEffects.outboxMessageId}::uuid,
             ${deniedClosureIds.outboxMessageId}::uuid,
-            ${deniedClosureIds.notificationOutboxMessageId}::uuid
+            ${deniedClosureIds.notificationOutboxMessageId}::uuid,
+            ${deniedProposalEffects.outboxMessageId}::uuid
           )) as outbox,
         (select count(*)::text from platform.notifications
           where notification_id in (
@@ -4838,34 +4869,180 @@ describePostgres('PostgreSQL critical command transaction', () => {
         (select count(*)::text from community.role_grants
           where grant_id = ${deniedPrimaryEffects.primaryGrantId}::uuid) as grants,
         (select count(*)::text from community.community_closure_plans
-          where plan_id = ${deniedClosureIds.planId}::uuid) as closure_plans
+          where plan_id = ${deniedClosureIds.planId}::uuid) as closure_plans,
+        (select count(*)::text from community.primary_admin_successor_proposals
+          where proposal_id = ${deniedProposalId}::uuid) as proposals
     `.execute(database);
     expect(deniedEffects.rows[0]).toEqual({
       events: '0', audits: '0', outbox: '0', notifications: '0',
-      grants: '0', closure_plans: '0',
+      grants: '0', closure_plans: '0', proposals: '0',
     });
 
-    const transferCommand = primaryCommand(
-      ids.roleUnverified, 1, testId(332), 'primary-transfer-second',
-    );
-    const transferEffects = primaryEffects(333);
-    const transferredPrimary = await changePrimaryAdmin(
+    const proposalCommand = (proposalId: string, commandId: string, idempotencyKey: string) => ({
+      commandId, commandType: 'PROPOSE_PRIMARY_ADMIN_SUCCESSOR', idempotencyKey,
+      actor: {
+        type: 'USER' as const, id: ids.roleCoach,
+        roles: ['CENTRAL_ADMIN'], scopeIds: [ids.venue],
+      },
+      aggregateType: 'PrimaryAdminSuccessorProposal', aggregateId: proposalId,
+      expectedVersion: 0, correlationId: ids.identityCorrelation, causationId: null,
+      requestId: ids.identityRequest, source: 'admin', payloadVersion: 1,
+      payload: {
+        userId: ids.roleUnverified, venueId: ids.venue,
+        reasonCode: 'PRIVATE_SUCCESSION_REASON',
+      },
+    } satisfies CommandEnvelope<{
+      readonly userId: string; readonly venueId: string; readonly reasonCode: string;
+    }>);
+    const proposalEffects = (offset: number) => ({
+      eventId: testId(offset), auditId: testId(offset + 1),
+      outboxMessageId: testId(offset + 2),
+    });
+    const proposalCommands = [
+      proposalCommand(testId(383), testId(384), 'primary-proposal-race-one'),
+      proposalCommand(testId(388), testId(389), 'primary-proposal-race-two'),
+    ] as const;
+    const proposalEffectsByCommand = [proposalEffects(385), proposalEffects(390)] as const;
+    const racedProposals = await Promise.allSettled([
+      proposePrimaryAdminSuccessor(
+        database, proposalCommands[0], proposalEffectsByCommand[0],
+      ),
+      proposePrimaryAdminSuccessor(
+        database, proposalCommands[1], proposalEffectsByCommand[1],
+      ),
+    ]);
+    expect(racedProposals.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(racedProposals.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const winningProposalResult = racedProposals.find((result) => result.status === 'fulfilled');
+    if (!winningProposalResult || winningProposalResult.status !== 'fulfilled') {
+      throw new Error('Expected one Primary successor proposal');
+    }
+    const winningProposalId = winningProposalResult.value.response.proposalId;
+    const winningProposalIndex = proposalCommands[0].aggregateId === winningProposalId ? 0 : 1;
+    const winningProposalCommand = proposalCommands[winningProposalIndex];
+    const winningProposalEffects = proposalEffectsByCommand[winningProposalIndex];
+    await expect(proposePrimaryAdminSuccessor(
+      database, winningProposalCommand, winningProposalEffects,
+    )).resolves.toMatchObject({ replayed: true, response: { state: 'PENDING' } });
+    await expect(listPrimaryAdminSuccessorProposals(database, ids.centralActor)).resolves
+      .toMatchObject([{ proposalId: winningProposalId, state: 'PENDING' }]);
+
+    const beforeApproval = await sql<{
+      readonly primary_user_id: string; readonly primary_count: string;
+      readonly target_primary_count: string;
+    }>`
+      select
+        min(user_id::text) filter (where role = 'PRIMARY_ADMIN' and state = 'ACTIVE')
+          as primary_user_id,
+        count(*) filter (where role = 'PRIMARY_ADMIN' and state = 'ACTIVE')::text
+          as primary_count,
+        count(*) filter (where role = 'PRIMARY_ADMIN' and state = 'ACTIVE'
+          and user_id = ${ids.roleUnverified}::uuid)::text as target_primary_count
+      from community.role_grants
+      where scope_type = 'VENUE' and scope_id = ${ids.venue}::uuid
+    `.execute(database);
+    expect(beforeApproval.rows[0]).toEqual({
+      primary_user_id: ids.roleCoach, primary_count: '1', target_primary_count: '0',
+    });
+
+    const approvalCommand = (
+      commandId: string, idempotencyKey: string, actorId: string = ids.centralActor,
+    ) => ({
+      commandId, commandType: 'APPROVE_PRIMARY_ADMIN_SUCCESSOR', idempotencyKey,
+      actor: {
+        type: 'USER' as const, id: actorId,
+        roles: ['CENTRAL_ADMIN'], scopeIds: [ids.venue],
+      },
+      aggregateType: 'PrimaryAdminSuccessorProposal', aggregateId: winningProposalId,
+      expectedVersion: 1, correlationId: ids.identityCorrelation,
+      causationId: winningProposalEffects.eventId, requestId: ids.identityRequest,
+      source: 'admin', payloadVersion: 1,
+      payload: { proposalId: winningProposalId, reasonCode: 'PRIMARY_SUCCESSION' },
+    } satisfies CommandEnvelope<{
+      readonly proposalId: string; readonly reasonCode: string;
+    }>);
+    const approvalEffects = (offset: number) => ({
+      eventId: testId(offset), auditId: testId(offset + 1),
+      outboxMessageId: testId(offset + 2), primaryEventId: testId(offset + 3),
+      primaryGrantId: testId(offset + 4), targetNotificationId: testId(offset + 5),
+      previousNotificationId: testId(offset + 6),
+    });
+    const deniedApprovalEffects = approvalEffects(410);
+    await expect(approvePrimaryAdminSuccessor(
       database,
-      transferCommand,
-      transferEffects,
-    );
-    const replayedTransfer = await changePrimaryAdmin(database, transferCommand, transferEffects);
-    expect(transferredPrimary.response).toMatchObject({
-      change: 'TRANSFERRED',
-      primaryAdminUserId: ids.roleUnverified,
-      previousPrimaryAdminUserId: ids.roleCoach,
-      version: 2,
+      approvalCommand(testId(409), 'primary-approval-forged-central', thirdAdmin),
+      deniedApprovalEffects,
+    )).rejects.toBeInstanceOf(RoleGrantPermissionDeniedError);
+    const deniedApprovalWrites = await sql<{
+      readonly events: string; readonly audits: string; readonly outbox: string;
+      readonly grants: string;
+    }>`
+      select
+        (select count(*)::text from platform.domain_events
+          where event_id in (
+            ${deniedApprovalEffects.eventId}::uuid,
+            ${deniedApprovalEffects.primaryEventId}::uuid
+          )) as events,
+        (select count(*)::text from platform.audit_events
+          where audit_id = ${deniedApprovalEffects.auditId}::uuid) as audits,
+        (select count(*)::text from platform.outbox_messages
+          where message_id = ${deniedApprovalEffects.outboxMessageId}::uuid) as outbox,
+        (select count(*)::text from community.role_grants
+          where grant_id = ${deniedApprovalEffects.primaryGrantId}::uuid) as grants
+    `.execute(database);
+    expect(deniedApprovalWrites.rows[0]).toEqual({
+      events: '0', audits: '0', outbox: '0', grants: '0',
     });
-    expect(replayedTransfer).toMatchObject({
-      replayed: true,
-      eventId: transferEffects.eventId,
-      response: transferredPrimary.response,
+    const approvalCommands = [
+      approvalCommand(testId(393), 'primary-approval-race-one'),
+      approvalCommand(testId(401), 'primary-approval-race-two'),
+    ] as const;
+    const approvalEffectsByCommand = [approvalEffects(394), approvalEffects(402)] as const;
+    const racedApprovals = await Promise.allSettled([
+      approvePrimaryAdminSuccessor(
+        database, approvalCommands[0], approvalEffectsByCommand[0],
+      ),
+      approvePrimaryAdminSuccessor(
+        database, approvalCommands[1], approvalEffectsByCommand[1],
+      ),
+    ]);
+    expect(racedApprovals.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejectedApproval = racedApprovals.find((result) => result.status === 'rejected');
+    expect(rejectedApproval).toMatchObject({
+      status: 'rejected', reason: expect.any(VersionConflictError),
     });
+    const winningApprovalResult = racedApprovals.find((result) => result.status === 'fulfilled');
+    if (!winningApprovalResult || winningApprovalResult.status !== 'fulfilled') {
+      throw new Error('Expected one Primary successor approval');
+    }
+    const winningApprovalIndex = approvalEffectsByCommand[0].primaryGrantId
+      === winningApprovalResult.value.response.primaryGrantId ? 0 : 1;
+    const winningApprovalCommand = approvalCommands[winningApprovalIndex];
+    const transferEffects = approvalEffectsByCommand[winningApprovalIndex];
+    expect(winningApprovalResult.value.response).toMatchObject({
+      proposalId: winningProposalId, state: 'APPROVED', version: 2,
+      primaryAdminVersion: 2, primaryGrantId: transferEffects.primaryGrantId,
+    });
+    await expect(approvePrimaryAdminSuccessor(
+      database, winningApprovalCommand, transferEffects,
+    )).resolves.toMatchObject({
+      replayed: true, eventId: transferEffects.eventId,
+      response: winningApprovalResult.value.response,
+    });
+    await expect(listPrimaryAdminSuccessorProposals(database, ids.centralActor))
+      .resolves.toEqual([]);
+    const transferredRoles = await sql<{
+      readonly active_primary: string; readonly old_admin: string;
+    }>`
+      select
+        count(*) filter (where user_id = ${ids.roleUnverified}::uuid
+          and role = 'PRIMARY_ADMIN' and state = 'ACTIVE')::text as active_primary,
+        count(*) filter (where user_id = ${ids.roleCoach}::uuid
+          and role = 'GYM_ADMIN' and state = 'ACTIVE')::text as old_admin
+      from community.role_grants
+      where scope_type = 'VENUE' and scope_id = ${ids.venue}::uuid
+    `.execute(database);
+    expect(transferredRoles.rows[0]).toEqual({ active_primary: '1', old_admin: '1' });
 
     const racingTransfers = await Promise.allSettled([
       changePrimaryAdmin(
@@ -4909,6 +5086,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
           where audit_id = ${transferEffects.auditId}::uuid) as audit_reason,
         array[
           (select payload from platform.domain_events
+            where event_id = ${winningProposalEffects.eventId}::uuid),
+          (select payload from platform.outbox_messages
+            where message_id = ${winningProposalEffects.outboxMessageId}::uuid),
+          (select payload from platform.domain_events
             where event_id = ${transferEffects.eventId}::uuid),
           (select payload from platform.outbox_messages
             where message_id = ${transferEffects.outboxMessageId}::uuid)
@@ -4924,6 +5105,9 @@ describePostgres('PostgreSQL critical command transaction', () => {
     });
     expect(JSON.stringify(primaryHistory.rows[0]?.public_payloads)).not.toContain(
       'PRIMARY_SUCCESSION',
+    );
+    expect(JSON.stringify(primaryHistory.rows[0]?.public_payloads)).not.toContain(
+      'PRIVATE_SUCCESSION_REASON',
     );
     const roleSummary = await readVenueRoleSummary(
       database,

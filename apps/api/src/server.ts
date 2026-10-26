@@ -15,6 +15,8 @@ import {
   changeSports,
   confirmMissingResultVenue,
   changePrimaryAdmin,
+  proposePrimaryAdminSuccessor,
+  approvePrimaryAdminSuccessor,
   confirmBookingHost,
   decideBookingOfficialConversion,
   decideBookingSoloContinuation,
@@ -38,6 +40,7 @@ import {
   inviteCoach,
   hideChatMessageForUser,
   listPendingCoachInvites,
+  listPrimaryAdminSuccessorProposals,
   listPendingMemberships,
   listMissingResultReviewsForCentral,
   listMissingResultReviewsForViewer,
@@ -1478,6 +1481,12 @@ const app = await buildApp({
     appointGymAdmin: (command, ids) => appointGymAdmin(database, command, ids),
     changePrimaryAdmin: (command, ids) =>
       changePrimaryAdmin(database, command, ids),
+    proposePrimaryAdminSuccessor: (command, ids) =>
+      proposePrimaryAdminSuccessor(database, command, ids),
+    approvePrimaryAdminSuccessor: (command, ids) =>
+      approvePrimaryAdminSuccessor(database, command, ids),
+    listPrimaryAdminSuccessorProposals: (centralUserId) =>
+      listPrimaryAdminSuccessorProposals(database, centralUserId),
     readVenueRoleSummary: (centralUserId, venueId) =>
       readVenueRoleSummary(database, centralUserId, venueId),
     verifyVenue: (command, ids) => verifyVenue(database, command, ids),

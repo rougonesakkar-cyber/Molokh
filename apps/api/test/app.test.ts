@@ -24,6 +24,7 @@ import type {
   ApproveVerificationPayload,
   AcceptCoachInvitePayload,
   AppointGymAdminPayload,
+  ApprovePrimaryAdminSuccessorPayload,
   AuthorizeGuestCoachPayload,
   BlockActionProjection,
   BlockEffectIds,
@@ -40,6 +41,10 @@ import type {
   RoleGrantEffectIds,
   PrimaryAdminEffectIds,
   PrimaryAdminProjection,
+  PrimaryAdminSuccessorApprovalEffectIds,
+  PrimaryAdminSuccessorEffectIds,
+  PrimaryAdminSuccessorProjection,
+  ProposePrimaryAdminSuccessorPayload,
   VerifyVenuePayload,
   VenueVerificationEffectIds,
   VenueVerificationProjection,
@@ -1783,9 +1788,10 @@ describe('runtime contract', () => {
     });
   });
 
-  it('[AC-145][AC-204] exposes Venue verification and Primary transfer only through Central routes', async () => {
+  it('[AC-021][AC-145][AC-204] exposes Venue verification and Primary succession through scoped routes', async () => {
     const centralUserId = '0199a1b2-1234-7000-8000-000000000701';
     const coachUserId = '0199a1b2-1234-7000-8000-000000000702';
+    const successorUserId = '0199a1b2-1234-7000-8000-000000000716';
     const communityId = '0199a1b2-1234-7000-8000-000000000703';
     const grantId = '0199a1b2-1234-7000-8000-000000000704';
     const venueId = '0199a1b2-1234-7000-8000-000000000707';
@@ -1843,6 +1849,28 @@ describe('runtime contract', () => {
       previousPrimaryAdminUserId: null,
       change: 'APPOINTED',
       version: 1,
+    };
+    const successorProposal: PrimaryAdminSuccessorProjection = {
+      proposalId: '0199a1b2-1234-7000-8000-000000000717',
+      venueId,
+      proposedByUserId: coachUserId,
+      targetUserId: successorUserId,
+      state: 'PENDING',
+      proposedAt: '2026-09-06T12:15:00.000Z',
+      approvedAt: null,
+      approvedByUserId: null,
+      primaryGrantId: null,
+      primaryAdminVersion: null,
+      version: 1,
+    };
+    const approvedSuccessorProposal: PrimaryAdminSuccessorProjection = {
+      ...successorProposal,
+      state: 'APPROVED',
+      approvedAt: '2026-09-06T12:20:00.000Z',
+      approvedByUserId: centralUserId,
+      primaryGrantId: '0199a1b2-1234-7000-8000-000000000718',
+      primaryAdminVersion: 2,
+      version: 2,
     };
     const venueVerification: VenueVerificationProjection = {
       venueId,
@@ -1902,6 +1930,26 @@ describe('runtime contract', () => {
       aggregateVersion: 1,
       replayed: false,
     }));
+    const proposePrimaryAdminSuccessor = vi.fn(async (
+      _command: CommandEnvelope<ProposePrimaryAdminSuccessorPayload>,
+      _ids: PrimaryAdminSuccessorEffectIds,
+    ) => ({
+      responseStatus: 201,
+      response: successorProposal,
+      eventId: '0199a1b2-1234-7000-8000-000000000719',
+      aggregateVersion: 1,
+      replayed: false,
+    }));
+    const approvePrimaryAdminSuccessor = vi.fn(async (
+      _command: CommandEnvelope<ApprovePrimaryAdminSuccessorPayload>,
+      _ids: PrimaryAdminSuccessorApprovalEffectIds,
+    ) => ({
+      responseStatus: 200,
+      response: approvedSuccessorProposal,
+      eventId: '0199a1b2-1234-7000-8000-000000000720',
+      aggregateVersion: 2,
+      replayed: false,
+    }));
     const verifyVenue = vi.fn(async (
       _command: CommandEnvelope<VerifyVenuePayload>,
       _ids: VenueVerificationEffectIds,
@@ -1922,6 +1970,9 @@ describe('runtime contract', () => {
         listPendingCoachInvites: async () => [pending],
         appointGymAdmin,
         changePrimaryAdmin,
+        proposePrimaryAdminSuccessor,
+        approvePrimaryAdminSuccessor,
+        listPrimaryAdminSuccessorProposals: async () => [successorProposal],
         verifyVenue,
         readVenueRoleSummary: async () => ({
           venueId,
@@ -2113,6 +2164,59 @@ describe('runtime contract', () => {
       expectedVersion: 0,
       actor: { id: centralUserId, roles: [], scopeIds: [] },
       payload: { userId: coachUserId, venueId, reasonCode: 'PILOT_PRIMARY' },
+    });
+
+    const proposed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/venues/${venueId}/primary-admin-successor-proposals`,
+      headers: {
+        authorization: `Bearer ${coachToken}`,
+        'idempotency-key': 'primary-successor-proposal-test-1',
+      },
+      payload: { userId: successorUserId, reasonCode: 'PLANNED_SUCCESSION' },
+    });
+    expect(proposed.statusCode).toBe(201);
+    expect(proposed.json()).toMatchObject({ data: { state: 'PENDING' } });
+    expect(proposePrimaryAdminSuccessor.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'PROPOSE_PRIMARY_ADMIN_SUCCESSOR',
+      aggregateType: 'PrimaryAdminSuccessorProposal',
+      expectedVersion: 0,
+      actor: { id: coachUserId, roles: [], scopeIds: [] },
+      payload: { userId: successorUserId, venueId, reasonCode: 'PLANNED_SUCCESSION' },
+    });
+
+    const proposals = await app.inject({
+      method: 'GET',
+      url: '/api/v1/central/primary-admin-successor-proposals',
+      headers: { authorization: `Bearer ${centralToken}` },
+    });
+    expect(proposals.statusCode).toBe(200);
+    expect(proposals.json().data).toEqual([successorProposal]);
+
+    const approved = await app.inject({
+      method: 'POST',
+      url: `/api/v1/central/primary-admin-successor-proposals/${successorProposal.proposalId}/approve`,
+      headers: {
+        authorization: `Bearer ${centralToken}`,
+        'idempotency-key': 'primary-successor-approve-test-1',
+        'if-match': '1',
+      },
+      payload: { reasonCode: 'SUCCESSION_APPROVED' },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({
+      data: { state: 'APPROVED', primaryAdminVersion: 2, version: 2 },
+    });
+    expect(approvePrimaryAdminSuccessor.mock.calls[0]?.[0]).toMatchObject({
+      commandType: 'APPROVE_PRIMARY_ADMIN_SUCCESSOR',
+      aggregateType: 'PrimaryAdminSuccessorProposal',
+      aggregateId: successorProposal.proposalId,
+      expectedVersion: 1,
+      actor: { id: centralUserId, roles: [], scopeIds: [] },
+      payload: {
+        proposalId: successorProposal.proposalId,
+        reasonCode: 'SUCCESSION_APPROVED',
+      },
     });
   });
 

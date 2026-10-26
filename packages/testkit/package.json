@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads",
     "typecheck": "tsc -p tsconfig.json"
   }
 }

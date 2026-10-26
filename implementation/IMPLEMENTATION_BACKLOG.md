@@ -202,7 +202,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   terminal Result removes DB-authoritative capabilities immediately and the bounded Worker sweep
   appends the EXPIRED grant/event/audit/outbox history idempotently. The Admin/Coach client explains
   the exact scope and terminal expiry without inventing a new permission model or persistence table.
-- Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
+- Story 5 Admin increment: complete. Central appoints only active verified Gym Admins, the first Primary appointment and every transfer serialize on one Venue aggregate, the former Primary keeps the ordinary Gym Admin grant, and database uniqueness guarantees one active Primary. AC-021 adds a source-immutable pending successor proposal that only the current Primary can create; it changes no capabilities until active global Central approves it through the same RG-10 transfer. Competing proposals/approvals, stale versions and forged envelope roles leave no partial success effects. RG-08/RG-09/RG-10 are audited, notified, race-tested and available through a repeatable local operator script.
 - Story 5 Community configuration increment: complete. AC-166/CO-06 lets a database-authorized scoped Gym Admin, Primary Admin or Central publish Pair Cooldown only inside 7–30 days. Each change appends an immutable public version and atomically advances the Community pointer/version with event, audit and outbox; existing Challenge/Session snapshots and already-created Cooldowns retain the preceding version while new Challenge snapshots use the current one.
 - Story 5 Membership onboarding increment: complete. Hashed QR/invite activation, self-request,
   12h Admin reminder, 24h Central escalation, scoped FIFO approval, neutral rejection with a
@@ -422,7 +422,7 @@ This sprint produces a demonstrable Training slice while establishing the same f
   Central API/client operations and Worker exhaustion-before-`COMPENSATED` are executable.
   Migrations `0049`–`0052` and PostgreSQL scenarios AC-195/AC-196 pass; CH-24 gives scheduling
   one 7-day extension before CH-25 no-capacity cancellation.
-  Acceptance traceability is 212/214 (`196/196 P0`, `16/17 P1`).
+  Acceptance traceability is 213/214 (`196/196 P0`, `17/17 P1`).
 - M4 Venue-closure hardening: complete through AC-069. Training-option reads recheck active
   Venue/Community, active Coach account and current Community-scoped Coach grant before exposing
   a published Slot; coach overlap remains excluded by the canonical Slot constraint. A confirmed

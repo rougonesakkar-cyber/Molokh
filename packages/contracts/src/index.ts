@@ -4618,6 +4618,27 @@ export const ChangePrimaryAdminBodySchema = Type.Object(
 
 export type ChangePrimaryAdminBody = Static<typeof ChangePrimaryAdminBodySchema>;
 
+export const ProposePrimaryAdminSuccessorBodySchema = Type.Object(
+  {
+    userId: Type.String({ format: 'uuid' }),
+    reasonCode: Type.String({ minLength: 3, maxLength: 80 }),
+  },
+  { $id: 'ProposePrimaryAdminSuccessorBody', additionalProperties: false },
+);
+
+export type ProposePrimaryAdminSuccessorBody = Static<
+  typeof ProposePrimaryAdminSuccessorBodySchema
+>;
+
+export const ApprovePrimaryAdminSuccessorBodySchema = Type.Object(
+  { reasonCode: Type.String({ minLength: 3, maxLength: 80 }) },
+  { $id: 'ApprovePrimaryAdminSuccessorBody', additionalProperties: false },
+);
+
+export type ApprovePrimaryAdminSuccessorBody = Static<
+  typeof ApprovePrimaryAdminSuccessorBodySchema
+>;
+
 export const PrimaryAdminProjectionSchema = Type.Object(
   {
     venueId: Type.String({ format: 'uuid' }),
@@ -4647,6 +4668,51 @@ export const PrimaryAdminCommandResponseSchema = Type.Object(
 
 export type PrimaryAdminCommandResponse = Static<
   typeof PrimaryAdminCommandResponseSchema
+>;
+
+export const PrimaryAdminSuccessorProjectionSchema = Type.Object(
+  {
+    proposalId: Type.String({ format: 'uuid' }),
+    venueId: Type.String({ format: 'uuid' }),
+    proposedByUserId: Type.String({ format: 'uuid' }),
+    targetUserId: Type.String({ format: 'uuid' }),
+    state: Type.Union([Type.Literal('PENDING'), Type.Literal('APPROVED')]),
+    proposedAt: Type.String({ format: 'date-time' }),
+    approvedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
+    approvedByUserId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    primaryGrantId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+    primaryAdminVersion: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+    version: Type.Integer({ minimum: 1 }),
+  },
+  { $id: 'PrimaryAdminSuccessorProjection', additionalProperties: false },
+);
+
+export const PrimaryAdminSuccessorCommandResponseSchema = Type.Object(
+  {
+    data: PrimaryAdminSuccessorProjectionSchema,
+    meta: Type.Object({
+      requestId: Type.String({ format: 'uuid' }),
+      eventId: Type.String({ format: 'uuid' }),
+      replayed: Type.Boolean(),
+    }),
+  },
+  { $id: 'PrimaryAdminSuccessorCommandResponse', additionalProperties: false },
+);
+
+export type PrimaryAdminSuccessorCommandResponse = Static<
+  typeof PrimaryAdminSuccessorCommandResponseSchema
+>;
+
+export const PrimaryAdminSuccessorListResponseSchema = Type.Object(
+  {
+    data: Type.Array(PrimaryAdminSuccessorProjectionSchema),
+    meta: Type.Object({ requestId: Type.String({ format: 'uuid' }) }),
+  },
+  { $id: 'PrimaryAdminSuccessorListResponse', additionalProperties: false },
+);
+
+export type PrimaryAdminSuccessorListResponse = Static<
+  typeof PrimaryAdminSuccessorListResponseSchema
 >;
 
 export const VenueRoleSummaryResponseSchema = Type.Object(

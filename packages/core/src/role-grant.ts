@@ -312,3 +312,62 @@ export function changePrimaryAdminState(
   }
   return input.currentPrimaryAdminUserId ? 'TRANSFERRED' : 'APPOINTED';
 }
+
+export type PrimaryAdminSuccessorProposalState = 'PENDING' | 'APPROVED';
+
+export function proposePrimaryAdminSuccessorState(input: {
+  readonly actorIsCurrentPrimary: boolean;
+  readonly venueState: VenueState;
+  readonly targetAccountState: AccountState;
+  readonly targetVerificationState: AccountVerificationState;
+  readonly targetHasActiveGymAdmin: boolean;
+  readonly proposerUserId: string;
+  readonly targetUserId: string;
+}): 'PENDING' {
+  if (!input.actorIsCurrentPrimary) throw new RoleGrantPermissionDeniedError();
+  if (input.venueState !== 'ACTIVE') {
+    throw new InvalidRoleGrantTransitionError('NONE');
+  }
+  if (input.targetAccountState !== 'ACTIVE') {
+    throw new RoleGrantValidationError('targetAccountState');
+  }
+  if (input.targetVerificationState !== 'VERIFIED') {
+    throw new RoleGrantValidationError('targetVerificationState');
+  }
+  if (!input.targetHasActiveGymAdmin) {
+    throw new RoleGrantValidationError('targetGymAdminGrant');
+  }
+  if (input.proposerUserId === input.targetUserId) {
+    throw new InvalidRoleGrantTransitionError('ACTIVE');
+  }
+  return 'PENDING';
+}
+
+export function approvePrimaryAdminSuccessorState(input: {
+  readonly actorIsCentral: boolean;
+  readonly proposalState: PrimaryAdminSuccessorProposalState;
+  readonly venueState: VenueState;
+  readonly targetAccountState: AccountState;
+  readonly targetVerificationState: AccountVerificationState;
+  readonly targetHasActiveGymAdmin: boolean;
+  readonly currentPrimaryAdminUserId: string | null;
+  readonly proposedByUserId: string;
+  readonly targetUserId: string;
+}): 'APPROVED' {
+  if (input.proposalState !== 'PENDING') {
+    throw new RoleGrantValidationError('proposalState');
+  }
+  if (input.currentPrimaryAdminUserId !== input.proposedByUserId) {
+    throw new RoleGrantValidationError('currentPrimaryAdmin');
+  }
+  changePrimaryAdminState({
+    actorIsCentral: input.actorIsCentral,
+    venueState: input.venueState,
+    targetAccountState: input.targetAccountState,
+    targetVerificationState: input.targetVerificationState,
+    targetHasActiveGymAdmin: input.targetHasActiveGymAdmin,
+    currentPrimaryAdminUserId: input.currentPrimaryAdminUserId,
+    targetUserId: input.targetUserId,
+  });
+  return 'APPROVED';
+}

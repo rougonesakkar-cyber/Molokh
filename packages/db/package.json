@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "migrate": "tsx src/migrate.ts",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

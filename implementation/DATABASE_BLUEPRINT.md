@@ -547,6 +547,12 @@ Migration `0060_challenge_reschedules.sql` keeps a user-supplied reason note onl
 append-only row and audit metadata. Public domain/outbox/notification payloads receive the bounded
 reason category, never the note.
 
+Migration `0078_primary_admin_successor_proposals.sql` stores one source-immutable pending
+successor proposal per Venue. The proposal carries protected normalized reasons and changes no
+RoleGrant. Central approval appends decision lineage and reuses the existing Venue-locked RG-10
+transfer, so the unique active-Primary constraint and the ordinary Gym Admin grants remain the
+authority source.
+
 Membership rejection uses the original `community_memberships` privacy split: the Athlete-facing
 projection, event and notification contain only a neutral public category and the seven-day
 `reapply_not_before_at`; the internal reason code and optional Case reference remain in the private

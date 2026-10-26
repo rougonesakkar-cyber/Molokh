@@ -7,10 +7,12 @@ import {
   acceptCoachInviteState,
   authorizeGuestCoachState,
   appointGymAdminState,
+  approvePrimaryAdminSuccessorState,
   changePrimaryAdminState,
   expireGuestCoachState,
   inviteCoachState,
   normalizeRoleReasonCode,
+  proposePrimaryAdminSuccessorState,
   verifyVenueState,
 } from '../src/role-grant.js';
 
@@ -103,6 +105,44 @@ describe('Coach role grant policy', () => {
         targetUserId: 'admin-2',
       }),
     ).toBe('TRANSFERRED');
+  });
+
+  it('[AC-021] keeps a Primary successor proposal inert until Central approval', () => {
+    const proposal = {
+      actorIsCurrentPrimary: true,
+      venueState: 'ACTIVE' as const,
+      targetAccountState: 'ACTIVE' as const,
+      targetVerificationState: 'VERIFIED' as const,
+      targetHasActiveGymAdmin: true,
+      proposerUserId: 'primary-1',
+      targetUserId: 'admin-2',
+    };
+    expect(proposePrimaryAdminSuccessorState(proposal)).toBe('PENDING');
+    expect(() => proposePrimaryAdminSuccessorState({
+      ...proposal, actorIsCurrentPrimary: false,
+    })).toThrow(RoleGrantPermissionDeniedError);
+    expect(approvePrimaryAdminSuccessorState({
+      actorIsCentral: true,
+      proposalState: 'PENDING',
+      venueState: 'ACTIVE',
+      targetAccountState: 'ACTIVE',
+      targetVerificationState: 'VERIFIED',
+      targetHasActiveGymAdmin: true,
+      currentPrimaryAdminUserId: 'primary-1',
+      proposedByUserId: 'primary-1',
+      targetUserId: 'admin-2',
+    })).toBe('APPROVED');
+    expect(() => approvePrimaryAdminSuccessorState({
+      actorIsCentral: false,
+      proposalState: 'PENDING',
+      venueState: 'ACTIVE',
+      targetAccountState: 'ACTIVE',
+      targetVerificationState: 'VERIFIED',
+      targetHasActiveGymAdmin: true,
+      currentPrimaryAdminUserId: 'primary-1',
+      proposedByUserId: 'primary-1',
+      targetUserId: 'admin-2',
+    })).toThrow(RoleGrantPermissionDeniedError);
   });
 
   it('[AC-145] verifies a pending Venue only with Central authority and protected evidence', () => {
