@@ -5,6 +5,17 @@ import { useState } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { createClientQueryClient } from '../lib/query';
+import { AppThemeProvider, useAppTheme } from '../ui/theme';
+
+function AppNavigator() {
+  const theme = useAppTheme();
+  return (
+    <>
+      <StatusBar style={theme.dark ? 'light' : 'dark'} />
+      <Stack screenOptions={{ contentStyle: { backgroundColor: theme.colors.background }, headerShown: false }} />
+    </>
+  );
+}
 
 export default function RootLayout() {
   const [queryClient] = useState(createClientQueryClient);
@@ -12,8 +23,9 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
-        <StatusBar style="auto" />
-        <Stack screenOptions={{ headerShown: false }} />
+        <AppThemeProvider>
+          <AppNavigator />
+        </AppThemeProvider>
       </QueryClientProvider>
     </SafeAreaProvider>
   );

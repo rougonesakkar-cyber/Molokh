@@ -134,6 +134,7 @@ import {
   parseDestination,
   type AppDestination,
 } from '../features/navigation/navigation';
+import { type AppTheme, useAppTheme } from '../ui/theme';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -481,6 +482,8 @@ export default function IdentityScreen() {
   const router = useRouter();
   const sectionParams = useLocalSearchParams<{ section?: string | string[] }>();
   const queryClient = useQueryClient();
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const activeTokenRef = useRef(localToken);
@@ -1187,7 +1190,6 @@ export default function IdentityScreen() {
             ]}
           >
             <Text
-              numberOfLines={2}
               style={[
                 styles.mainNavigationText,
                 selected && styles.mainNavigationTextSelected,
@@ -3490,7 +3492,7 @@ export default function IdentityScreen() {
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.container}>
           <Text style={styles.eyebrow}>MOLOKH</Text>
-          <ActivityIndicator color="#221f1a" />
+          <ActivityIndicator color={theme.colors.text} />
           <Text style={styles.hint}>Восстанавливаем защищённую session…</Text>
         </View>
       </SafeAreaView>
@@ -3584,7 +3586,7 @@ export default function IdentityScreen() {
 
         {refreshing ? (
           <View accessibilityLiveRegion="polite" style={styles.refreshingRow}>
-            <ActivityIndicator color="#8b2f22" size="small" />
+            <ActivityIndicator color={theme.colors.primary} size="small" />
             <Text style={styles.muted}>Обновляем данные в фоне…</Text>
           </View>
         ) : null}
@@ -3604,7 +3606,7 @@ export default function IdentityScreen() {
 
         {loading ? (
           <View style={styles.stateCard}>
-            <ActivityIndicator color="#8b2f22" />
+            <ActivityIndicator color={theme.colors.primary} />
             <Text style={styles.muted}>Подключаемся к Molokh API…</Text>
           </View>
         ) : identity ? (
@@ -3703,7 +3705,7 @@ export default function IdentityScreen() {
                     ]}
                   >
                     {saving ? (
-                      <ActivityIndicator color="#ffffff" />
+                      <ActivityIndicator color={theme.colors.onPrimary} />
                     ) : (
                       <Text style={styles.buttonText}>Сохранить имя</Text>
                     )}
@@ -3800,7 +3802,7 @@ export default function IdentityScreen() {
                     ]}
                   >
                     {savingSports ? (
-                      <ActivityIndicator color="#ffffff" />
+                      <ActivityIndicator color={theme.colors.onPrimary} />
                     ) : (
                       <Text style={styles.buttonText}>Сохранить виды спорта</Text>
                     )}
@@ -3861,7 +3863,7 @@ export default function IdentityScreen() {
                       pressed && canSaveHomeVenue && styles.buttonPressed,
                     ]}
                   >
-                    {savingHomeVenue ? <ActivityIndicator color="#ffffff" /> : (
+                    {savingHomeVenue ? <ActivityIndicator color={theme.colors.onPrimary} /> : (
                       <Text style={styles.buttonText}>Сохранить домашний зал</Text>
                     )}
                   </Pressable>
@@ -3916,7 +3918,7 @@ export default function IdentityScreen() {
                       style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
                     >
                       {startingVerification ? (
-                        <ActivityIndicator color="#8b2f22" />
+                        <ActivityIndicator color={theme.colors.primary} />
                       ) : (
                         <Text style={styles.secondaryButtonText}>Отправить на верификацию</Text>
                       )}
@@ -4014,7 +4016,7 @@ export default function IdentityScreen() {
                           ]}
                         >
                           {actingMembershipId === membership.membershipId
-                            ? <ActivityIndicator color="#ffffff" />
+                            ? <ActivityIndicator color={theme.colors.onPrimary} />
                             : <Text style={styles.buttonText}>Принять в Community</Text>}
                         </Pressable>
                         {rejectingMembershipId === membership.membershipId ? (
@@ -4076,7 +4078,7 @@ export default function IdentityScreen() {
                                 ]}
                               >
                                 {actingMembershipId === membership.membershipId
-                                  ? <ActivityIndicator color="#ffffff" />
+                                  ? <ActivityIndicator color={theme.colors.onPrimary} />
                                   : <Text style={styles.dangerButtonText}>Подтвердить отказ</Text>}
                               </Pressable>
                             </View>
@@ -4375,7 +4377,7 @@ export default function IdentityScreen() {
                             pressed && !actingCommunityLifecycle && styles.buttonPressed,
                           ]}
                         >
-                          {actingCommunityLifecycle ? <ActivityIndicator color="#ffffff" /> : (
+                          {actingCommunityLifecycle ? <ActivityIndicator color={theme.colors.onPrimary} /> : (
                             <Text style={communityLifecycle.state === 'ACTIVE'
                               ? styles.dangerButtonText : styles.buttonText}>
                               {communityLifecycle.state === 'ACTIVE'
@@ -4542,7 +4544,7 @@ export default function IdentityScreen() {
                             pressed && !actingCommunityClosure && styles.buttonPressed,
                           ]}
                         >
-                          {actingCommunityClosure ? <ActivityIndicator color="#9a3023" /> : (
+                          {actingCommunityClosure ? <ActivityIndicator color={theme.colors.dangerText} /> : (
                             <Text style={styles.dangerButtonText}>
                               {communityClosureArmed
                                 ? 'Подтвердить Closure Plan'
@@ -4584,7 +4586,7 @@ export default function IdentityScreen() {
                                 pressed && !actingCommunityClosure && styles.buttonPressed,
                               ]}
                             >
-                              {actingCommunityClosure ? <ActivityIndicator color="#9a3023" /> : (
+                              {actingCommunityClosure ? <ActivityIndicator color={theme.colors.dangerText} /> : (
                                 <Text style={styles.dangerButtonText}>Завершить закрытие Community</Text>
                               )}
                             </Pressable>
@@ -4657,7 +4659,7 @@ export default function IdentityScreen() {
                                 pressed && actingCentralAppealId === null && styles.buttonPressed,
                               ]}
                             >
-                              {acting ? <ActivityIndicator color="#ffffff" />
+                              {acting ? <ActivityIndicator color={theme.colors.onPrimary} />
                                 : <Text style={styles.buttonText}>Взять в рассмотрение</Text>}
                             </Pressable>
                           ) : null}
@@ -4838,7 +4840,7 @@ export default function IdentityScreen() {
                       ]}
                     >
                       {acceptingCoachGrant === invite.grantId ? (
-                        <ActivityIndicator color="#ffffff" />
+                        <ActivityIndicator color={theme.colors.onPrimary} />
                       ) : (
                         <Text style={styles.buttonText}>Принять роль Coach</Text>
                       )}
@@ -5213,7 +5215,7 @@ export default function IdentityScreen() {
                         ]}
                       >
                         {publishingSchedule ? (
-                          <ActivityIndicator color="#ffffff" />
+                          <ActivityIndicator color={theme.colors.onPrimary} />
                         ) : (
                           <Text style={styles.buttonText}>
                             {editingAdminSchedule ? 'Сохранить изменения' : 'Опубликовать'}
@@ -5407,7 +5409,7 @@ export default function IdentityScreen() {
                               ]}
                             >
                               {withdrawingScheduleId ? (
-                                <ActivityIndicator color="#9a3023" />
+                                <ActivityIndicator color={theme.colors.dangerText} />
                               ) : (
                                 <Text style={styles.dangerButtonText}>Снять публикацию</Text>
                               )}
@@ -5480,7 +5482,7 @@ export default function IdentityScreen() {
                             ]}
                           >
                             {confirming ? (
-                              <ActivityIndicator color="#ffffff" />
+                              <ActivityIndicator color={theme.colors.onPrimary} />
                             ) : (
                               <Text style={styles.buttonText}>Подтвердить тренировку</Text>
                             )}
@@ -5550,7 +5552,7 @@ export default function IdentityScreen() {
                                   ]}
                                 >
                                   {confirming ? (
-                                    <ActivityIndicator color="#9a3023" />
+                                    <ActivityIndicator color={theme.colors.dangerText} />
                                   ) : (
                                     <Text style={styles.dangerButtonText}>Подтвердить отказ</Text>
                                   )}
@@ -6194,7 +6196,7 @@ export default function IdentityScreen() {
                               ]}
                             >
                               {actionPending ? (
-                                <ActivityIndicator color="#ffffff" />
+                                <ActivityIndicator color={theme.colors.onPrimary} />
                               ) : (
                                 <Text style={styles.buttonText}>Начать Session</Text>
                               )}
@@ -6279,7 +6281,7 @@ export default function IdentityScreen() {
                               ]}
                             >
                               {actionPending ? (
-                                <ActivityIndicator color="#ffffff" />
+                                <ActivityIndicator color={theme.colors.onPrimary} />
                               ) : (
                                 <Text style={styles.buttonText}>
                                   {session.purpose === 'OFFICIAL_CHALLENGE'
@@ -6750,7 +6752,7 @@ export default function IdentityScreen() {
                         ]}
                       >
                         {actingMembershipId === 'request'
-                          ? <ActivityIndicator color="#ffffff" />
+                          ? <ActivityIndicator color={theme.colors.onPrimary} />
                           : <Text style={styles.buttonText}>Вступить в Community</Text>}
                       </Pressable>
                     ) : null}
@@ -6771,7 +6773,7 @@ export default function IdentityScreen() {
                           ]}
                         >
                           {actingMembershipId === communityContext.membership?.membershipId
-                            ? <ActivityIndicator color="#8b2f22" />
+                            ? <ActivityIndicator color={theme.colors.primary} />
                             : <Text style={styles.secondaryButtonText}>Отозвать заявку</Text>}
                         </Pressable>
                       </View>
@@ -6833,7 +6835,7 @@ export default function IdentityScreen() {
                           ]}
                         >
                           {savingPairCooldown
-                            ? <ActivityIndicator color="#8b2f22" />
+                            ? <ActivityIndicator color={theme.colors.primary} />
                             : <Text style={styles.secondaryButtonText}>Опубликовать версию</Text>}
                         </Pressable>
                         {pairCooldownNotice ? (
@@ -6926,8 +6928,9 @@ export default function IdentityScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { backgroundColor: '#f6f4ef', flex: 1 },
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
+  safeArea: { backgroundColor: theme.colors.background, flex: 1 },
   appFrame: { flex: 1 },
   appFrameWide: { flexDirection: 'row' },
   contentScroll: { flex: 1 },
@@ -6941,10 +6944,10 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   containerExpanded: { maxWidth: 880, paddingHorizontal: 32 },
-  eyebrow: { color: '#8b2f22', fontSize: 13, fontWeight: '700', letterSpacing: 2 },
+  eyebrow: { color: theme.colors.primary, fontSize: 13, fontWeight: '700', letterSpacing: 2 },
   testAccountPanel: {
-    backgroundColor: '#fff7e6',
-    borderColor: '#dfc994',
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
     borderRadius: 14,
     borderWidth: 1,
     gap: 12,
@@ -6952,22 +6955,22 @@ const styles = StyleSheet.create({
   },
   testAccountHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   testAccountIdentity: { flex: 1, gap: 3 },
-  testAccountLabel: { color: '#806218', fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
-  testAccountName: { color: '#3f310c', fontSize: 15, fontWeight: '700' },
+  testAccountLabel: { color: theme.colors.warningText, fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
+  testAccountName: { color: theme.colors.warningText, fontSize: 15, fontWeight: '700' },
   testAccountButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  testAccountButtonText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
+  testAccountButtonText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
   testAccountList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   testAccountOption: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 10,
     borderWidth: 1,
     flexBasis: '48%',
@@ -6976,24 +6979,24 @@ const styles = StyleSheet.create({
     minHeight: 54,
     padding: 10,
   },
-  testAccountOptionSelected: { borderColor: '#8b2f22', borderWidth: 2 },
-  testAccountOptionName: { color: '#171512', fontSize: 13, fontWeight: '700' },
-  testAccountOptionRole: { color: '#777168', fontSize: 12 },
+  testAccountOptionSelected: { borderColor: theme.colors.primary, borderWidth: 2 },
+  testAccountOptionName: { color: theme.colors.text, fontSize: 13, fontWeight: '700' },
+  testAccountOptionRole: { color: theme.colors.textMuted, fontSize: 12 },
   mainNavigation: {
-    backgroundColor: '#e9e5dd',
+    backgroundColor: theme.colors.surfaceStrong,
     flexDirection: 'row',
     gap: 4,
     padding: 4,
   },
   mainNavigationCompact: {
-    borderTopColor: '#d3cec5',
+    borderTopColor: theme.colors.border,
     borderTopWidth: 1,
     paddingBottom: 6,
     paddingHorizontal: 6,
     paddingTop: 6,
   },
   mainNavigationWide: {
-    borderRightColor: '#d3cec5',
+    borderRightColor: theme.colors.border,
     borderRightWidth: 1,
     flexDirection: 'column',
     paddingHorizontal: 10,
@@ -7005,18 +7008,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     flex: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 8,
   },
   mainNavigationItemWide: { flex: 0, paddingHorizontal: 14 },
-  mainNavigationItemSelected: { backgroundColor: '#8b2f22' },
-  mainNavigationText: { color: '#625d55', fontSize: 14, fontWeight: '700' },
-  mainNavigationTextSelected: { color: '#ffffff' },
-  title: { color: '#171512', fontSize: 36, fontWeight: '800', letterSpacing: -1, lineHeight: 42 },
-  lead: { color: '#4c4943', fontSize: 17, lineHeight: 25 },
+  mainNavigationItemSelected: { backgroundColor: theme.colors.primary },
+  mainNavigationText: { color: theme.colors.textMuted, fontSize: 14, fontWeight: '700' },
+  mainNavigationTextSelected: { color: theme.colors.onPrimary },
+  title: { color: theme.colors.text, fontSize: 36, fontWeight: '800', letterSpacing: -1, lineHeight: 42 },
+  lead: { color: theme.colors.textSecondary, fontSize: 17, lineHeight: 25 },
   card: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 18,
     borderWidth: 1,
     gap: 12,
@@ -7024,24 +7027,24 @@ const styles = StyleSheet.create({
   },
   stateCard: {
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: theme.colors.surface,
     borderRadius: 18,
     gap: 12,
     padding: 28,
   },
   refreshingRow: { alignItems: 'center', flexDirection: 'row', gap: 10, minHeight: 48 },
   warningCard: {
-    backgroundColor: '#fff7e6',
-    borderColor: '#dfc994',
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
     borderRadius: 14,
     borderWidth: 1,
     gap: 8,
     padding: 14,
   },
-  warningText: { color: '#59430e', fontSize: 14, lineHeight: 20 },
+  warningText: { color: theme.colors.warningText, fontSize: 14, lineHeight: 20 },
   hostConfirmationCard: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
@@ -7051,8 +7054,8 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   adminMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   adminMetric: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
     flexBasis: '30%',
@@ -7061,10 +7064,10 @@ const styles = StyleSheet.create({
     minWidth: 120,
     padding: 12,
   },
-  adminMetricValue: { color: '#8b2f22', fontSize: 24, fontWeight: '800' },
-  adminMetricLabel: { color: '#625d55', fontSize: 12, lineHeight: 17 },
+  adminMetricValue: { color: theme.colors.primary, fontSize: 24, fontWeight: '800' },
+  adminMetricLabel: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 17 },
   publicationKindTabs: {
-    backgroundColor: '#e9e5dd',
+    backgroundColor: theme.colors.surfaceStrong,
     borderRadius: 12,
     flexDirection: 'row',
     gap: 4,
@@ -7075,29 +7078,29 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     flex: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 8,
   },
-  publicationKindTabSelected: { backgroundColor: '#ffffff' },
-  publicationKindTabText: { color: '#625d55', fontSize: 13, fontWeight: '700' },
-  publicationKindTabTextSelected: { color: '#8b2f22' },
+  publicationKindTabSelected: { backgroundColor: theme.colors.surface },
+  publicationKindTabText: { color: theme.colors.textMuted, fontSize: 13, fontWeight: '700' },
+  publicationKindTabTextSelected: { color: theme.colors.primary },
   formRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   formField: { flexBasis: '46%', flexGrow: 1, gap: 7, minWidth: 150 },
   choiceChip: {
     alignItems: 'center',
-    borderColor: '#c9c3b9',
+    borderColor: theme.colors.border,
     borderRadius: 999,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 13,
   },
-  choiceChipSelected: { backgroundColor: '#8b2f22', borderColor: '#8b2f22' },
-  choiceChipText: { color: '#625d55', fontSize: 13, fontWeight: '700' },
-  choiceChipTextSelected: { color: '#ffffff' },
+  choiceChipSelected: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  choiceChipText: { color: theme.colors.textMuted, fontSize: 13, fontWeight: '700' },
+  choiceChipTextSelected: { color: theme.colors.onPrimary },
   adminScheduleItem: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
     gap: 6,
@@ -7105,9 +7108,9 @@ const styles = StyleSheet.create({
   },
   groupState: {
     alignSelf: 'flex-start',
-    backgroundColor: '#e8f1e9',
+    backgroundColor: theme.colors.successBackground,
     borderRadius: 999,
-    color: '#285d35',
+    color: theme.colors.successText,
     fontSize: 12,
     fontWeight: '700',
     overflow: 'hidden',
@@ -7115,17 +7118,17 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   successCard: {
-    backgroundColor: '#eef7ef',
-    borderColor: '#b8d6bc',
+    backgroundColor: theme.colors.successBackground,
+    borderColor: theme.colors.successText,
     borderRadius: 14,
     borderWidth: 1,
     padding: 16,
   },
-  successText: { color: '#285d35', fontSize: 14, lineHeight: 20 },
+  successText: { color: theme.colors.successText, fontSize: 14, lineHeight: 20 },
   sessionState: {
-    backgroundColor: '#e8f1e9',
+    backgroundColor: theme.colors.successBackground,
     borderRadius: 999,
-    color: '#285d35',
+    color: theme.colors.successText,
     fontSize: 12,
     fontWeight: '700',
     overflow: 'hidden',
@@ -7134,52 +7137,52 @@ const styles = StyleSheet.create({
   },
   attendanceList: { gap: 8 },
   sessionConfirmation: {
-    backgroundColor: '#fff7e6',
-    borderColor: '#dfc994',
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
     borderRadius: 12,
     borderWidth: 1,
     gap: 10,
     padding: 14,
   },
   sessionConfirmationDanger: {
-    backgroundColor: '#fff3f1',
-    borderColor: '#b84838',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
   },
-  confirmationTitle: { color: '#171512', fontSize: 15, fontWeight: '800' },
-  confirmationDescription: { color: '#625d55', fontSize: 13, lineHeight: 19 },
+  confirmationTitle: { color: theme.colors.text, fontSize: 15, fontWeight: '800' },
+  confirmationDescription: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 19 },
   confirmationActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   confirmationCancelButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
   confirmationPrimaryButton: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 10,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
   confirmationDangerButton: {
     alignItems: 'center',
-    backgroundColor: '#9a3023',
+    backgroundColor: theme.colors.dangerText,
     borderRadius: 10,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  confirmationButtonText: { color: '#ffffff', fontSize: 14, fontWeight: '800' },
+  confirmationButtonText: { color: theme.colors.onPrimary, fontSize: 14, fontWeight: '800' },
   attendanceCard: {
-    backgroundColor: '#ffffff',
-    borderColor: '#e5e0d7',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 10,
     borderWidth: 1,
     gap: 8,
@@ -7188,167 +7191,168 @@ const styles = StyleSheet.create({
   attendanceActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   attendanceButton: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 9,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 10,
   },
-  attendanceButtonText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
-  label: { color: '#171512', fontSize: 14, fontWeight: '700' },
+  attendanceButtonText: { color: theme.colors.onPrimary, fontSize: 12, fontWeight: '700' },
+  label: { color: theme.colors.text, fontSize: 14, fontWeight: '700' },
   input: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#c9c3b9',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
-    color: '#171512',
+    color: theme.colors.text,
     fontSize: 17,
     minHeight: 52,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
   appealInput: { minHeight: 96, textAlignVertical: 'top' },
-  hint: { color: '#777168', fontSize: 13, lineHeight: 19 },
+  hint: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 19 },
   button: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 12,
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: 18,
   },
-  buttonDisabled: { backgroundColor: '#bbb5ad' },
+  buttonDisabled: { backgroundColor: theme.colors.disabled },
   buttonPressed: { opacity: 0.85 },
-  buttonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
+  buttonText: { color: theme.colors.onPrimary, fontSize: 16, fontWeight: '700' },
   secondaryButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 12,
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: 18,
   },
-  secondaryButtonText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
+  secondaryButtonText: { color: theme.colors.primary, fontSize: 15, fontWeight: '700' },
   compactSecondaryButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
   dangerButton: {
     alignItems: 'center',
-    backgroundColor: '#fff3f1',
-    borderColor: '#b84838',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
     borderRadius: 12,
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: 18,
   },
-  dangerButtonText: { color: '#9a3023', fontSize: 15, fontWeight: '700' },
+  dangerButtonText: { color: theme.colors.dangerText, fontSize: 15, fontWeight: '700' },
   compactDangerButton: {
     alignItems: 'center',
-    backgroundColor: '#fff3f1',
-    borderColor: '#b84838',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
     borderRadius: 10,
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
   refreshButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  refreshText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
-  cardTitle: { color: '#171512', fontSize: 18, fontWeight: '700' },
-  venueName: { color: '#4c4943', fontSize: 16, fontWeight: '600' },
+  refreshText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
+  cardTitle: { color: theme.colors.text, fontSize: 18, fontWeight: '700' },
+  venueName: { color: theme.colors.textSecondary, fontSize: 16, fontWeight: '600' },
   row: { alignItems: 'flex-start', flexDirection: 'row', gap: 16, justifyContent: 'space-between' },
-  muted: { color: '#777168', flexShrink: 1, fontSize: 14 },
-  value: { color: '#171512', flexShrink: 1, fontSize: 14, fontWeight: '600', textAlign: 'right' },
+  muted: { color: theme.colors.textMuted, flexShrink: 1, fontSize: 14 },
+  value: { color: theme.colors.text, flexShrink: 1, fontSize: 14, fontWeight: '600', textAlign: 'right' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { backgroundColor: '#e8f1e9', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
-  chipText: { color: '#285d35', fontSize: 13, fontWeight: '600' },
+  chip: { backgroundColor: theme.colors.successBackground, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
+  chipText: { color: theme.colors.successText, fontSize: 13, fontWeight: '600' },
   capabilityList: { gap: 8 },
   capabilityRow: {
     alignItems: 'center',
-    backgroundColor: '#faf9f6',
+    backgroundColor: theme.colors.surfaceMuted,
     borderRadius: 10,
     flexDirection: 'row',
     gap: 12,
     justifyContent: 'space-between',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  capabilityText: { color: '#4c4943', flex: 1, fontSize: 14 },
-  capabilityState: { color: '#285d35', fontSize: 13, fontWeight: '700' },
+  capabilityText: { color: theme.colors.textSecondary, flex: 1, fontSize: 14 },
+  capabilityState: { color: theme.colors.successText, fontSize: 13, fontWeight: '700' },
   sportOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   sportOption: {
     alignItems: 'center',
-    borderColor: '#c9c3b9',
+    borderColor: theme.colors.border,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  sportOptionSelected: { backgroundColor: '#8b2f22', borderColor: '#8b2f22' },
-  sportOptionText: { color: '#625d55', fontSize: 13, fontWeight: '600' },
-  sportOptionTextSelected: { color: '#ffffff' },
+  sportOptionSelected: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  sportOptionText: { color: theme.colors.textMuted, fontSize: 13, fontWeight: '600' },
+  sportOptionTextSelected: { color: theme.colors.onPrimary },
   discoveryCard: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
     padding: 16,
   },
-  discoveryCardInterested: { borderColor: '#8b2f22', borderWidth: 2 },
+  discoveryCardInterested: { borderColor: theme.colors.primary, borderWidth: 2 },
   discoveryHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   discoveryIdentity: { flex: 1, gap: 3 },
   avatarPlaceholder: {
     alignItems: 'center',
-    backgroundColor: '#e9ddd7',
+    backgroundColor: theme.colors.accentBackground,
     borderRadius: 28,
     height: 56,
     justifyContent: 'center',
     width: 56,
   },
-  avatarText: { color: '#8b2f22', fontSize: 22, fontWeight: '800' },
-  discoveryName: { color: '#171512', fontSize: 17, fontWeight: '700' },
-  discoveryExperience: { color: '#4c4943', fontSize: 14, lineHeight: 20 },
+  avatarText: { color: theme.colors.primary, fontSize: 22, fontWeight: '800' },
+  discoveryName: { color: theme.colors.text, fontSize: 17, fontWeight: '700' },
+  discoveryExperience: { color: theme.colors.textSecondary, fontSize: 14, lineHeight: 20 },
   interestBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#f4dfda',
+    backgroundColor: theme.colors.accentBackground,
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
-  interestText: { color: '#7a261b', fontSize: 13, fontWeight: '700' },
-  denial: { color: '#8b2f22', fontSize: 14, lineHeight: 20 },
+  interestText: { color: theme.colors.dangerText, fontSize: 13, fontWeight: '700' },
+  denial: { color: theme.colors.primary, fontSize: 14, lineHeight: 20 },
   errorCard: {
-    backgroundColor: '#fff0ed',
-    borderColor: '#e5b3aa',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
     padding: 16,
   },
-  errorText: { color: '#7a261b', fontSize: 14, lineHeight: 20 },
+  errorText: { color: theme.colors.dangerText, fontSize: 14, lineHeight: 20 },
   retryButton: { alignSelf: 'flex-start', justifyContent: 'center', minHeight: 48, paddingHorizontal: 4 },
-  retryText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
-});
+  retryText: { color: theme.colors.primary, fontSize: 15, fontWeight: '700' },
+  });
+}

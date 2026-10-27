@@ -1,5 +1,7 @@
+import { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { type AppTheme, useAppTheme } from '../../ui/theme';
 import type { AppDestination } from './navigation';
 
 interface HomeSectionProps {
@@ -60,6 +62,8 @@ function nextAction(props: HomeSectionProps): NextAction {
 }
 
 export function HomeSection(props: HomeSectionProps) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const next = nextAction(props);
   return (
     <View style={styles.card}>
@@ -81,27 +85,29 @@ export function HomeSection(props: HomeSectionProps) {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
   card: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 18,
     borderWidth: 1,
     gap: 10,
     padding: 20,
   },
-  eyebrow: { color: '#8b2f22', fontSize: 13, fontWeight: '800', textTransform: 'uppercase' },
-  title: { color: '#171512', fontSize: 22, fontWeight: '800', lineHeight: 28 },
-  explanation: { color: '#4c4943', fontSize: 15, lineHeight: 22 },
+  eyebrow: { color: theme.colors.primary, fontSize: 13, fontWeight: '800', textTransform: 'uppercase' },
+  title: { color: theme.colors.text, fontSize: 22, fontWeight: '800', lineHeight: 28 },
+  explanation: { color: theme.colors.textSecondary, fontSize: 15, lineHeight: 22 },
   button: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 12,
     justifyContent: 'center',
     minHeight: 48,
     paddingHorizontal: 18,
   },
-  buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+  buttonText: { color: theme.colors.onPrimary, fontSize: 15, fontWeight: '700' },
   pressed: { opacity: 0.82 },
-});
+  });
+}
