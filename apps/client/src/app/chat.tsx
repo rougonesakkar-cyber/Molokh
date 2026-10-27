@@ -16,6 +16,7 @@ import type {
   YouthConsentSummaryResponse,
 } from '@molokh/contracts';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -31,6 +32,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
+import {
+  clientQueryKeys,
+  fetchApiQuery,
+  fetchQueryWithCache,
+  queryFreshness,
+} from '../lib/query';
 import {
   CHAT_REPORT_CONFIRMATION_COPY,
   CHAT_REPORT_SUBMITTED_LABEL,
@@ -76,6 +83,7 @@ function formatDateTime(value: string): string {
 
 export default function ChatScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const params = useLocalSearchParams<{
     chatId?: string | string[];
     counterpart?: string | string[];
@@ -106,6 +114,28 @@ export default function ChatScreen() {
   const [error, setError] = useState<string | null>(null);
   const actionKeys = useRef(new Map<string, string>());
 
+  const readChatResource = useCallback(async <T,>(
+    resource: string,
+    path: string,
+    options: { readonly refresh?: boolean; readonly staleTime?: number } = {},
+  ) => {
+    const queryKey = clientQueryKeys.resource(`chat:${chatId}`, resource);
+    if (options.refresh) {
+      await queryClient.invalidateQueries({ queryKey, refetchType: 'none' });
+    }
+    const result = await fetchQueryWithCache(queryClient, {
+      queryKey,
+      staleTime: options.staleTime ?? queryFreshness.operational,
+      queryFn: (context) => fetchApiQuery<T>({ path, token: localToken }, context),
+    });
+    if (result.data === null) throw new Error('Запрошенные данные не найдены.');
+    return { data: result.data, usedStaleFallback: result.usedStaleFallback };
+  }, [chatId, queryClient]);
+
+  useEffect(() => () => {
+    void queryClient.cancelQueries({ queryKey: clientQueryKeys.session(`chat:${chatId}`) });
+  }, [chatId, queryClient]);
+
   const leaveChat = () => {
     if (router.canGoBack()) {
       router.back();
@@ -114,81 +144,82 @@ export default function ChatScreen() {
     router.replace('/');
   };
 
-  const loadMessages = useCallback(async () => {
+  const loadMessages = useCallback(async (refresh = true) => {
     if (!chatId) {
       setError('Не указан Chat. Вернитесь к списку Match.');
       setLoading(false);
       return;
     }
-    setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/api/v1/chats/${chatId}/messages?limit=50`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as ChatMessagesResponse;
-      setMessages(result.data);
-      setViewerUserId(result.meta.viewerUserId);
-      setChatState(result.meta.chatState);
+      const result = await readChatResource<ChatMessagesResponse>(
+        'messages',
+        `/api/v1/chats/${chatId}/messages?limit=50`,
+        { refresh },
+      );
+      setMessages(result.data.data);
+      setViewerUserId(result.data.meta.viewerUserId);
+      setChatState(result.data.meta.chatState);
+      if (result.usedStaleFallback) {
+        setError('Нет связи с сервером. Показана последняя доступная история чата.');
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить сообщения');
     } finally {
       setLoading(false);
     }
-  }, [chatId]);
+  }, [chatId, readChatResource]);
 
   useEffect(() => {
-    void loadMessages();
+    void loadMessages(false);
   }, [loadMessages]);
 
-  const loadChallenge = useCallback(async () => {
+  const loadChallenge = useCallback(async (refresh = true) => {
     if (!chatId) return;
     setChallengeLoading(true);
     try {
-      const response = await fetch(`${apiUrl}/api/v1/chats/${chatId}/challenge`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as ChatChallengeResponse;
-      setChatChallenge(result.data);
+      const result = await readChatResource<ChatChallengeResponse>(
+        'challenge',
+        `/api/v1/chats/${chatId}/challenge`,
+        { refresh },
+      );
+      setChatChallenge(result.data.data);
     } catch (caught) {
       setChatChallenge(null);
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить Official Challenge');
     } finally {
       setChallengeLoading(false);
     }
-  }, [chatId]);
+  }, [chatId, readChatResource]);
 
   useEffect(() => {
-    void loadChallenge();
+    void loadChallenge(false);
   }, [loadChallenge]);
 
   const activeChallengeId = chatChallenge?.challenge?.challengeId ?? '';
-  const loadYouthConsent = useCallback(async () => {
+  const loadYouthConsent = useCallback(async (refresh = true) => {
     if (!activeChallengeId) {
       setYouthConsent(null);
       return;
     }
     try {
-      const response = await fetch(
-        `${apiUrl}/api/v1/challenges/${activeChallengeId}/youth-consents`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
+      const result = await readChatResource<YouthConsentSummaryResponse>(
+        `youth-consent:${activeChallengeId}`,
+        `/api/v1/challenges/${activeChallengeId}/youth-consents`,
+        { refresh },
       );
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as YouthConsentSummaryResponse;
-      setYouthConsent(result.data);
+      setYouthConsent(result.data.data);
     } catch (caught) {
       setYouthConsent(null);
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить согласие представителя');
     }
-  }, [activeChallengeId]);
+  }, [activeChallengeId, readChatResource]);
 
   useEffect(() => {
-    void loadYouthConsent();
+    void loadYouthConsent(false);
   }, [loadYouthConsent]);
 
-  const loadTrainingOptions = useCallback(async () => {
+  const loadTrainingOptions = useCallback(async (refresh = true) => {
     if (!chatId) {
       setOptionsLoading(false);
       return;
@@ -196,34 +227,46 @@ export default function ChatScreen() {
     setOptionsLoading(true);
     setOptionsError(null);
     try {
-      const headers = { Authorization: `Bearer ${localToken}` };
-      const [response, conversionResponse] = await Promise.all([
-        fetch(`${apiUrl}/api/v1/chats/${chatId}/training-options`, { headers }),
-        fetch(`${apiUrl}/api/v1/me/group-plan-official-conversions`, { headers }),
+      const [optionsResult, conversionResult] = await Promise.allSettled([
+        readChatResource<TrainingOptionsResponse>(
+          'training-options',
+          `/api/v1/chats/${chatId}/training-options`,
+          { refresh },
+        ),
+        readChatResource<MyGroupPlanOfficialConversionsResponse>(
+          'group-plan-conversions',
+          '/api/v1/me/group-plan-official-conversions',
+          { refresh },
+        ),
       ]);
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      if (!conversionResponse.ok) throw new Error(await apiErrorMessage(conversionResponse));
-      const [result, conversionResult] = await Promise.all([
-        response.json() as Promise<TrainingOptionsResponse>,
-        conversionResponse.json() as Promise<MyGroupPlanOfficialConversionsResponse>,
-      ]);
-      setTrainingOptions(result.data);
-      setGroupPlanConversions(conversionResult.data.filter((item) => item.chatId === chatId));
-      setViewerUserId(result.meta.viewerUserId);
+      if (optionsResult.status === 'fulfilled') {
+        setTrainingOptions(optionsResult.value.data.data);
+        setViewerUserId(optionsResult.value.data.meta.viewerUserId);
+      } else {
+        setTrainingOptions(null);
+        setOptionsError('Расписание временно недоступно. Чат продолжает работать.');
+      }
+      if (conversionResult.status === 'fulfilled') {
+        setGroupPlanConversions(
+          conversionResult.value.data.data.filter((item) => item.chatId === chatId),
+        );
+      } else {
+        setGroupPlanConversions([]);
+        setOptionsError((current) => current
+          ?? 'Статус группового плана временно недоступен. Остальные варианты показаны.');
+      }
     } catch (caught) {
-      setTrainingOptions(null);
-      setGroupPlanConversions([]);
       setOptionsError(
         caught instanceof Error ? caught.message : 'Не удалось загрузить расписание',
       );
     } finally {
       setOptionsLoading(false);
     }
-  }, [chatId]);
+  }, [chatId, readChatResource]);
 
   useEffect(() => {
     if (chatState === 'OPEN') {
-      void loadTrainingOptions();
+      void loadTrainingOptions(false);
       return;
     }
     if (chatState !== null) {

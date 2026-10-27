@@ -57,6 +57,7 @@ import type {
   AuthSessionTokens,
 } from '@molokh/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { type Href, useRouter } from 'expo-router';
 import {
   ActivityIndicator,
@@ -112,6 +113,12 @@ import {
   resultCardPresentation,
 } from '../lib/result-presentation';
 import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
+import {
+  clientQueryKeys,
+  fetchApiQuery,
+  fetchQueryWithCache,
+  queryFreshness,
+} from '../lib/query';
 import { coachSafetyRefusalPresentation } from '../features/safety/presentation';
 import { SafetyCaseReviewSection } from '../features/safety/SafetyCaseReviewSection';
 import {
@@ -455,7 +462,13 @@ const officialDenialLabels: Record<CommunityDenialCode, string> = {
 
 export default function IdentityScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView | null>(null);
+  const activeTokenRef = useRef(localToken);
+  const sessionCounterRef = useRef(1);
+  const sessionScopeRef = useRef('session-1');
+  const loadSequenceRef = useRef(0);
+  const hasLoadedIdentityRef = useRef(false);
   const membershipRequestAttemptRef = useRef(
     `membership-request-attempt:${Date.now().toString(36)}`,
   );
@@ -548,6 +561,8 @@ export default function IdentityScreen() {
   const communityConfigurationKeys = useRef(new Map<string, string>());
   const [actingRelationshipId, setActingRelationshipId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [dataWarning, setDataWarning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savingSports, setSavingSports] = useState(false);
   const [startingVerification, setStartingVerification] = useState(false);
@@ -605,323 +620,405 @@ export default function IdentityScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const loadIdentity = useCallback(async () => {
-    setLoading(true);
+    const sequence = ++loadSequenceRef.current;
+    const scope = sessionScopeRef.current;
+    const token = activeTokenRef.current;
+    const firstLoad = !hasLoadedIdentityRef.current;
+    const warnings = new Set<string>();
+    let usedStaleFallback = false;
+
+    if (firstLoad) setLoading(true);
+    else {
+      setRefreshing(true);
+      await queryClient.invalidateQueries({
+        queryKey: clientQueryKeys.session(scope),
+        refetchType: 'none',
+      });
+    }
     setError(null);
+    setDataWarning(null);
     setDiscoveryNotice(null);
     setPairCooldownNotice(null);
+
+    const read = async <T,>(
+      resource: string,
+      path: string,
+      staleTime: number = queryFreshness.operational,
+      options: { readonly allowNotFound?: boolean; readonly emptyStatuses?: readonly number[] } = {},
+    ): Promise<T | null> => {
+      const result = await fetchQueryWithCache(queryClient, {
+        queryKey: clientQueryKeys.resource(scope, resource),
+        staleTime,
+        queryFn: (context) => fetchApiQuery<T>({ path, token, ...options }, context),
+      });
+      if (result.usedStaleFallback) usedStaleFallback = true;
+      return result.data;
+    };
+
+    const loadPart = async <T,>(
+      label: string,
+      task: Promise<T | null>,
+      apply: (value: T | null) => void,
+    ) => {
+      try {
+        const value = await task;
+        if (loadSequenceRef.current === sequence) apply(value);
+      } catch {
+        warnings.add(label);
+      }
+    };
+
     try {
-      const response = await fetch(`${apiUrl}/api/v1/me`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as MeResponse;
-      setIdentity(result.data);
-      setDisplayName(result.data.displayName);
-      setPrimarySport(result.data.primarySport);
-      setSecondarySport(result.data.secondarySport);
-      const enforcementAppealResponse = await fetch(`${apiUrl}/api/v1/me/enforcement-appeal`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!enforcementAppealResponse.ok) {
-        throw new Error(await apiErrorMessage(enforcementAppealResponse));
-      }
-      const enforcementAppealResult =
-        (await enforcementAppealResponse.json()) as MyEnforcementAppealResponse;
-      setEnforcementAppealContext(enforcementAppealResult.data);
-      const homeVenueResponse = await fetch(`${apiUrl}/api/v1/me/home-venue`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!homeVenueResponse.ok) throw new Error(await apiErrorMessage(homeVenueResponse));
-      const homeVenueResult = (await homeVenueResponse.json()) as HomeVenueSettingsResponse;
-      setHomeVenueSettings(homeVenueResult.data);
-      setSelectedHomeVenueId(homeVenueResult.data.homeVenueId);
-      const communityResponse = await fetch(`${apiUrl}/api/v1/me/community`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      let loadedCommunity: CommunityContext | null = null;
-      if (communityResponse.status === 404) {
-        setCommunityContext(null);
-        setPairCooldownDraft('15');
-      } else {
-        if (!communityResponse.ok) throw new Error(await apiErrorMessage(communityResponse));
-        const communityResult = (await communityResponse.json()) as CommunityContextResponse;
-        loadedCommunity = communityResult.data;
-        setCommunityContext(communityResult.data);
-        setPairCooldownDraft(String(communityResult.data.community.pairCooldownDays));
-      }
-      const competitionResponse = await fetch(`${apiUrl}/api/v1/me/competition`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (competitionResponse.status === 404) {
-        setCompetitionStatus(null);
-      } else {
-        if (!competitionResponse.ok) throw new Error(await apiErrorMessage(competitionResponse));
-        const competitionResult = (await competitionResponse.json()) as CompetitionStatusResponse;
-        setCompetitionStatus(competitionResult.data);
-      }
-      const currentAccount = localTestAccounts.find((account) => account.token === localToken);
-      const myRemovalResponse = await fetch(`${apiUrl}/api/v1/me/membership-removals`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!myRemovalResponse.ok) throw new Error(await apiErrorMessage(myRemovalResponse));
-      const myRemovalResult = (await myRemovalResponse.json()) as MembershipRemovalListResponse;
-      setMembershipRemovals(myRemovalResult.data);
-      if (currentAccount?.role === 'Central' && loadedCommunity) {
-        const lifecycleResponse = await fetch(
-          `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/lifecycle`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
+      const meResult = await read<MeResponse>('me', '/api/v1/me', queryFreshness.profile);
+      if (!meResult) throw new Error('Профиль временно недоступен.');
+      if (loadSequenceRef.current !== sequence) return;
+      setIdentity(meResult.data);
+      setDisplayName(meResult.data.displayName);
+      setPrimarySport(meResult.data.primarySport);
+      setSecondarySport(meResult.data.secondarySport);
+      hasLoadedIdentityRef.current = true;
+      setLoading(false);
+
+      const currentAccount = localTestAccounts.find((account) => account.token === token);
+      const role = currentAccount?.role ?? 'Athlete';
+      const communityTask = read<CommunityContextResponse>(
+        'community',
+        '/api/v1/me/community',
+        queryFreshness.profile,
+        { allowNotFound: true },
+      );
+      const sessionsTask = read<MySessionsResponse>(
+        'sessions',
+        '/api/v1/me/sessions',
+      );
+
+      const loads: Promise<void>[] = [
+        loadPart(
+          'enforcement-appeal',
+          read<MyEnforcementAppealResponse>(
+            'enforcement-appeal',
+            '/api/v1/me/enforcement-appeal',
+          ),
+          (value) => setEnforcementAppealContext(value?.data ?? null),
+        ),
+        loadPart(
+          'home-venue',
+          read<HomeVenueSettingsResponse>(
+            'home-venue',
+            '/api/v1/me/home-venue',
+            queryFreshness.profile,
+          ),
+          (value) => {
+            setHomeVenueSettings(value?.data ?? null);
+            setSelectedHomeVenueId(value?.data.homeVenueId ?? null);
+          },
+        ),
+        loadPart('community', communityTask, (value) => {
+          const loadedCommunity = value?.data ?? null;
+          setCommunityContext(loadedCommunity);
+          setPairCooldownDraft(String(loadedCommunity?.community.pairCooldownDays ?? 15));
+        }),
+        loadPart(
+          'competition',
+          read<CompetitionStatusResponse>(
+            'competition',
+            '/api/v1/me/competition',
+            queryFreshness.operational,
+            { allowNotFound: true },
+          ),
+          (value) => setCompetitionStatus(value?.data ?? null),
+        ),
+        loadPart(
+          'coach-invites',
+          read<PendingCoachInviteListResponse>('coach-invites', '/api/v1/me/coach-invites'),
+          (value) => setCoachInvites(value?.data ?? []),
+        ),
+        loadPart(
+          'host-confirmations',
+          read<HostConfirmationQueueResponse>(
+            'host-confirmations',
+            '/api/v1/me/host-confirmations',
+          ),
+          (value) => setHostConfirmations(value?.data ?? []),
+        ),
+        loadPart('sessions', sessionsTask, (value) => {
+          setSessions(value?.data.sessions ?? []);
+          setCompletedTrainingCount(value?.data.completedTrainingCount ?? 0);
+        }),
+        loadPart(
+          'group-conversions',
+          read<MyGroupPlanOfficialConversionsResponse>(
+            'group-conversions',
+            '/api/v1/me/group-plan-official-conversions',
+          ),
+          (value) => setGroupPlanConversions(value?.data ?? []),
+        ),
+        loadPart(
+          'missing-result-reviews',
+          read<MissingResultReviewListResponse>(
+            'missing-result-reviews',
+            role === 'Central'
+              ? '/api/v1/central/missing-result-reviews'
+              : '/api/v1/me/missing-result-reviews',
+          ),
+          (value) => setMissingResultReviews(value?.data ?? []),
+        ),
+        loadPart(
+          'integrity-cases',
+          read<IntegrityCaseListResponse>(
+            'integrity-cases',
+            role === 'Central'
+              ? '/api/v1/central/integrity-cases'
+              : '/api/v1/me/integrity-cases',
+          ),
+          (value) => setIntegrityCases(value?.data ?? []),
+        ),
+        loadPart(
+          'technical-corrections',
+          read<TechnicalCorrectionListResponse>(
+            'technical-corrections',
+            role === 'Central'
+              ? '/api/v1/central/technical-corrections'
+              : '/api/v1/me/technical-corrections',
+          ),
+          (value) => setTechnicalCorrections(value?.data ?? []),
+        ),
+        loadPart(
+          'discovery',
+          read<DiscoveryCardsResponse>(
+            'discovery',
+            '/api/v1/discovery/cards?limit=20',
+            queryFreshness.profile,
+            { emptyStatuses: [403] },
+          ),
+          (value) => {
+            setDiscoveryCards(value?.data ?? []);
+            setDiscoveryNotice(value
+              ? null
+              : 'Discovery откроется после выбора города и домашнего зала.');
+          },
+        ),
+        loadPart(
+          'matches',
+          read<MatchesResponse>('matches', '/api/v1/matches', queryFreshness.profile),
+          (value) => setMatches(value?.data ?? []),
+        ),
+        loadPart(
+          'blocks',
+          read<BlockedUsersResponse>('blocks', '/api/v1/me/blocks', queryFreshness.profile),
+          (value) => setBlockedUsers(value?.data ?? []),
+        ),
+      ];
+
+      if (role === 'Central') {
+        loads.push(
+          loadPart(
+            'membership-removals',
+            read<MembershipRemovalListResponse>(
+              'central-membership-removals',
+              '/api/v1/central/membership-removals',
+            ),
+            (value) => setMembershipRemovals(value?.data ?? []),
+          ),
+          loadPart(
+            'moderation-cases',
+            read<CentralModerationCaseListResponse>(
+              'central-moderation-cases',
+              '/api/v1/central/moderation-cases',
+            ),
+            (value) => setModerationCases(value?.data ?? []),
+          ),
+          loadPart(
+            'enforcement-appeals',
+            read<EnforcementAppealListResponse>(
+              'central-enforcement-appeals',
+              '/api/v1/central/enforcement-appeals',
+            ),
+            (value) => setEnforcementAppeals(value?.data ?? []),
+          ),
+          loadPart(
+            'appeals',
+            read<AppealQueueResponse>('central-appeals', '/api/v1/central/appeals'),
+            (value) => setCentralAppeals(value?.data ?? []),
+          ),
         );
-        if (!lifecycleResponse.ok) throw new Error(await apiErrorMessage(lifecycleResponse));
-        const lifecycleResult = (await lifecycleResponse.json()) as CommunityLifecycleResponse;
-        setCommunityLifecycle(lifecycleResult.data);
-        const closureResponse = await fetch(
-          `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/closure`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (closureResponse.status === 404) setCommunityClosurePlan(null);
-        else {
-          if (!closureResponse.ok) throw new Error(await apiErrorMessage(closureResponse));
-          const closureResult = (await closureResponse.json()) as CommunityClosurePlanResponse;
-          setCommunityClosurePlan(closureResult.data);
-        }
-        if (lifecycleResult.data.state === 'ACTIVE' || lifecycleResult.data.state === 'PAUSED') {
-          const candidatesResponse = await fetch(
-            `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/closure/candidates`,
-            { headers: { Authorization: `Bearer ${localToken}` } },
-          );
-          if (!candidatesResponse.ok) throw new Error(await apiErrorMessage(candidatesResponse));
-          const candidatesResult =
-            (await candidatesResponse.json()) as CommunityClosureCandidatesResponse;
-          setCommunityClosureCandidates(candidatesResult.data);
-          setCommunityClosureDispositions(Object.fromEntries(
-            candidatesResult.data.map((candidate) => [
-              candidate.sessionId, candidate.recommendedDisposition,
-            ]),
-          ));
-        } else {
-          setCommunityClosureCandidates([]);
-          setCommunityClosureDispositions({});
-        }
-      } else {
-        setCommunityLifecycle(null);
-        setCommunityClosurePlan(null);
-        setCommunityClosureCandidates([]);
-        setCommunityClosureDispositions({});
-      }
-      if (currentAccount?.role === 'Central') {
-        const removalQueueResponse = await fetch(
-          `${apiUrl}/api/v1/central/membership-removals`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!removalQueueResponse.ok) {
-          throw new Error(await apiErrorMessage(removalQueueResponse));
-        }
-        const removalQueue =
-          (await removalQueueResponse.json()) as MembershipRemovalListResponse;
-        setMembershipRemovals(removalQueue.data);
-        const moderationQueueResponse = await fetch(
-          `${apiUrl}/api/v1/central/moderation-cases`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!moderationQueueResponse.ok) {
-          throw new Error(await apiErrorMessage(moderationQueueResponse));
-        }
-        const moderationQueue =
-          (await moderationQueueResponse.json()) as CentralModerationCaseListResponse;
-        setModerationCases(moderationQueue.data);
-        const enforcementAppealQueueResponse = await fetch(
-          `${apiUrl}/api/v1/central/enforcement-appeals`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!enforcementAppealQueueResponse.ok) {
-          throw new Error(await apiErrorMessage(enforcementAppealQueueResponse));
-        }
-        const enforcementAppealQueue =
-          (await enforcementAppealQueueResponse.json()) as EnforcementAppealListResponse;
-        setEnforcementAppeals(enforcementAppealQueue.data);
       } else {
         setModerationCases([]);
         setEnforcementAppeals([]);
-      }
-      if (
-        loadedCommunity?.access.capabilities.includes('MANAGE_MEMBERSHIPS')
-      ) {
-        const pendingMembershipResponse = await fetch(
-          `${apiUrl}/api/v1/communities/${loadedCommunity.community.communityId}/memberships/pending`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!pendingMembershipResponse.ok) {
-          throw new Error(await apiErrorMessage(pendingMembershipResponse));
-        }
-        const pendingMembershipResult =
-          (await pendingMembershipResponse.json()) as PendingMembershipListResponse;
-        setPendingMemberships(pendingMembershipResult.data);
-        const dashboardResponse = await fetch(
-          `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/admin-dashboard`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!dashboardResponse.ok) {
-          throw new Error(await apiErrorMessage(dashboardResponse));
-        }
-        const dashboardResult =
-          (await dashboardResponse.json()) as VenueAdminDashboardResponse;
-        setVenueAdminDashboard(dashboardResult.data);
-        setAdminCoachId((current) =>
-          dashboardResult.data.coaches.some((coach) => coach.userId === current)
-            ? current
-            : dashboardResult.data.coaches[0]?.userId ?? '');
-        const membersResponse = await fetch(
-          `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/members`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!membersResponse.ok) throw new Error(await apiErrorMessage(membersResponse));
-        const membersResult = (await membersResponse.json()) as VenueMemberListResponse;
-        setVenueMembers(membersResult.data);
-      } else {
-        setPendingMemberships([]);
-        setVenueAdminDashboard(null);
-        setVenueMembers([]);
-      }
-      const coachInviteResponse = await fetch(`${apiUrl}/api/v1/me/coach-invites`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!coachInviteResponse.ok) {
-        throw new Error(await apiErrorMessage(coachInviteResponse));
-      }
-      const coachInviteResult =
-        (await coachInviteResponse.json()) as PendingCoachInviteListResponse;
-      setCoachInvites(coachInviteResult.data);
-      const hostConfirmationsResponse = await fetch(
-        `${apiUrl}/api/v1/me/host-confirmations`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!hostConfirmationsResponse.ok) {
-        throw new Error(await apiErrorMessage(hostConfirmationsResponse));
-      }
-      const hostConfirmationsResult =
-        (await hostConfirmationsResponse.json()) as HostConfirmationQueueResponse;
-      setHostConfirmations(hostConfirmationsResult.data);
-      const sessionsResponse = await fetch(`${apiUrl}/api/v1/me/sessions`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!sessionsResponse.ok) {
-        throw new Error(await apiErrorMessage(sessionsResponse));
-      }
-      const sessionsResult = (await sessionsResponse.json()) as MySessionsResponse;
-      setSessions(sessionsResult.data.sessions);
-      setCompletedTrainingCount(sessionsResult.data.completedTrainingCount);
-      const groupConversionResponse = await fetch(
-        `${apiUrl}/api/v1/me/group-plan-official-conversions`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!groupConversionResponse.ok) {
-        throw new Error(await apiErrorMessage(groupConversionResponse));
-      }
-      const groupConversionResult =
-        (await groupConversionResponse.json()) as MyGroupPlanOfficialConversionsResponse;
-      setGroupPlanConversions(groupConversionResult.data);
-      const missingResultResponse = await fetch(
-        currentAccount?.role === 'Central'
-          ? `${apiUrl}/api/v1/central/missing-result-reviews`
-          : `${apiUrl}/api/v1/me/missing-result-reviews`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!missingResultResponse.ok) {
-        throw new Error(await apiErrorMessage(missingResultResponse));
-      }
-      const missingResultData = (await missingResultResponse.json()) as MissingResultReviewListResponse;
-      setMissingResultReviews(missingResultData.data);
-      const integrityCasesResponse = await fetch(
-        currentAccount?.role === 'Central'
-          ? `${apiUrl}/api/v1/central/integrity-cases`
-          : `${apiUrl}/api/v1/me/integrity-cases`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!integrityCasesResponse.ok) {
-        throw new Error(await apiErrorMessage(integrityCasesResponse));
-      }
-      const integrityCasesResult =
-        (await integrityCasesResponse.json()) as IntegrityCaseListResponse;
-      setIntegrityCases(integrityCasesResult.data);
-      const technicalCorrectionsResponse = await fetch(
-        currentAccount?.role === 'Central'
-          ? `${apiUrl}/api/v1/central/technical-corrections`
-          : `${apiUrl}/api/v1/me/technical-corrections`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!technicalCorrectionsResponse.ok) {
-        throw new Error(await apiErrorMessage(technicalCorrectionsResponse));
-      }
-      const technicalCorrectionsResult =
-        (await technicalCorrectionsResponse.json()) as TechnicalCorrectionListResponse;
-      setTechnicalCorrections(technicalCorrectionsResult.data);
-      const officialResults = await Promise.all(
-        sessionsResult.data.sessions
-          .filter((session) => session.resultId !== null)
-          .map(async (session) => {
-            const resultResponse = await fetch(`${apiUrl}/api/v1/results/${session.resultId}`, {
-              headers: { Authorization: `Bearer ${localToken}` },
-            });
-            if (!resultResponse.ok) throw new Error(await apiErrorMessage(resultResponse));
-            return ((await resultResponse.json()) as ResultResponse).data;
-          }),
-      );
-      setResultsById(Object.fromEntries(officialResults.map((result) => [result.resultId, result])));
-      const appealDetails = await Promise.all(
-        officialResults.filter((result) => result.state === 'UNDER_APPEAL').map(async (result) => {
-          const appealResponse = await fetch(`${apiUrl}/api/v1/results/${result.resultId}/appeal`, {
-            headers: { Authorization: `Bearer ${localToken}` },
-          });
-          if (appealResponse.status === 404) return null;
-          if (!appealResponse.ok) throw new Error(await apiErrorMessage(appealResponse));
-          return ((await appealResponse.json()) as AppealDetailResponse).data;
-        }),
-      );
-      setAppealsByResultId(Object.fromEntries(
-        appealDetails.filter((appeal): appeal is AppealDetail => appeal !== null)
-          .map((appeal) => [appeal.resultId, appeal]),
-      ));
-      const discoveryResponse = await fetch(`${apiUrl}/api/v1/discovery/cards?limit=20`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (discoveryResponse.status === 403) {
-        setDiscoveryCards([]);
-        setDiscoveryNotice('Discovery откроется после выбора города и домашнего зала.');
-      } else if (!discoveryResponse.ok) {
-        throw new Error(await apiErrorMessage(discoveryResponse));
-      } else {
-        const discoveryResult =
-          (await discoveryResponse.json()) as DiscoveryCardsResponse;
-        setDiscoveryCards(discoveryResult.data);
-      }
-      const matchesResponse = await fetch(`${apiUrl}/api/v1/matches`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!matchesResponse.ok) throw new Error(await apiErrorMessage(matchesResponse));
-      const matchesResult = (await matchesResponse.json()) as MatchesResponse;
-      setMatches(matchesResult.data);
-      const blocksResponse = await fetch(`${apiUrl}/api/v1/me/blocks`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!blocksResponse.ok) throw new Error(await apiErrorMessage(blocksResponse));
-      const blocksResult = (await blocksResponse.json()) as BlockedUsersResponse;
-      setBlockedUsers(blocksResult.data);
-      if (currentAccount?.role === 'Central') {
-        const appealsResponse = await fetch(`${apiUrl}/api/v1/central/appeals`, {
-          headers: { Authorization: `Bearer ${localToken}` },
-        });
-        if (!appealsResponse.ok) throw new Error(await apiErrorMessage(appealsResponse));
-        const appealsResult = (await appealsResponse.json()) as AppealQueueResponse;
-        setCentralAppeals(appealsResult.data);
-      } else {
         setCentralAppeals([]);
+        loads.push(loadPart(
+          'membership-removals',
+          read<MembershipRemovalListResponse>(
+            'membership-removals',
+            '/api/v1/me/membership-removals',
+          ),
+          (value) => setMembershipRemovals(value?.data ?? []),
+        ));
+      }
+
+      loads.push((async () => {
+        const communityResult = await communityTask;
+        const loadedCommunity = communityResult?.data ?? null;
+        if (role === 'Central' && loadedCommunity) {
+          const communityId = loadedCommunity.community.communityId;
+          const lifecycleTask = read<CommunityLifecycleResponse>(
+            `community-lifecycle:${communityId}`,
+            `/api/v1/central/communities/${communityId}/lifecycle`,
+          );
+          await Promise.all([
+            loadPart('community-lifecycle', lifecycleTask, (value) =>
+              setCommunityLifecycle(value?.data ?? null)),
+            loadPart(
+              'community-closure',
+              read<CommunityClosurePlanResponse>(
+                `community-closure:${communityId}`,
+                `/api/v1/central/communities/${communityId}/closure`,
+                queryFreshness.operational,
+                { allowNotFound: true },
+              ),
+              (value) => setCommunityClosurePlan(value?.data ?? null),
+            ),
+            (async () => {
+              const lifecycle = await lifecycleTask;
+              if (!lifecycle || !['ACTIVE', 'PAUSED'].includes(lifecycle.data.state)) {
+                if (loadSequenceRef.current === sequence) {
+                  setCommunityClosureCandidates([]);
+                  setCommunityClosureDispositions({});
+                }
+                return;
+              }
+              await loadPart(
+                'community-closure-candidates',
+                read<CommunityClosureCandidatesResponse>(
+                  `community-closure-candidates:${communityId}`,
+                  `/api/v1/central/communities/${communityId}/closure/candidates`,
+                ),
+                (value) => {
+                  const candidates = value?.data ?? [];
+                  setCommunityClosureCandidates(candidates);
+                  setCommunityClosureDispositions(Object.fromEntries(
+                    candidates.map((candidate) => [
+                      candidate.sessionId,
+                      candidate.recommendedDisposition,
+                    ]),
+                  ));
+                },
+              );
+            })(),
+          ]);
+        } else if (loadSequenceRef.current === sequence) {
+          setCommunityLifecycle(null);
+          setCommunityClosurePlan(null);
+          setCommunityClosureCandidates([]);
+          setCommunityClosureDispositions({});
+        }
+      })().catch(() => { warnings.add('community-operations'); }));
+
+      loads.push((async () => {
+        const communityResult = await communityTask;
+        const loadedCommunity = communityResult?.data ?? null;
+        if (!loadedCommunity?.access.capabilities.includes('MANAGE_MEMBERSHIPS')) {
+          if (loadSequenceRef.current === sequence) {
+            setPendingMemberships([]);
+            setVenueAdminDashboard(null);
+            setVenueMembers([]);
+          }
+          return;
+        }
+        const communityId = loadedCommunity.community.communityId;
+        const venueId = loadedCommunity.venue.venueId;
+        await Promise.all([
+          loadPart(
+            'pending-memberships',
+            read<PendingMembershipListResponse>(
+              `pending-memberships:${communityId}`,
+              `/api/v1/communities/${communityId}/memberships/pending`,
+            ),
+            (value) => setPendingMemberships(value?.data ?? []),
+          ),
+          loadPart(
+            'venue-dashboard',
+            read<VenueAdminDashboardResponse>(
+              `venue-dashboard:${venueId}`,
+              `/api/v1/venues/${venueId}/admin-dashboard`,
+            ),
+            (value) => {
+              setVenueAdminDashboard(value?.data ?? null);
+              if (value) {
+                setAdminCoachId((current) =>
+                  value.data.coaches.some((coach) => coach.userId === current)
+                    ? current
+                    : value.data.coaches[0]?.userId ?? '');
+              }
+            },
+          ),
+          loadPart(
+            'venue-members',
+            read<VenueMemberListResponse>(
+              `venue-members:${venueId}`,
+              `/api/v1/venues/${venueId}/members`,
+              queryFreshness.profile,
+            ),
+            (value) => setVenueMembers(value?.data ?? []),
+          ),
+        ]);
+      })().catch(() => { warnings.add('venue-operations'); }));
+
+      loads.push((async () => {
+        const sessionsResult = await sessionsTask;
+        const resultIds = (sessionsResult?.data.sessions ?? [])
+          .map((session) => session.resultId)
+          .filter((resultId): resultId is string => resultId !== null);
+        const resultSettled = await Promise.allSettled(resultIds.map((resultId) =>
+          read<ResultResponse>(`result:${resultId}`, `/api/v1/results/${resultId}`)));
+        const officialResults = resultSettled.flatMap((result) =>
+          result.status === 'fulfilled' && result.value ? [result.value.data] : []);
+        if (resultSettled.some((result) => result.status === 'rejected')) warnings.add('results');
+        if (loadSequenceRef.current === sequence) {
+          setResultsById(Object.fromEntries(
+            officialResults.map((result) => [result.resultId, result]),
+          ));
+        }
+        const appealSettled = await Promise.allSettled(
+          officialResults
+            .filter((result) => result.state === 'UNDER_APPEAL')
+            .map((result) => read<AppealDetailResponse>(
+              `appeal:${result.resultId}`,
+              `/api/v1/results/${result.resultId}/appeal`,
+              queryFreshness.operational,
+              { allowNotFound: true },
+            )),
+        );
+        const appealDetails = appealSettled.flatMap((result) =>
+          result.status === 'fulfilled' && result.value ? [result.value.data] : []);
+        if (appealSettled.some((result) => result.status === 'rejected')) warnings.add('appeals');
+        if (loadSequenceRef.current === sequence) {
+          setAppealsByResultId(Object.fromEntries(
+            appealDetails.map((appeal) => [appeal.resultId, appeal]),
+          ));
+        }
+      })().catch(() => { warnings.add('results'); }));
+
+      await Promise.all(loads);
+      if (loadSequenceRef.current === sequence) {
+        if (usedStaleFallback) {
+          setDataWarning('Нет связи с сервером. Показаны последние доступные данные; действия не ставятся в очередь.');
+        } else if (warnings.size > 0) {
+          setDataWarning('Основные данные загружены. Некоторые разделы временно недоступны — обновите экран позже.');
+        }
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
+      if (loadSequenceRef.current === sequence) {
+        setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
+      }
     } finally {
-      setLoading(false);
+      if (loadSequenceRef.current === sequence) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, []);
+  }, [queryClient]);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -931,6 +1028,7 @@ export default function IdentityScreen() {
         const session = await refreshManagedAuthSession();
         if (session && !cancelled) {
           setLocalToken(session.accessToken, false);
+          activeTokenRef.current = session.accessToken;
           setActiveTestToken(session.accessToken);
           setManagedAccessExpiresAt(session.accessExpiresAt);
           setManagedLoginRequired(false);
@@ -959,6 +1057,7 @@ export default function IdentityScreen() {
             return;
           }
           setLocalToken(session.accessToken, false);
+          activeTokenRef.current = session.accessToken;
           setActiveTestToken(session.accessToken);
           setManagedAccessExpiresAt(session.accessExpiresAt);
         } catch (caught) {
@@ -1133,11 +1232,22 @@ export default function IdentityScreen() {
       void logoutManagedAuthSession(activeTestToken).catch(() => undefined);
       setManagedAccessExpiresAt(null);
     }
+    const previousScope = sessionScopeRef.current;
+    loadSequenceRef.current += 1;
+    void queryClient.cancelQueries({ queryKey: clientQueryKeys.session(previousScope) })
+      .then(() => queryClient.removeQueries({ queryKey: clientQueryKeys.session(previousScope) }));
+    sessionCounterRef.current += 1;
+    sessionScopeRef.current = `session-${sessionCounterRef.current}`;
+    activeTokenRef.current = account.token;
+    hasLoadedIdentityRef.current = false;
     setLocalToken(account.token, persistToken);
     setActiveTestToken(account.token);
     setAccountMenuOpen(false);
     openSection(account.startSection);
     setIdentity(null);
+    setLoading(true);
+    setRefreshing(false);
+    setDataWarning(null);
     setHomeVenueSettings(null);
     setSelectedHomeVenueId(null);
     setHomeVenueNotice(null);
@@ -1239,6 +1349,11 @@ export default function IdentityScreen() {
     setManagedAccessExpiresAt(null);
     if (__DEV__) switchLocalAccount(localTestAccounts[0]!, true, false);
     else {
+      const previousScope = sessionScopeRef.current;
+      loadSequenceRef.current += 1;
+      await queryClient.cancelQueries({ queryKey: clientQueryKeys.session(previousScope) });
+      queryClient.removeQueries({ queryKey: clientQueryKeys.session(previousScope) });
+      hasLoadedIdentityRef.current = false;
       setIdentity(null);
       setManagedLoginRequired(true);
     }
@@ -3411,6 +3526,26 @@ export default function IdentityScreen() {
         ) : null}
         <Text accessibilityRole="header" aria-level={1} style={styles.title}>{activeSectionCopy.title}</Text>
         <Text style={styles.lead}>{activeSectionCopy.lead}</Text>
+
+        {refreshing ? (
+          <View accessibilityLiveRegion="polite" style={styles.refreshingRow}>
+            <ActivityIndicator color="#8b2f22" size="small" />
+            <Text style={styles.muted}>Обновляем данные в фоне…</Text>
+          </View>
+        ) : null}
+
+        {dataWarning ? (
+          <View style={styles.warningCard}>
+            <Text accessibilityLiveRegion="polite" style={styles.warningText}>{dataWarning}</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void loadIdentity()}
+              style={styles.retryButton}
+            >
+              <Text style={styles.retryText}>Обновить</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         {loading ? (
           <View style={styles.stateCard}>
@@ -6775,6 +6910,16 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 28,
   },
+  refreshingRow: { alignItems: 'center', flexDirection: 'row', gap: 10, minHeight: 48 },
+  warningCard: {
+    backgroundColor: '#fff7e6',
+    borderColor: '#dfc994',
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 8,
+    padding: 14,
+  },
+  warningText: { color: '#59430e', fontSize: 14, lineHeight: 20 },
   hostConfirmationCard: {
     backgroundColor: '#faf9f6',
     borderColor: '#ded9cf',
