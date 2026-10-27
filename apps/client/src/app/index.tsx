@@ -58,7 +58,7 @@ import type {
 } from '@molokh/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { type Href, useRouter } from 'expo-router';
+import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   ActivityIndicator,
   Pressable,
@@ -66,6 +66,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -125,6 +126,14 @@ import {
   CentralEnforcementAppealQueue,
   EnforcementAppealSection,
 } from '../features/enforcement-appeal/EnforcementAppealSection';
+import { HomeSection } from '../features/navigation/HomeSection';
+import {
+  destinationParam,
+  destinationsForRole,
+  layoutMode,
+  parseDestination,
+  type AppDestination,
+} from '../features/navigation/navigation';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -184,7 +193,7 @@ type CentralModerationCase = CentralModerationCaseListResponse['data'][number];
 type EnforcementAppeal = EnforcementAppealListResponse['data'][number];
 type EnforcementAppealContext = Exclude<MyEnforcementAppealResponse['data'], null>;
 type VenueAdminDashboard = VenueAdminDashboardResponse['data'];
-type MainSection = 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
+type MainSection = AppDestination;
 type AdminPublicationKind = 'SLOT' | 'GROUP';
 type AdminDurationMinutes = 60 | 90;
 type ScheduleReasonCode = ScheduleMutationReasonBody['reasonCode'];
@@ -245,10 +254,22 @@ const mainSections: ReadonlyArray<{
   readonly lead: string;
 }> = [
   {
+    id: 'HOME',
+    label: 'Главная',
+    title: 'Что дальше',
+    lead: 'Сначала показываем ближайшее обязательное действие, затем остальные возможности.',
+  },
+  {
     id: 'DISCOVERY',
     label: 'Discovery',
     title: 'Найдите партнёра',
     lead: 'Выберите человека, с которым хотите потренироваться. Общение откроется после взаимного интереса.',
+  },
+  {
+    id: 'CHATS',
+    label: 'Чаты',
+    title: 'Ваши чаты',
+    lead: 'Договоритесь о Training или начните Official Challenge после взаимного Match.',
   },
   {
     id: 'PROFILE',
@@ -270,8 +291,8 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
   readonly lead: string;
 }>>>>> = {
   Coach: {
-    COMMUNITY: {
-      label: 'Сессии',
+    HOME: {
+      label: 'Работа',
       title: 'Рабочие сессии',
       lead: 'Начинайте тренировки, отмечайте присутствие и подтверждайте результат.',
     },
@@ -282,8 +303,8 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
     },
   },
   'Gym Admin': {
-    COMMUNITY: {
-      label: 'Заявки',
+    HOME: {
+      label: 'Работа',
       title: 'Управление залом',
       lead: 'Подтверждайте бронирования и управляйте назначенными сессиями.',
     },
@@ -294,8 +315,8 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
     },
   },
   Central: {
-    COMMUNITY: {
-      label: 'Обращения',
+    HOME: {
+      label: 'Работа',
       title: 'Центральное рассмотрение',
       lead: 'Рассматривайте Appeal прозрачно и фиксируйте обоснование каждого решения.',
     },
@@ -303,11 +324,7 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
 };
 
 function sectionsForRole(role: string) {
-  const availableIds: readonly MainSection[] = role === 'Athlete'
-    ? ['DISCOVERY', 'PROFILE', 'COMMUNITY']
-    : role === 'Central'
-      ? ['COMMUNITY']
-      : ['COMMUNITY', 'PROFILE'];
+  const availableIds = destinationsForRole(role);
   const overrides = operationalSectionCopy[role];
   return availableIds
     .map((id) => mainSections.find((section) => section.id === id)!)
@@ -462,7 +479,9 @@ const officialDenialLabels: Record<CommunityDenialCode, string> = {
 
 export default function IdentityScreen() {
   const router = useRouter();
+  const sectionParams = useLocalSearchParams<{ section?: string | string[] }>();
   const queryClient = useQueryClient();
+  const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const activeTokenRef = useRef(localToken);
   const sessionCounterRef = useRef(1);
@@ -473,8 +492,9 @@ export default function IdentityScreen() {
     `membership-request-attempt:${Date.now().toString(36)}`,
   );
   const [activeSection, setActiveSection] = useState<MainSection>(() =>
-    localTestAccounts.find((account) => account.token === localToken)?.startSection
-      ?? 'DISCOVERY');
+    parseDestination(sectionParams.section)
+      ?? localTestAccounts.find((account) => account.token === localToken)?.startSection
+      ?? 'HOME');
   const [activeTestToken, setActiveTestToken] = useState(localToken);
   const [managedAccessExpiresAt, setManagedAccessExpiresAt] = useState<string | null>(null);
   const [authBootstrapped, setAuthBootstrapped] = useState(false);
@@ -1113,14 +1133,73 @@ export default function IdentityScreen() {
   const activeTestAccount =
     localTestAccounts.find((account) => account.token === activeTestToken) ??
     localTestAccounts[0]!;
+  const currentLayout = layoutMode(width);
+  const isCompactLayout = currentLayout === 'compact';
   const visibleSections = sectionsForRole(activeTestAccount.role);
   const activeSectionCopy =
     visibleSections.find((section) => section.id === activeSection) ?? visibleSections[0]!;
 
+  useEffect(() => {
+    const requested = parseDestination(sectionParams.section);
+    const next = requested && visibleSections.some((section) => section.id === requested)
+      ? requested
+      : visibleSections[0]?.id ?? 'HOME';
+    if (activeSection !== next) setActiveSection(next);
+  }, [activeTestAccount.role, sectionParams.section]);
+
   const openSection = (section: MainSection) => {
     setActiveSection(section);
+    router.setParams({ section: destinationParam(section) });
     scrollRef.current?.scrollTo({ animated: false, y: 0 });
   };
+
+  const operationalCount = activeTestAccount.role === 'Central'
+    ? centralAppeals.length + moderationCases.length + enforcementAppeals.length
+      + missingResultReviews.length + integrityCases.length + technicalCorrections.length
+    : activeTestAccount.role === 'Gym Admin'
+      ? pendingMemberships.length + hostConfirmations.length
+      : activeTestAccount.role === 'Coach'
+        ? hostConfirmations.length + sessions.length
+        : 0;
+
+  const mainNavigation = visibleSections.length > 1 ? (
+    <View
+      accessibilityRole="tablist"
+      style={[
+        styles.mainNavigation,
+        isCompactLayout ? styles.mainNavigationCompact : styles.mainNavigationWide,
+      ]}
+    >
+      {visibleSections.map((section) => {
+        const selected = section.id === activeSection;
+        return (
+          <Pressable
+            key={section.id}
+            aria-selected={selected}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+            onPress={() => openSection(section.id)}
+            style={({ pressed }) => [
+              styles.mainNavigationItem,
+              !isCompactLayout && styles.mainNavigationItemWide,
+              selected && styles.mainNavigationItemSelected,
+              pressed && styles.buttonPressed,
+            ]}
+          >
+            <Text
+              numberOfLines={2}
+              style={[
+                styles.mainNavigationText,
+                selected && styles.mainNavigationTextSelected,
+              ]}
+            >
+              {section.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  ) : null;
 
   const saveDisplayName = async () => {
     if (!identity || !canSave) return;
@@ -3433,11 +3512,17 @@ export default function IdentityScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="handled"
-      >
+      <View style={[styles.appFrame, !isCompactLayout && styles.appFrameWide]}>
+        {!isCompactLayout ? mainNavigation : null}
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.container,
+            currentLayout === 'expanded' && styles.containerExpanded,
+          ]}
+          keyboardShouldPersistTaps="handled"
+          style={styles.contentScroll}
+        >
         <Text style={styles.eyebrow}>MOLOKH</Text>
         {__DEV__ ? (
           <View style={styles.testAccountPanel}>
@@ -3494,36 +3579,6 @@ export default function IdentityScreen() {
             ) : null}
           </View>
         ) : null}
-        {visibleSections.length > 1 ? (
-          <View accessibilityRole="tablist" style={styles.mainNavigation}>
-            {visibleSections.map((section) => {
-              const selected = section.id === activeSection;
-              return (
-                <Pressable
-                  key={section.id}
-                  aria-selected={selected}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected }}
-                  onPress={() => openSection(section.id)}
-                  style={({ pressed }) => [
-                    styles.mainNavigationItem,
-                    selected && styles.mainNavigationItemSelected,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.mainNavigationText,
-                      selected && styles.mainNavigationTextSelected,
-                    ]}
-                  >
-                    {section.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : null}
         <Text accessibilityRole="header" aria-level={1} style={styles.title}>{activeSectionCopy.title}</Text>
         <Text style={styles.lead}>{activeSectionCopy.lead}</Text>
 
@@ -3554,6 +3609,18 @@ export default function IdentityScreen() {
           </View>
         ) : identity ? (
           <>
+            {activeSection === 'HOME' ? (
+              <HomeSection
+                coachInviteCount={coachInvites.length}
+                hostConfirmationCount={hostConfirmations.length}
+                matchCount={matches.length}
+                onNavigate={openSection}
+                operationalCount={operationalCount}
+                role={activeTestAccount.role}
+                sessionCount={sessions.length}
+              />
+            ) : null}
+
             {activeSection === 'DISCOVERY' ? (
               <DiscoverySection
                 actingAction={actingDiscoveryAction}
@@ -3571,12 +3638,42 @@ export default function IdentityScreen() {
                     params: {
                       chatId: match.chatId,
                       counterpart: match.counterpartDisplayName,
+                      returnTo: 'discovery',
                     },
                   } as unknown) as Href)
                 }
                 onRefresh={() => void loadIdentity()}
                 onUnblock={(blocked) => void unblock(blocked)}
                 onUnmatch={(match) => void endMatch(match, 'unmatch')}
+                showConnections={false}
+              />
+            ) : null}
+
+            {activeSection === 'CHATS' ? (
+              <DiscoverySection
+                actingAction={actingDiscoveryAction}
+                actingCandidateId={actingCandidateId}
+                actingRelationshipId={actingRelationshipId}
+                blockedUsers={blockedUsers}
+                cards={discoveryCards}
+                matches={matches}
+                notice={discoveryNotice}
+                onAction={(candidate, action) => void actOnDiscovery(candidate, action)}
+                onBlock={(match) => void endMatch(match, 'block')}
+                onOpenChat={(match) =>
+                  router.push(({
+                    pathname: '/chat',
+                    params: {
+                      chatId: match.chatId,
+                      counterpart: match.counterpartDisplayName,
+                      returnTo: 'chats',
+                    },
+                  } as unknown) as Href)
+                }
+                onRefresh={() => void loadIdentity()}
+                onUnblock={(blocked) => void unblock(blocked)}
+                onUnmatch={(match) => void endMatch(match, 'unmatch')}
+                showDiscovery={false}
               />
             ) : null}
 
@@ -3881,7 +3978,8 @@ export default function IdentityScreen() {
               </>
             ) : null}
 
-            {activeSection === 'COMMUNITY' ? (
+            {activeSection === 'COMMUNITY'
+              || (activeSection === 'HOME' && activeTestAccount.role !== 'Athlete') ? (
               <>
                 {communityContext?.access.capabilities.includes('MANAGE_MEMBERSHIPS') ? (
                   <View style={styles.card}>
@@ -6821,13 +6919,18 @@ export default function IdentityScreen() {
           </View>
         ) : null}
 
-      </ScrollView>
+        </ScrollView>
+        {isCompactLayout ? mainNavigation : null}
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: '#f6f4ef', flex: 1 },
+  appFrame: { flex: 1 },
+  appFrameWide: { flexDirection: 'row' },
+  contentScroll: { flex: 1 },
   container: {
     alignSelf: 'center',
     boxSizing: 'border-box',
@@ -6837,6 +6940,7 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
     width: '100%',
   },
+  containerExpanded: { maxWidth: 880, paddingHorizontal: 32 },
   eyebrow: { color: '#8b2f22', fontSize: 13, fontWeight: '700', letterSpacing: 2 },
   testAccountPanel: {
     backgroundColor: '#fff7e6',
@@ -6877,10 +6981,24 @@ const styles = StyleSheet.create({
   testAccountOptionRole: { color: '#777168', fontSize: 12 },
   mainNavigation: {
     backgroundColor: '#e9e5dd',
-    borderRadius: 14,
     flexDirection: 'row',
     gap: 4,
     padding: 4,
+  },
+  mainNavigationCompact: {
+    borderTopColor: '#d3cec5',
+    borderTopWidth: 1,
+    paddingBottom: 6,
+    paddingHorizontal: 6,
+    paddingTop: 6,
+  },
+  mainNavigationWide: {
+    borderRightColor: '#d3cec5',
+    borderRightWidth: 1,
+    flexDirection: 'column',
+    paddingHorizontal: 10,
+    paddingTop: 24,
+    width: 176,
   },
   mainNavigationItem: {
     alignItems: 'center',
@@ -6890,6 +7008,7 @@ const styles = StyleSheet.create({
     minHeight: 46,
     paddingHorizontal: 8,
   },
+  mainNavigationItemWide: { flex: 0, paddingHorizontal: 14 },
   mainNavigationItemSelected: { backgroundColor: '#8b2f22' },
   mainNavigationText: { color: '#625d55', fontSize: 14, fontWeight: '700' },
   mainNavigationTextSelected: { color: '#ffffff' },

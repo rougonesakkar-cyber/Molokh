@@ -32,6 +32,8 @@ export interface DiscoverySectionProps {
   readonly onRefresh: () => void;
   readonly onUnblock: (blocked: BlockedUser) => void;
   readonly onUnmatch: (match: Match) => void;
+  readonly showConnections?: boolean;
+  readonly showDiscovery?: boolean;
 }
 
 export const DISCOVERY_PRESENTATION_COPY = {
@@ -54,6 +56,8 @@ export function DiscoverySection({
   onRefresh,
   onUnblock,
   onUnmatch,
+  showConnections = true,
+  showDiscovery = true,
 }: DiscoverySectionProps) {
   const [pendingRelationshipAction, setPendingRelationshipAction] =
     useState<PendingRelationshipAction | null>(null);
@@ -164,9 +168,9 @@ export function DiscoverySection({
 
   return (
     <>
-      {matchesSection}
+      {showConnections ? matchesSection : null}
 
-      <View style={styles.section}>
+      {showDiscovery ? <View style={styles.section}>
         <Text accessibilityRole="header" aria-level={2} style={styles.title}>Люди для тренировки</Text>
         <Text style={styles.muted}>
           {DISCOVERY_PRESENTATION_COPY.orderHint}
@@ -268,9 +272,9 @@ export function DiscoverySection({
             );
           })
         )}
-      </View>
+      </View> : null}
 
-      {blockedUsers.length > 0 ? (
+      {showConnections && blockedUsers.length > 0 ? (
         <View style={styles.section}>
           <Text accessibilityRole="header" aria-level={2} style={styles.title}>Заблокированные пользователи</Text>
           <Text style={styles.muted}>

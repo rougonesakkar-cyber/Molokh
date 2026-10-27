@@ -15,7 +15,7 @@ import type {
   YouthConsentCommandResponse,
   YouthConsentSummaryResponse,
 } from '@molokh/contracts';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -87,9 +87,11 @@ export default function ChatScreen() {
   const params = useLocalSearchParams<{
     chatId?: string | string[];
     counterpart?: string | string[];
+    returnTo?: string | string[];
   }>();
   const chatId = firstParameter(params.chatId);
   const counterpart = firstParameter(params.counterpart) || 'Партнёр по тренировке';
+  const returnTo = firstParameter(params.returnTo) === 'community' ? 'community' : 'chats';
   const [viewerUserId, setViewerUserId] = useState('');
   const [chatState, setChatState] = useState<ChatState | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -141,7 +143,10 @@ export default function ChatScreen() {
       router.back();
       return;
     }
-    router.replace('/');
+    router.replace(({
+      pathname: '/',
+      params: { section: returnTo },
+    } as unknown) as Href);
   };
 
   const loadMessages = useCallback(async (refresh = true) => {

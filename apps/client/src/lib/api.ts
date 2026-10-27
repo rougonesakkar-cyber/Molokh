@@ -12,7 +12,7 @@ export interface LocalTestAccount {
   readonly label: string;
   readonly role: string;
   readonly token: string;
-  readonly startSection: 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
+  readonly startSection: 'HOME' | 'DISCOVERY' | 'CHATS' | 'PROFILE' | 'COMMUNITY';
 }
 
 export const localTestAccounts: readonly LocalTestAccount[] = [
@@ -25,10 +25,10 @@ export const localTestAccounts: readonly LocalTestAccount[] = [
   { id: 'timur', label: 'Тимур Стойка', role: 'Athlete', token: 'molokh-local-timur-token', startSection: 'DISCOVERY' },
   { id: 'anna', label: 'Анна Пульс', role: 'Athlete', token: 'molokh-local-anna-token', startSection: 'DISCOVERY' },
   { id: 'membership-applicant', label: 'Кирилл Старт', role: 'Athlete', token: 'molokh-local-applicant-token', startSection: 'COMMUNITY' },
-  { id: 'coach', label: 'Пилотный тренер', role: 'Coach', token: 'molokh-local-coach-token', startSection: 'COMMUNITY' },
-  { id: 'replacement-coach', label: 'Резервный тренер', role: 'Coach', token: 'molokh-local-replacement-coach-token', startSection: 'COMMUNITY' },
-  { id: 'gym-admin', label: 'Пилотный администратор', role: 'Gym Admin', token: 'molokh-local-admin-token', startSection: 'COMMUNITY' },
-  { id: 'central', label: 'Central Operator', role: 'Central', token: 'molokh-local-central-token', startSection: 'COMMUNITY' },
+  { id: 'coach', label: 'Пилотный тренер', role: 'Coach', token: 'molokh-local-coach-token', startSection: 'HOME' },
+  { id: 'replacement-coach', label: 'Резервный тренер', role: 'Coach', token: 'molokh-local-replacement-coach-token', startSection: 'HOME' },
+  { id: 'gym-admin', label: 'Пилотный администратор', role: 'Gym Admin', token: 'molokh-local-admin-token', startSection: 'HOME' },
+  { id: 'central', label: 'Central Operator', role: 'Central', token: 'molokh-local-central-token', startSection: 'HOME' },
 ];
 
 interface LocalTokenStorage {
