@@ -1,0 +1,8 @@
+{
+  "baseCommit": "3bba1c57635b4c3e54351ade6e8fd275a9bffacc",
+  "entryRawBytes": 1775773,
+  "entryGzipBytes": 407684,
+  "distBytes": 1951202,
+  "buildSeconds": 31.31,
+  "note": "Production Web export captured before Client Foundation & Performance v1. Runtime device metrics were not available."
+}

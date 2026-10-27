@@ -46,7 +46,11 @@ import {
   SAFETY_CANCEL_ACTION_LABEL,
   SAFETY_CANCEL_CONFIRMATION_COPY,
 } from '../lib/chat-report-presentation';
-import { challengeStateLabel, chatMessageLabel } from '../lib/chat-message-presentation';
+import {
+  challengeStateLabel,
+  chatMessageLabel,
+  mergeOlderChatMessages,
+} from '../lib/chat-message-presentation';
 import {
   challengeCreateDenialCopy,
   challengeStakeLabel,
@@ -199,13 +203,7 @@ export default function ChatScreen() {
         `/api/v1/chats/${chatId}/messages?limit=50&cursor=${encodeURIComponent(nextMessageCursor)}`,
         { staleTime: queryFreshness.profile },
       );
-      setMessages((current) => {
-        const existing = new Set(current.map((message) => message.messageId));
-        return [
-          ...result.data.data.filter((message) => !existing.has(message.messageId)),
-          ...current,
-        ];
-      });
+      setMessages((current) => mergeOlderChatMessages(result.data.data, current));
       setNextMessageCursor(result.data.meta.nextCursor);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить ранние сообщения');

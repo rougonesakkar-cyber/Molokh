@@ -58,3 +58,11 @@ const guardianConsentStateLabels: Readonly<Record<string, string>> = {
 export function guardianConsentStateLabel(state: string): string {
   return guardianConsentStateLabels[state] ?? 'Состояние согласия обновилось';
 }
+
+export function mergeOlderChatMessages<T extends { readonly messageId: string }>(
+  older: readonly T[],
+  current: readonly T[],
+): T[] {
+  const existing = new Set(current.map((message) => message.messageId));
+  return [...older.filter((message) => !existing.has(message.messageId)), ...current];
+}

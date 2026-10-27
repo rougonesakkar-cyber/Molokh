@@ -60,6 +60,47 @@ describe('client query foundation', () => {
     expect(result).toEqual({ data: { data: { name: 'Pilot' } }, usedStaleFallback: true });
   });
 
+  it('serves a warm screen from fresh cache without a second request', async () => {
+    const queryClient = createClientQueryClient();
+    const queryKey = clientQueryKeys.resource('session-1', 'profile');
+    const queryFn = vi.fn(async () => ({ data: { displayName: 'Марина' } }));
+
+    const cold = await fetchQueryWithCache(queryClient, {
+      queryKey,
+      queryFn,
+      staleTime: queryFreshness.profile,
+    });
+    const warm = await fetchQueryWithCache(queryClient, {
+      queryKey,
+      queryFn,
+      staleTime: queryFreshness.profile,
+    });
+
+    expect(cold.data).toEqual(warm.data);
+    expect(queryFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconnects after an offline stale fallback and replaces cached data', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryKey = clientQueryKeys.resource('session-1', 'sessions');
+    queryClient.setQueryData(queryKey, { data: ['cached'] });
+    await queryClient.invalidateQueries({ queryKey });
+
+    const offline = await fetchQueryWithCache(queryClient, {
+      queryKey,
+      queryFn: async () => { throw new Error('offline'); },
+      staleTime: queryFreshness.operational,
+    });
+    const online = await fetchQueryWithCache(queryClient, {
+      queryKey,
+      queryFn: async () => ({ data: ['fresh'] }),
+      staleTime: queryFreshness.operational,
+    });
+
+    expect(offline.usedStaleFallback).toBe(true);
+    expect(online).toEqual({ data: { data: ['fresh'] }, usedStaleFallback: false });
+  });
+
   it('does not retry mutations implicitly', () => {
     const queryClient = createClientQueryClient();
     expect(queryClient.getDefaultOptions().mutations?.retry).toBe(false);

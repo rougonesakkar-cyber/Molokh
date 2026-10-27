@@ -4,6 +4,7 @@ import {
   challengeStateLabel,
   chatMessageLabel,
   guardianConsentStateLabel,
+  mergeOlderChatMessages,
 } from './chat-message-presentation';
 
 describe('human-readable engine projections', () => {
@@ -18,5 +19,13 @@ describe('human-readable engine projections', () => {
     expect(chatMessageLabel(internal)).not.toContain(internal);
     expect(challengeStateLabel(internal)).not.toContain(internal);
     expect(guardianConsentStateLabel(internal)).not.toContain(internal);
+  });
+
+  it('prepends a cursor page without duplicating the boundary message', () => {
+    const merged = mergeOlderChatMessages(
+      [{ messageId: '1' }, { messageId: '2' }],
+      [{ messageId: '2' }, { messageId: '3' }],
+    );
+    expect(merged.map((message) => message.messageId)).toEqual(['1', '2', '3']);
   });
 });
