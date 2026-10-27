@@ -274,7 +274,7 @@ export async function apiErrorMessage(response: Response): Promise<string> {
     if (response.status === 409) return 'Данные изменились. Обновите экран и попробуйте снова.';
     if (response.status === 422) return 'Проверьте введённые данные.';
     if (response.status >= 500) return 'Сервис временно недоступен. Попробуйте ещё раз.';
-    return error.message;
+    return 'Не удалось выполнить запрос. Обновите экран и попробуйте снова.';
   } catch {
     return response.status >= 500
       ? 'Сервис временно недоступен. Попробуйте ещё раз.'

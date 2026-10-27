@@ -3640,10 +3640,15 @@ export default function IdentityScreen() {
                     params: {
                       chatId: match.chatId,
                       counterpart: match.counterpartDisplayName,
+                      counterpartUserId: match.counterpartUserId,
                       returnTo: 'discovery',
                     },
                   } as unknown) as Href)
                 }
+                onOpenProfile={(userId) => router.push(({
+                  pathname: '/athlete/[userId]',
+                  params: { userId, returnTo: 'discovery' },
+                } as unknown) as Href)}
                 onRefresh={() => void loadIdentity()}
                 onUnblock={(blocked) => void unblock(blocked)}
                 onUnmatch={(match) => void endMatch(match, 'unmatch')}
@@ -3668,10 +3673,15 @@ export default function IdentityScreen() {
                     params: {
                       chatId: match.chatId,
                       counterpart: match.counterpartDisplayName,
+                      counterpartUserId: match.counterpartUserId,
                       returnTo: 'chats',
                     },
                   } as unknown) as Href)
                 }
+                onOpenProfile={(userId) => router.push(({
+                  pathname: '/athlete/[userId]',
+                  params: { userId, returnTo: 'chats' },
+                } as unknown) as Href)}
                 onRefresh={() => void loadIdentity()}
                 onUnblock={(blocked) => void unblock(blocked)}
                 onUnmatch={(match) => void endMatch(match, 'unmatch')}
@@ -4143,6 +4153,14 @@ export default function IdentityScreen() {
                         },
                       } as unknown) as Href);
                     }}
+                    onOpenProfile={(userId) => router.push(({
+                      pathname: '/athlete/[userId]',
+                      params: {
+                        userId,
+                        competitionId: competitionStatus.competitionId,
+                        returnTo: 'community',
+                      },
+                    } as unknown) as Href)}
                   />
                 ) : null}
                 {activeTestAccount.role === 'Athlete'
@@ -4443,7 +4461,7 @@ export default function IdentityScreen() {
                                 {candidate.athleteDisplayNames.join(' · ')}
                               </Text>
                               <Text style={styles.muted}>
-                                {formatDateTime(candidate.scheduledStartAt)} · {candidate.state}
+                                {formatDateTime(candidate.scheduledStartAt)} · {sessionStateLabels[candidate.state]}
                               </Text>
                               <View style={styles.chips}>
                                 <Pressable

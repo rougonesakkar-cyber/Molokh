@@ -49,7 +49,7 @@ export function EnforcementAppealSection(props: {
     <Text accessibilityRole="header" aria-level={2} style={styles.title}>{copy.title}</Text>
     <Text style={styles.hint}>{copy.explanation}</Text>
     <Text style={styles.hint}>Срок подачи: {new Date(props.context.appealDeadlineAt).toLocaleString('ru-RU')}</Text>
-    {props.context.appeal ? <Text style={styles.state}>Состояние: {props.context.appeal.state}</Text> : <>
+    {props.context.appeal ? <Text style={styles.state}>Состояние: {copy.title}</Text> : <>
       <TextInput accessibilityLabel="Заявление Enforcement Appeal" multiline value={statement}
         onChangeText={setStatement} placeholder="Опишите основание пересмотра"
         style={styles.input} maxLength={2000} />

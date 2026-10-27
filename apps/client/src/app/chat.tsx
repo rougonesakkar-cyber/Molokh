@@ -21,11 +21,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   KeyboardAvoidingView,
   Linking,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -46,6 +46,7 @@ import {
   SAFETY_CANCEL_ACTION_LABEL,
   SAFETY_CANCEL_CONFIRMATION_COPY,
 } from '../lib/chat-report-presentation';
+import { challengeStateLabel, chatMessageLabel } from '../lib/chat-message-presentation';
 import {
   challengeCreateDenialCopy,
   challengeStakeLabel,
@@ -92,14 +93,18 @@ export default function ChatScreen() {
   const params = useLocalSearchParams<{
     chatId?: string | string[];
     counterpart?: string | string[];
+    counterpartUserId?: string | string[];
     returnTo?: string | string[];
   }>();
   const chatId = firstParameter(params.chatId);
   const counterpart = firstParameter(params.counterpart) || 'Партнёр по тренировке';
+  const counterpartUserId = firstParameter(params.counterpartUserId);
   const returnTo = firstParameter(params.returnTo) === 'community' ? 'community' : 'chats';
   const [viewerUserId, setViewerUserId] = useState('');
   const [chatState, setChatState] = useState<ChatState | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [nextMessageCursor, setNextMessageCursor] = useState<string | null>(null);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [trainingOptions, setTrainingOptions] = useState<TrainingOptions | null>(null);
   const [groupPlanConversions, setGroupPlanConversions] = useState<GroupPlanOfficialConversion[]>([]);
   const [chatChallenge, setChatChallenge] = useState<ChatChallenge | null>(null);
@@ -168,6 +173,7 @@ export default function ChatScreen() {
         { refresh },
       );
       setMessages(result.data.data);
+      setNextMessageCursor(result.data.meta.nextCursor);
       setViewerUserId(result.data.meta.viewerUserId);
       setChatState(result.data.meta.chatState);
       if (result.usedStaleFallback) {
@@ -183,6 +189,30 @@ export default function ChatScreen() {
   useEffect(() => {
     void loadMessages(false);
   }, [loadMessages]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!chatId || !nextMessageCursor || loadingOlderMessages) return;
+    setLoadingOlderMessages(true);
+    try {
+      const result = await readChatResource<ChatMessagesResponse>(
+        `messages:${nextMessageCursor}`,
+        `/api/v1/chats/${chatId}/messages?limit=50&cursor=${encodeURIComponent(nextMessageCursor)}`,
+        { staleTime: queryFreshness.profile },
+      );
+      setMessages((current) => {
+        const existing = new Set(current.map((message) => message.messageId));
+        return [
+          ...result.data.data.filter((message) => !existing.has(message.messageId)),
+          ...current,
+        ];
+      });
+      setNextMessageCursor(result.data.meta.nextCursor);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось загрузить ранние сообщения');
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  }, [chatId, loadingOlderMessages, nextMessageCursor, readChatResource]);
 
   const loadChallenge = useCallback(async (refresh = true) => {
     if (!chatId) return;
@@ -951,7 +981,22 @@ export default function ChatScreen() {
         <Pressable accessibilityRole="button" onPress={leaveChat} style={styles.backButton}>
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
-        <View style={styles.headerIdentity}>
+        <Pressable
+          accessibilityLabel={counterpartUserId
+            ? `Открыть спортивный профиль ${counterpart}`
+            : undefined}
+          accessibilityRole={counterpartUserId ? 'button' : undefined}
+          accessibilityState={{ disabled: !counterpartUserId }}
+          disabled={!counterpartUserId}
+          onPress={() => {
+            if (!counterpartUserId) return;
+            router.push(({
+              pathname: '/athlete/[userId]',
+              params: { userId: counterpartUserId, returnTo },
+            } as unknown) as Href);
+          }}
+          style={styles.headerIdentity}
+        >
           <Text accessibilityRole="header" aria-level={1} style={styles.title}>{counterpart}</Text>
           <Text style={styles.subtitle}>
             {chatIsOpen
@@ -960,7 +1005,7 @@ export default function ChatScreen() {
                 : 'Личный чат · тренировки выбираются вместе'
               : 'Личный чат · история сообщений'}
           </Text>
-        </View>
+        </Pressable>
       </View>
 
       {loading ? (
@@ -968,12 +1013,15 @@ export default function ChatScreen() {
           <ActivityIndicator color={theme.colors.primary} />
         </View>
       ) : (
-        <ScrollView
+        <FlatList
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           contentContainerStyle={styles.messages}
+          data={messages}
+          keyExtractor={(message) => message.messageId}
           keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           keyboardShouldPersistTaps="handled"
-        >
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          ListHeaderComponent={<>
           {chatStateMessage ? (
             <View accessibilityLiveRegion="polite" style={styles.readOnlyNotice}>
               <Text style={styles.readOnlyNoticeTitle}>Чат закрыт</Text>
@@ -1263,7 +1311,7 @@ export default function ChatScreen() {
                             ? 'Срок ответа истёк без вины сторон. Поражения и других спортивных последствий нет.'
                             : chatChallenge.challenge.state === 'RESULT_RECORDED'
                               ? 'Зафиксирован предварительный Result. Проигравший может подать Appeal в течение 48 часов.'
-                            : `Статус: ${chatChallenge.challenge.state}`}
+                            : challengeStateLabel(chatChallenge.challenge.state)}
                     </Text>
                   )}
                   {['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED']
@@ -1680,10 +1728,26 @@ export default function ChatScreen() {
               );
             }) : null}
           </View> : null}
-          {messages.length === 0 ? (
-            <Text style={styles.empty}>Напишите первое сообщение и договоритесь о тренировке.</Text>
+          {nextMessageCursor ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: loadingOlderMessages }}
+              disabled={loadingOlderMessages}
+              onPress={() => void loadOlderMessages()}
+              style={({ pressed }) => [styles.olderMessagesButton, pressed && styles.pressed]}
+            >
+              {loadingOlderMessages ? (
+                <ActivityIndicator color={theme.colors.primary} size="small" />
+              ) : (
+                <Text style={styles.olderMessagesText}>Показать ранние сообщения</Text>
+              )}
+            </Pressable>
           ) : null}
-          {messages.map((message) => {
+          </>}
+          ListEmptyComponent={(
+            <Text style={styles.empty}>Напишите первое сообщение и договоритесь о тренировке.</Text>
+          )}
+          renderItem={({ item: message }) => {
             const own = message.senderUserId !== null && message.senderUserId === viewerUserId;
             const acting = actingMessageId === message.messageId;
             return (
@@ -1693,13 +1757,14 @@ export default function ChatScreen() {
                   <Text style={styles.messageText}>{message.content.text}</Text>
                 ) : message.content.kind === 'ACTION' ? (
                   <View style={styles.actionCard}>
-                    <Text style={styles.actionTitle}>{message.content.renderKey}</Text>
-                    <Text style={styles.actionMeta}>
-                      {message.content.resourceType} · версия {message.content.stateVersion}
+                    <Text style={styles.actionTitle}>
+                      {chatMessageLabel(message.content.renderKey)}
                     </Text>
                   </View>
                 ) : (
-                  <Text style={styles.serviceText}>{message.content.renderKey}</Text>
+                  <Text style={styles.serviceText}>
+                    {chatMessageLabel(message.content.renderKey)}
+                  </Text>
                 )}
                 <Text style={styles.messageMeta}>
                   {formatDateTime(message.createdAt)}
@@ -1764,8 +1829,8 @@ export default function ChatScreen() {
                 ) : null}
               </View>
             );
-          })}
-        </ScrollView>
+          }}
+        />
       )}
 
       {error ? <Text accessibilityLiveRegion="assertive" style={styles.error}>{error}</Text> : null}
@@ -1850,6 +1915,17 @@ function createStyles(theme: AppTheme) {
     width: '100%',
   },
   empty: { color: theme.colors.textMuted, fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  olderMessagesButton: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    borderColor: theme.colors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: theme.touchTarget,
+    paddingHorizontal: 16,
+  },
+  olderMessagesText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
   optionsSection: {
     backgroundColor: theme.colors.surface,
     borderColor: theme.colors.border,

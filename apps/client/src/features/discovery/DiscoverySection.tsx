@@ -30,6 +30,7 @@ export interface DiscoverySectionProps {
   readonly onAction: (candidate: DiscoveryCard, action: DiscoveryAction) => void;
   readonly onBlock: (match: Match) => void;
   readonly onOpenChat: (match: Match) => void;
+  readonly onOpenProfile: (userId: string) => void;
   readonly onRefresh: () => void;
   readonly onUnblock: (blocked: BlockedUser) => void;
   readonly onUnmatch: (match: Match) => void;
@@ -54,6 +55,7 @@ export function DiscoverySection({
   onAction,
   onBlock,
   onOpenChat,
+  onOpenProfile,
   onRefresh,
   onUnblock,
   onUnmatch,
@@ -76,12 +78,17 @@ export function DiscoverySection({
       </Text>
       {matches.map((match) => (
         <View key={match.matchId} style={styles.match}>
-          <View style={styles.matchIdentity}>
+          <Pressable
+            accessibilityLabel={`Открыть спортивный профиль ${match.counterpartDisplayName}`}
+            accessibilityRole="button"
+            onPress={() => onOpenProfile(match.counterpartUserId)}
+            style={styles.matchIdentity}
+          >
             <Text style={styles.name}>{match.counterpartDisplayName}</Text>
             <Text style={styles.hint}>
               {match.state === 'ACTIVE' ? 'Активный Match' : 'Архив'}
             </Text>
-          </View>
+          </Pressable>
           <View style={styles.matchActions}>
             {actingRelationshipId === match.matchId ? (
               <ActivityIndicator color={theme.colors.primary} />
@@ -201,7 +208,12 @@ export function DiscoverySection({
                 key={candidate.candidateUserId}
                 style={[styles.candidate, candidate.inboundLike && styles.candidateInterested]}
               >
-                <View style={styles.header}>
+                <Pressable
+                  accessibilityLabel={`Открыть спортивный профиль ${candidate.displayName}`}
+                  accessibilityRole="button"
+                  onPress={() => onOpenProfile(candidate.candidateUserId)}
+                  style={styles.header}
+                >
                   <View style={styles.avatar}>
                     <Text style={styles.avatarText}>
                       {candidate.displayName.slice(0, 1).toLocaleUpperCase('ru-RU')}
@@ -214,7 +226,7 @@ export function DiscoverySection({
                       {candidate.secondarySport ? ` · ${sportLabel(candidate.secondarySport)}` : ''}
                     </Text>
                   </View>
-                </View>
+                </Pressable>
                 {candidate.inboundLike ? (
                   <View style={styles.interestBadge}>
                     <Text style={styles.interestText}>{DISCOVERY_PRESENTATION_COPY.inboundInterest}</Text>
