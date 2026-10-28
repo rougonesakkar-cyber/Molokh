@@ -4,7 +4,7 @@ import {
   useContext,
   useMemo,
 } from 'react';
-import { useColorScheme } from 'react-native';
+import { Platform, useColorScheme } from 'react-native';
 
 const spacing = { xxs: 4, xs: 8, sm: 12, md: 16, lg: 20, xl: 24, xxl: 32, xxxl: 40 } as const;
 const radius = { sm: 8, md: 12, lg: 16, xl: 18, pill: 999 } as const;
@@ -96,7 +96,8 @@ export const darkTheme: AppTheme = {
 const ThemeContext = createContext<AppTheme>(lightTheme);
 
 export function AppThemeProvider({ children }: PropsWithChildren) {
-  const scheme = useColorScheme();
+  const nativeScheme = useColorScheme();
+  const scheme = Platform.OS === 'web' ? 'light' : nativeScheme;
   const theme = useMemo(() => scheme === 'dark' ? darkTheme : lightTheme, [scheme]);
   return <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('react-native', () => ({ useColorScheme: () => 'light' }));
+vi.mock('react-native', () => ({ Platform: { OS: 'web' }, useColorScheme: () => 'light' }));
 
 import { contrastRatio, darkTheme, lightTheme } from './theme';
 

@@ -8,6 +8,7 @@ const findings = [];
 const primaryInteractionFiles = new Set([
   'app/chat.tsx',
   'app/index.tsx',
+  'features/auth/LocalPhoneAuthPanel.tsx',
   'features/discovery/DiscoverySection.tsx',
   'features/navigation/HomeSection.tsx',
   'features/public-profile/PublicAthleteProfileCard.tsx',
