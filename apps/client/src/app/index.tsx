@@ -108,6 +108,7 @@ import {
   logoutManagedAuthSession,
   refreshManagedAuthSession,
 } from '../lib/auth-session';
+import { hasScopedVenueAdminGrant } from '../lib/community-access';
 import { sportLabel, sportOptions } from '../lib/sports';
 import {
   athleteStoppageResult,
@@ -954,6 +955,11 @@ export default function IdentityScreen() {
         }
         const communityId = loadedCommunity.community.communityId;
         const venueId = loadedCommunity.venue.venueId;
+        const canLoadVenueAdminData = hasScopedVenueAdminGrant(loadedCommunity);
+        if (!canLoadVenueAdminData && loadSequenceRef.current === sequence) {
+          setVenueAdminDashboard(null);
+          setVenueMembers([]);
+        }
         await Promise.all([
           loadPart(
             'pending-memberships',
@@ -963,7 +969,7 @@ export default function IdentityScreen() {
             ),
             (value) => setPendingMemberships(value?.data ?? []),
           ),
-          loadPart(
+          ...(canLoadVenueAdminData ? [loadPart(
             'venue-dashboard',
             read<VenueAdminDashboardResponse>(
               `venue-dashboard:${venueId}`,
@@ -978,8 +984,8 @@ export default function IdentityScreen() {
                     : value.data.coaches[0]?.userId ?? '');
               }
             },
-          ),
-          loadPart(
+          )] : []),
+          ...(canLoadVenueAdminData ? [loadPart(
             'venue-members',
             read<VenueMemberListResponse>(
               `venue-members:${venueId}`,
@@ -987,7 +993,7 @@ export default function IdentityScreen() {
               queryFreshness.profile,
             ),
             (value) => setVenueMembers(value?.data ?? []),
-          ),
+          )] : []),
         ]);
       })().catch(() => { warnings.add('venue-operations'); }));
 
