@@ -1,9 +1,51 @@
 import type { ApiError } from '@molokh/contracts';
 import { Platform } from 'react-native';
 
-const defaultApiUrl = Platform.OS === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000';
+export interface ApiConfiguration {
+  readonly apiUrl: string;
+  readonly error: string | null;
+}
 
-export const apiUrl = (process.env.EXPO_PUBLIC_API_URL ?? defaultApiUrl).replace(/\/$/, '');
+export function resolveApiConfiguration(
+  configuredUrl: string | undefined,
+  platform: string,
+): ApiConfiguration {
+  const fallback = platform === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000';
+  const candidate = configuredUrl?.trim() || fallback;
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      throw new Error('unsupported origin');
+    }
+    return { apiUrl: candidate.replace(/\/$/, ''), error: null };
+  } catch {
+    return {
+      apiUrl: fallback,
+      error: 'Некорректный адрес Molokh API. Проверьте EXPO_PUBLIC_API_URL и перезапустите клиент.',
+    };
+  }
+}
+
+const apiConfiguration = resolveApiConfiguration(process.env.EXPO_PUBLIC_API_URL, Platform.OS);
+export const apiUrl = apiConfiguration.apiUrl;
+export const apiConfigurationError = apiConfiguration.error;
+
+export function requireApiUrl(): string {
+  if (apiConfigurationError) throw new Error(apiConfigurationError);
+  return apiUrl;
+}
+
+export function retryableIdempotencyKey(
+  keys: Map<string, string>,
+  operation: string,
+  create: () => string,
+): string {
+  const existing = keys.get(operation);
+  if (existing) return existing;
+  const created = create();
+  keys.set(operation, created);
+  return created;
+}
 const defaultLocalToken =
   process.env.EXPO_PUBLIC_LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 
@@ -12,7 +54,7 @@ export interface LocalTestAccount {
   readonly label: string;
   readonly role: string;
   readonly token: string;
-  readonly startSection: 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
+  readonly startSection: 'HOME' | 'DISCOVERY' | 'CHATS' | 'PROFILE' | 'COMMUNITY';
 }
 
 export const localTestAccounts: readonly LocalTestAccount[] = [
@@ -25,10 +67,10 @@ export const localTestAccounts: readonly LocalTestAccount[] = [
   { id: 'timur', label: 'Тимур Стойка', role: 'Athlete', token: 'molokh-local-timur-token', startSection: 'DISCOVERY' },
   { id: 'anna', label: 'Анна Пульс', role: 'Athlete', token: 'molokh-local-anna-token', startSection: 'DISCOVERY' },
   { id: 'membership-applicant', label: 'Кирилл Старт', role: 'Athlete', token: 'molokh-local-applicant-token', startSection: 'COMMUNITY' },
-  { id: 'coach', label: 'Пилотный тренер', role: 'Coach', token: 'molokh-local-coach-token', startSection: 'COMMUNITY' },
-  { id: 'replacement-coach', label: 'Резервный тренер', role: 'Coach', token: 'molokh-local-replacement-coach-token', startSection: 'COMMUNITY' },
-  { id: 'gym-admin', label: 'Пилотный администратор', role: 'Gym Admin', token: 'molokh-local-admin-token', startSection: 'COMMUNITY' },
-  { id: 'central', label: 'Central Operator', role: 'Central', token: 'molokh-local-central-token', startSection: 'COMMUNITY' },
+  { id: 'coach', label: 'Пилотный тренер', role: 'Coach', token: 'molokh-local-coach-token', startSection: 'HOME' },
+  { id: 'replacement-coach', label: 'Резервный тренер', role: 'Coach', token: 'molokh-local-replacement-coach-token', startSection: 'HOME' },
+  { id: 'gym-admin', label: 'Пилотный администратор', role: 'Gym Admin', token: 'molokh-local-admin-token', startSection: 'HOME' },
+  { id: 'central', label: 'Central Operator', role: 'Central', token: 'molokh-local-central-token', startSection: 'HOME' },
 ];
 
 interface LocalTokenStorage {
@@ -274,7 +316,7 @@ export async function apiErrorMessage(response: Response): Promise<string> {
     if (response.status === 409) return 'Данные изменились. Обновите экран и попробуйте снова.';
     if (response.status === 422) return 'Проверьте введённые данные.';
     if (response.status >= 500) return 'Сервис временно недоступен. Попробуйте ещё раз.';
-    return error.message;
+    return 'Не удалось выполнить запрос. Обновите экран и попробуйте снова.';
   } catch {
     return response.status >= 500
       ? 'Сервис временно недоступен. Попробуйте ещё раз.'

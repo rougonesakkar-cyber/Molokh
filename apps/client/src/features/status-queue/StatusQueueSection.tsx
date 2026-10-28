@@ -18,6 +18,7 @@ interface StatusQueueSectionProps {
   readonly onGenesisResponse: (decision: 'ACCEPT' | 'DECLINE') => void;
   readonly onOpenGenesisChat: () => void;
   readonly onOpenActiveChallenge: () => void;
+  readonly onOpenProfile: (userId: string) => void;
   readonly onPreviewRelease: () => void;
   readonly onConfirmRelease: () => void;
   readonly onCancelRelease: () => void;
@@ -93,6 +94,7 @@ export function StatusQueueSection({
   onGenesisResponse,
   onOpenGenesisChat,
   onOpenActiveChallenge,
+  onOpenProfile,
   onPreviewRelease,
   onConfirmRelease,
   onCancelRelease,
@@ -119,14 +121,36 @@ export function StatusQueueSection({
       </View>
 
       <View style={styles.holders}>
-        <View style={[styles.holder, styles.championHolder]}>
+        <Pressable
+          accessibilityLabel={competition.champion
+            ? `Открыть профиль ${competition.champion.displayName}`
+            : 'Статус номер один пока свободен'}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: competition.champion === null }}
+          disabled={competition.champion === null}
+          onPress={() => {
+            if (competition.champion) onOpenProfile(competition.champion.userId);
+          }}
+          style={[styles.holder, styles.championHolder]}
+        >
           <Text style={styles.holderLabel}>№1</Text>
           <Text style={styles.holderName}>{competition.champion?.displayName ?? 'Пока не определён'}</Text>
-        </View>
-        <View style={styles.holder}>
+        </Pressable>
+        <Pressable
+          accessibilityLabel={competition.contender
+            ? `Открыть профиль ${competition.contender.displayName}`
+            : 'Статус Претендента пока свободен'}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: competition.contender === null }}
+          disabled={competition.contender === null}
+          onPress={() => {
+            if (competition.contender) onOpenProfile(competition.contender.userId);
+          }}
+          style={styles.holder}
+        >
           <Text style={styles.holderLabel}>Претендент</Text>
           <Text style={styles.holderName}>{competition.contender?.displayName ?? 'Место свободно'}</Text>
-        </View>
+        </Pressable>
       </View>
 
       {releasePreview ? (

@@ -6,7 +6,7 @@ import type {
 } from '@molokh/contracts';
 import { Platform } from 'react-native';
 
-import { apiErrorMessage, apiUrl } from './api';
+import { apiErrorMessage, requireApiUrl } from './api';
 
 const nativeRefreshTokenKey = 'molokh.auth.refresh-token';
 
@@ -33,7 +33,7 @@ async function writeNativeRefreshToken(token: string | null): Promise<void> {
 
 export async function requestAuthOtp(phoneE164: string): Promise<RequestAuthOtpResponse> {
   const localDevelopment = __DEV__;
-  const response = await fetch(`${apiUrl}/api/v1/auth/otp/request`, {
+  const response = await fetch(`${requireApiUrl()}/api/v1/auth/otp/request`, {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json',
       'Idempotency-Key': operationKey('auth-otp-request') },
@@ -51,7 +51,7 @@ export async function verifyAuthOtp(input: {
   readonly code: string;
   readonly deviceLabel: string;
 }): Promise<AuthSessionTokens> {
-  const response = await fetch(`${apiUrl}/api/v1/auth/otp/verify`, {
+  const response = await fetch(`${requireApiUrl()}/api/v1/auth/otp/verify`, {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json',
       'Idempotency-Key': operationKey('auth-otp-verify') },
@@ -72,7 +72,7 @@ export async function refreshManagedAuthSession(): Promise<AuthSessionTokens | n
   const kind = clientKind();
   const refreshToken = kind === 'NATIVE' ? await readNativeRefreshToken() : null;
   if (kind === 'NATIVE' && !refreshToken) return null;
-  const response = await fetch(`${apiUrl}/api/v1/auth/refresh`, {
+  const response = await fetch(`${requireApiUrl()}/api/v1/auth/refresh`, {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json',
       'Idempotency-Key': operationKey('auth-refresh') },
@@ -90,7 +90,7 @@ export async function refreshManagedAuthSession(): Promise<AuthSessionTokens | n
 }
 
 export async function logoutManagedAuthSession(accessToken: string): Promise<void> {
-  const response = await fetch(`${apiUrl}/api/v1/auth/logout`, {
+  const response = await fetch(`${requireApiUrl()}/api/v1/auth/logout`, {
     method: 'POST', credentials: 'include',
     headers: { Authorization: `Bearer ${accessToken}`,
       'Idempotency-Key': operationKey('auth-logout') },

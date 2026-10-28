@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { apiErrorMessage, apiUrl } from '../lib/api';
+import { guardianConsentStateLabel } from '../lib/chat-message-presentation';
 
 function firstParameter(value: string | string[] | undefined): string {
   return Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
@@ -122,7 +123,7 @@ export default function GuardianConsentScreen() {
           <View style={styles.card}>
             <Text style={styles.eyebrow}>СПОРТСМЕН</Text>
             <Text style={styles.athlete}>{consent.athleteDisplayName}</Text>
-            <Text style={styles.meta}>Состояние: {consent.state}</Text>
+            <Text style={styles.meta}>Состояние: {guardianConsentStateLabel(consent.state)}</Text>
             <Text style={styles.meta}>
               Ссылка действует до {new Date(consent.expiresAt).toLocaleString('ru-RU')}.
             </Text>

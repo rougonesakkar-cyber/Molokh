@@ -3,10 +3,11 @@ import type {
   DiscoveryCardsResponse,
   MatchesResponse,
 } from '@molokh/contracts';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { sportLabel } from '../../lib/sports';
+import { type AppTheme, useAppTheme } from '../../ui/theme';
 
 type DiscoveryCard = DiscoveryCardsResponse['data'][number];
 type Match = MatchesResponse['data'][number];
@@ -29,9 +30,12 @@ export interface DiscoverySectionProps {
   readonly onAction: (candidate: DiscoveryCard, action: DiscoveryAction) => void;
   readonly onBlock: (match: Match) => void;
   readonly onOpenChat: (match: Match) => void;
+  readonly onOpenProfile: (userId: string) => void;
   readonly onRefresh: () => void;
   readonly onUnblock: (blocked: BlockedUser) => void;
   readonly onUnmatch: (match: Match) => void;
+  readonly showConnections?: boolean;
+  readonly showDiscovery?: boolean;
 }
 
 export const DISCOVERY_PRESENTATION_COPY = {
@@ -51,10 +55,15 @@ export function DiscoverySection({
   onAction,
   onBlock,
   onOpenChat,
+  onOpenProfile,
   onRefresh,
   onUnblock,
   onUnmatch,
+  showConnections = true,
+  showDiscovery = true,
 }: DiscoverySectionProps) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const [pendingRelationshipAction, setPendingRelationshipAction] =
     useState<PendingRelationshipAction | null>(null);
 
@@ -69,15 +78,20 @@ export function DiscoverySection({
       </Text>
       {matches.map((match) => (
         <View key={match.matchId} style={styles.match}>
-          <View style={styles.matchIdentity}>
+          <Pressable
+            accessibilityLabel={`Открыть спортивный профиль ${match.counterpartDisplayName}`}
+            accessibilityRole="button"
+            onPress={() => onOpenProfile(match.counterpartUserId)}
+            style={styles.matchIdentity}
+          >
             <Text style={styles.name}>{match.counterpartDisplayName}</Text>
             <Text style={styles.hint}>
               {match.state === 'ACTIVE' ? 'Активный Match' : 'Архив'}
             </Text>
-          </View>
+          </Pressable>
           <View style={styles.matchActions}>
             {actingRelationshipId === match.matchId ? (
-              <ActivityIndicator color="#8b2f22" />
+              <ActivityIndicator color={theme.colors.primary} />
             ) : (
               <>
                 <Pressable
@@ -164,9 +178,9 @@ export function DiscoverySection({
 
   return (
     <>
-      {matchesSection}
+      {showConnections ? matchesSection : null}
 
-      <View style={styles.section}>
+      {showDiscovery ? <View style={styles.section}>
         <Text accessibilityRole="header" aria-level={2} style={styles.title}>Люди для тренировки</Text>
         <Text style={styles.muted}>
           {DISCOVERY_PRESENTATION_COPY.orderHint}
@@ -194,7 +208,12 @@ export function DiscoverySection({
                 key={candidate.candidateUserId}
                 style={[styles.candidate, candidate.inboundLike && styles.candidateInterested]}
               >
-                <View style={styles.header}>
+                <Pressable
+                  accessibilityLabel={`Открыть спортивный профиль ${candidate.displayName}`}
+                  accessibilityRole="button"
+                  onPress={() => onOpenProfile(candidate.candidateUserId)}
+                  style={styles.header}
+                >
                   <View style={styles.avatar}>
                     <Text style={styles.avatarText}>
                       {candidate.displayName.slice(0, 1).toLocaleUpperCase('ru-RU')}
@@ -207,7 +226,7 @@ export function DiscoverySection({
                       {candidate.secondarySport ? ` · ${sportLabel(candidate.secondarySport)}` : ''}
                     </Text>
                   </View>
-                </View>
+                </Pressable>
                 {candidate.inboundLike ? (
                   <View style={styles.interestBadge}>
                     <Text style={styles.interestText}>{DISCOVERY_PRESENTATION_COPY.inboundInterest}</Text>
@@ -238,7 +257,7 @@ export function DiscoverySection({
                     ]}
                   >
                     {acting && actingAction === 'skip' ? (
-                      <ActivityIndicator color="#8b2f22" />
+                      <ActivityIndicator color={theme.colors.primary} />
                     ) : (
                       <Text style={styles.skipText}>Пропустить</Text>
                     )}
@@ -256,7 +275,7 @@ export function DiscoverySection({
                     ]}
                   >
                     {acting && actingAction === 'like' ? (
-                      <ActivityIndicator color="#ffffff" />
+                      <ActivityIndicator color={theme.colors.onPrimary} />
                     ) : (
                       <Text style={styles.likeText}>
                         {candidate.inboundLike ? 'Создать Match' : 'Хочу тренироваться'}
@@ -268,9 +287,9 @@ export function DiscoverySection({
             );
           })
         )}
-      </View>
+      </View> : null}
 
-      {blockedUsers.length > 0 ? (
+      {showConnections && blockedUsers.length > 0 ? (
         <View style={styles.section}>
           <Text accessibilityRole="header" aria-level={2} style={styles.title}>Заблокированные пользователи</Text>
           <Text style={styles.muted}>
@@ -295,7 +314,7 @@ export function DiscoverySection({
                 ]}
               >
                 {actingRelationshipId === blocked.blockId ? (
-                  <ActivityIndicator color="#8b2f22" />
+                  <ActivityIndicator color={theme.colors.primary} />
                 ) : (
                   <Text style={styles.matchActionText}>Разблокировать</Text>
                 )}
@@ -308,21 +327,22 @@ export function DiscoverySection({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
   section: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 18,
     borderWidth: 1,
     gap: 12,
     padding: 20,
   },
-  title: { color: '#171512', fontSize: 18, fontWeight: '700' },
+  title: { color: theme.colors.text, fontSize: 18, fontWeight: '700' },
   sectionHeader: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   countBadge: {
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 999,
-    color: '#ffffff',
+    color: theme.colors.onPrimary,
     fontSize: 12,
     fontWeight: '800',
     minWidth: 24,
@@ -331,64 +351,64 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     textAlign: 'center',
   },
-  muted: { color: '#777168', flexShrink: 1, fontSize: 14, lineHeight: 20 },
-  hint: { color: '#777168', fontSize: 13, lineHeight: 19 },
+  muted: { color: theme.colors.textMuted, flexShrink: 1, fontSize: 14, lineHeight: 20 },
+  hint: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 19 },
   emptyState: { gap: 8, paddingVertical: 4 },
-  emptyTitle: { color: '#171512', fontSize: 15, fontWeight: '700' },
+  emptyTitle: { color: theme.colors.text, fontSize: 15, fontWeight: '700' },
   refreshButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  refreshText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
+  refreshText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
   notice: {
-    backgroundColor: '#e8f1e9',
+    backgroundColor: theme.colors.successBackground,
     borderRadius: 12,
-    color: '#285d35',
+    color: theme.colors.successText,
     fontSize: 14,
     fontWeight: '600',
     lineHeight: 20,
     padding: 12,
   },
   candidate: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
     padding: 16,
   },
-  candidateInterested: { borderColor: '#8b2f22', borderWidth: 2 },
+  candidateInterested: { borderColor: theme.colors.primary, borderWidth: 2 },
   header: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   identity: { flex: 1, gap: 3 },
   avatar: {
     alignItems: 'center',
-    backgroundColor: '#e9ddd7',
+    backgroundColor: theme.colors.accentBackground,
     borderRadius: 28,
     height: 56,
     justifyContent: 'center',
     width: 56,
   },
-  avatarText: { color: '#8b2f22', fontSize: 22, fontWeight: '800' },
-  name: { color: '#171512', fontSize: 17, fontWeight: '700' },
-  experience: { color: '#4c4943', fontSize: 14, lineHeight: 20 },
+  avatarText: { color: theme.colors.primary, fontSize: 22, fontWeight: '800' },
+  name: { color: theme.colors.text, fontSize: 17, fontWeight: '700' },
+  experience: { color: theme.colors.textSecondary, fontSize: 14, lineHeight: 20 },
   interestBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#f4dfda',
+    backgroundColor: theme.colors.accentBackground,
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
-  interestText: { color: '#7a261b', fontSize: 13, fontWeight: '700' },
+  interestText: { color: theme.colors.dangerText, fontSize: 13, fontWeight: '700' },
   actions: { flexDirection: 'row', gap: 10 },
   skipButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 12,
     borderWidth: 1,
     flex: 1,
@@ -396,22 +416,22 @@ const styles = StyleSheet.create({
     minHeight: 50,
     paddingHorizontal: 12,
   },
-  skipText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
+  skipText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
   likeButton: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 12,
     flex: 1.4,
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: 12,
   },
-  likeText: { color: '#ffffff', fontSize: 14, fontWeight: '700', textAlign: 'center' },
+  likeText: { color: theme.colors.onPrimary, fontSize: 14, fontWeight: '700', textAlign: 'center' },
   disabled: { opacity: 0.55 },
   pressed: { opacity: 0.82 },
   match: {
     alignItems: 'stretch',
-    backgroundColor: '#faf9f6',
+    backgroundColor: theme.colors.surfaceMuted,
     borderRadius: 14,
     gap: 12,
     padding: 16,
@@ -419,54 +439,55 @@ const styles = StyleSheet.create({
   matchIdentity: { gap: 4 },
   matchActions: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   openChatAction: {
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 10,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  openChatActionText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
+  openChatActionText: { color: theme.colors.onPrimary, fontSize: 12, fontWeight: '700' },
   matchAction: {
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  matchActionText: { color: '#8b2f22', fontSize: 12, fontWeight: '700' },
+  matchActionText: { color: theme.colors.primary, fontSize: 12, fontWeight: '700' },
   blockAction: {
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  blockActionText: { color: '#777168', fontSize: 12, fontWeight: '600' },
+  blockActionText: { color: theme.colors.textMuted, fontSize: 12, fontWeight: '600' },
   confirmation: {
-    backgroundColor: '#fff7e6',
-    borderColor: '#dfc994',
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
     borderRadius: 10,
     borderWidth: 1,
     gap: 10,
     padding: 12,
   },
-  confirmationText: { color: '#5d4610', fontSize: 13, lineHeight: 19 },
+  confirmationText: { color: theme.colors.warningText, fontSize: 13, lineHeight: 19 },
   confirmationActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   confirmationCancel: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 9,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
   confirmationConfirm: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 9,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  confirmationConfirmText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
-});
+  confirmationConfirmText: { color: theme.colors.onPrimary, fontSize: 12, fontWeight: '700' },
+  });
+}

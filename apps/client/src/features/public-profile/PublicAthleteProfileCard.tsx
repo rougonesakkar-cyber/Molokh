@@ -1,5 +1,9 @@
 import type { PublicAthleteProfile } from '@molokh/contracts';
+import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+
+import { sportOptions } from '../../lib/sports';
+import { type AppTheme, useAppTheme } from '../../ui/theme';
 
 type PublicResult = PublicAthleteProfile['recentOfficialResults'][number];
 type PublicReviewState = PublicResult['reviewState'];
@@ -37,17 +41,31 @@ export function publicResultLabel(result: PublicResult): string {
   return [outcome, method, publicReviewLabel(result.reviewState)].filter(Boolean).join(' · ');
 }
 
+export function publicSportLabel(code: string): string {
+  return sportOptions.find((sport) => sport.code === code)?.label ?? 'Другой вид спорта';
+}
+
+export function publicAgeLabel(ageDivision: PublicAthleteProfile['ageDivision']): string {
+  return ageDivision === 'YOUTH' ? 'Youth · 14–17 лет' : 'Взрослый контур';
+}
+
 export interface PublicAthleteProfileCardProps {
   readonly profile: PublicAthleteProfile;
 }
 
 export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardProps) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   return (
     <View style={styles.card}>
       <Text accessibilityRole="header" aria-level={2} style={styles.name}>
         {profile.displayName}
       </Text>
-      <Text style={styles.muted}>{profile.primarySport}</Text>
+      <Text style={styles.muted}>
+        {publicSportLabel(profile.primarySport)}
+        {profile.secondarySport ? ` · ${publicSportLabel(profile.secondarySport)}` : ''}
+        {' · '}{publicAgeLabel(profile.ageDivision)}
+      </Text>
 
       {profile.selectedCompetitionScope ? (
         <View style={styles.section}>
@@ -56,9 +74,9 @@ export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardPr
           </Text>
           <Text style={styles.value}>
             {profile.selectedCompetitionScope.communityName}
-            {' · '}{profile.selectedCompetitionScope.ageDivision}
+            {' · '}{publicAgeLabel(profile.selectedCompetitionScope.ageDivision)}
             {profile.selectedCompetitionScope.disciplineKey
-              ? ` · ${profile.selectedCompetitionScope.disciplineKey}`
+              ? ` · ${publicSportLabel(profile.selectedCompetitionScope.disciplineKey)}`
               : ''}
             {profile.selectedCompetitionScope.primaryForHomeDiscovery ? ' · основное сообщество' : ''}
           </Text>
@@ -121,13 +139,15 @@ export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardPr
   );
 }
 
-const styles = StyleSheet.create({
-  card: { backgroundColor: '#ffffff', borderColor: '#e6ded7', borderRadius: 16,
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
+  card: { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, borderRadius: 16,
     borderWidth: 1, gap: 12, padding: 16 },
-  name: { color: '#241813', fontSize: 22, fontWeight: '700' },
-  muted: { color: '#746761', fontSize: 14 },
-  privacy: { color: '#746761', fontSize: 12, lineHeight: 18 },
+  name: { color: theme.colors.text, fontSize: 22, fontWeight: '700' },
+  muted: { color: theme.colors.textMuted, fontSize: 14 },
+  privacy: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 18 },
   section: { gap: 4 },
-  title: { color: '#5e2018', fontSize: 14, fontWeight: '700' },
-  value: { color: '#241813', fontSize: 15 },
-});
+  title: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
+  value: { color: theme.colors.text, fontSize: 15 },
+  });
+}

@@ -1,8 +1,9 @@
 import type { AuthSessionTokens, RequestAuthOtpResponse } from '@molokh/contracts';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { requestAuthOtp, verifyAuthOtp } from '../../lib/auth-session';
+import { type AppTheme, useAppTheme } from '../../ui/theme';
 
 interface Props {
   readonly activeSession: boolean;
@@ -11,6 +12,8 @@ interface Props {
 }
 
 export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }: Props) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const [phone, setPhone] = useState('+79990000001');
   const [challenge, setChallenge] = useState<RequestAuthOtpResponse['data'] | null>(null);
   const [code, setCode] = useState('');
@@ -99,7 +102,8 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
       </Pressable>
       {challenge ? (
         <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy}
-          onPress={() => { setChallenge(null); setCode(''); setNotice(null); }}>
+          onPress={() => { setChallenge(null); setCode(''); setNotice(null); }}
+          style={styles.linkButton}>
           <Text style={styles.link}>Изменить номер</Text>
         </Pressable>
       ) : null}
@@ -109,19 +113,22 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
   );
 }
 
-const styles = StyleSheet.create({
-  panel: { borderTopColor: '#d8d2c4', borderTopWidth: 1, gap: 10,
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
+  panel: { borderTopColor: theme.colors.border, borderTopWidth: 1, gap: 10,
     marginTop: 14, paddingTop: 14 },
-  title: { color: '#201d18', fontSize: 16, fontWeight: '700' },
-  hint: { color: '#645f55', fontSize: 13, lineHeight: 18 },
-  input: { backgroundColor: '#fff', borderColor: '#cfc7b8', borderRadius: 10,
-    borderWidth: 1, color: '#201d18', fontSize: 16, minHeight: 44,
+  title: { color: theme.colors.text, fontSize: 16, fontWeight: '700' },
+  hint: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 18 },
+  input: { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, borderRadius: 10,
+    borderWidth: 1, color: theme.colors.text, fontSize: 16, minHeight: theme.touchTarget,
     paddingHorizontal: 12, paddingVertical: 10 },
-  notice: { color: '#645f55', fontSize: 13, lineHeight: 18 },
-  button: { alignItems: 'center', backgroundColor: '#221f1a', borderRadius: 10,
-    justifyContent: 'center', minHeight: 44, paddingHorizontal: 14 },
-  buttonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  link: { color: '#59462e', fontSize: 14, fontWeight: '600', textAlign: 'center' },
+  notice: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 18 },
+  button: { alignItems: 'center', backgroundColor: theme.colors.text, borderRadius: 10,
+    justifyContent: 'center', minHeight: theme.touchTarget, paddingHorizontal: 14 },
+  buttonText: { color: theme.colors.background, fontSize: 15, fontWeight: '700' },
+  linkButton: { alignItems: 'center', justifyContent: 'center', minHeight: theme.touchTarget },
+  link: { color: theme.colors.primary, fontSize: 14, fontWeight: '600', textAlign: 'center' },
   pressed: { opacity: 0.78 },
   disabled: { opacity: 0.55 },
 });
+}

@@ -18,7 +18,9 @@
     "dev:client": "pnpm --filter @molokh/client start",
     "dev:worker": "pnpm --filter @molokh/worker dev",
     "monitor:pilot": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/check-pilot-health.ps1",
+    "measure:client": "node ./tools/measure-client-bundle.mjs",
     "rehearse:db-recovery": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/rehearse-db-recovery.ps1",
+    "smoke:client": "node ./tools/smoke-client-web.mjs",
     "test": "pnpm -r --if-present test",
     "test:db": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/test-db.ps1",
     "typecheck": "pnpm -r --if-present typecheck"

@@ -44,6 +44,8 @@ jobs:
         run: pnpm audit:prod
       - name: Verify code and database integration
         run: pnpm check
+      - name: Smoke production Web and enforce its bundle budget
+        run: pnpm smoke:client && pnpm measure:client
       - name: Verify the canonical Core specification
         shell: pwsh
         run: ./tools/validate-spec.ps1

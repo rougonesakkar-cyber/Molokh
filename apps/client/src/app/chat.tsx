@@ -15,14 +15,17 @@ import type {
   YouthConsentCommandResponse,
   YouthConsentSummaryResponse,
 } from '@molokh/contracts';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
+  KeyboardAvoidingView,
   Linking,
+  Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -32,16 +35,28 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
 import {
+  clientQueryKeys,
+  fetchApiQuery,
+  fetchQueryWithCache,
+  queryFreshness,
+} from '../lib/query';
+import {
   CHAT_REPORT_CONFIRMATION_COPY,
   CHAT_REPORT_SUBMITTED_LABEL,
   SAFETY_CANCEL_ACTION_LABEL,
   SAFETY_CANCEL_CONFIRMATION_COPY,
 } from '../lib/chat-report-presentation';
 import {
+  challengeStateLabel,
+  chatMessageLabel,
+  mergeOlderChatMessages,
+} from '../lib/chat-message-presentation';
+import {
   challengeCreateDenialCopy,
   challengeStakeLabel,
   genesisSchedulingExplanation,
 } from '../lib/challenge-presentation';
+import { type AppTheme, useAppTheme } from '../ui/theme';
 
 type ChatMessage = ChatMessagesResponse['data'][number];
 type TrainingOptions = TrainingOptionsResponse['data'];
@@ -76,15 +91,24 @@ function formatDateTime(value: string): string {
 
 export default function ChatScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const params = useLocalSearchParams<{
     chatId?: string | string[];
     counterpart?: string | string[];
+    counterpartUserId?: string | string[];
+    returnTo?: string | string[];
   }>();
   const chatId = firstParameter(params.chatId);
   const counterpart = firstParameter(params.counterpart) || 'Партнёр по тренировке';
+  const counterpartUserId = firstParameter(params.counterpartUserId);
+  const returnTo = firstParameter(params.returnTo) === 'community' ? 'community' : 'chats';
   const [viewerUserId, setViewerUserId] = useState('');
   const [chatState, setChatState] = useState<ChatState | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [nextMessageCursor, setNextMessageCursor] = useState<string | null>(null);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [trainingOptions, setTrainingOptions] = useState<TrainingOptions | null>(null);
   const [groupPlanConversions, setGroupPlanConversions] = useState<GroupPlanOfficialConversion[]>([]);
   const [chatChallenge, setChatChallenge] = useState<ChatChallenge | null>(null);
@@ -106,89 +130,134 @@ export default function ChatScreen() {
   const [error, setError] = useState<string | null>(null);
   const actionKeys = useRef(new Map<string, string>());
 
+  const readChatResource = useCallback(async <T,>(
+    resource: string,
+    path: string,
+    options: { readonly refresh?: boolean; readonly staleTime?: number } = {},
+  ) => {
+    const queryKey = clientQueryKeys.resource(`chat:${chatId}`, resource);
+    if (options.refresh) {
+      await queryClient.invalidateQueries({ queryKey, refetchType: 'none' });
+    }
+    const result = await fetchQueryWithCache(queryClient, {
+      queryKey,
+      staleTime: options.staleTime ?? queryFreshness.operational,
+      queryFn: (context) => fetchApiQuery<T>({ path, token: localToken }, context),
+    });
+    if (result.data === null) throw new Error('Запрошенные данные не найдены.');
+    return { data: result.data, usedStaleFallback: result.usedStaleFallback };
+  }, [chatId, queryClient]);
+
+  useEffect(() => () => {
+    void queryClient.cancelQueries({ queryKey: clientQueryKeys.session(`chat:${chatId}`) });
+  }, [chatId, queryClient]);
+
   const leaveChat = () => {
     if (router.canGoBack()) {
       router.back();
       return;
     }
-    router.replace('/');
+    router.replace(({
+      pathname: '/',
+      params: { section: returnTo },
+    } as unknown) as Href);
   };
 
-  const loadMessages = useCallback(async () => {
+  const loadMessages = useCallback(async (refresh = true) => {
     if (!chatId) {
       setError('Не указан Chat. Вернитесь к списку Match.');
       setLoading(false);
       return;
     }
-    setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/api/v1/chats/${chatId}/messages?limit=50`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as ChatMessagesResponse;
-      setMessages(result.data);
-      setViewerUserId(result.meta.viewerUserId);
-      setChatState(result.meta.chatState);
+      const result = await readChatResource<ChatMessagesResponse>(
+        'messages',
+        `/api/v1/chats/${chatId}/messages?limit=50`,
+        { refresh },
+      );
+      setMessages(result.data.data);
+      setNextMessageCursor(result.data.meta.nextCursor);
+      setViewerUserId(result.data.meta.viewerUserId);
+      setChatState(result.data.meta.chatState);
+      if (result.usedStaleFallback) {
+        setError('Нет связи с сервером. Показана последняя доступная история чата.');
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить сообщения');
     } finally {
       setLoading(false);
     }
-  }, [chatId]);
+  }, [chatId, readChatResource]);
 
   useEffect(() => {
-    void loadMessages();
+    void loadMessages(false);
   }, [loadMessages]);
 
-  const loadChallenge = useCallback(async () => {
+  const loadOlderMessages = useCallback(async () => {
+    if (!chatId || !nextMessageCursor || loadingOlderMessages) return;
+    setLoadingOlderMessages(true);
+    try {
+      const result = await readChatResource<ChatMessagesResponse>(
+        `messages:${nextMessageCursor}`,
+        `/api/v1/chats/${chatId}/messages?limit=50&cursor=${encodeURIComponent(nextMessageCursor)}`,
+        { staleTime: queryFreshness.profile },
+      );
+      setMessages((current) => mergeOlderChatMessages(result.data.data, current));
+      setNextMessageCursor(result.data.meta.nextCursor);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось загрузить ранние сообщения');
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  }, [chatId, loadingOlderMessages, nextMessageCursor, readChatResource]);
+
+  const loadChallenge = useCallback(async (refresh = true) => {
     if (!chatId) return;
     setChallengeLoading(true);
     try {
-      const response = await fetch(`${apiUrl}/api/v1/chats/${chatId}/challenge`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as ChatChallengeResponse;
-      setChatChallenge(result.data);
+      const result = await readChatResource<ChatChallengeResponse>(
+        'challenge',
+        `/api/v1/chats/${chatId}/challenge`,
+        { refresh },
+      );
+      setChatChallenge(result.data.data);
     } catch (caught) {
       setChatChallenge(null);
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить Official Challenge');
     } finally {
       setChallengeLoading(false);
     }
-  }, [chatId]);
+  }, [chatId, readChatResource]);
 
   useEffect(() => {
-    void loadChallenge();
+    void loadChallenge(false);
   }, [loadChallenge]);
 
   const activeChallengeId = chatChallenge?.challenge?.challengeId ?? '';
-  const loadYouthConsent = useCallback(async () => {
+  const loadYouthConsent = useCallback(async (refresh = true) => {
     if (!activeChallengeId) {
       setYouthConsent(null);
       return;
     }
     try {
-      const response = await fetch(
-        `${apiUrl}/api/v1/challenges/${activeChallengeId}/youth-consents`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
+      const result = await readChatResource<YouthConsentSummaryResponse>(
+        `youth-consent:${activeChallengeId}`,
+        `/api/v1/challenges/${activeChallengeId}/youth-consents`,
+        { refresh },
       );
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as YouthConsentSummaryResponse;
-      setYouthConsent(result.data);
+      setYouthConsent(result.data.data);
     } catch (caught) {
       setYouthConsent(null);
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить согласие представителя');
     }
-  }, [activeChallengeId]);
+  }, [activeChallengeId, readChatResource]);
 
   useEffect(() => {
-    void loadYouthConsent();
+    void loadYouthConsent(false);
   }, [loadYouthConsent]);
 
-  const loadTrainingOptions = useCallback(async () => {
+  const loadTrainingOptions = useCallback(async (refresh = true) => {
     if (!chatId) {
       setOptionsLoading(false);
       return;
@@ -196,34 +265,46 @@ export default function ChatScreen() {
     setOptionsLoading(true);
     setOptionsError(null);
     try {
-      const headers = { Authorization: `Bearer ${localToken}` };
-      const [response, conversionResponse] = await Promise.all([
-        fetch(`${apiUrl}/api/v1/chats/${chatId}/training-options`, { headers }),
-        fetch(`${apiUrl}/api/v1/me/group-plan-official-conversions`, { headers }),
+      const [optionsResult, conversionResult] = await Promise.allSettled([
+        readChatResource<TrainingOptionsResponse>(
+          'training-options',
+          `/api/v1/chats/${chatId}/training-options`,
+          { refresh },
+        ),
+        readChatResource<MyGroupPlanOfficialConversionsResponse>(
+          'group-plan-conversions',
+          '/api/v1/me/group-plan-official-conversions',
+          { refresh },
+        ),
       ]);
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      if (!conversionResponse.ok) throw new Error(await apiErrorMessage(conversionResponse));
-      const [result, conversionResult] = await Promise.all([
-        response.json() as Promise<TrainingOptionsResponse>,
-        conversionResponse.json() as Promise<MyGroupPlanOfficialConversionsResponse>,
-      ]);
-      setTrainingOptions(result.data);
-      setGroupPlanConversions(conversionResult.data.filter((item) => item.chatId === chatId));
-      setViewerUserId(result.meta.viewerUserId);
+      if (optionsResult.status === 'fulfilled') {
+        setTrainingOptions(optionsResult.value.data.data);
+        setViewerUserId(optionsResult.value.data.meta.viewerUserId);
+      } else {
+        setTrainingOptions(null);
+        setOptionsError('Расписание временно недоступно. Чат продолжает работать.');
+      }
+      if (conversionResult.status === 'fulfilled') {
+        setGroupPlanConversions(
+          conversionResult.value.data.data.filter((item) => item.chatId === chatId),
+        );
+      } else {
+        setGroupPlanConversions([]);
+        setOptionsError((current) => current
+          ?? 'Статус группового плана временно недоступен. Остальные варианты показаны.');
+      }
     } catch (caught) {
-      setTrainingOptions(null);
-      setGroupPlanConversions([]);
       setOptionsError(
         caught instanceof Error ? caught.message : 'Не удалось загрузить расписание',
       );
     } finally {
       setOptionsLoading(false);
     }
-  }, [chatId]);
+  }, [chatId, readChatResource]);
 
   useEffect(() => {
     if (chatState === 'OPEN') {
-      void loadTrainingOptions();
+      void loadTrainingOptions(false);
       return;
     }
     if (chatState !== null) {
@@ -890,11 +971,30 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : Platform.OS === 'android' ? 'height' : undefined}
+        style={styles.keyboardSafe}
+      >
       <View style={styles.header}>
         <Pressable accessibilityRole="button" onPress={leaveChat} style={styles.backButton}>
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
-        <View style={styles.headerIdentity}>
+        <Pressable
+          accessibilityLabel={counterpartUserId
+            ? `Открыть спортивный профиль ${counterpart}`
+            : undefined}
+          accessibilityRole={counterpartUserId ? 'button' : undefined}
+          accessibilityState={{ disabled: !counterpartUserId }}
+          disabled={!counterpartUserId}
+          onPress={() => {
+            if (!counterpartUserId) return;
+            router.push(({
+              pathname: '/athlete/[userId]',
+              params: { userId: counterpartUserId, returnTo },
+            } as unknown) as Href);
+          }}
+          style={styles.headerIdentity}
+        >
           <Text accessibilityRole="header" aria-level={1} style={styles.title}>{counterpart}</Text>
           <Text style={styles.subtitle}>
             {chatIsOpen
@@ -903,15 +1003,23 @@ export default function ChatScreen() {
                 : 'Личный чат · тренировки выбираются вместе'
               : 'Личный чат · история сообщений'}
           </Text>
-        </View>
+        </Pressable>
       </View>
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator color="#8b2f22" />
+          <ActivityIndicator color={theme.colors.primary} />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.messages}>
+        <FlatList
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          contentContainerStyle={styles.messages}
+          data={messages}
+          keyExtractor={(message) => message.messageId}
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          keyboardShouldPersistTaps="handled"
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          ListHeaderComponent={<>
           {chatStateMessage ? (
             <View accessibilityLiveRegion="polite" style={styles.readOnlyNotice}>
               <Text style={styles.readOnlyNoticeTitle}>Чат закрыт</Text>
@@ -929,7 +1037,7 @@ export default function ChatScreen() {
                     Спортивный результат подтверждает Coach. До принятия это только приглашение.
                   </Text>
                 </View>
-                {challengeLoading ? <ActivityIndicator color="#8b2f22" size="small" /> : null}
+                {challengeLoading ? <ActivityIndicator color={theme.colors.primary} size="small" /> : null}
               </View>
               {!challengeLoading && !chatChallenge?.challenge && chatChallenge?.canCreate ? (
                 <Pressable
@@ -939,7 +1047,7 @@ export default function ChatScreen() {
                   onPress={() => void runChallengeAction('create')}
                   style={({ pressed }) => [styles.challengeCreateButton, actingChallenge && styles.disabled, pressed && styles.pressed]}
                 >
-                  {actingChallenge ? <ActivityIndicator color="#8b2f22" size="small" /> : (
+                  {actingChallenge ? <ActivityIndicator color={theme.colors.primary} size="small" /> : (
                     <Text style={styles.challengeCreateButtonText}>Бросить официальный вызов</Text>
                   )}
                 </Pressable>
@@ -1201,7 +1309,7 @@ export default function ChatScreen() {
                             ? 'Срок ответа истёк без вины сторон. Поражения и других спортивных последствий нет.'
                             : chatChallenge.challenge.state === 'RESULT_RECORDED'
                               ? 'Зафиксирован предварительный Result. Проигравший может подать Appeal в течение 48 часов.'
-                            : `Статус: ${chatChallenge.challenge.state}`}
+                            : challengeStateLabel(chatChallenge.challenge.state)}
                     </Text>
                   )}
                   {['ACCEPTED_UNSCHEDULED', 'BOOKING_PENDING', 'BOOKED']
@@ -1304,7 +1412,7 @@ export default function ChatScreen() {
                 <Text style={styles.actionLink}>Обновить</Text>
               </Pressable>
             </View>
-            {optionsLoading ? <ActivityIndicator color="#8b2f22" size="small" /> : null}
+            {optionsLoading ? <ActivityIndicator color={theme.colors.primary} size="small" /> : null}
             {!optionsLoading && optionsError ? (
               <Text accessibilityLiveRegion="polite" style={styles.optionsError}>
                 {optionsError}
@@ -1417,7 +1525,7 @@ export default function ChatScreen() {
                     ]}
                   >
                     {actingTrainingId === slot.slotId ? (
-                      <ActivityIndicator color="#ffffff" size="small" />
+                      <ActivityIndicator color={theme.colors.onPrimary} size="small" />
                     ) : (
                       <Text style={styles.trainingButtonText}>{buttonLabel}</Text>
                     )}
@@ -1436,7 +1544,7 @@ export default function ChatScreen() {
                       ]}
                     >
                       {actingTrainingId === booking.bookingId ? (
-                        <ActivityIndicator color="#8b2f22" size="small" />
+                        <ActivityIndicator color={theme.colors.primary} size="small" />
                       ) : (
                         <Text style={styles.secondaryChallengeText}>Отменить выбор слота</Text>
                       )}
@@ -1538,7 +1646,7 @@ export default function ChatScreen() {
                     ]}
                   >
                     {actingTrainingId === offering.groupOfferingId ? (
-                      <ActivityIndicator color="#ffffff" size="small" />
+                      <ActivityIndicator color={theme.colors.onPrimary} size="small" />
                     ) : (
                       <Text style={styles.trainingButtonText}>{buttonLabel}</Text>
                     )}
@@ -1618,10 +1726,26 @@ export default function ChatScreen() {
               );
             }) : null}
           </View> : null}
-          {messages.length === 0 ? (
-            <Text style={styles.empty}>Напишите первое сообщение и договоритесь о тренировке.</Text>
+          {nextMessageCursor ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: loadingOlderMessages }}
+              disabled={loadingOlderMessages}
+              onPress={() => void loadOlderMessages()}
+              style={({ pressed }) => [styles.olderMessagesButton, pressed && styles.pressed]}
+            >
+              {loadingOlderMessages ? (
+                <ActivityIndicator color={theme.colors.primary} size="small" />
+              ) : (
+                <Text style={styles.olderMessagesText}>Показать ранние сообщения</Text>
+              )}
+            </Pressable>
           ) : null}
-          {messages.map((message) => {
+          </>}
+          ListEmptyComponent={(
+            <Text style={styles.empty}>Напишите первое сообщение и договоритесь о тренировке.</Text>
+          )}
+          renderItem={({ item: message }) => {
             const own = message.senderUserId !== null && message.senderUserId === viewerUserId;
             const acting = actingMessageId === message.messageId;
             return (
@@ -1631,13 +1755,14 @@ export default function ChatScreen() {
                   <Text style={styles.messageText}>{message.content.text}</Text>
                 ) : message.content.kind === 'ACTION' ? (
                   <View style={styles.actionCard}>
-                    <Text style={styles.actionTitle}>{message.content.renderKey}</Text>
-                    <Text style={styles.actionMeta}>
-                      {message.content.resourceType} · версия {message.content.stateVersion}
+                    <Text style={styles.actionTitle}>
+                      {chatMessageLabel(message.content.renderKey)}
                     </Text>
                   </View>
                 ) : (
-                  <Text style={styles.serviceText}>{message.content.renderKey}</Text>
+                  <Text style={styles.serviceText}>
+                    {chatMessageLabel(message.content.renderKey)}
+                  </Text>
                 )}
                 <Text style={styles.messageMeta}>
                   {formatDateTime(message.createdAt)}
@@ -1666,7 +1791,7 @@ export default function ChatScreen() {
                       <Text style={styles.reportLink}>Пожаловаться</Text>
                     </Pressable>
                   ) : null}
-                  {acting ? <ActivityIndicator color="#8b2f22" size="small" /> : null}
+                  {acting ? <ActivityIndicator color={theme.colors.primary} size="small" /> : null}
                 </View>
                 {pendingMessageAction?.messageId === message.messageId ? (
                   <View accessibilityLiveRegion="polite" style={styles.confirmation}>
@@ -1702,8 +1827,8 @@ export default function ChatScreen() {
                 ) : null}
               </View>
             );
-          })}
-        </ScrollView>
+          }}
+        />
       )}
 
       {error ? <Text accessibilityLiveRegion="assertive" style={styles.error}>{error}</Text> : null}
@@ -1744,7 +1869,7 @@ export default function ChatScreen() {
             ]}
           >
             {actingMessageId === 'new' ? (
-              <ActivityIndicator color="#ffffff" />
+              <ActivityIndicator color={theme.colors.onPrimary} />
             ) : (
               <Text style={styles.sendText}>{editingMessage ? 'Сохранить' : 'Отправить'}</Text>
             )}
@@ -1755,27 +1880,30 @@ export default function ChatScreen() {
           <Text style={styles.closedComposerText}>Новые сообщения недоступны</Text>
         </View>
       )}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { backgroundColor: '#f6f4ef', flex: 1 },
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
+  safeArea: { backgroundColor: theme.colors.background, flex: 1 },
+  keyboardSafe: { flex: 1 },
   header: {
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderBottomColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderBottomColor: theme.colors.border,
     borderBottomWidth: 1,
     flexDirection: 'row',
     gap: 14,
     paddingHorizontal: 18,
     paddingVertical: 14,
   },
-  backButton: { justifyContent: 'center', minHeight: 44, paddingRight: 6 },
-  backText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
+  backButton: { justifyContent: 'center', minHeight: theme.touchTarget, paddingRight: 6 },
+  backText: { color: theme.colors.primary, fontSize: 15, fontWeight: '700' },
   headerIdentity: { flex: 1, gap: 2 },
-  title: { color: '#171512', fontSize: 18, fontWeight: '800' },
-  subtitle: { color: '#777168', fontSize: 12 },
+  title: { color: theme.colors.text, fontSize: 18, fontWeight: '800' },
+  subtitle: { color: theme.colors.textMuted, fontSize: 12 },
   center: { alignItems: 'center', flex: 1, justifyContent: 'center' },
   messages: {
     alignSelf: 'center',
@@ -1784,219 +1912,230 @@ const styles = StyleSheet.create({
     padding: 18,
     width: '100%',
   },
-  empty: { color: '#777168', fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  empty: { color: theme.colors.textMuted, fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  olderMessagesButton: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    borderColor: theme.colors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: theme.touchTarget,
+    paddingHorizontal: 16,
+  },
+  olderMessagesText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
   optionsSection: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 16,
     borderWidth: 1,
     gap: 10,
     padding: 14,
   },
   challengeSection: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 16,
     borderWidth: 1,
     gap: 10,
     padding: 14,
   },
   challengeHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
-  challengeTitle: { color: '#171512', fontSize: 17, fontWeight: '800' },
+  challengeTitle: { color: theme.colors.text, fontSize: 17, fontWeight: '800' },
   challengeCard: { gap: 8 },
-  challengeBadge: { color: '#8b2f22', fontSize: 12, fontWeight: '800', textTransform: 'uppercase' },
+  challengeBadge: { color: theme.colors.primary, fontSize: 12, fontWeight: '800', textTransform: 'uppercase' },
   challengeActions: { gap: 8 },
-  challengeButton: { alignItems: 'center', backgroundColor: '#8b2f22', borderRadius: 12, minHeight: 44, justifyContent: 'center', paddingHorizontal: 14 },
+  challengeButton: { alignItems: 'center', backgroundColor: theme.colors.primary, borderRadius: 12, minHeight: theme.touchTarget, justifyContent: 'center', paddingHorizontal: 14 },
   challengeCreateButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 12,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  challengeCreateButtonText: { color: '#8b2f22', fontSize: 14, fontWeight: '800' },
-  secondaryChallengeButton: { alignItems: 'center', borderColor: '#8b2f22', borderRadius: 12, borderWidth: 1, minHeight: 44, justifyContent: 'center', paddingHorizontal: 14 },
-  secondaryChallengeText: { color: '#8b2f22', fontSize: 14, fontWeight: '800' },
-  acceptedChallengeText: { color: '#2f6846', fontSize: 14, fontWeight: '900' },
-  challengeUnavailable: { color: '#777168', fontSize: 13, lineHeight: 19 },
-  youthConsentCard: { backgroundColor: '#fff7e8', borderColor: '#e7c98d', borderRadius: 12, borderWidth: 1, gap: 8, padding: 12 },
-  youthConsentTitle: { color: '#5e451b', fontSize: 14, fontWeight: '900' },
-  youthConsentPending: { color: '#7a5b23', fontSize: 13, fontWeight: '700' },
-  guardianInput: { backgroundColor: '#fff', borderColor: '#cfc6b8', borderRadius: 10, borderWidth: 1, minHeight: 44, paddingHorizontal: 12 },
-  developmentLink: { color: '#8b2f22', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
+  challengeCreateButtonText: { color: theme.colors.primary, fontSize: 14, fontWeight: '800' },
+  secondaryChallengeButton: { alignItems: 'center', borderColor: theme.colors.primary, borderRadius: 12, borderWidth: 1, minHeight: theme.touchTarget, justifyContent: 'center', paddingHorizontal: 14 },
+  secondaryChallengeText: { color: theme.colors.primary, fontSize: 14, fontWeight: '800' },
+  acceptedChallengeText: { color: theme.colors.successText, fontSize: 14, fontWeight: '900' },
+  challengeUnavailable: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 19 },
+  youthConsentCard: { backgroundColor: theme.colors.warningBackground, borderColor: theme.colors.warningBorder, borderRadius: 12, borderWidth: 1, gap: 8, padding: 12 },
+  youthConsentTitle: { color: theme.colors.warningText, fontSize: 14, fontWeight: '900' },
+  youthConsentPending: { color: theme.colors.warningText, fontSize: 13, fontWeight: '700' },
+  guardianInput: { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, borderRadius: 10, borderWidth: 1, color: theme.colors.text, minHeight: theme.touchTarget, paddingHorizontal: 12 },
+  developmentLink: { color: theme.colors.primary, fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
   optionsHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   optionsRefreshButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 9,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
   optionsHeading: { flex: 1, gap: 3 },
-  optionsTitle: { color: '#171512', fontSize: 17, fontWeight: '800' },
-  optionsSubtitle: { color: '#777168', fontSize: 12, lineHeight: 17 },
-  optionsEmpty: { color: '#777168', fontSize: 13 },
-  optionsError: { color: '#7a261b', fontSize: 13, lineHeight: 18 },
+  optionsTitle: { color: theme.colors.text, fontSize: 17, fontWeight: '800' },
+  optionsSubtitle: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 17 },
+  optionsEmpty: { color: theme.colors.textMuted, fontSize: 13 },
+  optionsError: { color: theme.colors.dangerText, fontSize: 13, lineHeight: 18 },
   readOnlyNotice: {
-    backgroundColor: '#fff7e6',
-    borderColor: '#dfc994',
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
     borderRadius: 14,
     borderWidth: 1,
     gap: 4,
     padding: 14,
   },
-  readOnlyNoticeTitle: { color: '#5d4610', fontSize: 15, fontWeight: '800' },
-  readOnlyNoticeText: { color: '#6b551d', fontSize: 13, lineHeight: 19 },
+  readOnlyNoticeTitle: { color: theme.colors.warningText, fontSize: 15, fontWeight: '800' },
+  readOnlyNoticeText: { color: theme.colors.warningText, fontSize: 13, lineHeight: 19 },
   trainingCard: {
-    backgroundColor: '#f6f4ef',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.background,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
     gap: 4,
     padding: 12,
   },
   selectedTrainingCard: {
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderWidth: 2,
   },
   confirmedTrainingCard: {
-    backgroundColor: '#eef7ef',
-    borderColor: '#79a682',
+    backgroundColor: theme.colors.successBackground,
+    borderColor: theme.colors.successText,
     borderWidth: 2,
   },
-  confirmedTrainingBadge: { color: '#285d35', fontSize: 12, fontWeight: '800' },
+  confirmedTrainingBadge: { color: theme.colors.successText, fontSize: 12, fontWeight: '800' },
   groupTrainingCard: {
-    backgroundColor: '#edf4ef',
-    borderColor: '#cbdccf',
+    backgroundColor: theme.colors.successBackground,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
     gap: 4,
     padding: 12,
   },
   selectedGroupCard: {
-    borderColor: '#31533a',
+    borderColor: theme.colors.successText,
     borderWidth: 2,
   },
-  statusSchedulingNotice: { backgroundColor: '#f6f4ef', borderRadius: 10, padding: 12 },
-  trainingKind: { color: '#8b2f22', fontSize: 11, fontWeight: '800' },
-  trainingTitle: { color: '#171512', fontSize: 14, fontWeight: '700' },
-  trainingMeta: { color: '#625d55', fontSize: 12 },
-  trainingTerms: { color: '#777168', fontSize: 11, lineHeight: 16, marginTop: 2 },
+  statusSchedulingNotice: { backgroundColor: theme.colors.background, borderRadius: 10, padding: 12 },
+  trainingKind: { color: theme.colors.primary, fontSize: 11, fontWeight: '800' },
+  trainingTitle: { color: theme.colors.text, fontSize: 14, fontWeight: '700' },
+  trainingMeta: { color: theme.colors.textMuted, fontSize: 12 },
+  trainingTerms: { color: theme.colors.textMuted, fontSize: 11, lineHeight: 16, marginTop: 2 },
   trainingButton: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 10,
     justifyContent: 'center',
     marginTop: 7,
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
   groupButton: {
     alignItems: 'center',
-    backgroundColor: '#31533a',
+    backgroundColor: theme.colors.successText,
     borderRadius: 10,
     justifyContent: 'center',
     marginTop: 7,
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  trainingButtonText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
+  trainingButtonText: { color: theme.colors.onPrimary, fontSize: 13, fontWeight: '800' },
   safetyCancelButton: {
-    alignItems: 'center', borderColor: '#8b2f22', borderRadius: 10,
+    alignItems: 'center', borderColor: theme.colors.primary, borderRadius: 10,
     borderWidth: 1, marginTop: 12, paddingHorizontal: 12, paddingVertical: 10,
   },
-  safetyCancelText: { color: '#8b2f22', fontSize: 13, fontWeight: '800' },
-  intentDeadline: { color: '#8b2f22', fontSize: 11, textAlign: 'center' },
-  capacityNotice: { color: '#31533a', fontSize: 12, lineHeight: 17, marginTop: 4 },
+  safetyCancelText: { color: theme.colors.primary, fontSize: 13, fontWeight: '800' },
+  intentDeadline: { color: theme.colors.primary, fontSize: 11, textAlign: 'center' },
+  capacityNotice: { color: theme.colors.successText, fontSize: 12, lineHeight: 17, marginTop: 4 },
   phoneAction: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    borderColor: '#31533a',
+    borderColor: theme.colors.successText,
     borderRadius: 9,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  phoneActionText: { color: '#31533a', fontSize: 12, fontWeight: '800' },
-  freshness: { color: '#777168', fontSize: 10 },
+  phoneActionText: { color: theme.colors.successText, fontSize: 12, fontWeight: '800' },
+  freshness: { color: theme.colors.textMuted, fontSize: 10 },
   message: {
     alignSelf: 'flex-start',
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 14,
     borderWidth: 1,
     gap: 7,
     maxWidth: '88%',
     padding: 13,
   },
-  ownMessage: { alignSelf: 'flex-end', backgroundColor: '#f4e9e5' },
-  sender: { color: '#777168', fontSize: 12, fontWeight: '700' },
-  messageText: { color: '#171512', fontSize: 16, lineHeight: 22 },
-  serviceText: { color: '#4c4943', fontSize: 14, fontWeight: '600' },
-  actionCard: { backgroundColor: '#f6f4ef', borderRadius: 10, gap: 4, padding: 12 },
-  actionTitle: { color: '#171512', fontSize: 14, fontWeight: '700' },
-  actionMeta: { color: '#777168', fontSize: 12 },
-  messageMeta: { color: '#8c867e', fontSize: 11 },
+  ownMessage: { alignSelf: 'flex-end', backgroundColor: theme.colors.accentBackground },
+  sender: { color: theme.colors.textMuted, fontSize: 12, fontWeight: '700' },
+  messageText: { color: theme.colors.text, fontSize: 16, lineHeight: 22 },
+  serviceText: { color: theme.colors.textSecondary, fontSize: 14, fontWeight: '600' },
+  actionCard: { backgroundColor: theme.colors.background, borderRadius: 10, gap: 4, padding: 12 },
+  actionTitle: { color: theme.colors.text, fontSize: 14, fontWeight: '700' },
+  actionMeta: { color: theme.colors.textMuted, fontSize: 12 },
+  messageMeta: { color: theme.colors.textMuted, fontSize: 11 },
   messageActions: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
-  messageAction: { justifyContent: 'center', minHeight: 44 },
-  actionLink: { color: '#625d55', fontSize: 12, fontWeight: '600' },
-  reportLink: { color: '#8b2f22', fontSize: 12, fontWeight: '600' },
+  messageAction: { justifyContent: 'center', minHeight: theme.touchTarget },
+  actionLink: { color: theme.colors.textMuted, fontSize: 12, fontWeight: '600' },
+  reportLink: { color: theme.colors.primary, fontSize: 12, fontWeight: '600' },
   confirmation: {
-    backgroundColor: '#faf6ef',
+    backgroundColor: theme.colors.warningBackground,
     borderRadius: 10,
     gap: 10,
     padding: 10,
   },
-  confirmationText: { color: '#4c4943', fontSize: 12, lineHeight: 18 },
+  confirmationText: { color: theme.colors.textSecondary, fontSize: 12, lineHeight: 18 },
   confirmationActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  confirmationCancel: { justifyContent: 'center', minHeight: 44, paddingHorizontal: 8 },
+  confirmationCancel: { justifyContent: 'center', minHeight: theme.touchTarget, paddingHorizontal: 8 },
   confirmationConfirm: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 9,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  confirmationConfirmText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
+  confirmationConfirmText: { color: theme.colors.onPrimary, fontSize: 12, fontWeight: '700' },
   error: {
-    backgroundColor: '#fff0ed',
-    color: '#7a261b',
+    backgroundColor: theme.colors.dangerBackground,
+    color: theme.colors.dangerText,
     fontSize: 13,
     paddingHorizontal: 18,
     paddingVertical: 10,
   },
   composer: {
-    backgroundColor: '#ffffff',
-    borderTopColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderTopColor: theme.colors.border,
     borderTopWidth: 1,
     gap: 8,
     padding: 14,
   },
   closedComposer: {
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderTopColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderTopColor: theme.colors.border,
     borderTopWidth: 1,
     justifyContent: 'center',
     minHeight: 68,
     padding: 14,
   },
-  closedComposerText: { color: '#777168', fontSize: 14, fontWeight: '600' },
+  closedComposerText: { color: theme.colors.textMuted, fontSize: 14, fontWeight: '600' },
   editingRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  editingText: { color: '#777168', fontSize: 12 },
+  editingText: { color: theme.colors.textMuted, fontSize: 12 },
   composerRow: { alignItems: 'flex-end', flexDirection: 'row', gap: 10 },
   input: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#c9c3b9',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
-    color: '#171512',
+    color: theme.colors.text,
     flex: 1,
     fontSize: 15,
     maxHeight: 120,
@@ -2006,14 +2145,15 @@ const styles = StyleSheet.create({
   },
   sendButton: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 12,
     justifyContent: 'center',
     minHeight: 48,
     minWidth: 94,
     paddingHorizontal: 14,
   },
-  sendText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
+  sendText: { color: theme.colors.onPrimary, fontSize: 14, fontWeight: '700' },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.82 },
-});
+  });
+}
