@@ -8,6 +8,8 @@ import {
   createClientQueryClient,
   fetchApiQuery,
   fetchQueryWithCache,
+  settleSecondaryQuery,
+  staleDataWarning,
   queryFreshness,
 } from './query';
 
@@ -58,6 +60,14 @@ describe('client query foundation', () => {
     });
 
     expect(result).toEqual({ data: { data: { name: 'Pilot' } }, usedStaleFallback: true });
+    expect(staleDataWarning).toContain('действия не ставятся в очередь');
+  });
+
+  it('contains a secondary endpoint failure without rejecting the primary screen', async () => {
+    await expect(settleSecondaryQuery(Promise.reject(new Error('secondary unavailable'))))
+      .resolves.toEqual({ data: null, failed: true });
+    await expect(settleSecondaryQuery(Promise.resolve({ data: ['primary remains'] })))
+      .resolves.toEqual({ data: { data: ['primary remains'] }, failed: false });
   });
 
   it('serves a warm screen from fresh cache without a second request', async () => {

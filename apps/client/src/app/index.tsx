@@ -100,6 +100,7 @@ import {
   apiUrl,
   localTestAccounts,
   localToken,
+  retryableIdempotencyKey,
   setLocalToken,
   type LocalTestAccount,
 } from '../lib/api';
@@ -118,7 +119,10 @@ import {
   clientQueryKeys,
   fetchApiQuery,
   fetchQueryWithCache,
+  partialDataWarning,
   queryFreshness,
+  settleSecondaryQuery,
+  staleDataWarning,
 } from '../lib/query';
 import { coachSafetyRefusalPresentation } from '../features/safety/presentation';
 import { SafetyCaseReviewSection } from '../features/safety/SafetyCaseReviewSection';
@@ -683,12 +687,12 @@ export default function IdentityScreen() {
       task: Promise<T | null>,
       apply: (value: T | null) => void,
     ) => {
-      try {
-        const value = await task;
-        if (loadSequenceRef.current === sequence) apply(value);
-      } catch {
+      const result = await settleSecondaryQuery(task);
+      if (result.failed) {
         warnings.add(label);
+        return;
       }
+      if (loadSequenceRef.current === sequence) apply(result.data);
     };
 
     try {
@@ -1025,9 +1029,9 @@ export default function IdentityScreen() {
       await Promise.all(loads);
       if (loadSequenceRef.current === sequence) {
         if (usedStaleFallback) {
-          setDataWarning('Нет связи с сервером. Показаны последние доступные данные; действия не ставятся в очередь.');
+          setDataWarning(staleDataWarning);
         } else if (warnings.size > 0) {
-          setDataWarning('Основные данные загружены. Некоторые разделы временно недоступны — обновите экран позже.');
+          setDataWarning(partialDataWarning);
         }
       }
     } catch (caught) {
@@ -2844,9 +2848,11 @@ export default function IdentityScreen() {
   const joinStatusQueue = async () => {
     if (!competitionStatus || actingStatusQueue) return;
     const operation = `join:${competitionStatus.competitionId}`;
-    const idempotencyKey = statusQueueActionKeys.current.get(operation)
-      ?? `status-queue:${operation}:${Date.now().toString(36)}`;
-    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    const idempotencyKey = retryableIdempotencyKey(
+      statusQueueActionKeys.current,
+      operation,
+      () => `status-queue:${operation}:${Date.now().toString(36)}`,
+    );
     setActingStatusQueue(true);
     setStatusQueueNotice(null);
     setError(null);
@@ -3489,7 +3495,7 @@ export default function IdentityScreen() {
 
   if (!authBootstrapped) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.colors.background }]}>
         <View style={styles.container}>
           <Text style={styles.eyebrow}>MOLOKH</Text>
           <ActivityIndicator color={theme.colors.text} />
@@ -3501,7 +3507,7 @@ export default function IdentityScreen() {
 
   if (managedLoginRequired) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.colors.background }]}>
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
           <Text style={styles.eyebrow}>MOLOKH</Text>
           <Text style={styles.title}>Вход</Text>
@@ -3513,7 +3519,7 @@ export default function IdentityScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.colors.background }]}>
       <View style={[styles.appFrame, !isCompactLayout && styles.appFrameWide]}>
         {!isCompactLayout ? mainNavigation : null}
         <ScrollView

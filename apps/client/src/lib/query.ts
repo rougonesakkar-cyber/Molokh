@@ -4,7 +4,7 @@ import {
   type QueryFunctionContext,
 } from '@tanstack/react-query';
 
-import { apiErrorMessage, apiUrl } from './api';
+import { apiErrorMessage, requireApiUrl } from './api';
 
 export const queryFreshness = {
   operational: 45_000,
@@ -13,6 +13,10 @@ export const queryFreshness = {
 } as const;
 
 export const queryGarbageCollectionTime = 30 * 60_000;
+export const staleDataWarning =
+  'Нет связи с сервером. Показаны последние доступные данные; действия не ставятся в очередь.';
+export const partialDataWarning =
+  'Основные данные загружены. Некоторые разделы временно недоступны — обновите экран позже.';
 
 export const clientQueryKeys = {
   all: ['client'] as const,
@@ -49,7 +53,7 @@ export async function fetchApiQuery<T>(
   options: ApiQueryOptions,
   context: Pick<QueryFunctionContext<QueryKey>, 'signal'>,
 ): Promise<T | null> {
-  const response = await fetch(`${apiUrl}${options.path}`, {
+  const response = await fetch(`${requireApiUrl()}${options.path}`, {
     headers: { Authorization: `Bearer ${options.token}` },
     signal: context.signal,
   });
@@ -68,6 +72,19 @@ interface CachedQueryOptions<T> {
 export interface CachedQueryResult<T> {
   readonly data: T;
   readonly usedStaleFallback: boolean;
+}
+
+export interface SecondaryQueryResult<T> {
+  readonly data: T | null;
+  readonly failed: boolean;
+}
+
+export async function settleSecondaryQuery<T>(task: Promise<T | null>): Promise<SecondaryQueryResult<T>> {
+  try {
+    return { data: await task, failed: false };
+  } catch {
+    return { data: null, failed: true };
+  }
 }
 
 /**

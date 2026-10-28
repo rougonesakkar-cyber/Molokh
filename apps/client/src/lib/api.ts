@@ -1,9 +1,51 @@
 import type { ApiError } from '@molokh/contracts';
 import { Platform } from 'react-native';
 
-const defaultApiUrl = Platform.OS === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000';
+export interface ApiConfiguration {
+  readonly apiUrl: string;
+  readonly error: string | null;
+}
 
-export const apiUrl = (process.env.EXPO_PUBLIC_API_URL ?? defaultApiUrl).replace(/\/$/, '');
+export function resolveApiConfiguration(
+  configuredUrl: string | undefined,
+  platform: string,
+): ApiConfiguration {
+  const fallback = platform === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000';
+  const candidate = configuredUrl?.trim() || fallback;
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      throw new Error('unsupported origin');
+    }
+    return { apiUrl: candidate.replace(/\/$/, ''), error: null };
+  } catch {
+    return {
+      apiUrl: fallback,
+      error: 'Некорректный адрес Molokh API. Проверьте EXPO_PUBLIC_API_URL и перезапустите клиент.',
+    };
+  }
+}
+
+const apiConfiguration = resolveApiConfiguration(process.env.EXPO_PUBLIC_API_URL, Platform.OS);
+export const apiUrl = apiConfiguration.apiUrl;
+export const apiConfigurationError = apiConfiguration.error;
+
+export function requireApiUrl(): string {
+  if (apiConfigurationError) throw new Error(apiConfigurationError);
+  return apiUrl;
+}
+
+export function retryableIdempotencyKey(
+  keys: Map<string, string>,
+  operation: string,
+  create: () => string,
+): string {
+  const existing = keys.get(operation);
+  if (existing) return existing;
+  const created = create();
+  keys.set(operation, created);
+  return created;
+}
 const defaultLocalToken =
   process.env.EXPO_PUBLIC_LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
 
