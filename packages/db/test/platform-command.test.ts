@@ -2568,7 +2568,16 @@ describePostgres('PostgreSQL critical command transaction', () => {
     `.execute(database);
   });
 
-  const seedConfirmedTrainingForConversion = async (base: number) => {
+  const seedConfirmedTrainingForConversion = async (
+    base: number,
+    schedule: {
+      readonly startAt: string;
+      readonly endAt: string;
+    } = {
+      startAt: '2026-10-01T10:00:00.000Z',
+      endAt: '2026-10-01T11:00:00.000Z',
+    },
+  ) => {
     const athleteA = testId(base);
     const athleteB = testId(base + 1);
     const coach = testId(base + 2);
@@ -2582,8 +2591,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const booking = testId(base + 10);
     const session = testId(base + 11);
     const occurredAt = '2026-09-27T10:00:00.000Z';
-    const scheduledStartAt = '2026-10-01T10:00:00.000Z';
-    const scheduledEndAt = '2026-10-01T11:00:00.000Z';
+    const scheduledStartAt = schedule.startAt;
+    const scheduledEndAt = schedule.endAt;
 
     await sql`
       insert into identity.users (
@@ -5129,7 +5138,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
   });
 
   it('[AC-019] scopes a verified Guest Coach to one Session and expires the grant after cancellation', async () => {
-    const fixture = await seedConfirmedTrainingForConversion(125000);
+    const fixture = await seedConfirmedTrainingForConversion(125000, {
+      startAt: '2099-10-01T10:00:00.000Z',
+      endAt: '2099-10-01T11:00:00.000Z',
+    });
     const other = await seedConfirmedTrainingForConversion(125100);
     const grantId = testId(125200);
     const authorizedAt = new Date('2026-09-28T10:00:00.000Z');
@@ -5180,7 +5192,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(authorized.response).toMatchObject({
       grantId, userId: fixture.coach, role: 'COACH', scopeType: 'SESSION',
       scopeId: fixture.session, state: 'ACTIVE', version: 1,
-      expiresAt: '2026-10-31T11:00:00.000Z',
+      expiresAt: '2099-10-31T11:00:00.000Z',
     });
     await expect(authorizeGuestCoach(
       database, authorizationCommand, authorizationEffects, () => authorizedAt,

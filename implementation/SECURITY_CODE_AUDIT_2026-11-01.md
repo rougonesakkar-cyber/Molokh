@@ -70,11 +70,12 @@ smoke used a new isolated database instead of rewriting applied migration histor
 
 ## Residual risks and release prerequisites
 
-- Raw `pnpm audit` reports five non-runtime tooling advisories: one high (`zod` through Expo/EAS
-  CLI), two moderate (`uuid`, `ts-deepmerge`) and two low (`diff`, `deepmerge`). The production
-  gate excludes only the reviewed Expo CLI `zod` path until 24 November 2026 and will fail after
-  that date unless it is upgraded or reviewed again. No advisory is accepted in application
-  runtime.
+- Raw `pnpm audit` reports eight advisory classes in non-runtime tooling: two high (`zod`, `joi`),
+  four moderate (`uuid`, `ts-deepmerge`, `minimatch`, `glob`) and two low (`diff`, `deepmerge`).
+  Their reported paths are confined to Expo/EAS CLI, build and development tooling. The
+  production gate has no general exception: it permits only the reviewed non-runtime Expo CLI
+  `zod` finding until 24 November 2026 and will fail after that date unless it is upgraded or
+  reviewed again. No advisory is accepted in application runtime.
 - Android lint itself crashes while analysing third-party `react-native-worklets` with
   `Cannot find a KaModule for the VirtualFile`. APK assembly, TypeScript, Expo Doctor and Molokh
   tests pass; this is recorded as an upstream lint/toolchain blocker rather than a clean lint pass.
