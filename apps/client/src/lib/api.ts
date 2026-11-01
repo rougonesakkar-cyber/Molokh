@@ -9,12 +9,22 @@ export interface ApiConfiguration {
 export function resolveApiConfiguration(
   configuredUrl: string | undefined,
   platform: string,
+  development = true,
 ): ApiConfiguration {
   const fallback = platform === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000';
-  const candidate = configuredUrl?.trim() || fallback;
+  const configured = configuredUrl?.trim();
+  if (!configured && !development) {
+    return {
+      apiUrl: '',
+      error: 'Не задан адрес Molokh API. Настройте EXPO_PUBLIC_API_URL и пересоберите клиент.',
+    };
+  }
+  const candidate = configured || fallback;
   try {
     const parsed = new URL(candidate);
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    if (!['http:', 'https:'].includes(parsed.protocol)
+      || (!development && parsed.protocol !== 'https:')
+      || parsed.username || parsed.password || parsed.search || parsed.hash) {
       throw new Error('unsupported origin');
     }
     return { apiUrl: candidate.replace(/\/$/, ''), error: null };
@@ -26,7 +36,14 @@ export function resolveApiConfiguration(
   }
 }
 
-const apiConfiguration = resolveApiConfiguration(process.env.EXPO_PUBLIC_API_URL, Platform.OS);
+const developmentBuild = typeof __DEV__ === 'boolean'
+  ? __DEV__
+  : process.env.NODE_ENV !== 'production';
+const apiConfiguration = resolveApiConfiguration(
+  process.env.EXPO_PUBLIC_API_URL,
+  Platform.OS,
+  developmentBuild,
+);
 export const apiUrl = apiConfiguration.apiUrl;
 export const apiConfigurationError = apiConfiguration.error;
 
@@ -47,12 +64,14 @@ export function retryableIdempotencyKey(
   return created;
 }
 const defaultLocalToken =
-  process.env.EXPO_PUBLIC_LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token';
+  developmentBuild
+    ? process.env.EXPO_PUBLIC_LOCAL_AUTH_TOKEN ?? 'molokh-local-athlete-token'
+    : '';
 
 export interface LocalTestAccount {
   readonly id: string;
   readonly label: string;
-  readonly role: string;
+  readonly role: 'Athlete' | 'Coach' | 'Gym Admin' | 'Central';
   readonly token: string;
   readonly startSection: 'HOME' | 'DISCOVERY' | 'CHATS' | 'PROFILE' | 'COMMUNITY';
 }

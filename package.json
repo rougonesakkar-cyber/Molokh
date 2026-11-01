@@ -29,6 +29,6 @@
     "@types/node": "24.13.3",
     "eas-cli": "23.2.0",
     "typescript": "5.9.3",
-    "vitest": "5.0.0"
+    "vitest": "5.0.5"
   }
 }

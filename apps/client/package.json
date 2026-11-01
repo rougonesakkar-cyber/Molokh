@@ -15,11 +15,11 @@
   "dependencies": {
     "@molokh/contracts": "workspace:*",
     "@tanstack/react-query": "5.102.8",
-    "expo": "~57.0.26",
-    "expo-constants": "~57.0.20",
-    "expo-dev-client": "~57.0.19",
-    "expo-linking": "~57.0.11",
-    "expo-router": "~57.0.24",
+    "expo": "~57.0.31",
+    "expo-constants": "~57.0.22",
+    "expo-dev-client": "~57.0.20",
+    "expo-linking": "~57.0.13",
+    "expo-router": "~57.0.29",
     "expo-secure-store": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
@@ -33,6 +33,6 @@
   "devDependencies": {
     "@react-native/metro-config": "0.86.3",
     "@types/react": "19.2.18",
-    "vitest": "5.0.0"
+    "vitest": "5.0.5"
   }
 }

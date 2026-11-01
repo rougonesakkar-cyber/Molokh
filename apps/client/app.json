@@ -8,7 +8,13 @@
     "userInterfaceStyle": "automatic",
     "plugins": ["expo-router"],
     "android": {
-      "package": "app.molokh.mobile"
+      "package": "app.molokh.mobile",
+      "allowBackup": false,
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
     },
     "ios": {
       "bundleIdentifier": "app.molokh.mobile",

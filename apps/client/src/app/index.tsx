@@ -108,7 +108,12 @@ import {
   logoutManagedAuthSession,
   refreshManagedAuthSession,
 } from '../lib/auth-session';
-import { hasScopedVenueAdminGrant } from '../lib/community-access';
+import {
+  canLoadAthleteDiscovery,
+  hasScopedVenueAdminGrant,
+  operationalRoleForCommunityContext,
+  type ClientOperationalRole,
+} from '../lib/community-access';
 import { sportLabel, sportOptions } from '../lib/sports';
 import {
   athleteStoppageResult,
@@ -504,6 +509,8 @@ export default function IdentityScreen() {
       ?? localTestAccounts.find((account) => account.token === localToken)?.startSection
       ?? 'HOME');
   const [activeTestToken, setActiveTestToken] = useState(localToken);
+  const [operationalRole, setOperationalRole] = useState<ClientOperationalRole>(() =>
+    localTestAccounts.find((account) => account.token === localToken)?.role ?? 'Athlete');
   const [managedAccessExpiresAt, setManagedAccessExpiresAt] = useState<string | null>(null);
   const [authBootstrapped, setAuthBootstrapped] = useState(false);
   const [managedLoginRequired, setManagedLoginRequired] = useState(!__DEV__);
@@ -708,7 +715,6 @@ export default function IdentityScreen() {
       setLoading(false);
 
       const currentAccount = localTestAccounts.find((account) => account.token === token);
-      const role = currentAccount?.role ?? 'Athlete';
       const communityTask = read<CommunityContextResponse>(
         'community',
         '/api/v1/me/community',
@@ -719,6 +725,21 @@ export default function IdentityScreen() {
         'sessions',
         '/api/v1/me/sessions',
       );
+      let communityResult: CommunityContextResponse | null = null;
+      try {
+        communityResult = await communityTask;
+      } catch {
+        warnings.add('community');
+      }
+      const loadedCommunity = communityResult?.data ?? null;
+      const role = operationalRoleForCommunityContext(
+        loadedCommunity,
+        currentAccount?.role ?? 'Athlete',
+      );
+      if (loadSequenceRef.current !== sequence) return;
+      setOperationalRole(role);
+      setCommunityContext(loadedCommunity);
+      setPairCooldownDraft(String(loadedCommunity?.community.pairCooldownDays ?? 15));
 
       const loads: Promise<void>[] = [
         loadPart(
@@ -741,11 +762,6 @@ export default function IdentityScreen() {
             setSelectedHomeVenueId(value?.data.homeVenueId ?? null);
           },
         ),
-        loadPart('community', communityTask, (value) => {
-          const loadedCommunity = value?.data ?? null;
-          setCommunityContext(loadedCommunity);
-          setPairCooldownDraft(String(loadedCommunity?.community.pairCooldownDays ?? 15));
-        }),
         loadPart(
           'competition',
           read<CompetitionStatusResponse>(
@@ -812,21 +828,6 @@ export default function IdentityScreen() {
           (value) => setTechnicalCorrections(value?.data ?? []),
         ),
         loadPart(
-          'discovery',
-          read<DiscoveryCardsResponse>(
-            'discovery',
-            '/api/v1/discovery/cards?limit=20',
-            queryFreshness.profile,
-            { emptyStatuses: [403] },
-          ),
-          (value) => {
-            setDiscoveryCards(value?.data ?? []);
-            setDiscoveryNotice(value
-              ? null
-              : 'Discovery откроется после выбора города и домашнего зала.');
-          },
-        ),
-        loadPart(
           'matches',
           read<MatchesResponse>('matches', '/api/v1/matches', queryFreshness.profile),
           (value) => setMatches(value?.data ?? []),
@@ -837,6 +838,26 @@ export default function IdentityScreen() {
           (value) => setBlockedUsers(value?.data ?? []),
         ),
       ];
+
+      if (canLoadAthleteDiscovery(role)) {
+        loads.push(loadPart(
+          'discovery',
+          read<DiscoveryCardsResponse>(
+            'discovery',
+            '/api/v1/discovery/cards?limit=20',
+            queryFreshness.profile,
+          ),
+          (value) => {
+            setDiscoveryCards(value?.data ?? []);
+            setDiscoveryNotice(value
+              ? null
+              : 'Discovery откроется после выбора города и домашнего зала.');
+          },
+        ));
+      } else {
+        setDiscoveryCards([]);
+        setDiscoveryNotice(null);
+      }
 
       if (role === 'Central') {
         loads.push(
@@ -1143,9 +1164,11 @@ export default function IdentityScreen() {
     (adminPublicationKind === 'SLOT'
       ? adminCoachId.length > 0
       : adminGroupClassLabel.trim().length > 0);
-  const activeTestAccount =
-    localTestAccounts.find((account) => account.token === activeTestToken) ??
-    localTestAccounts[0]!;
+  const activeTestAccount = {
+    ...(localTestAccounts.find((account) => account.token === activeTestToken)
+      ?? localTestAccounts[0]!),
+    role: operationalRole,
+  };
   const currentLayout = layoutMode(width);
   const isCompactLayout = currentLayout === 'compact';
   const visibleSections = sectionsForRole(activeTestAccount.role);
@@ -1333,6 +1356,7 @@ export default function IdentityScreen() {
     hasLoadedIdentityRef.current = false;
     setLocalToken(account.token, persistToken);
     setActiveTestToken(account.token);
+    setOperationalRole(account.role);
     setAccountMenuOpen(false);
     openSection(account.startSection);
     setIdentity(null);

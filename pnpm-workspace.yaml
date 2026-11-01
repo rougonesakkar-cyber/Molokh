@@ -7,29 +7,41 @@ allowBuilds:
   esbuild: true
   protobufjs: true
 minimumReleaseAgeExclude:
-  - '@vitest/mocker@5.0.0'
-  - '@vitest/spy@5.0.0'
-  - vitest@5.0.0
+  - '@vitest/mocker@5.0.5'
+  - '@vitest/spy@5.0.5'
+  - vitest@5.0.5
   - '@expo/cli@57.0.22'
   - expo-modules-core@57.0.16
   - expo-modules-jsi@57.0.8
   - expo@57.0.20
   - '@expo/ui@57.0.16'
   - expo-router@57.0.19
-  - ip-address@10.7.3
+  - ip-address@10.7.5
   - compression@1.8.2
   - source-map-js@1.2.2
 
 overrides:
+  'ajv@>=8.0.0 <8.18.0': 8.18.0
+  'brace-expansion@<1.1.21': 1.1.21
+  'brace-expansion@>=2.0.0 <2.1.7': 2.1.7
   'brace-expansion@>=4.0.0 <5.0.12': 5.0.12
   'compression@<1.8.2': 1.8.2
-  'fast-uri@>=3.0.0 <3.1.8': 3.1.8
-  'ip-address@<=10.7.0': 10.7.3
+  'decode-uri-component@<=0.5.0': 0.5.1
+  'fast-uri@>=3.0.0 <3.1.9': 3.1.9
+  'fast-uri@>=4.0.0 <4.2.3': 4.2.3
+  'ip-address@<=10.7.4': 10.7.5
+  'joi@>=17.0.0 <17.13.8': 17.13.8
+  'minimatch@>=5.0.0 <5.1.8': 5.1.8
+  'moment@>=2.29.2 <2.31.0': 2.31.0
+  'nanoid@>=3.0.0 <3.3.18': 3.3.18
+  'node-forge@<1.4.2': 1.4.2
   'shell-quote@>=1.8.4 <1.11.0': 1.11.0
   'source-map-js@>=1.0.0 <1.2.2': 1.2.2
-  query-string>decode-uri-component: 0.5.0
+  'tar@>=7.0.0 <=7.5.20': 7.5.21
+  'vite@>=8.2.0 <=8.2.3': 8.2.4
+  'yaml@>=2.0.0 <2.8.3': 2.8.3
+  query-string>decode-uri-component: 0.5.1
   xcode>uuid: 11.1.1
 
 patchedDependencies:
   braces@3.0.3: patches/braces@3.0.3.patch
-  node-forge@1.4.0: patches/node-forge@1.4.0.patch

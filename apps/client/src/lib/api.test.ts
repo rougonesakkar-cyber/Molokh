@@ -17,6 +17,21 @@ describe('API error presentation', () => {
     expect(resolveApiConfiguration('https://secret@example.com', 'web').error).not.toBeNull();
   });
 
+  it('fails closed for a production build without an explicit HTTPS API URL', () => {
+    expect(resolveApiConfiguration(undefined, 'android', false)).toEqual({
+      apiUrl: '',
+      error: expect.stringContaining('EXPO_PUBLIC_API_URL'),
+    });
+    expect(resolveApiConfiguration('http://api.molokh.example', 'android', false).error)
+      .not.toBeNull();
+    expect(resolveApiConfiguration('https://api.molokh.example', 'android', false)).toEqual({
+      apiUrl: 'https://api.molokh.example',
+      error: null,
+    });
+    expect(resolveApiConfiguration('https://api.molokh.example?token=private', 'web', false).error)
+      .not.toBeNull();
+  });
+
   it('keeps one idempotency key across an explicit status-command retry', () => {
     const keys = new Map<string, string>();
     const create = vi.fn(() => 'status-command-key');

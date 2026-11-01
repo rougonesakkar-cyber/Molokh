@@ -675,6 +675,7 @@ describe('runtime contract', () => {
     expect(response.headers['access-control-allow-origin']).toBe('http://localhost:8081');
     expect(response.headers['access-control-allow-headers']).toContain('X-Causation-Id');
     expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['cache-control']).toBe('no-store');
   });
 
   it('[AC-166] returns public config and exposes a versioned scoped Pair Cooldown command', async () => {
