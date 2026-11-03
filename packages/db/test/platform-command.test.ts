@@ -231,6 +231,7 @@ import {
   acceptOptionalChallenge,
   activateStatusQueueHead,
   declineOptionalChallenge,
+  withdrawOptionalChallenge,
   finalizeResult,
   readChatChallenge,
   readChallengeTimerSnapshot,
@@ -22176,6 +22177,105 @@ describePostgres('PostgreSQL critical command transaction', () => {
         ${resultEffects.notificationOutboxMessageId}::uuid)
     `.execute(database);
     expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-equipment-safety-detail');
+  });
+
+  it('serializes a persisted Official Challenge for both participants after API reload', async () => {
+    const fixture = await seedConfirmedTrainingForConversion(310000);
+    // Use the real API serializer with the existing DB fixture, not a parallel test database suite.
+    const { buildApp } = await import('../../../apps/api/src/app.js');
+    const { StaticBearerAuthRegistryAdapter } = await import('../../../apps/api/src/auth.js');
+    const initiatorToken = 'challenge-read-initiator-token';
+    const recipientToken = 'challenge-read-recipient-token';
+    const outsiderToken = 'challenge-read-outsider-token';
+    const auth = new StaticBearerAuthRegistryAdapter([
+      { token: initiatorToken, userId: fixture.athleteA },
+      { token: recipientToken, userId: fixture.athleteB },
+      { token: outsiderToken, userId: fixture.coach },
+    ]);
+    const openApp = () => buildApp({
+      challenge: {
+        auth,
+        readChatChallenge: (chatId, viewerId) => readChatChallenge(database, chatId, viewerId),
+        createDirectOpenChallenge: (command, effects) => createDirectOpenChallenge(
+          database, command, effects, () => new Date('2026-09-28T10:00:00.000Z'),
+        ),
+        acceptOptionalChallenge: (command, effects) => acceptOptionalChallenge(database, command, effects),
+        declineOptionalChallenge: (command, effects) => declineOptionalChallenge(database, command, effects),
+        withdrawOptionalChallenge: (command, effects) => withdrawOptionalChallenge(database, command, effects),
+        rescheduleChallengeByAthlete: (command, effects) => rescheduleChallengeByAthlete(database, command, effects),
+        proposeMutualChallengeReschedule: (command, effects) => proposeMutualChallengeReschedule(database, command, effects),
+        confirmMutualChallengeReschedule: (command, effects) => confirmMutualChallengeReschedule(database, command, effects),
+      },
+    });
+    let app = await openApp();
+    try {
+      const createRequest = {
+        method: 'POST' as const,
+        url: '/api/v1/challenges',
+        headers: {
+          authorization: `Bearer ${initiatorToken}`,
+          'idempotency-key': 'challenge-api-db-create-read-reload',
+          'if-match': '0',
+        },
+        payload: { sourceChatId: fixture.chat },
+      };
+      const created = await app.inject(createRequest);
+      expect(created.statusCode).toBe(201);
+      const persisted = await readChatChallenge(database, fixture.chat, fixture.athleteA);
+      expect(persisted.challenge).toMatchObject({
+        competitionId: fixture.competition, sourceChatId: fixture.chat,
+        state: 'AWAITING_RESPONSE', responsePolicy: 'OPTIONAL', stake: 'NONE', version: 1,
+      });
+
+      const effectsBefore = await sql<{
+        readonly events: string; readonly audits: string; readonly outbox: string;
+      }>`select
+        (select count(*)::text from platform.domain_events) as events,
+        (select count(*)::text from platform.audit_events) as audits,
+        (select count(*)::text from platform.outbox_messages) as outbox
+      `.execute(database);
+
+      for (let load = 0; load < 2; load += 1) {
+        if (load > 0) {
+          await app.close();
+          app = await openApp();
+        }
+        for (const [token, viewerId] of [
+          [initiatorToken, fixture.athleteA], [recipientToken, fixture.athleteB],
+        ] as const) {
+          const response = await app.inject({
+            method: 'GET', url: `/api/v1/chats/${fixture.chat}/challenge`,
+            headers: { authorization: `Bearer ${token}` },
+          });
+          expect(response.statusCode).toBe(200);
+          expect(response.json().data).toEqual(await readChatChallenge(database, fixture.chat, viewerId));
+          expect(response.json().data.challenge.viewerRole)
+            .toBe(viewerId === fixture.athleteA ? 'INITIATOR' : 'RECIPIENT');
+        }
+        const denied = await app.inject({
+          method: 'GET', url: `/api/v1/chats/${fixture.chat}/challenge`,
+          headers: { authorization: `Bearer ${outsiderToken}` },
+        });
+        expect(denied.statusCode).toBe(404);
+        expect(denied.json().code).toBe('MATCH_REQUIRED');
+        expect(denied.body).not.toContain(fixture.competition);
+        expect(denied.body).not.toContain(fixture.athleteA);
+      }
+      expect(created.json().data).toEqual(persisted.challenge);
+      const replayed = await app.inject(createRequest);
+      expect(replayed.statusCode).toBe(201);
+      expect(replayed.json()).toMatchObject({ data: persisted.challenge, meta: { replayed: true } });
+      const effectsAfter = await sql<{
+        readonly events: string; readonly audits: string; readonly outbox: string;
+      }>`select
+        (select count(*)::text from platform.domain_events) as events,
+        (select count(*)::text from platform.audit_events) as audits,
+        (select count(*)::text from platform.outbox_messages) as outbox
+      `.execute(database);
+      expect(effectsAfter.rows).toEqual(effectsBefore.rows);
+    } finally {
+      await app.close();
+    }
   });
 
   it('[AC-073] keeps Champion status outside a matched OPEN Result through the frozen NONE stake', async () => {

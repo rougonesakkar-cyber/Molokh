@@ -3880,10 +3880,11 @@ describe('runtime contract', () => {
       aggregateVersion: 3,
       replayed: false,
     }));
+    const readChatChallenge = vi.fn().mockResolvedValue(chatProjection);
     const app = await buildApp({
       challenge: {
         auth: new StaticBearerAuthAdapter(token, userId),
-        readChatChallenge: vi.fn().mockResolvedValue(chatProjection),
+        readChatChallenge,
         createDirectOpenChallenge: created,
         acceptOptionalChallenge: accepted,
         declineOptionalChallenge: vi.fn(),
@@ -3922,6 +3923,29 @@ describe('runtime contract', () => {
     });
     expect(created.mock.calls[0]?.[1].reminderTimerOutboxMessageIds).toHaveLength(2);
     expect(new Set(created.mock.calls[0]?.[1].reminderTimerOutboxMessageIds).size).toBe(2);
+
+    readChatChallenge.mockResolvedValue({ ...chatProjection, challenge, canCreate: false });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const persisted = await app.inject({
+        method: 'GET', url: `/api/v1/chats/${chatId}/challenge`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(persisted.statusCode).toBe(200);
+      expect(persisted.json().data.challenge).toEqual(challenge);
+    }
+    expect(create.json().data.competitionId).toBe(challenge.competitionId);
+
+    readChatChallenge.mockResolvedValue({
+      ...chatProjection,
+      challenge: { ...challenge, privateReason: 'must-not-be-public' },
+    });
+    const unsafeProjection = await app.inject({
+      method: 'GET', url: `/api/v1/chats/${chatId}/challenge`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(unsafeProjection.statusCode).toBe(500);
+    expect(unsafeProjection.json().code).toBe('INTERNAL_ERROR');
+    expect(unsafeProjection.body).not.toContain('must-not-be-public');
 
     const accept = await app.inject({
       method: 'POST',

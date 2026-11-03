@@ -1200,6 +1200,7 @@ export type MutualChallengeRescheduleRequestContract = Static<
 export const ChallengeProjectionSchema = Type.Object(
   {
     challengeId: Type.String({ format: 'uuid' }),
+    competitionId: Type.String({ format: 'uuid' }),
     sourceChatId: Type.String({ format: 'uuid' }),
     serviceChatId: Type.String({ format: 'uuid' }),
     initiatorUserId: Type.String({ format: 'uuid' }),
