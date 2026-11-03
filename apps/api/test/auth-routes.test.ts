@@ -41,10 +41,17 @@ describe('authentication session routes', () => {
       verifyOtp: async (command, _ids, hashes) => {
         commands.push(command); verifierHashes.push(hashes.suppliedCodeVerifierHash,
           hashes.accessTokenHash, hashes.refreshTokenHash, hashes.sessionReferenceHash);
+        if (command.expectedVersion === 1) {
+          return executed({ outcome: 'INVALID_CODE', session: null, challenge: {
+            challengeId: command.payload.challengeId, userId, phoneE164: '+79990000001',
+            transport: 'LOCAL_DEVELOPMENT', state: 'PENDING', attempts: 1,
+            maxAttempts: 5, expiresAt: '2026-10-04T10:10:00.000Z', version: 2,
+          } });
+        }
         return executed({ outcome: 'VERIFIED', challenge: {
           challengeId: command.payload.challengeId, userId, phoneE164: '+79990000001',
-          transport: 'LOCAL_DEVELOPMENT', state: 'VERIFIED', attempts: 0,
-          maxAttempts: 5, expiresAt: '2026-10-04T10:10:00.000Z', version: 2,
+          transport: 'LOCAL_DEVELOPMENT', state: 'VERIFIED', attempts: 1,
+          maxAttempts: 5, expiresAt: '2026-10-04T10:10:00.000Z', version: 3,
         }, session: { userId, familyId, accessTokenId, refreshTokenId,
           generation: 1, accessExpiresAt: '2026-10-04T10:17:00.000Z',
           refreshExpiresAt: '2026-11-03T10:02:00.000Z' } });
@@ -79,9 +86,22 @@ describe('authentication session routes', () => {
     expect(verifierHashes[0]).toMatch(/^[0-9a-f]{64}$/);
     expect(verifierHashes[0]).not.toContain(requestBody.data.developmentCode);
 
+    const invalid = await app.inject({ method: 'POST', url: '/api/v1/auth/otp/verify',
+      headers: { 'idempotency-key': 'verify-login-wrong-1' }, payload: {
+        challengeId: requestBody.data.challengeId, challengeVersion: 1,
+        code: '000000', clientKind: 'WEB',
+      } });
+    expect(invalid.statusCode).toBe(200);
+    expect(invalid.json().data).toEqual({ outcome: 'INVALID_CODE', session: null,
+      challenge: { challengeId: requestBody.data.challengeId, transport: 'LOCAL_DEVELOPMENT',
+        state: 'PENDING', attempts: 1, maxAttempts: 5,
+        expiresAt: requestBody.data.expiresAt, version: 2 } });
+    expect(invalid.headers['set-cookie']).toBeUndefined();
+
     const verified = await app.inject({ method: 'POST', url: '/api/v1/auth/otp/verify',
       headers: { 'idempotency-key': 'verify-login-1' }, payload: {
-        challengeId: requestBody.data.challengeId, challengeVersion: 1,
+        challengeId: invalid.json().data.challenge.challengeId,
+        challengeVersion: invalid.json().data.challenge.version,
         code: requestBody.data.developmentCode, clientKind: 'NATIVE',
         deviceLabel: 'Pilot browser',
       } });
@@ -97,7 +117,7 @@ describe('authentication session routes', () => {
 
     const webVerified = await app.inject({ method: 'POST', url: '/api/v1/auth/otp/verify',
       headers: { 'idempotency-key': 'verify-login-web-1' }, payload: {
-        challengeId: requestBody.data.challengeId, challengeVersion: 1,
+        challengeId: requestBody.data.challengeId, challengeVersion: 2,
         code: requestBody.data.developmentCode, clientKind: 'WEB',
         deviceLabel: 'Pilot web browser',
       } });
@@ -137,6 +157,32 @@ describe('authentication session routes', () => {
     expect(paths).toHaveProperty('/api/v1/auth/otp/verify');
     expect(paths).toHaveProperty('/api/v1/auth/refresh');
     expect(paths).toHaveProperty('/api/v1/auth/logout');
+  });
+
+  it.each(['EXPIRED', 'LOCKED'] as const)('serializes %s without session tokens or a refresh cookie', async (outcome) => {
+    const unavailable = async (): Promise<never> => { throw new Error('not used'); };
+    const app = await buildApp({ authentication: {
+      auth: { authenticate: async () => null }, secret,
+      localDevelopmentTransportEnabled: true, smsTransportAvailable: false, secureCookies: false,
+      requestOtp: unavailable, readRefreshContext: unavailable,
+      rotateSession: unavailable, revokeSession: unavailable,
+      verifyOtp: async (command) => executed({ outcome, session: null, challenge: {
+        challengeId: command.payload.challengeId, userId, phoneE164: '+79990000001',
+        transport: 'LOCAL_DEVELOPMENT', state: outcome, attempts: outcome === 'LOCKED' ? 5 : 1,
+        maxAttempts: 5, expiresAt: '2026-10-04T10:10:00.000Z', version: 2,
+      } }),
+    } });
+    apps.push(app);
+    const response = await app.inject({ method: 'POST', url: '/api/v1/auth/otp/verify',
+      headers: { 'idempotency-key': `verify-${outcome}` }, payload: {
+        challengeId: accessTokenId, challengeVersion: 1, code: '000000', clientKind: 'WEB',
+      } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toMatchObject({ outcome, session: null,
+      challenge: { state: outcome, version: 2 } });
+    expect(response.json().data.challenge).not.toHaveProperty('phoneE164');
+    expect(response.json().data.challenge).not.toHaveProperty('userId');
+    expect(response.headers['set-cookie']).toBeUndefined();
   });
 
   it('revokes the whole family when a rotated refresh token is reused with a new key', async () => {

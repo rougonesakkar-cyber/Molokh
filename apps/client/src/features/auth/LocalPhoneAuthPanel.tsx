@@ -1,5 +1,5 @@
 import type { AuthSessionTokens, RequestAuthOtpResponse } from '@molokh/contracts';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { requestAuthOtp, verifyAuthOtp } from '../../lib/auth-session';
@@ -18,9 +18,13 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
   const [challenge, setChallenge] = useState<RequestAuthOtpResponse['data'] | null>(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const canVerify = challenge?.state === 'PENDING';
 
   const requestCode = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setNotice(null);
     try {
@@ -33,33 +37,45 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Не удалось запросить код');
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
 
   const confirmCode = async () => {
-    if (!challenge) return;
+    if (!challenge || !canVerify || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setNotice(null);
     try {
-      const session = await verifyAuthOtp({ challengeId: challenge.challengeId,
+      const result = await verifyAuthOtp({ challengeId: challenge.challengeId,
         challengeVersion: challenge.version, code: code.trim(),
         deviceLabel: 'Molokh universal client' });
-      onAuthenticated(session);
+      setChallenge(result.challenge);
+      if (result.outcome === 'VERIFIED' && result.session !== null) {
+        onAuthenticated(result.session);
+      } else {
+        setNotice(result.outcome === 'INVALID_CODE'
+          ? 'Неверный код. Проверьте шесть цифр и попробуйте снова.'
+          : 'Код больше недействителен. Запросите новый код.');
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Не удалось подтвердить код');
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
 
   const logout = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setNotice(null);
     try { await onLogout(); }
     catch (error) {
       setNotice(error instanceof Error ? error.message : 'Не удалось завершить сессию');
-    } finally { setBusy(false); }
+    } finally { inFlight.current = false; setBusy(false); }
   };
 
   return (
@@ -86,18 +102,19 @@ export function LocalPhoneAuthPanel({ activeSession, onAuthenticated, onLogout }
       <TextInput accessibilityLabel="Номер телефона" autoCapitalize="none"
         keyboardType="phone-pad" onChangeText={setPhone} placeholder="+79990000001"
         style={styles.input} value={phone} />
-      {challenge ? (
+      {canVerify ? (
         <TextInput accessibilityLabel="Код подтверждения" keyboardType="number-pad"
           maxLength={6} onChangeText={setCode} placeholder="000000"
           style={styles.input} value={code} />
       ) : null}
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
       <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy}
-        onPress={() => { void (challenge ? confirmCode() : requestCode()); }}
+        onPress={() => { void (canVerify ? confirmCode() : requestCode()); }}
         style={({ pressed }) => [styles.button, pressed && styles.pressed,
           busy && styles.disabled]}>
         {busy ? <ActivityIndicator color="#fff" /> : (
-          <Text style={styles.buttonText}>{challenge ? 'Войти' : 'Получить код'}</Text>
+          <Text style={styles.buttonText}>{canVerify ? 'Войти'
+            : challenge ? 'Получить новый код' : 'Получить код'}</Text>
         )}
       </Pressable>
       {challenge ? (

@@ -24433,13 +24433,21 @@ describePostgres('PostgreSQL critical command transaction', () => {
       accessTokenHash: firstAccessHash, refreshTokenHash: firstRefreshHash,
     }, () => new Date('2026-10-04T10:01:00.000Z'));
     expect(rejected.response).toMatchObject({ outcome: 'INVALID_CODE',
-      challenge: { attempts: 1, version: 2 }, session: null });
+      challenge: { challengeId, state: 'PENDING', attempts: 1, version: 2,
+        expiresAt: requested.response.expiresAt }, session: null });
+    const beforeLogin = await sql<{ families: string; access_tokens: string; refresh_tokens: string }>`
+      select (select count(*)::text from identity.auth_session_families) as families,
+        (select count(*)::text from identity.auth_access_tokens) as access_tokens,
+        (select count(*)::text from identity.auth_refresh_tokens) as refresh_tokens
+    `.execute(database);
+    expect(beforeLogin.rows[0]).toEqual({ families: '0', access_tokens: '0', refresh_tokens: '0' });
 
     const verified = await verifyAuthOtp(database, {
       commandId: testId(28023), commandType: 'VERIFY_AUTH_OTP',
       idempotencyKey: 'auth-otp-correct-28001',
       actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
-      aggregateType: 'AuthOtpChallenge', aggregateId: challengeId, expectedVersion: 2,
+      aggregateType: 'AuthOtpChallenge', aggregateId: rejected.response.challenge.challengeId,
+      expectedVersion: rejected.response.challenge.version,
       correlationId: testId(28008), causationId: testId(28015), requestId: testId(28024),
       source: 'api', payloadVersion: 1,
       payload: { challengeId, deviceLabel: 'Pilot browser' },
@@ -24450,6 +24458,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       accessTokenHash: firstAccessHash, refreshTokenHash: firstRefreshHash,
     }, () => new Date('2026-10-04T10:02:00.000Z'));
     expect(verified.response).toMatchObject({ outcome: 'VERIFIED',
+      challenge: { state: 'VERIFIED', attempts: 1, version: 3,
+        expiresAt: requested.response.expiresAt },
       session: { familyId, generation: 1 } });
     await expect(authenticateAccessToken(database, firstAccessHash,
       new Date('2026-10-04T10:03:00.000Z'))).resolves.toMatchObject({

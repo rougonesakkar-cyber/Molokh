@@ -50,7 +50,7 @@ export async function verifyAuthOtp(input: {
   readonly challengeVersion: number;
   readonly code: string;
   readonly deviceLabel: string;
-}): Promise<AuthSessionTokens> {
+}): Promise<VerifyAuthOtpResponse['data']> {
   const response = await fetch(`${requireApiUrl()}/api/v1/auth/otp/verify`, {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json',
@@ -59,13 +59,10 @@ export async function verifyAuthOtp(input: {
   });
   if (!response.ok) throw new Error(await apiErrorMessage(response));
   const result = await response.json() as VerifyAuthOtpResponse;
-  if (result.data.outcome !== 'VERIFIED' || result.data.session === null) {
-    throw new Error(result.data.outcome === 'INVALID_CODE'
-      ? 'Неверный код. Проверьте шесть цифр и попробуйте снова.'
-      : 'Код больше недействителен. Запросите новый код.');
+  if (result.data.outcome === 'VERIFIED' && result.data.session !== null) {
+    await writeNativeRefreshToken(result.data.session.refreshToken);
   }
-  await writeNativeRefreshToken(result.data.session.refreshToken);
-  return result.data.session;
+  return result.data;
 }
 
 export async function refreshManagedAuthSession(): Promise<AuthSessionTokens | null> {
