@@ -105,10 +105,35 @@ function tokenStorage(): LocalTokenStorage | null {
 }
 
 export let localToken = tokenStorage()?.getItem(localTokenStorageKey) ?? defaultLocalToken;
+let localSessionVersion = 1;
+const localSessionListeners = new Set<() => void>();
+
+export function getLocalSessionScope(): string {
+  return `session-${localSessionVersion}`;
+}
+
+export function subscribeLocalSession(listener: () => void): () => void {
+  localSessionListeners.add(listener);
+  return () => { localSessionListeners.delete(listener); };
+}
+
+export function localTokenForSession(scope: string): string {
+  if (scope !== getLocalSessionScope()) throw new Error('Аккаунт изменился. Откройте чат снова.');
+  if (!localToken) throw new Error('Войдите, чтобы открыть чат.');
+  return localToken;
+}
 
 export function setLocalToken(token: string, persist = true): void {
-  localToken = token;
   if (persist) tokenStorage()?.setItem(localTokenStorageKey, token);
+  localToken = token;
+  localSessionVersion += 1;
+  localSessionListeners.forEach((listener) => listener());
+}
+
+export function rotateLocalToken(scope: string, token: string): boolean {
+  if (scope !== getLocalSessionScope()) return false;
+  localToken = token;
+  return true;
 }
 
 const localizedApiErrors: Readonly<Record<string, string>> = {

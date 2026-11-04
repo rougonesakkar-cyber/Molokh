@@ -15,9 +15,9 @@ import type {
   YouthConsentCommandResponse,
   YouthConsentSummaryResponse,
 } from '@molokh/contracts';
-import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
+import { type Href, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -33,12 +33,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { apiErrorMessage, apiUrl, localToken } from '../lib/api';
+import {
+  apiErrorMessage, apiUrl, getLocalSessionScope, localTokenForSession, subscribeLocalSession,
+} from '../lib/api';
 import {
   clientQueryKeys,
-  fetchApiQuery,
-  fetchQueryWithCache,
   queryFreshness,
+  readChatQuery,
 } from '../lib/query';
 import {
   CHAT_REPORT_CONFIRMATION_COPY,
@@ -90,10 +91,6 @@ function formatDateTime(value: string): string {
 }
 
 export default function ChatScreen() {
-  const router = useRouter();
-  const queryClient = useQueryClient();
-  const theme = useAppTheme();
-  const styles = useMemo(() => createStyles(theme), [theme]);
   const params = useLocalSearchParams<{
     chatId?: string | string[];
     counterpart?: string | string[];
@@ -101,9 +98,30 @@ export default function ChatScreen() {
     returnTo?: string | string[];
   }>();
   const chatId = firstParameter(params.chatId);
-  const counterpart = firstParameter(params.counterpart) || 'Партнёр по тренировке';
-  const counterpartUserId = firstParameter(params.counterpartUserId);
-  const returnTo = firstParameter(params.returnTo) === 'community' ? 'community' : 'chats';
+  const scope = useSyncExternalStore(subscribeLocalSession, getLocalSessionScope, getLocalSessionScope);
+  return (
+    <ViewerChat
+      key={`${scope}:${chatId}`}
+      scope={scope}
+      chatId={chatId}
+      counterpart={firstParameter(params.counterpart)}
+      counterpartUserId={firstParameter(params.counterpartUserId)}
+      returnTo={firstParameter(params.returnTo) === 'community' ? 'community' : 'chats'}
+    />
+  );
+}
+
+function ViewerChat({ scope, chatId, counterpart, counterpartUserId, returnTo }: {
+  readonly scope: string;
+  readonly chatId: string;
+  readonly counterpart: string;
+  readonly counterpartUserId: string;
+  readonly returnTo: 'community' | 'chats';
+}) {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const [viewerUserId, setViewerUserId] = useState('');
   const [chatState, setChatState] = useState<ChatState | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -130,27 +148,16 @@ export default function ChatScreen() {
   const [error, setError] = useState<string | null>(null);
   const actionKeys = useRef(new Map<string, string>());
 
-  const readChatResource = useCallback(async <T,>(
+  const readChatResource = useCallback(<T,>(
     resource: string,
     path: string,
-    options: { readonly refresh?: boolean; readonly staleTime?: number } = {},
-  ) => {
-    const queryKey = clientQueryKeys.resource(`chat:${chatId}`, resource);
-    if (options.refresh) {
-      await queryClient.invalidateQueries({ queryKey, refetchType: 'none' });
-    }
-    const result = await fetchQueryWithCache(queryClient, {
-      queryKey,
-      staleTime: options.staleTime ?? queryFreshness.operational,
-      queryFn: (context) => fetchApiQuery<T>({ path, token: localToken }, context),
-    });
-    if (result.data === null) throw new Error('Запрошенные данные не найдены.');
-    return { data: result.data, usedStaleFallback: result.usedStaleFallback };
-  }, [chatId, queryClient]);
+    staleTime?: number,
+  ) => readChatQuery<T>(queryClient, scope, chatId, resource, path, staleTime),
+  [chatId, queryClient, scope]);
 
   useEffect(() => () => {
-    void queryClient.cancelQueries({ queryKey: clientQueryKeys.session(`chat:${chatId}`) });
-  }, [chatId, queryClient]);
+    void queryClient.cancelQueries({ queryKey: clientQueryKeys.resource(scope, 'chat', chatId) });
+  }, [chatId, queryClient, scope]);
 
   const leaveChat = () => {
     if (router.canGoBack()) {
@@ -163,36 +170,34 @@ export default function ChatScreen() {
     } as unknown) as Href);
   };
 
-  const loadMessages = useCallback(async (refresh = true) => {
+  const loadMessages = useCallback(async () => {
     if (!chatId) {
       setError('Не указан Chat. Вернитесь к списку Match.');
       setLoading(false);
-      return;
+      return null;
     }
     setError(null);
     try {
       const result = await readChatResource<ChatMessagesResponse>(
         'messages',
         `/api/v1/chats/${chatId}/messages?limit=50`,
-        { refresh },
       );
-      setMessages(result.data.data);
-      setNextMessageCursor(result.data.meta.nextCursor);
-      setViewerUserId(result.data.meta.viewerUserId);
-      setChatState(result.data.meta.chatState);
-      if (result.usedStaleFallback) {
-        setError('Нет связи с сервером. Показана последняя доступная история чата.');
-      }
+      setMessages(result.data);
+      setNextMessageCursor(result.meta.nextCursor);
+      setViewerUserId(result.meta.viewerUserId);
+      setChatState(result.meta.chatState);
+      return result.meta.chatState;
     } catch (caught) {
+      setMessages([]);
+      setNextMessageCursor(null);
+      setViewerUserId('');
+      setChatState(null);
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить сообщения');
+      return null;
     } finally {
       setLoading(false);
     }
   }, [chatId, readChatResource]);
-
-  useEffect(() => {
-    void loadMessages(false);
-  }, [loadMessages]);
 
   const loadOlderMessages = useCallback(async () => {
     if (!chatId || !nextMessageCursor || loadingOlderMessages) return;
@@ -201,10 +206,10 @@ export default function ChatScreen() {
       const result = await readChatResource<ChatMessagesResponse>(
         `messages:${nextMessageCursor}`,
         `/api/v1/chats/${chatId}/messages?limit=50&cursor=${encodeURIComponent(nextMessageCursor)}`,
-        { staleTime: queryFreshness.profile },
+        queryFreshness.profile,
       );
-      setMessages((current) => mergeOlderChatMessages(result.data.data, current));
-      setNextMessageCursor(result.data.meta.nextCursor);
+      setMessages((current) => mergeOlderChatMessages(result.data, current));
+      setNextMessageCursor(result.meta.nextCursor);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить ранние сообщения');
     } finally {
@@ -212,16 +217,15 @@ export default function ChatScreen() {
     }
   }, [chatId, loadingOlderMessages, nextMessageCursor, readChatResource]);
 
-  const loadChallenge = useCallback(async (refresh = true) => {
+  const loadChallenge = useCallback(async () => {
     if (!chatId) return;
     setChallengeLoading(true);
     try {
       const result = await readChatResource<ChatChallengeResponse>(
         'challenge',
         `/api/v1/chats/${chatId}/challenge`,
-        { refresh },
       );
-      setChatChallenge(result.data.data);
+      setChatChallenge(result.data);
     } catch (caught) {
       setChatChallenge(null);
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить Official Challenge');
@@ -230,12 +234,8 @@ export default function ChatScreen() {
     }
   }, [chatId, readChatResource]);
 
-  useEffect(() => {
-    void loadChallenge(false);
-  }, [loadChallenge]);
-
   const activeChallengeId = chatChallenge?.challenge?.challengeId ?? '';
-  const loadYouthConsent = useCallback(async (refresh = true) => {
+  const loadYouthConsent = useCallback(async () => {
     if (!activeChallengeId) {
       setYouthConsent(null);
       return;
@@ -244,9 +244,8 @@ export default function ChatScreen() {
       const result = await readChatResource<YouthConsentSummaryResponse>(
         `youth-consent:${activeChallengeId}`,
         `/api/v1/challenges/${activeChallengeId}/youth-consents`,
-        { refresh },
       );
-      setYouthConsent(result.data.data);
+      setYouthConsent(result.data);
     } catch (caught) {
       setYouthConsent(null);
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить согласие представителя');
@@ -254,10 +253,10 @@ export default function ChatScreen() {
   }, [activeChallengeId, readChatResource]);
 
   useEffect(() => {
-    void loadYouthConsent(false);
+    void loadYouthConsent();
   }, [loadYouthConsent]);
 
-  const loadTrainingOptions = useCallback(async (refresh = true) => {
+  const loadTrainingOptions = useCallback(async () => {
     if (!chatId) {
       setOptionsLoading(false);
       return;
@@ -269,24 +268,21 @@ export default function ChatScreen() {
         readChatResource<TrainingOptionsResponse>(
           'training-options',
           `/api/v1/chats/${chatId}/training-options`,
-          { refresh },
         ),
         readChatResource<MyGroupPlanOfficialConversionsResponse>(
           'group-plan-conversions',
           '/api/v1/me/group-plan-official-conversions',
-          { refresh },
         ),
       ]);
       if (optionsResult.status === 'fulfilled') {
-        setTrainingOptions(optionsResult.value.data.data);
-        setViewerUserId(optionsResult.value.data.meta.viewerUserId);
+        setTrainingOptions(optionsResult.value.data);
       } else {
         setTrainingOptions(null);
         setOptionsError('Расписание временно недоступно. Чат продолжает работать.');
       }
       if (conversionResult.status === 'fulfilled') {
         setGroupPlanConversions(
-          conversionResult.value.data.data.filter((item) => item.chatId === chatId),
+          conversionResult.value.data.filter((item) => item.chatId === chatId),
         );
       } else {
         setGroupPlanConversions([]);
@@ -302,20 +298,26 @@ export default function ChatScreen() {
     }
   }, [chatId, readChatResource]);
 
-  useEffect(() => {
-    if (chatState === 'OPEN') {
-      void loadTrainingOptions(false);
-      return;
+  const reloadChat = useCallback(async () => {
+    setLoading(true);
+    setChatChallenge(null);
+    setTrainingOptions(null);
+    setGroupPlanConversions([]);
+    if (await loadMessages() === 'OPEN') {
+      await Promise.all([loadChallenge(), loadTrainingOptions()]);
     }
-    if (chatState !== null) {
-      setTrainingOptions(null);
-      setOptionsError(null);
-      setOptionsLoading(false);
-    }
-  }, [chatState, loadTrainingOptions]);
+  }, [loadChallenge, loadMessages, loadTrainingOptions]);
+
+  useFocusEffect(useCallback(() => {
+    void reloadChat();
+  }, [reloadChat]));
 
   const normalizedDraft = draft.trim();
   const chatIsOpen = chatState === 'OPEN';
+  const profileUserId = !loading && chatState && counterpartUserId !== viewerUserId
+    ? counterpartUserId
+    : '';
+  const title = profileUserId && counterpart ? counterpart : 'Партнёр по тренировке';
   const challengeIsTerminal = chatChallenge?.challenge
     ? ['COMPLETED', 'DECLINED', 'WITHDRAWN', 'CANCELLED_NO_FAULT', 'EXPIRED_NO_FAULT'].includes(chatChallenge.challenge.state)
     : false;
@@ -350,7 +352,7 @@ export default function ChatScreen() {
       const response = await fetch(`${apiUrl}${input.path}`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${localToken}`,
+          Authorization: `Bearer ${localTokenForSession(scope)}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
           'If-Match': String(input.version),
@@ -394,7 +396,7 @@ export default function ChatScreen() {
       const response = await fetch(`${apiUrl}${path}`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${localToken}`,
+          Authorization: `Bearer ${localTokenForSession(scope)}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
           'If-Match': String(resourceVersion),
@@ -434,7 +436,7 @@ export default function ChatScreen() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(challenge.version),
@@ -508,7 +510,7 @@ export default function ChatScreen() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(challenge.version),
@@ -549,7 +551,7 @@ export default function ChatScreen() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(challenge.version),
@@ -620,7 +622,7 @@ export default function ChatScreen() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': '0',
@@ -727,7 +729,7 @@ export default function ChatScreen() {
     setOptionsError(null);
     try {
       const sessionResponse = await fetch(`${apiUrl}/api/v1/sessions/${booking.sessionId}`, {
-        headers: { Authorization: `Bearer ${localToken}` },
+        headers: { Authorization: `Bearer ${localTokenForSession(scope)}` },
       });
       if (!sessionResponse.ok) throw new Error(await apiErrorMessage(sessionResponse));
       const session = (await sessionResponse.json() as SessionResponse).data;
@@ -736,7 +738,7 @@ export default function ChatScreen() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(session.version),
@@ -849,7 +851,7 @@ export default function ChatScreen() {
         {
           method: editingMessage ? 'PATCH' : 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(editingMessage?.version ?? 0),
@@ -894,7 +896,7 @@ export default function ChatScreen() {
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Idempotency-Key': idempotencyKey,
             'If-Match': '0',
           },
@@ -926,7 +928,7 @@ export default function ChatScreen() {
       const response = await fetch(`${apiUrl}/api/v1/messages/${message.messageId}/reports`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${localToken}`,
+          Authorization: `Bearer ${localTokenForSession(scope)}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
           'If-Match': String(message.version),
@@ -980,22 +982,22 @@ export default function ChatScreen() {
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
         <Pressable
-          accessibilityLabel={counterpartUserId
-            ? `Открыть спортивный профиль ${counterpart}`
+          accessibilityLabel={profileUserId
+            ? `Открыть спортивный профиль ${title}`
             : undefined}
-          accessibilityRole={counterpartUserId ? 'button' : undefined}
-          accessibilityState={{ disabled: !counterpartUserId }}
-          disabled={!counterpartUserId}
+          accessibilityRole={profileUserId ? 'button' : undefined}
+          accessibilityState={{ disabled: !profileUserId }}
+          disabled={!profileUserId}
           onPress={() => {
-            if (!counterpartUserId) return;
+            if (!profileUserId) return;
             router.push(({
               pathname: '/athlete/[userId]',
-              params: { userId: counterpartUserId, returnTo },
+              params: { userId: profileUserId, returnTo },
             } as unknown) as Href);
           }}
           style={styles.headerIdentity}
         >
-          <Text accessibilityRole="header" aria-level={1} style={styles.title}>{counterpart}</Text>
+          <Text accessibilityRole="header" aria-level={1} style={styles.title}>{title}</Text>
           <Text style={styles.subtitle}>
             {chatIsOpen
               ? chatChallenge?.challenge?.responsePolicy === 'MUTUAL_GENESIS'
@@ -1387,7 +1389,7 @@ export default function ChatScreen() {
               ) : null}
             </View>
           ) : null}
-          {chatIsOpen ? <View style={styles.optionsSection}>
+          {chatIsOpen && chatChallenge && !challengeLoading ? <View style={styles.optionsSection}>
             <View style={styles.optionsHeader}>
               <View style={styles.optionsHeading}>
                 <Text accessibilityRole="header" aria-level={2} style={styles.optionsTitle}>Куда пойдём?</Text>
@@ -1742,9 +1744,9 @@ export default function ChatScreen() {
             </Pressable>
           ) : null}
           </>}
-          ListEmptyComponent={(
+          ListEmptyComponent={chatState ? (
             <Text style={styles.empty}>Напишите первое сообщение и договоритесь о тренировке.</Text>
-          )}
+          ) : null}
           renderItem={({ item: message }) => {
             const own = message.senderUserId !== null && message.senderUserId === viewerUserId;
             const acting = actingMessageId === message.messageId;
@@ -1831,8 +1833,21 @@ export default function ChatScreen() {
         />
       )}
 
-      {error ? <Text accessibilityLiveRegion="assertive" style={styles.error}>{error}</Text> : null}
-      {chatIsOpen ? <View style={styles.composer}>
+      {error ? (
+        <View>
+          <Text accessibilityLiveRegion="assertive" style={styles.error}>{error}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: loading }}
+            disabled={loading}
+            onPress={() => void reloadChat()}
+            style={styles.olderMessagesButton}
+          >
+            <Text style={styles.olderMessagesText}>Обновить чат</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {!loading && chatIsOpen ? <View style={styles.composer}>
         {editingMessage ? (
           <View style={styles.editingRow}>
             <Text style={styles.editingText}>Редактирование сообщения</Text>
@@ -1875,11 +1890,11 @@ export default function ChatScreen() {
             )}
           </Pressable>
         </View>
-      </View> : (
+      </View> : !loading && chatState ? (
         <View style={styles.closedComposer}>
           <Text style={styles.closedComposerText}>Новые сообщения недоступны</Text>
         </View>
-      )}
+      ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

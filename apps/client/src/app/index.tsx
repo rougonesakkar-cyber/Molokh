@@ -99,9 +99,11 @@ import { LocalPhoneAuthPanel } from '../features/auth/LocalPhoneAuthPanel';
 import {
   apiErrorMessage,
   apiUrl,
+  getLocalSessionScope,
   localTestAccounts,
   localToken,
   retryableIdempotencyKey,
+  rotateLocalToken,
   setLocalToken,
   type LocalTestAccount,
 } from '../lib/api';
@@ -499,8 +501,6 @@ export default function IdentityScreen() {
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const activeTokenRef = useRef(localToken);
-  const sessionCounterRef = useRef(1);
-  const sessionScopeRef = useRef('session-1');
   const loadSequenceRef = useRef(0);
   const hasLoadedIdentityRef = useRef(false);
   const membershipRequestAttemptRef = useRef(
@@ -659,7 +659,7 @@ export default function IdentityScreen() {
 
   const loadIdentity = useCallback(async () => {
     const sequence = ++loadSequenceRef.current;
-    const scope = sessionScopeRef.current;
+    const scope = getLocalSessionScope();
     const token = activeTokenRef.current;
     const firstLoad = !hasLoadedIdentityRef.current;
     const warnings = new Set<string>();
@@ -1089,11 +1089,12 @@ export default function IdentityScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    const scope = getLocalSessionScope();
     void (async () => {
       let canLoadIdentity = __DEV__;
       try {
         const session = await refreshManagedAuthSession();
-        if (session && !cancelled) {
+        if (session && !cancelled && scope === getLocalSessionScope()) {
           setLocalToken(session.accessToken, false);
           activeTokenRef.current = session.accessToken;
           setActiveTestToken(session.accessToken);
@@ -1112,23 +1113,32 @@ export default function IdentityScreen() {
 
   useEffect(() => {
     if (!managedAccessExpiresAt) return;
+    const scope = getLocalSessionScope();
     const delay = Math.max(1_000,
       new Date(managedAccessExpiresAt).getTime() - Date.now() - 60_000);
     const timer = setTimeout(() => {
       void (async () => {
         try {
           const session = await refreshManagedAuthSession();
+          if (scope !== getLocalSessionScope()) return;
           if (!session) {
             setManagedAccessExpiresAt(null);
-            if (!__DEV__) setManagedLoginRequired(true);
+            if (!__DEV__) {
+              setLocalToken('', false);
+              activeTokenRef.current = '';
+              setManagedLoginRequired(true);
+            }
             return;
           }
-          setLocalToken(session.accessToken, false);
+          rotateLocalToken(scope, session.accessToken);
           activeTokenRef.current = session.accessToken;
           setActiveTestToken(session.accessToken);
           setManagedAccessExpiresAt(session.accessExpiresAt);
         } catch (caught) {
+          if (scope !== getLocalSessionScope()) return;
           if (!__DEV__) {
+            setLocalToken('', false);
+            activeTokenRef.current = '';
             setManagedAccessExpiresAt(null);
             setManagedLoginRequired(true);
           }
@@ -1359,12 +1369,10 @@ export default function IdentityScreen() {
       void logoutManagedAuthSession(activeTestToken).catch(() => undefined);
       setManagedAccessExpiresAt(null);
     }
-    const previousScope = sessionScopeRef.current;
+    const previousScope = getLocalSessionScope();
     loadSequenceRef.current += 1;
     void queryClient.cancelQueries({ queryKey: clientQueryKeys.session(previousScope) })
       .then(() => queryClient.removeQueries({ queryKey: clientQueryKeys.session(previousScope) }));
-    sessionCounterRef.current += 1;
-    sessionScopeRef.current = `session-${sessionCounterRef.current}`;
     activeTokenRef.current = account.token;
     hasLoadedIdentityRef.current = false;
     setLocalToken(account.token, persistToken);
@@ -1474,11 +1482,14 @@ export default function IdentityScreen() {
   };
 
   const logoutManagedSession = async () => {
+    const previousScope = getLocalSessionScope();
     await logoutManagedAuthSession(activeTestToken);
+    if (previousScope !== getLocalSessionScope()) return;
     setManagedAccessExpiresAt(null);
     if (__DEV__) switchLocalAccount(localTestAccounts[0]!, true, false);
     else {
-      const previousScope = sessionScopeRef.current;
+      setLocalToken('', false);
+      activeTokenRef.current = '';
       loadSequenceRef.current += 1;
       await queryClient.cancelQueries({ queryKey: clientQueryKeys.session(previousScope) });
       queryClient.removeQueries({ queryKey: clientQueryKeys.session(previousScope) });

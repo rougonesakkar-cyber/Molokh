@@ -3,11 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
 
+import { getLocalSessionScope, localTokenForSession, rotateLocalToken, setLocalToken } from './api';
 import {
   clientQueryKeys,
   createClientQueryClient,
   fetchApiQuery,
   fetchQueryWithCache,
+  readChatQuery,
   settleSecondaryQuery,
   staleDataWarning,
   queryFreshness,
@@ -114,5 +116,72 @@ describe('client query foundation', () => {
   it('does not retry mutations implicitly', () => {
     const queryClient = createClientQueryClient();
     expect(queryClient.getDefaultOptions().mutations?.retry).toBe(false);
+  });
+});
+
+describe('viewer-scoped chat reads', () => {
+  const chatId = 'shared-chat';
+  const path = '/api/v1/chats/shared-chat/challenge';
+  const json = (data: unknown) => new Response(JSON.stringify(data));
+
+  it('loads B in the same chat and rejects A’s late response, even with A’s cache populated', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let resolveA!: (response: Response) => void;
+    const delayedA = new Promise<Response>((resolve) => { resolveA = resolve; });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ viewerRole: 'INITIATOR' }))
+      .mockReturnValueOnce(delayedA)
+      .mockResolvedValueOnce(json({ viewerRole: 'RECIPIENT' }));
+
+    setLocalToken('fake-account-a', false);
+    const scopeA = getLocalSessionScope();
+    await expect(readChatQuery(queryClient, scopeA, chatId, 'challenge', path))
+      .resolves.toEqual({ viewerRole: 'INITIATOR' });
+    const pendingA = readChatQuery(queryClient, scopeA, chatId, 'challenge', path);
+    const rejectedA = expect(pendingA).rejects.toThrow('Аккаунт изменился');
+
+    setLocalToken('fake-account-b', false);
+    const scopeB = getLocalSessionScope();
+    await expect(readChatQuery(queryClient, scopeB, chatId, 'challenge', path))
+      .resolves.toEqual({ viewerRole: 'RECIPIENT' });
+    resolveA(json({ viewerRole: 'INITIATOR', late: true }));
+    await rejectedA;
+
+    expect(fetchSpy.mock.calls.map(([, options]) =>
+      new Headers(options?.headers).get('Authorization'),
+    )).toEqual(['Bearer fake-account-a', 'Bearer fake-account-a', 'Bearer fake-account-b']);
+    expect(queryClient.getQueryData(clientQueryKeys.resource(scopeB, 'chat', chatId, 'challenge')))
+      .toEqual({ viewerRole: 'RECIPIENT' });
+    expect(queryClient.getQueryData(clientQueryKeys.resource(scopeA, 'chat', chatId, 'challenge')))
+      .toEqual({ viewerRole: 'INITIATOR' });
+    expect(JSON.stringify(queryClient.getQueryCache().getAll().map((entry) => entry.queryKey)))
+      .not.toContain('fake-account');
+    expect(() => localTokenForSession(scopeA)).toThrow('Аккаунт изменился');
+    expect(rotateLocalToken(scopeA, 'old-refresh')).toBe(false);
+    expect(rotateLocalToken(scopeB, 'current-refresh')).toBe(true);
+    expect(getLocalSessionScope()).toBe(scopeB);
+    expect(localTokenForSession(scopeB)).toBe('current-refresh');
+  });
+
+  it('fetches current messages and training options on reopen and rejects a denied cached chat read', async () => {
+    setLocalToken('fake-current-viewer', false);
+    const scope = getLocalSessionScope();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ data: [] }))
+      .mockResolvedValueOnce(json({ booking: null }))
+      .mockResolvedValueOnce(json({ data: ['new message'] }))
+      .mockResolvedValueOnce(json({ booking: 'selected by partner' }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'PERMISSION_DENIED' }), { status: 403 }));
+    const messages = () => readChatQuery(queryClient, scope, chatId, 'messages', path.replace('challenge', 'messages'));
+    const training = () => readChatQuery(queryClient, scope, chatId, 'training-options', path.replace('challenge', 'training-options'));
+
+    await expect(messages()).resolves.toEqual({ data: [] });
+    await expect(training()).resolves.toEqual({ booking: null });
+    await expect(messages()).resolves.toEqual({ data: ['new message'] });
+    await expect(training()).resolves.toEqual({ booking: 'selected by partner' });
+    await expect(messages()).rejects.toThrow();
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
+    expect(fetchSpy.mock.calls.every(([, options]) => options?.method === undefined)).toBe(true);
   });
 });

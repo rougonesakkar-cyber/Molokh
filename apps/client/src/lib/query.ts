@@ -4,7 +4,7 @@ import {
   type QueryFunctionContext,
 } from '@tanstack/react-query';
 
-import { apiErrorMessage, requireApiUrl } from './api';
+import { apiErrorMessage, localTokenForSession, requireApiUrl } from './api';
 
 export const queryFreshness = {
   operational: 45_000,
@@ -61,6 +61,29 @@ export async function fetchApiQuery<T>(
     || options.emptyStatuses?.includes(response.status)) return null;
   if (!response.ok) throw new Error(await apiErrorMessage(response));
   return (await response.json()) as T;
+}
+
+export async function readChatQuery<T>(
+  queryClient: QueryClient,
+  scope: string,
+  chatId: string,
+  resource: string,
+  path: string,
+  staleTime = 0,
+): Promise<T> {
+  localTokenForSession(scope);
+  const data = await queryClient.fetchQuery({
+    queryKey: clientQueryKeys.resource(scope, 'chat', chatId, resource),
+    staleTime,
+    queryFn: async (context) => {
+      const result = await fetchApiQuery<T>({ path, token: localTokenForSession(scope) }, context);
+      localTokenForSession(scope);
+      return result;
+    },
+  });
+  localTokenForSession(scope);
+  if (data === null) throw new Error('Запрошенные данные не найдены.');
+  return data;
 }
 
 interface CachedQueryOptions<T> {
