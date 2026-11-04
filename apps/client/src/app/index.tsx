@@ -73,6 +73,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   DiscoverySection,
+  type ChatLoadState,
   type DiscoveryAction,
 } from '../features/discovery/DiscoverySection';
 import { MissingResultReviewSection } from '../features/missing-result/MissingResultReviewSection';
@@ -144,6 +145,7 @@ import {
   parseDestination,
   type AppDestination,
 } from '../features/navigation/navigation';
+import { ChoiceGroup } from '../ui/ChoiceGroup';
 import { type AppTheme, useAppTheme } from '../ui/theme';
 
 type Identity = MeResponse['data'];
@@ -579,6 +581,7 @@ export default function IdentityScreen() {
   const [completedTrainingCount, setCompletedTrainingCount] = useState(0);
   const [discoveryCards, setDiscoveryCards] = useState<DiscoveryCard[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
+  const [chatLoadState, setChatLoadState] = useState<ChatLoadState>('loading');
   const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([]);
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
   const [actingCandidateId, setActingCandidateId] = useState<string | null>(null);
@@ -662,6 +665,7 @@ export default function IdentityScreen() {
     const warnings = new Set<string>();
     let usedStaleFallback = false;
 
+    setChatLoadState('loading');
     if (firstLoad) setLoading(true);
     else {
       setRefreshing(true);
@@ -675,17 +679,19 @@ export default function IdentityScreen() {
     setDiscoveryNotice(null);
     setPairCooldownNotice(null);
 
-    const read = async <T,>(
+    const readWithCache = <T,>(
       resource: string,
       path: string,
       staleTime: number = queryFreshness.operational,
       options: { readonly allowNotFound?: boolean; readonly emptyStatuses?: readonly number[] } = {},
-    ): Promise<T | null> => {
-      const result = await fetchQueryWithCache(queryClient, {
-        queryKey: clientQueryKeys.resource(scope, resource),
-        staleTime,
-        queryFn: (context) => fetchApiQuery<T>({ path, token, ...options }, context),
-      });
+    ) => fetchQueryWithCache(queryClient, {
+      queryKey: clientQueryKeys.resource(scope, resource),
+      staleTime,
+      queryFn: (context) => fetchApiQuery<T>({ path, token, ...options }, context),
+    });
+
+    const read = async <T,>(...args: Parameters<typeof readWithCache<T>>): Promise<T | null> => {
+      const result = await readWithCache<T>(...args);
       if (result.usedStaleFallback) usedStaleFallback = true;
       return result.data;
     };
@@ -827,11 +833,17 @@ export default function IdentityScreen() {
           ),
           (value) => setTechnicalCorrections(value?.data ?? []),
         ),
-        loadPart(
-          'matches',
-          read<MatchesResponse>('matches', '/api/v1/matches', queryFreshness.profile),
-          (value) => setMatches(value?.data ?? []),
-        ),
+        readWithCache<MatchesResponse>('matches', '/api/v1/matches', queryFreshness.profile)
+          .then(({ data, usedStaleFallback: stale }) => {
+            if (stale) usedStaleFallback = true;
+            if (loadSequenceRef.current !== sequence) return;
+            if (data) setMatches(data.data);
+            setChatLoadState(stale || !data ? 'error' : 'ready');
+          })
+          .catch(() => {
+            warnings.add('matches');
+            if (loadSequenceRef.current === sequence) setChatLoadState('error');
+          }),
         loadPart(
           'blocks',
           read<BlockedUsersResponse>('blocks', '/api/v1/me/blocks', queryFreshness.profile),
@@ -1063,6 +1075,7 @@ export default function IdentityScreen() {
       }
     } catch (caught) {
       if (loadSequenceRef.current === sequence) {
+        setChatLoadState('error');
         setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
       }
     } finally {
@@ -1416,6 +1429,7 @@ export default function IdentityScreen() {
     setCompletedTrainingCount(0);
     setDiscoveryCards([]);
     setMatches([]);
+    setChatLoadState('loading');
     setBlockedUsers([]);
     setDiscoveryNotice(null);
     setHostNotice(null);
@@ -3699,10 +3713,15 @@ export default function IdentityScreen() {
                 actingRelationshipId={actingRelationshipId}
                 blockedUsers={blockedUsers}
                 cards={discoveryCards}
+                chatLoadState={chatLoadState}
                 matches={matches}
                 notice={discoveryNotice}
                 onAction={(candidate, action) => void actOnDiscovery(candidate, action)}
                 onBlock={(match) => void endMatch(match, 'block')}
+                onFindPartner={identity.capabilities.includes('USE_DISCOVERY')
+                  && visibleSections.some((section) => section.id === 'DISCOVERY')
+                  ? () => openSection('DISCOVERY')
+                  : undefined}
                 onOpenChat={(match) =>
                   router.push(({
                     pathname: '/chat',
@@ -5047,43 +5066,20 @@ export default function IdentityScreen() {
                       <Text style={styles.hint}>
                         Дата и время указываются в часовом поясе зала: {venueAdminDashboard.venue.timezone}.
                       </Text>
-                      <View style={styles.publicationKindTabs}>
-                        {([
+                      <ChoiceGroup
+                        label="Тип тренировки"
+                        options={[
                           ['SLOT', 'Персональная'],
                           ['GROUP', 'Групповая'],
-                        ] as const).map(([kind, label]) => {
-                          const selected = adminPublicationKind === kind;
-                          return (
-                            <Pressable
-                              key={kind}
-                              accessibilityRole="button"
-                              accessibilityState={{
-                                disabled: editingAdminSchedule !== null,
-                                selected,
-                              }}
-                              disabled={editingAdminSchedule !== null}
-                              onPress={() => {
-                                setAdminPublicationKind(kind);
-                                setScheduleNotice(null);
-                                setError(null);
-                              }}
-                              style={({ pressed }) => [
-                                styles.publicationKindTab,
-                                selected && styles.publicationKindTabSelected,
-                                editingAdminSchedule !== null && !selected && styles.buttonDisabled,
-                                pressed && styles.buttonPressed,
-                              ]}
-                            >
-                              <Text style={[
-                                styles.publicationKindTabText,
-                                selected && styles.publicationKindTabTextSelected,
-                              ]}>
-                                {label}
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
+                        ]}
+                        value={adminPublicationKind}
+                        disabled={editingAdminSchedule !== null}
+                        onChange={(kind) => {
+                          setAdminPublicationKind(kind);
+                          setScheduleNotice(null);
+                          setError(null);
+                        }}
+                      />
 
                       <View style={styles.formRow}>
                         <View style={styles.formField}>
@@ -5112,31 +5108,12 @@ export default function IdentityScreen() {
                         </View>
                       </View>
                       <Text style={styles.label}>Длительность</Text>
-                      <View style={styles.chips}>
-                        {([60, 90] as const).map((minutes) => {
-                          const selected = adminDurationMinutes === minutes;
-                          return (
-                            <Pressable
-                              key={minutes}
-                              accessibilityRole="button"
-                              accessibilityState={{ selected }}
-                              onPress={() => setAdminDurationMinutes(minutes)}
-                              style={({ pressed }) => [
-                                styles.choiceChip,
-                                selected && styles.choiceChipSelected,
-                                pressed && styles.buttonPressed,
-                              ]}
-                            >
-                              <Text style={[
-                                styles.choiceChipText,
-                                selected && styles.choiceChipTextSelected,
-                              ]}>
-                                {minutes} мин
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
+                      <ChoiceGroup
+                        label="Длительность тренировки"
+                        options={[[60, '60 мин'], [90, '90 мин']]}
+                        value={adminDurationMinutes}
+                        onChange={setAdminDurationMinutes}
+                      />
 
                       {adminPublicationKind === 'SLOT' ? (
                         <>
@@ -7120,24 +7097,6 @@ function createStyles(theme: AppTheme) {
   },
   adminMetricValue: { color: theme.colors.primary, fontSize: 24, fontWeight: '800' },
   adminMetricLabel: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 17 },
-  publicationKindTabs: {
-    backgroundColor: theme.colors.surfaceStrong,
-    borderRadius: 12,
-    flexDirection: 'row',
-    gap: 4,
-    padding: 4,
-  },
-  publicationKindTab: {
-    alignItems: 'center',
-    borderRadius: 9,
-    flex: 1,
-    justifyContent: 'center',
-    minHeight: theme.touchTarget,
-    paddingHorizontal: 8,
-  },
-  publicationKindTabSelected: { backgroundColor: theme.colors.surface },
-  publicationKindTabText: { color: theme.colors.textMuted, fontSize: 13, fontWeight: '700' },
-  publicationKindTabTextSelected: { color: theme.colors.primary },
   formRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   formField: { flexBasis: '46%', flexGrow: 1, gap: 7, minWidth: 150 },
   choiceChip: {

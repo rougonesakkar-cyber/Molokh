@@ -18,6 +18,7 @@ type PendingRelationshipAction = {
 };
 
 export type DiscoveryAction = 'like' | 'skip';
+export type ChatLoadState = 'loading' | 'ready' | 'error';
 
 export interface DiscoverySectionProps {
   readonly actingCandidateId: string | null;
@@ -36,6 +37,8 @@ export interface DiscoverySectionProps {
   readonly onUnmatch: (match: Match) => void;
   readonly showConnections?: boolean;
   readonly showDiscovery?: boolean;
+  readonly chatLoadState?: ChatLoadState;
+  readonly onFindPartner?: () => void;
 }
 
 export const DISCOVERY_PRESENTATION_COPY = {
@@ -61,6 +64,8 @@ export function DiscoverySection({
   onUnmatch,
   showConnections = true,
   showDiscovery = true,
+  chatLoadState,
+  onFindPartner,
 }: DiscoverySectionProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -178,6 +183,30 @@ export function DiscoverySection({
 
   return (
     <>
+      {showConnections && chatLoadState && (chatLoadState === 'error' || matches.length === 0) ? (
+        <View style={styles.section}>
+          {chatLoadState === 'loading' ? (
+            <Text accessibilityLiveRegion="polite" style={styles.muted}>Загружаем чаты…</Text>
+          ) : chatLoadState === 'error' ? (
+            <>
+              <Text accessibilityLiveRegion="polite" style={styles.title}>Не удалось загрузить чаты</Text>
+              <Pressable accessibilityRole="button" onPress={onRefresh} style={styles.likeButton}>
+                <Text style={styles.likeText}>Повторить</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text accessibilityRole="header" aria-level={2} style={styles.title}>Чатов пока нет</Text>
+              <Text style={styles.muted}>Чат появляется после взаимного интереса.</Text>
+              {onFindPartner ? (
+                <Pressable accessibilityRole="button" onPress={onFindPartner} style={styles.likeButton}>
+                  <Text style={styles.likeText}>Найти партнёра</Text>
+                </Pressable>
+              ) : null}
+            </>
+          )}
+        </View>
+      ) : null}
       {showConnections ? matchesSection : null}
 
       {showDiscovery ? <View style={styles.section}>

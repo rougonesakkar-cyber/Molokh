@@ -111,7 +111,9 @@ export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardPr
         <Text accessibilityRole="header" aria-level={3} style={styles.title}>
           {PUBLIC_PROFILE_COPY.recentResults}
         </Text>
-        {profile.recentOfficialResults.map((result) => (
+        {profile.recentOfficialResults.length === 0 ? (
+          <Text style={styles.muted}>Официальных результатов пока нет.</Text>
+        ) : profile.recentOfficialResults.map((result) => (
           <Text key={result.resultId} style={styles.value}>
             {publicResultLabel(result)} · {new Date(result.occurredAt).toLocaleDateString('ru-RU')}
           </Text>
@@ -122,7 +124,9 @@ export function PublicAthleteProfileCard({ profile }: PublicAthleteProfileCardPr
         <Text accessibilityRole="header" aria-level={3} style={styles.title}>
           {PUBLIC_PROFILE_COPY.statusHistory}
         </Text>
-        {profile.statusHistory.map((tenure) => (
+        {profile.statusHistory.length === 0 ? (
+          <Text style={styles.muted}>Истории статусов пока нет.</Text>
+        ) : profile.statusHistory.map((tenure) => (
           <Text key={tenure.tenureId} style={styles.value}>
             {tenure.status === 'CHAMPION' ? 'Чемпион' : 'Претендент'}
             {tenure.endedAt === null ? ' · сейчас' : ' · завершён'}
