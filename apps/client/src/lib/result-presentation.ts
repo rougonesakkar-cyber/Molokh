@@ -1,3 +1,17 @@
+import type { SessionLifecycleContract } from '@molokh/contracts';
+
+export function canRecordOfficialResult(
+  session: Pick<SessionLifecycleContract,
+    'state' | 'purpose' | 'viewerCanRecordResult' | 'challengeState'>,
+  hasResult: boolean,
+): boolean {
+  return session.state === 'ENDED'
+    && session.purpose === 'OFFICIAL_CHALLENGE'
+    && session.viewerCanRecordResult
+    && session.challengeState === 'RESULT_PENDING'
+    && !hasResult;
+}
+
 export interface ResultCardPresentationInput {
   readonly outcomeCode: string;
   readonly winnerDisplayName: string | null;

@@ -4070,13 +4070,9 @@ export async function endSession(
       const resultReminderDeadlines = challenge
         ? challengeResultReminderDeadlines(context.occurredAt).map((value) => value.toISOString())
         : [];
-      const updated: SessionRow = {
-        ...row,
-        state: 'ENDED',
-        actual_end_at: context.occurredAt,
-        version: String(context.nextVersion),
-      };
-      const response = await sessionProjection(transaction, updated, command.actor.id!);
+      // Include the linked Booking and Challenge transitions in the command
+      // response, just as a subsequent read would, before storing its replay.
+      const response = await readSession(transaction, row.session_id, command.actor.id!);
       return {
         responseStatus: 200,
         response,

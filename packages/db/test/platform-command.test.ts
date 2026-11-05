@@ -1476,7 +1476,7 @@ async function verifySchedulingPublication(
     const replacementCommand: CommandEnvelope<ReplaceSessionCoachPayload> = {
       commandId: testId(1350),
       commandType: 'REPLACE_SESSION_COACH',
-      idempotencyKey: `replace-session-coach-${confirmedSession.sessionId}`,
+      idempotencyKey: `replace-session-assigned-coach-${confirmedSession.sessionId}`,
       actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
       aggregateType: 'Session',
       aggregateId: confirmedSession.sessionId,
@@ -11771,9 +11771,94 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-09-12T14:55:00.000Z'),
     );
     expect(endedOfficial.response).toMatchObject({ state: 'ENDED', version: 5 });
+    // The command replaces the Coach's card without a reload. Its linked
+    // Challenge and Booking versions must match the committed read projection.
+    expect(endedOfficial.response).toEqual(await readSession(database, sessionId, coachId));
+    expect(endedOfficial.response).toMatchObject({
+      challengeState: 'RESULT_PENDING', challengeVersion: 8, viewerCanRecordResult: true,
+    });
     await expect(readChatChallenge(database, sourceChatId, athleteB)).resolves.toMatchObject({
       challenge: { challengeId, state: 'RESULT_PENDING', version: 8 },
     });
+
+    // Exercise the production route and strict serializer with the real command
+    // projection, not a hand-written Session fixture.
+    const { buildApp } = await import('../../../apps/api/src/app.js');
+    const { StaticBearerAuthRegistryAdapter } = await import('../../../apps/api/src/auth.js');
+    const { canRecordOfficialResult } = await import('../../../apps/client/src/lib/result-presentation.js');
+    const unusedSessionRoute = async (): Promise<never> => { throw new Error('Unexpected route'); };
+    const sessionApp = await buildApp({
+      scheduling: {
+        auth: new StaticBearerAuthRegistryAdapter([
+          { token: 'session-assigned-coach', userId: coachId },
+          { token: 'session-eligible-athlete', userId: athleteA },
+          { token: 'session-other-coach', userId: reviewerCoachId },
+        ]),
+        readTrainingOptions: unusedSessionRoute,
+        publishSlot: unusedSessionRoute,
+        updateSlot: unusedSessionRoute,
+        withdrawSlot: unusedSessionRoute,
+        publishGroupOffering: unusedSessionRoute,
+        updateGroupOffering: unusedSessionRoute,
+        withdrawGroupOffering: unusedSessionRoute,
+        selectSlot: unusedSessionRoute,
+        selectSameSlot: unusedSessionRoute,
+        withdrawBookingRequest: unusedSessionRoute,
+        readHostConfirmationQueue: unusedSessionRoute,
+        readVenueAdminDashboard: unusedSessionRoute,
+        confirmBookingHost: unusedSessionRoute,
+        rejectBookingHost: unusedSessionRoute,
+        readMySessions: unusedSessionRoute,
+        readSession: (id, viewer) => readSession(database, id, viewer),
+        startSession: unusedSessionRoute,
+        recordSessionAttendance: unusedSessionRoute,
+        endSession: async () => endedOfficial,
+        replaceSessionCoach: unusedSessionRoute,
+        cancelSessionAfterCoachReplacement: unusedSessionRoute,
+        cancelOfficialSessionByAthlete: unusedSessionRoute,
+        failSessionExternal: unusedSessionRoute,
+        reportSafetyAndCancelSession: unusedSessionRoute,
+        requestBookingOfficialConversion: unusedSessionRoute,
+        decideBookingOfficialConversion: unusedSessionRoute,
+        requestTrainingParticipantCancellation: unusedSessionRoute,
+        decideBookingSoloContinuation: unusedSessionRoute,
+        decideBookingTrainingRetention: unusedSessionRoute,
+        proposeGroupPlan: unusedSessionRoute,
+        confirmGroupPlan: unusedSessionRoute,
+        listGroupPlanOfficialConversionsForViewer: unusedSessionRoute,
+        requestGroupPlanOfficialConversion: unusedSessionRoute,
+        decideGroupPlanOfficialConversion: unusedSessionRoute,
+      },
+    });
+    try {
+      const endResponse = await sessionApp.inject({
+        method: 'POST', url: `/api/v1/sessions/${sessionId}/end`,
+        headers: {
+          authorization: 'Bearer session-assigned-coach', 'if-match': '4',
+          'idempotency-key': 'session-command-projection',
+        },
+        payload: {},
+      });
+      expect(endResponse.statusCode).toBe(200);
+      expect(endResponse.json().data).toEqual(await readSession(database, sessionId, coachId));
+      expect(canRecordOfficialResult(endResponse.json().data, false)).toBe(true);
+      const athleteResponse = await sessionApp.inject({
+        method: 'GET', url: `/api/v1/sessions/${sessionId}`,
+        headers: { authorization: 'Bearer session-eligible-athlete' },
+      });
+      expect(athleteResponse.statusCode).toBe(200);
+      expect(athleteResponse.json().data).toMatchObject({
+        state: 'ENDED', challengeState: 'RESULT_PENDING', viewerCanRecordResult: false,
+      });
+      expect(canRecordOfficialResult(athleteResponse.json().data, false)).toBe(false);
+      const unrelatedCoachResponse = await sessionApp.inject({
+        method: 'GET', url: `/api/v1/sessions/${sessionId}`,
+        headers: { authorization: 'Bearer session-other-coach' },
+      });
+      expect(unrelatedCoachResponse.statusCode).toBe(403);
+    } finally {
+      await sessionApp.close();
+    }
 
     const missingResultTimerCommand = (
       commandType: string,

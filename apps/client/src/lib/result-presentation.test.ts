@@ -2,11 +2,25 @@ import { describe, expect, it } from 'vitest';
 
 import {
   athleteStoppageResult,
+  canRecordOfficialResult,
   externalNoContestResult,
   resultCardPresentation,
 } from './result-presentation';
 
 describe('Result card presentation', () => {
+  it('opens Result entry immediately from the ended command projection', () => {
+    const session = {
+      state: 'IN_PROGRESS', purpose: 'OFFICIAL_CHALLENGE',
+      viewerCanRecordResult: true, challengeState: 'IN_SESSION',
+    } as const;
+    expect(canRecordOfficialResult(session, false)).toBe(false);
+    const ended = { ...session, state: 'ENDED', challengeState: 'RESULT_PENDING' } as const;
+    expect(canRecordOfficialResult(ended, false)).toBe(true);
+    expect(canRecordOfficialResult({ ...ended, viewerCanRecordResult: false }, false)).toBe(false);
+    expect(canRecordOfficialResult({ ...ended, challengeState: 'IN_SESSION' }, false)).toBe(false);
+    expect(canRecordOfficialResult(ended, true)).toBe(false);
+  });
+
   it('[AC-112] presents DRAW neutrally and follows the server Appeal capability', () => {
     expect(resultCardPresentation({
       outcomeCode: 'DRAW', winnerDisplayName: null,

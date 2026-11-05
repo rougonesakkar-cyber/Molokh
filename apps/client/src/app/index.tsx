@@ -100,6 +100,7 @@ import {
   apiErrorMessage,
   apiUrl,
   getLocalSessionScope,
+  localTokenForSession,
   localTestAccounts,
   localToken,
   retryableIdempotencyKey,
@@ -120,6 +121,7 @@ import {
 import { sportLabel, sportOptions } from '../lib/sports';
 import {
   athleteStoppageResult,
+  canRecordOfficialResult,
   externalNoContestResult,
   resultCardPresentation,
 } from '../lib/result-presentation';
@@ -1932,6 +1934,7 @@ export default function IdentityScreen() {
     operationSuffix: string,
   ) => {
     if (actingSessionKey !== null) return;
+    const scope = getLocalSessionScope();
     const operation = `${session.sessionId}:${action}:${operationSuffix}:v${session.version}`;
     const idempotencyKey =
       sessionActionKeys.current.get(operation) ?? `session:${operation}`;
@@ -1945,7 +1948,7 @@ export default function IdentityScreen() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(session.version),
@@ -1953,11 +1956,13 @@ export default function IdentityScreen() {
           body: JSON.stringify(body),
         },
       );
+      if (scope !== getLocalSessionScope()) return;
       if (!response.ok) {
         if (response.status === 409) await loadIdentity();
         throw new Error(await apiErrorMessage(response));
       }
       const result = (await response.json()) as SessionCommandResponse;
+      if (scope !== getLocalSessionScope()) return;
       sessionActionKeys.current.delete(operation);
       setSessions((current) =>
         current.map((item) =>
@@ -1982,9 +1987,10 @@ export default function IdentityScreen() {
                     : 'Coach/зал отменил Session по внешней причине. Для спортсменов нет штрафа.',
       );
     } catch (caught) {
+      if (scope !== getLocalSessionScope()) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Session');
     } finally {
-      setActingSessionKey(null);
+      if (scope === getLocalSessionScope()) setActingSessionKey(null);
     }
   };
 
@@ -2282,6 +2288,7 @@ export default function IdentityScreen() {
   ) => {
     if (!session.challengeId || !session.challengeVersion || actingResultKey !== null) return;
     const winnerUserId = options.winnerUserId ?? null;
+    const scope = getLocalSessionScope();
     const operation = `record:${session.challengeId}:${outcomeCode}:${winnerUserId ?? 'NONE'}:${options.methodCode ?? 'NO_METHOD'}:v${session.challengeVersion}`;
     const idempotencyKey = resultActionKeys.current.get(operation) ?? `result:${operation}`;
     resultActionKeys.current.set(operation, idempotencyKey);
@@ -2293,7 +2300,7 @@ export default function IdentityScreen() {
       const response = await fetch(`${apiUrl}/api/v1/challenges/${session.challengeId}/result`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${localToken}`,
+          Authorization: `Bearer ${localTokenForSession(scope)}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
           'If-Match': String(session.challengeVersion),
@@ -2313,11 +2320,13 @@ export default function IdentityScreen() {
             : {}),
         }),
       });
+      if (scope !== getLocalSessionScope()) return;
       if (!response.ok) {
         if (response.status === 409) await loadIdentity();
         throw new Error(await apiErrorMessage(response));
       }
       const result = (await response.json()) as ResultCommandResponse;
+      if (scope !== getLocalSessionScope()) return;
       resultActionKeys.current.delete(operation);
       setResultsById((current) => ({ ...current, [result.data.resultId]: result.data }));
       setSessions((current) => current.map((item) => item.sessionId === session.sessionId
@@ -2328,9 +2337,10 @@ export default function IdentityScreen() {
         : item));
       setSessionNotice('Coach подтвердил результат. Он уже виден, но остаётся предварительным 48 часов.');
     } catch (caught) {
+      if (scope !== getLocalSessionScope()) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось подтвердить результат');
     } finally {
-      setActingResultKey(null);
+      if (scope === getLocalSessionScope()) setActingResultKey(null);
     }
   };
 
@@ -6333,11 +6343,7 @@ export default function IdentityScreen() {
                               )}
                             </Pressable>
                           ) : null}
-                          {session.state === 'ENDED'
-                            && session.purpose === 'OFFICIAL_CHALLENGE'
-                            && session.viewerCanRecordResult
-                            && session.challengeState === 'RESULT_PENDING'
-                            && officialResult === null ? (
+                          {canRecordOfficialResult(session, officialResult !== null) ? (
                               <View style={styles.attendanceCard}>
                                 <Text style={styles.label}>Подтвердить официальный результат</Text>
                                 <Text style={styles.hint}>
