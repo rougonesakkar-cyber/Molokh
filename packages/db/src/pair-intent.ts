@@ -193,6 +193,7 @@ export interface HostRejectionProjection {
 
 export interface HostConfirmationQueueItem {
   readonly booking: BookingIntentProjection;
+  readonly venueTimezone: string;
   readonly athleteDisplayNames: readonly [string, string];
 }
 
@@ -1740,6 +1741,7 @@ export async function readHostConfirmationQueue(
   const result = await sql<BookingIntentRow & {
     readonly athlete_low_name: string;
     readonly athlete_high_name: string;
+    readonly venue_timezone: string;
   }>`
     select booking.booking_id, booking.chat_id, booking.match_id, booking.slot_id,
       booking.purpose, booking.challenge_id,
@@ -1749,9 +1751,11 @@ export async function readHostConfirmationQueue(
       booking.commercial_terms_snapshot, booking.host_confirmed_at,
       null::uuid as session_id, booking.state, booking.version::text as version,
       athlete_low.display_name as athlete_low_name,
-      athlete_high.display_name as athlete_high_name
+      athlete_high.display_name as athlete_high_name,
+      venue.timezone as venue_timezone
     from scheduling.bookings as booking
     join scheduling.slots as slot on slot.slot_id = booking.slot_id
+    join community.venues as venue on venue.venue_id = slot.venue_id
     join identity.users as athlete_low on athlete_low.user_id = booking.pair_low_id
     join identity.users as athlete_high on athlete_high.user_id = booking.pair_high_id
     where booking.state = 'HOST_CONFIRMATION_PENDING'
@@ -1780,6 +1784,7 @@ export async function readHostConfirmationQueue(
   `.execute(database);
   return result.rows.map((row) => ({
     booking: bookingProjection(row),
+    venueTimezone: row.venue_timezone,
     athleteDisplayNames: [row.athlete_low_name, row.athlete_high_name],
   }));
 }

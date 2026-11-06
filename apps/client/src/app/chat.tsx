@@ -58,6 +58,7 @@ import {
   genesisSchedulingExplanation,
 } from '../lib/challenge-presentation';
 import { type AppTheme, useAppTheme } from '../ui/theme';
+import { formatVenueDateTime } from '../lib/schedule-time';
 
 type ChatMessage = ChatMessagesResponse['data'][number];
 type TrainingOptions = TrainingOptionsResponse['data'];
@@ -1435,8 +1436,9 @@ function ViewerChat({ scope, chatId, counterpart, counterpartUserId, returnTo }:
                     : 'Тренировка подтверждена'}
                 </Text>
                 <Text style={styles.trainingTitle}>
-                  {formatDateTime(
+                  {formatVenueDateTime(
                     trainingOptions.activeIntent.booking.commercialTermsSnapshot.startAt,
+                    trainingOptions.venueTimezones?.[trainingOptions.activeIntent.booking.commercialTermsSnapshot.venueId],
                   )}{' '}
                   · {trainingOptions.activeIntent.booking.commercialTermsSnapshot.venueDisplayName}
                 </Text>
@@ -1502,7 +1504,7 @@ function ViewerChat({ scope, chatId, counterpart, counterpartUserId, returnTo }:
                       : 'Персональная тренировка'}
                   </Text>
                   <Text style={styles.trainingTitle}>
-                    {formatDateTime(slot.startAt)} · {slot.venueDisplayName}
+                    {formatVenueDateTime(slot.startAt, trainingOptions?.venueTimezones?.[slot.venueId])} · {slot.venueDisplayName}
                   </Text>
                   <Text style={styles.trainingMeta}>Тренер: {slot.coachDisplayName}</Text>
                   {slot.priceAmount && slot.priceCurrency ? (
@@ -1607,7 +1609,7 @@ function ViewerChat({ scope, chatId, counterpart, counterpartUserId, returnTo }:
                   <Text style={styles.trainingKind}>Групповая тренировка</Text>
                   <Text style={styles.trainingTitle}>{offering.classLabel}</Text>
                   <Text style={styles.trainingMeta}>
-                    {formatDateTime(offering.startAt)} ·{' '}
+                    {formatVenueDateTime(offering.startAt, trainingOptions?.venueTimezones?.[offering.venueId])} ·{' '}
                     {offering.venueDisplayName}
                   </Text>
                   {offering.coachDisplayName ? (

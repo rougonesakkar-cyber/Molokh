@@ -136,6 +136,7 @@ export interface TrainingOptionsProjection {
   readonly slots: readonly SlotProjection[];
   readonly groupOfferings: readonly GroupOfferingProjection[];
   readonly activeIntent: ActivePairIntentProjection;
+  readonly venueTimezones: Readonly<Record<string, string>>;
   readonly reservationPolicy: 'NO_RESERVATION_BEFORE_HOST_CONFIRMATION';
 }
 
@@ -1215,9 +1216,23 @@ export async function readTrainingOptions(
     `.execute(database),
     readActivePairIntents(database, chatId, viewerUserId),
   ]);
+  // Display metadata only: keep frozen commercial/offering snapshots unchanged.
+  const venueIds = [...new Set([
+    ...slots.rows.map((row) => row.venue_id),
+    ...groupOfferings.rows.map((row) => row.venue_id),
+    activeIntent.booking?.commercialTermsSnapshot?.venueId,
+    activeIntent.groupPlan?.offeringSnapshot.venueId,
+  ].filter((value): value is string => value !== undefined))];
+  const venueTimezones = venueIds.length === 0 ? {} : Object.fromEntries(
+    (await sql<{ readonly venue_id: string; readonly timezone: string }>`
+      select venue_id, timezone from community.venues
+      where venue_id in (${sql.join(venueIds.map((id) => sql`${id}::uuid`))})
+    `.execute(database)).rows.map((row) => [row.venue_id, row.timezone]),
+  );
   return {
     slots: slots.rows.map(slotProjection),
     groupOfferings: groupOfferings.rows.map(groupOfferingProjection),
+    venueTimezones,
     activeIntent,
     reservationPolicy: 'NO_RESERVATION_BEFORE_HOST_CONFIRMATION',
   };

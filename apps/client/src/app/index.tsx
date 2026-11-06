@@ -128,6 +128,7 @@ import {
   sessionResultNotice,
 } from '../lib/result-presentation';
 import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
+import { formatVenueDateTime } from '../lib/schedule-time';
 import {
   clientQueryKeys,
   fetchApiQuery,
@@ -579,6 +580,7 @@ export default function IdentityScreen() {
   const [venueAdminDashboard, setVenueAdminDashboard] =
     useState<VenueAdminDashboard | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionVenueTimezones, setSessionVenueTimezones] = useState<Readonly<Record<string, string>>>({});
   const [sessionsReadState, setSessionsReadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [groupPlanConversions, setGroupPlanConversions] =
     useState<GroupPlanOfficialConversion[]>([]);
@@ -807,6 +809,7 @@ export default function IdentityScreen() {
             return;
           }
           setSessions(value.data.sessions);
+          setSessionVenueTimezones(value.data.venueTimezones ?? {});
           setCompletedTrainingCount(value.data.completedTrainingCount);
           setSessionsReadState('ready');
         }, () => setSessionsReadState('error')),
@@ -1448,6 +1451,7 @@ export default function IdentityScreen() {
     setHostConfirmations([]);
     setVenueAdminDashboard(null);
     setSessions([]);
+    setSessionVenueTimezones({});
     setSessionsReadState('loading');
     setGroupPlanConversions([]);
     setResultsById({});
@@ -5323,7 +5327,7 @@ export default function IdentityScreen() {
                       {venueAdminDashboard.slots.map((slot) => (
                         <View key={slot.slotId} style={styles.adminScheduleItem}>
                           <Text style={styles.sessionState}>Персональная</Text>
-                          <Text style={styles.venueName}>{formatDateTime(slot.startAt)}</Text>
+                          <Text style={styles.venueName}>{formatVenueDateTime(slot.startAt, venueAdminDashboard.venue.timezone)}</Text>
                           <Text style={styles.hint}>Coach: {slot.coachDisplayName}</Text>
                           <Text style={styles.hint}>
                             {slot.priceAmount && slot.priceCurrency
@@ -5351,7 +5355,7 @@ export default function IdentityScreen() {
                                 setPendingScheduleWithdrawal({
                                   id: slot.slotId,
                                   kind: 'SLOT',
-                                  label: `${formatDateTime(slot.startAt)}, ${slot.coachDisplayName}`,
+                                  label: `${formatVenueDateTime(slot.startAt, venueAdminDashboard.venue.timezone)}, ${slot.coachDisplayName}`,
                                   version: slot.version,
                                 });
                                 setEditingAdminSchedule(null);
@@ -5371,7 +5375,7 @@ export default function IdentityScreen() {
                         <View key={offering.groupOfferingId} style={styles.adminScheduleItem}>
                           <Text style={styles.groupState}>Групповая</Text>
                           <Text style={styles.venueName}>{offering.classLabel}</Text>
-                          <Text style={styles.muted}>{formatDateTime(offering.startAt)}</Text>
+                          <Text style={styles.muted}>{formatVenueDateTime(offering.startAt, venueAdminDashboard.venue.timezone)}</Text>
                           {offering.coachDisplayName ? (
                             <Text style={styles.hint}>Coach: {offering.coachDisplayName}</Text>
                           ) : null}
@@ -5501,7 +5505,7 @@ export default function IdentityScreen() {
                       ) : venueAdminDashboard.groupInterests.map((interest) => (
                         <View key={interest.groupPlanId} style={styles.adminScheduleItem}>
                           <Text style={styles.venueName}>{interest.classLabel}</Text>
-                          <Text style={styles.muted}>{formatDateTime(interest.startAt)}</Text>
+                          <Text style={styles.muted}>{formatVenueDateTime(interest.startAt, venueAdminDashboard.venue.timezone)}</Text>
                           <Text style={styles.hint}>
                             {interest.athleteDisplayNames.join(' + ')}
                           </Text>
@@ -5537,7 +5541,7 @@ export default function IdentityScreen() {
                             {item.athleteDisplayNames.join(' + ')}
                           </Text>
                           <Text style={styles.muted}>
-                            {formatDateTime(snapshot.startAt)} · {snapshot.venueDisplayName}
+                            {formatVenueDateTime(snapshot.startAt, item.venueTimezone)} · {snapshot.venueDisplayName}
                           </Text>
                           <Text style={styles.hint}>Тренер: {snapshot.coachDisplayName}</Text>
                           <Pressable
@@ -5761,7 +5765,7 @@ export default function IdentityScreen() {
                             <Text style={styles.sessionState}>{sessionStateLabels[session.state]}</Text>
                           </View>
                           <Text style={styles.muted}>
-                            {formatDateTime(session.scheduledStartAt)} · {session.venueDisplayName}
+                            {formatVenueDateTime(session.scheduledStartAt, sessionVenueTimezones[session.venueId])} · {session.venueDisplayName}
                           </Text>
                           <Text style={styles.hint}>Coach: {session.coachDisplayName}</Text>
                           <GuestCoachAuthorizationCard

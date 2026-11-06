@@ -1130,6 +1130,16 @@ async function verifySchedulingPublication(
     ).resolves.toEqual([]);
 
     const options = await readTrainingOptions(database, chat, athleteA, occurredAt);
+    const { formatVenueDateTime } = await import('../../../apps/client/src/lib/schedule-time.js');
+    expect(options.venueTimezones).toMatchObject({ [venue]: 'Europe/Moscow' });
+    expect(new Set(Object.keys(options.venueTimezones))).toEqual(new Set([
+      ...options.slots.map((item) => item.venueId),
+      ...options.groupOfferings.map((item) => item.venueId),
+    ]));
+    for (const item of [...options.slots, ...options.groupOfferings]) {
+      expect(formatVenueDateTime(item.startAt, options.venueTimezones[item.venueId]))
+        .toContain('GMT+3 · время зала');
+    }
     expect(options.slots).toEqual(expect.arrayContaining([
       expect.objectContaining({ slotId: slot }),
       expect.objectContaining({ slotId: rejectedSlotId }),
@@ -1457,6 +1467,15 @@ async function verifySchedulingPublication(
     const confirmedSession = confirmedResult?.response.session;
     if (!confirmedSession) throw new Error('Expected the winning Booking to create a Session');
     const [sessionAthleteA, sessionAthleteB] = confirmedSession.athleteUserIds;
+    const confirmedBooking = confirmedResult!.response.booking;
+    const bookedOptions = await readTrainingOptions(
+      database, confirmedBooking.chatId, sessionAthleteA, occurredAt,
+    );
+    const frozenTerms = bookedOptions.activeIntent.booking?.commercialTermsSnapshot;
+    expect(frozenTerms).not.toBeNull();
+    expect(bookedOptions.venueTimezones[frozenTerms!.venueId]).toBe('Europe/Moscow');
+    expect(formatVenueDateTime(frozenTerms!.startAt, bookedOptions.venueTimezones[frozenTerms!.venueId]))
+      .toContain('GMT+3 · время зала');
     await expect(readSessionTimerSnapshot(database, confirmedSession.sessionId)).resolves.toEqual({
       state: 'SCHEDULED',
       version: 1,
@@ -11816,7 +11835,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
         readVenueAdminDashboard: unusedSessionRoute,
         confirmBookingHost: unusedSessionRoute,
         rejectBookingHost: unusedSessionRoute,
-        readMySessions: unusedSessionRoute,
+        readMySessions: (viewer) => readMySessions(database, viewer),
         readSession: (id, viewer) => readSession(database, id, viewer),
         startSession: unusedSessionRoute,
         recordSessionAttendance: unusedSessionRoute,
@@ -11849,6 +11868,18 @@ describePostgres('PostgreSQL critical command transaction', () => {
       });
       expect(endResponse.statusCode).toBe(200);
       expect(endResponse.json().data).toEqual(await readSession(database, sessionId, coachId));
+      const sessionListResponse = await sessionApp.inject({
+        method: 'GET', url: '/api/v1/me/sessions',
+        headers: { authorization: 'Bearer session-assigned-coach' },
+      });
+      expect(sessionListResponse.statusCode).toBe(200);
+      expect(sessionListResponse.json().data.venueTimezones).toEqual({ [venueId]: 'Europe/Moscow' });
+      const { formatVenueDateTime } = await import('../../../apps/client/src/lib/schedule-time.js');
+      const sessionForDisplay = sessionListResponse.json().data.sessions[0];
+      expect(formatVenueDateTime(
+        sessionForDisplay.scheduledStartAt,
+        sessionListResponse.json().data.venueTimezones[sessionForDisplay.venueId],
+      )).toContain('GMT+3 · время зала');
       expect(canRecordOfficialResult(endResponse.json().data, false)).toBe(true);
       expect(sessionResultNotice(endResponse.json().data, null, false)?.message)
         .toBe('Session завершена. Теперь Coach должен подтвердить официальный результат.');

@@ -2287,6 +2287,7 @@ describe('runtime contract', () => {
     const options: TrainingOptionsProjection = {
       slots: [slot],
       groupOfferings: [offering],
+      venueTimezones: { [venueId]: 'Europe/Moscow' },
       activeIntent: { booking: null, groupPlan: null },
       reservationPolicy: 'NO_RESERVATION_BEFORE_HOST_CONFIRMATION',
     };
@@ -2482,6 +2483,7 @@ describe('runtime contract', () => {
     const hostConfirmationItems = [
       {
         booking: pendingBooking,
+        venueTimezone: 'Europe/Moscow',
         athleteDisplayNames: ['Первый спортсмен', 'Второй спортсмен'] as const,
       },
     ] as const;
@@ -2650,6 +2652,7 @@ describe('runtime contract', () => {
     };
     const readMySessions = vi.fn(async () => ({
       sessions: [lifecycleSession],
+      venueTimezones: { [venueId]: 'Europe/Moscow' },
       completedTrainingCount: 0,
     }));
     const readSession = vi.fn(async () => lifecycleSession);
@@ -2980,6 +2983,7 @@ describe('runtime contract', () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(listed.statusCode).toBe(200);
+    expect(listed.json().data.venueTimezones).toEqual({ [venueId]: 'Europe/Moscow' });
     expect(listed.json()).toMatchObject({
       data: {
         slots: [{ slotId: slot.slotId }],
@@ -3331,6 +3335,7 @@ describe('runtime contract', () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(sessionList.statusCode).toBe(200);
+    expect(sessionList.json().data.venueTimezones).toEqual({ [venueId]: 'Europe/Moscow' });
     expect(sessionList.json()).toMatchObject({
       data: {
         sessions: [{ sessionId, state: 'READY_FOR_COACH', viewerCanManage: true }],
