@@ -57,7 +57,8 @@ import type {
   AuthSessionTokens,
 } from '@molokh/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { type Href, useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
+import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   ActivityIndicator,
   Pressable,
@@ -65,12 +66,14 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   DiscoverySection,
+  type ChatLoadState,
   type DiscoveryAction,
 } from '../features/discovery/DiscoverySection';
 import { MissingResultReviewSection } from '../features/missing-result/MissingResultReviewSection';
@@ -96,8 +99,12 @@ import { LocalPhoneAuthPanel } from '../features/auth/LocalPhoneAuthPanel';
 import {
   apiErrorMessage,
   apiUrl,
+  getLocalSessionScope,
+  localTokenForSession,
   localTestAccounts,
   localToken,
+  retryableIdempotencyKey,
+  rotateLocalToken,
   setLocalToken,
   type LocalTestAccount,
 } from '../lib/api';
@@ -105,19 +112,49 @@ import {
   logoutManagedAuthSession,
   refreshManagedAuthSession,
 } from '../lib/auth-session';
+import {
+  canLoadAthleteDiscovery,
+  hasScopedVenueAdminGrant,
+  operationalRoleForCommunityContext,
+  type ClientOperationalRole,
+} from '../lib/community-access';
 import { sportLabel, sportOptions } from '../lib/sports';
 import {
   athleteStoppageResult,
+  canRecordOfficialResult,
   externalNoContestResult,
   resultCardPresentation,
+  resultActionNotice,
+  sessionResultNotice,
 } from '../lib/result-presentation';
 import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
+import { formatVenueDateTime } from '../lib/schedule-time';
+import {
+  clientQueryKeys,
+  fetchApiQuery,
+  fetchQueryWithCache,
+  partialDataWarning,
+  queryFreshness,
+  settleSecondaryQuery,
+  staleDataWarning,
+} from '../lib/query';
 import { coachSafetyRefusalPresentation } from '../features/safety/presentation';
 import { SafetyCaseReviewSection } from '../features/safety/SafetyCaseReviewSection';
 import {
   CentralEnforcementAppealQueue,
   EnforcementAppealSection,
 } from '../features/enforcement-appeal/EnforcementAppealSection';
+import { HomeSection } from '../features/navigation/HomeSection';
+import {
+  activeSessionCount,
+  destinationParam,
+  destinationsForRole,
+  layoutMode,
+  parseDestination,
+  type AppDestination,
+} from '../features/navigation/navigation';
+import { ChoiceGroup } from '../ui/ChoiceGroup';
+import { type AppTheme, useAppTheme } from '../ui/theme';
 
 type Identity = MeResponse['data'];
 type HomeVenueSettings = HomeVenueSettingsResponse['data'];
@@ -177,7 +214,7 @@ type CentralModerationCase = CentralModerationCaseListResponse['data'][number];
 type EnforcementAppeal = EnforcementAppealListResponse['data'][number];
 type EnforcementAppealContext = Exclude<MyEnforcementAppealResponse['data'], null>;
 type VenueAdminDashboard = VenueAdminDashboardResponse['data'];
-type MainSection = 'DISCOVERY' | 'PROFILE' | 'COMMUNITY';
+type MainSection = AppDestination;
 type AdminPublicationKind = 'SLOT' | 'GROUP';
 type AdminDurationMinutes = 60 | 90;
 type ScheduleReasonCode = ScheduleMutationReasonBody['reasonCode'];
@@ -238,10 +275,22 @@ const mainSections: ReadonlyArray<{
   readonly lead: string;
 }> = [
   {
+    id: 'HOME',
+    label: 'Главная',
+    title: 'Что дальше',
+    lead: 'Сначала показываем ближайшее обязательное действие, затем остальные возможности.',
+  },
+  {
     id: 'DISCOVERY',
     label: 'Discovery',
     title: 'Найдите партнёра',
     lead: 'Выберите человека, с которым хотите потренироваться. Общение откроется после взаимного интереса.',
+  },
+  {
+    id: 'CHATS',
+    label: 'Чаты',
+    title: 'Ваши чаты',
+    lead: 'Договоритесь о Training или начните Official Challenge после взаимного Match.',
   },
   {
     id: 'PROFILE',
@@ -263,8 +312,8 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
   readonly lead: string;
 }>>>>> = {
   Coach: {
-    COMMUNITY: {
-      label: 'Сессии',
+    HOME: {
+      label: 'Работа',
       title: 'Рабочие сессии',
       lead: 'Начинайте тренировки, отмечайте присутствие и подтверждайте результат.',
     },
@@ -275,8 +324,8 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
     },
   },
   'Gym Admin': {
-    COMMUNITY: {
-      label: 'Заявки',
+    HOME: {
+      label: 'Работа',
       title: 'Управление залом',
       lead: 'Подтверждайте бронирования и управляйте назначенными сессиями.',
     },
@@ -287,8 +336,8 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
     },
   },
   Central: {
-    COMMUNITY: {
-      label: 'Обращения',
+    HOME: {
+      label: 'Работа',
       title: 'Центральное рассмотрение',
       lead: 'Рассматривайте Appeal прозрачно и фиксируйте обоснование каждого решения.',
     },
@@ -296,11 +345,7 @@ const operationalSectionCopy: Readonly<Record<string, Readonly<Partial<Record<Ma
 };
 
 function sectionsForRole(role: string) {
-  const availableIds: readonly MainSection[] = role === 'Athlete'
-    ? ['DISCOVERY', 'PROFILE', 'COMMUNITY']
-    : role === 'Central'
-      ? ['COMMUNITY']
-      : ['COMMUNITY', 'PROFILE'];
+  const availableIds = destinationsForRole(role);
   const overrides = operationalSectionCopy[role];
   return availableIds
     .map((id) => mainSections.find((section) => section.id === id)!)
@@ -455,14 +500,25 @@ const officialDenialLabels: Record<CommunityDenialCode, string> = {
 
 export default function IdentityScreen() {
   const router = useRouter();
+  const sectionParams = useLocalSearchParams<{ section?: string | string[] }>();
+  const queryClient = useQueryClient();
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
+  const activeTokenRef = useRef(localToken);
+  const loadSequenceRef = useRef(0);
+  const hasLoadedIdentityRef = useRef(false);
   const membershipRequestAttemptRef = useRef(
     `membership-request-attempt:${Date.now().toString(36)}`,
   );
   const [activeSection, setActiveSection] = useState<MainSection>(() =>
-    localTestAccounts.find((account) => account.token === localToken)?.startSection
-      ?? 'DISCOVERY');
+    parseDestination(sectionParams.section)
+      ?? localTestAccounts.find((account) => account.token === localToken)?.startSection
+      ?? 'HOME');
   const [activeTestToken, setActiveTestToken] = useState(localToken);
+  const [operationalRole, setOperationalRole] = useState<ClientOperationalRole>(() =>
+    localTestAccounts.find((account) => account.token === localToken)?.role ?? 'Athlete');
   const [managedAccessExpiresAt, setManagedAccessExpiresAt] = useState<string | null>(null);
   const [authBootstrapped, setAuthBootstrapped] = useState(false);
   const [managedLoginRequired, setManagedLoginRequired] = useState(!__DEV__);
@@ -524,6 +580,8 @@ export default function IdentityScreen() {
   const [venueAdminDashboard, setVenueAdminDashboard] =
     useState<VenueAdminDashboard | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionVenueTimezones, setSessionVenueTimezones] = useState<Readonly<Record<string, string>>>({});
+  const [sessionsReadState, setSessionsReadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [groupPlanConversions, setGroupPlanConversions] =
     useState<GroupPlanOfficialConversion[]>([]);
   const [resultsById, setResultsById] = useState<Record<string, OfficialResult>>({});
@@ -531,6 +589,7 @@ export default function IdentityScreen() {
   const [completedTrainingCount, setCompletedTrainingCount] = useState(0);
   const [discoveryCards, setDiscoveryCards] = useState<DiscoveryCard[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
+  const [chatLoadState, setChatLoadState] = useState<ChatLoadState>('loading');
   const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([]);
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
   const [actingCandidateId, setActingCandidateId] = useState<string | null>(null);
@@ -548,6 +607,8 @@ export default function IdentityScreen() {
   const communityConfigurationKeys = useRef(new Map<string, string>());
   const [actingRelationshipId, setActingRelationshipId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [dataWarning, setDataWarning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savingSports, setSavingSports] = useState(false);
   const [startingVerification, setStartingVerification] = useState(false);
@@ -605,332 +666,456 @@ export default function IdentityScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const loadIdentity = useCallback(async () => {
-    setLoading(true);
+    const sequence = ++loadSequenceRef.current;
+    const scope = getLocalSessionScope();
+    const token = activeTokenRef.current;
+    const firstLoad = !hasLoadedIdentityRef.current;
+    const warnings = new Set<string>();
+    let usedStaleFallback = false;
+
+    setSessionsReadState('loading');
+    setChatLoadState('loading');
+    if (firstLoad) setLoading(true);
+    else {
+      setRefreshing(true);
+      await queryClient.invalidateQueries({
+        queryKey: clientQueryKeys.session(scope),
+        refetchType: 'none',
+      });
+    }
     setError(null);
+    setDataWarning(null);
     setDiscoveryNotice(null);
     setPairCooldownNotice(null);
+
+    const readWithCache = <T,>(
+      resource: string,
+      path: string,
+      staleTime: number = queryFreshness.operational,
+      options: { readonly allowNotFound?: boolean; readonly emptyStatuses?: readonly number[] } = {},
+    ) => fetchQueryWithCache(queryClient, {
+      queryKey: clientQueryKeys.resource(scope, resource),
+      staleTime,
+      queryFn: (context) => fetchApiQuery<T>({ path, token, ...options }, context),
+    });
+
+    const read = async <T,>(...args: Parameters<typeof readWithCache<T>>): Promise<T | null> => {
+      const result = await readWithCache<T>(...args);
+      if (result.usedStaleFallback) usedStaleFallback = true;
+      return result.data;
+    };
+
+    const loadPart = async <T,>(
+      label: string,
+      task: Promise<T | null>,
+      apply: (value: T | null) => void,
+      onFailure?: () => void,
+    ) => {
+      const result = await settleSecondaryQuery(task);
+      if (result.failed) {
+        warnings.add(label);
+        if (loadSequenceRef.current === sequence) onFailure?.();
+        return;
+      }
+      if (loadSequenceRef.current === sequence) apply(result.data);
+    };
+
     try {
-      const response = await fetch(`${apiUrl}/api/v1/me`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response));
-      const result = (await response.json()) as MeResponse;
-      setIdentity(result.data);
-      setDisplayName(result.data.displayName);
-      setPrimarySport(result.data.primarySport);
-      setSecondarySport(result.data.secondarySport);
-      const enforcementAppealResponse = await fetch(`${apiUrl}/api/v1/me/enforcement-appeal`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!enforcementAppealResponse.ok) {
-        throw new Error(await apiErrorMessage(enforcementAppealResponse));
+      const meResult = await read<MeResponse>('me', '/api/v1/me', queryFreshness.profile);
+      if (!meResult) throw new Error('Профиль временно недоступен.');
+      if (loadSequenceRef.current !== sequence) return;
+      setIdentity(meResult.data);
+      setDisplayName(meResult.data.displayName);
+      setPrimarySport(meResult.data.primarySport);
+      setSecondarySport(meResult.data.secondarySport);
+      hasLoadedIdentityRef.current = true;
+      setLoading(false);
+
+      const currentAccount = localTestAccounts.find((account) => account.token === token);
+      const communityTask = read<CommunityContextResponse>(
+        'community',
+        '/api/v1/me/community',
+        queryFreshness.profile,
+        { allowNotFound: true },
+      );
+      const sessionsTask = read<MySessionsResponse>(
+        'sessions',
+        '/api/v1/me/sessions',
+      );
+      let communityResult: CommunityContextResponse | null = null;
+      try {
+        communityResult = await communityTask;
+      } catch {
+        warnings.add('community');
       }
-      const enforcementAppealResult =
-        (await enforcementAppealResponse.json()) as MyEnforcementAppealResponse;
-      setEnforcementAppealContext(enforcementAppealResult.data);
-      const homeVenueResponse = await fetch(`${apiUrl}/api/v1/me/home-venue`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!homeVenueResponse.ok) throw new Error(await apiErrorMessage(homeVenueResponse));
-      const homeVenueResult = (await homeVenueResponse.json()) as HomeVenueSettingsResponse;
-      setHomeVenueSettings(homeVenueResult.data);
-      setSelectedHomeVenueId(homeVenueResult.data.homeVenueId);
-      const communityResponse = await fetch(`${apiUrl}/api/v1/me/community`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      let loadedCommunity: CommunityContext | null = null;
-      if (communityResponse.status === 404) {
-        setCommunityContext(null);
-        setPairCooldownDraft('15');
+      const loadedCommunity = communityResult?.data ?? null;
+      const role = operationalRoleForCommunityContext(
+        loadedCommunity,
+        currentAccount?.role ?? 'Athlete',
+      );
+      if (loadSequenceRef.current !== sequence) return;
+      setOperationalRole(role);
+      setCommunityContext(loadedCommunity);
+      setPairCooldownDraft(String(loadedCommunity?.community.pairCooldownDays ?? 15));
+
+      const loads: Promise<void>[] = [
+        loadPart(
+          'enforcement-appeal',
+          read<MyEnforcementAppealResponse>(
+            'enforcement-appeal',
+            '/api/v1/me/enforcement-appeal',
+          ),
+          (value) => setEnforcementAppealContext(value?.data ?? null),
+        ),
+        loadPart(
+          'home-venue',
+          read<HomeVenueSettingsResponse>(
+            'home-venue',
+            '/api/v1/me/home-venue',
+            queryFreshness.profile,
+          ),
+          (value) => {
+            setHomeVenueSettings(value?.data ?? null);
+            setSelectedHomeVenueId(value?.data.homeVenueId ?? null);
+          },
+        ),
+        loadPart(
+          'competition',
+          read<CompetitionStatusResponse>(
+            'competition',
+            '/api/v1/me/competition',
+            queryFreshness.operational,
+            { allowNotFound: true },
+          ),
+          (value) => setCompetitionStatus(value?.data ?? null),
+        ),
+        loadPart(
+          'coach-invites',
+          read<PendingCoachInviteListResponse>('coach-invites', '/api/v1/me/coach-invites'),
+          (value) => setCoachInvites(value?.data ?? []),
+        ),
+        loadPart(
+          'host-confirmations',
+          read<HostConfirmationQueueResponse>(
+            'host-confirmations',
+            '/api/v1/me/host-confirmations',
+          ),
+          (value) => setHostConfirmations(value?.data ?? []),
+        ),
+        loadPart('sessions', sessionsTask, (value) => {
+          if (!value) {
+            warnings.add('sessions');
+            setSessionsReadState('error');
+            return;
+          }
+          setSessions(value.data.sessions);
+          setSessionVenueTimezones(value.data.venueTimezones ?? {});
+          setCompletedTrainingCount(value.data.completedTrainingCount);
+          setSessionsReadState('ready');
+        }, () => setSessionsReadState('error')),
+        loadPart(
+          'group-conversions',
+          read<MyGroupPlanOfficialConversionsResponse>(
+            'group-conversions',
+            '/api/v1/me/group-plan-official-conversions',
+          ),
+          (value) => setGroupPlanConversions(value?.data ?? []),
+        ),
+        loadPart(
+          'missing-result-reviews',
+          read<MissingResultReviewListResponse>(
+            'missing-result-reviews',
+            role === 'Central'
+              ? '/api/v1/central/missing-result-reviews'
+              : '/api/v1/me/missing-result-reviews',
+          ),
+          (value) => setMissingResultReviews(value?.data ?? []),
+        ),
+        loadPart(
+          'integrity-cases',
+          read<IntegrityCaseListResponse>(
+            'integrity-cases',
+            role === 'Central'
+              ? '/api/v1/central/integrity-cases'
+              : '/api/v1/me/integrity-cases',
+          ),
+          (value) => setIntegrityCases(value?.data ?? []),
+        ),
+        loadPart(
+          'technical-corrections',
+          read<TechnicalCorrectionListResponse>(
+            'technical-corrections',
+            role === 'Central'
+              ? '/api/v1/central/technical-corrections'
+              : '/api/v1/me/technical-corrections',
+          ),
+          (value) => setTechnicalCorrections(value?.data ?? []),
+        ),
+        readWithCache<MatchesResponse>('matches', '/api/v1/matches', queryFreshness.profile)
+          .then(({ data, usedStaleFallback: stale }) => {
+            if (stale) usedStaleFallback = true;
+            if (loadSequenceRef.current !== sequence) return;
+            if (data) setMatches(data.data);
+            setChatLoadState(stale || !data ? 'error' : 'ready');
+          })
+          .catch(() => {
+            warnings.add('matches');
+            if (loadSequenceRef.current === sequence) setChatLoadState('error');
+          }),
+        loadPart(
+          'blocks',
+          read<BlockedUsersResponse>('blocks', '/api/v1/me/blocks', queryFreshness.profile),
+          (value) => setBlockedUsers(value?.data ?? []),
+        ),
+      ];
+
+      if (canLoadAthleteDiscovery(role)) {
+        loads.push(loadPart(
+          'discovery',
+          read<DiscoveryCardsResponse>(
+            'discovery',
+            '/api/v1/discovery/cards?limit=20',
+            queryFreshness.profile,
+          ),
+          (value) => {
+            setDiscoveryCards(value?.data ?? []);
+            setDiscoveryNotice(value
+              ? null
+              : 'Discovery откроется после выбора города и домашнего зала.');
+          },
+        ));
       } else {
-        if (!communityResponse.ok) throw new Error(await apiErrorMessage(communityResponse));
-        const communityResult = (await communityResponse.json()) as CommunityContextResponse;
-        loadedCommunity = communityResult.data;
-        setCommunityContext(communityResult.data);
-        setPairCooldownDraft(String(communityResult.data.community.pairCooldownDays));
+        setDiscoveryCards([]);
+        setDiscoveryNotice(null);
       }
-      const competitionResponse = await fetch(`${apiUrl}/api/v1/me/competition`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (competitionResponse.status === 404) {
-        setCompetitionStatus(null);
-      } else {
-        if (!competitionResponse.ok) throw new Error(await apiErrorMessage(competitionResponse));
-        const competitionResult = (await competitionResponse.json()) as CompetitionStatusResponse;
-        setCompetitionStatus(competitionResult.data);
-      }
-      const currentAccount = localTestAccounts.find((account) => account.token === localToken);
-      const myRemovalResponse = await fetch(`${apiUrl}/api/v1/me/membership-removals`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!myRemovalResponse.ok) throw new Error(await apiErrorMessage(myRemovalResponse));
-      const myRemovalResult = (await myRemovalResponse.json()) as MembershipRemovalListResponse;
-      setMembershipRemovals(myRemovalResult.data);
-      if (currentAccount?.role === 'Central' && loadedCommunity) {
-        const lifecycleResponse = await fetch(
-          `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/lifecycle`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
+
+      if (role === 'Central') {
+        loads.push(
+          loadPart(
+            'membership-removals',
+            read<MembershipRemovalListResponse>(
+              'central-membership-removals',
+              '/api/v1/central/membership-removals',
+            ),
+            (value) => setMembershipRemovals(value?.data ?? []),
+          ),
+          loadPart(
+            'moderation-cases',
+            read<CentralModerationCaseListResponse>(
+              'central-moderation-cases',
+              '/api/v1/central/moderation-cases',
+            ),
+            (value) => setModerationCases(value?.data ?? []),
+          ),
+          loadPart(
+            'enforcement-appeals',
+            read<EnforcementAppealListResponse>(
+              'central-enforcement-appeals',
+              '/api/v1/central/enforcement-appeals',
+            ),
+            (value) => setEnforcementAppeals(value?.data ?? []),
+          ),
+          loadPart(
+            'appeals',
+            read<AppealQueueResponse>('central-appeals', '/api/v1/central/appeals'),
+            (value) => setCentralAppeals(value?.data ?? []),
+          ),
         );
-        if (!lifecycleResponse.ok) throw new Error(await apiErrorMessage(lifecycleResponse));
-        const lifecycleResult = (await lifecycleResponse.json()) as CommunityLifecycleResponse;
-        setCommunityLifecycle(lifecycleResult.data);
-        const closureResponse = await fetch(
-          `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/closure`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (closureResponse.status === 404) setCommunityClosurePlan(null);
-        else {
-          if (!closureResponse.ok) throw new Error(await apiErrorMessage(closureResponse));
-          const closureResult = (await closureResponse.json()) as CommunityClosurePlanResponse;
-          setCommunityClosurePlan(closureResult.data);
-        }
-        if (lifecycleResult.data.state === 'ACTIVE' || lifecycleResult.data.state === 'PAUSED') {
-          const candidatesResponse = await fetch(
-            `${apiUrl}/api/v1/central/communities/${loadedCommunity.community.communityId}/closure/candidates`,
-            { headers: { Authorization: `Bearer ${localToken}` } },
-          );
-          if (!candidatesResponse.ok) throw new Error(await apiErrorMessage(candidatesResponse));
-          const candidatesResult =
-            (await candidatesResponse.json()) as CommunityClosureCandidatesResponse;
-          setCommunityClosureCandidates(candidatesResult.data);
-          setCommunityClosureDispositions(Object.fromEntries(
-            candidatesResult.data.map((candidate) => [
-              candidate.sessionId, candidate.recommendedDisposition,
-            ]),
-          ));
-        } else {
-          setCommunityClosureCandidates([]);
-          setCommunityClosureDispositions({});
-        }
-      } else {
-        setCommunityLifecycle(null);
-        setCommunityClosurePlan(null);
-        setCommunityClosureCandidates([]);
-        setCommunityClosureDispositions({});
-      }
-      if (currentAccount?.role === 'Central') {
-        const removalQueueResponse = await fetch(
-          `${apiUrl}/api/v1/central/membership-removals`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!removalQueueResponse.ok) {
-          throw new Error(await apiErrorMessage(removalQueueResponse));
-        }
-        const removalQueue =
-          (await removalQueueResponse.json()) as MembershipRemovalListResponse;
-        setMembershipRemovals(removalQueue.data);
-        const moderationQueueResponse = await fetch(
-          `${apiUrl}/api/v1/central/moderation-cases`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!moderationQueueResponse.ok) {
-          throw new Error(await apiErrorMessage(moderationQueueResponse));
-        }
-        const moderationQueue =
-          (await moderationQueueResponse.json()) as CentralModerationCaseListResponse;
-        setModerationCases(moderationQueue.data);
-        const enforcementAppealQueueResponse = await fetch(
-          `${apiUrl}/api/v1/central/enforcement-appeals`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!enforcementAppealQueueResponse.ok) {
-          throw new Error(await apiErrorMessage(enforcementAppealQueueResponse));
-        }
-        const enforcementAppealQueue =
-          (await enforcementAppealQueueResponse.json()) as EnforcementAppealListResponse;
-        setEnforcementAppeals(enforcementAppealQueue.data);
       } else {
         setModerationCases([]);
         setEnforcementAppeals([]);
-      }
-      if (
-        loadedCommunity?.access.capabilities.includes('MANAGE_MEMBERSHIPS')
-      ) {
-        const pendingMembershipResponse = await fetch(
-          `${apiUrl}/api/v1/communities/${loadedCommunity.community.communityId}/memberships/pending`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!pendingMembershipResponse.ok) {
-          throw new Error(await apiErrorMessage(pendingMembershipResponse));
-        }
-        const pendingMembershipResult =
-          (await pendingMembershipResponse.json()) as PendingMembershipListResponse;
-        setPendingMemberships(pendingMembershipResult.data);
-        const dashboardResponse = await fetch(
-          `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/admin-dashboard`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!dashboardResponse.ok) {
-          throw new Error(await apiErrorMessage(dashboardResponse));
-        }
-        const dashboardResult =
-          (await dashboardResponse.json()) as VenueAdminDashboardResponse;
-        setVenueAdminDashboard(dashboardResult.data);
-        setAdminCoachId((current) =>
-          dashboardResult.data.coaches.some((coach) => coach.userId === current)
-            ? current
-            : dashboardResult.data.coaches[0]?.userId ?? '');
-        const membersResponse = await fetch(
-          `${apiUrl}/api/v1/venues/${loadedCommunity.venue.venueId}/members`,
-          { headers: { Authorization: `Bearer ${localToken}` } },
-        );
-        if (!membersResponse.ok) throw new Error(await apiErrorMessage(membersResponse));
-        const membersResult = (await membersResponse.json()) as VenueMemberListResponse;
-        setVenueMembers(membersResult.data);
-      } else {
-        setPendingMemberships([]);
-        setVenueAdminDashboard(null);
-        setVenueMembers([]);
-      }
-      const coachInviteResponse = await fetch(`${apiUrl}/api/v1/me/coach-invites`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!coachInviteResponse.ok) {
-        throw new Error(await apiErrorMessage(coachInviteResponse));
-      }
-      const coachInviteResult =
-        (await coachInviteResponse.json()) as PendingCoachInviteListResponse;
-      setCoachInvites(coachInviteResult.data);
-      const hostConfirmationsResponse = await fetch(
-        `${apiUrl}/api/v1/me/host-confirmations`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!hostConfirmationsResponse.ok) {
-        throw new Error(await apiErrorMessage(hostConfirmationsResponse));
-      }
-      const hostConfirmationsResult =
-        (await hostConfirmationsResponse.json()) as HostConfirmationQueueResponse;
-      setHostConfirmations(hostConfirmationsResult.data);
-      const sessionsResponse = await fetch(`${apiUrl}/api/v1/me/sessions`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!sessionsResponse.ok) {
-        throw new Error(await apiErrorMessage(sessionsResponse));
-      }
-      const sessionsResult = (await sessionsResponse.json()) as MySessionsResponse;
-      setSessions(sessionsResult.data.sessions);
-      setCompletedTrainingCount(sessionsResult.data.completedTrainingCount);
-      const groupConversionResponse = await fetch(
-        `${apiUrl}/api/v1/me/group-plan-official-conversions`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!groupConversionResponse.ok) {
-        throw new Error(await apiErrorMessage(groupConversionResponse));
-      }
-      const groupConversionResult =
-        (await groupConversionResponse.json()) as MyGroupPlanOfficialConversionsResponse;
-      setGroupPlanConversions(groupConversionResult.data);
-      const missingResultResponse = await fetch(
-        currentAccount?.role === 'Central'
-          ? `${apiUrl}/api/v1/central/missing-result-reviews`
-          : `${apiUrl}/api/v1/me/missing-result-reviews`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!missingResultResponse.ok) {
-        throw new Error(await apiErrorMessage(missingResultResponse));
-      }
-      const missingResultData = (await missingResultResponse.json()) as MissingResultReviewListResponse;
-      setMissingResultReviews(missingResultData.data);
-      const integrityCasesResponse = await fetch(
-        currentAccount?.role === 'Central'
-          ? `${apiUrl}/api/v1/central/integrity-cases`
-          : `${apiUrl}/api/v1/me/integrity-cases`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!integrityCasesResponse.ok) {
-        throw new Error(await apiErrorMessage(integrityCasesResponse));
-      }
-      const integrityCasesResult =
-        (await integrityCasesResponse.json()) as IntegrityCaseListResponse;
-      setIntegrityCases(integrityCasesResult.data);
-      const technicalCorrectionsResponse = await fetch(
-        currentAccount?.role === 'Central'
-          ? `${apiUrl}/api/v1/central/technical-corrections`
-          : `${apiUrl}/api/v1/me/technical-corrections`,
-        { headers: { Authorization: `Bearer ${localToken}` } },
-      );
-      if (!technicalCorrectionsResponse.ok) {
-        throw new Error(await apiErrorMessage(technicalCorrectionsResponse));
-      }
-      const technicalCorrectionsResult =
-        (await technicalCorrectionsResponse.json()) as TechnicalCorrectionListResponse;
-      setTechnicalCorrections(technicalCorrectionsResult.data);
-      const officialResults = await Promise.all(
-        sessionsResult.data.sessions
-          .filter((session) => session.resultId !== null)
-          .map(async (session) => {
-            const resultResponse = await fetch(`${apiUrl}/api/v1/results/${session.resultId}`, {
-              headers: { Authorization: `Bearer ${localToken}` },
-            });
-            if (!resultResponse.ok) throw new Error(await apiErrorMessage(resultResponse));
-            return ((await resultResponse.json()) as ResultResponse).data;
-          }),
-      );
-      setResultsById(Object.fromEntries(officialResults.map((result) => [result.resultId, result])));
-      const appealDetails = await Promise.all(
-        officialResults.filter((result) => result.state === 'UNDER_APPEAL').map(async (result) => {
-          const appealResponse = await fetch(`${apiUrl}/api/v1/results/${result.resultId}/appeal`, {
-            headers: { Authorization: `Bearer ${localToken}` },
-          });
-          if (appealResponse.status === 404) return null;
-          if (!appealResponse.ok) throw new Error(await apiErrorMessage(appealResponse));
-          return ((await appealResponse.json()) as AppealDetailResponse).data;
-        }),
-      );
-      setAppealsByResultId(Object.fromEntries(
-        appealDetails.filter((appeal): appeal is AppealDetail => appeal !== null)
-          .map((appeal) => [appeal.resultId, appeal]),
-      ));
-      const discoveryResponse = await fetch(`${apiUrl}/api/v1/discovery/cards?limit=20`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (discoveryResponse.status === 403) {
-        setDiscoveryCards([]);
-        setDiscoveryNotice('Discovery откроется после выбора города и домашнего зала.');
-      } else if (!discoveryResponse.ok) {
-        throw new Error(await apiErrorMessage(discoveryResponse));
-      } else {
-        const discoveryResult =
-          (await discoveryResponse.json()) as DiscoveryCardsResponse;
-        setDiscoveryCards(discoveryResult.data);
-      }
-      const matchesResponse = await fetch(`${apiUrl}/api/v1/matches`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!matchesResponse.ok) throw new Error(await apiErrorMessage(matchesResponse));
-      const matchesResult = (await matchesResponse.json()) as MatchesResponse;
-      setMatches(matchesResult.data);
-      const blocksResponse = await fetch(`${apiUrl}/api/v1/me/blocks`, {
-        headers: { Authorization: `Bearer ${localToken}` },
-      });
-      if (!blocksResponse.ok) throw new Error(await apiErrorMessage(blocksResponse));
-      const blocksResult = (await blocksResponse.json()) as BlockedUsersResponse;
-      setBlockedUsers(blocksResult.data);
-      if (currentAccount?.role === 'Central') {
-        const appealsResponse = await fetch(`${apiUrl}/api/v1/central/appeals`, {
-          headers: { Authorization: `Bearer ${localToken}` },
-        });
-        if (!appealsResponse.ok) throw new Error(await apiErrorMessage(appealsResponse));
-        const appealsResult = (await appealsResponse.json()) as AppealQueueResponse;
-        setCentralAppeals(appealsResult.data);
-      } else {
         setCentralAppeals([]);
+        loads.push(loadPart(
+          'membership-removals',
+          read<MembershipRemovalListResponse>(
+            'membership-removals',
+            '/api/v1/me/membership-removals',
+          ),
+          (value) => setMembershipRemovals(value?.data ?? []),
+        ));
+      }
+
+      loads.push((async () => {
+        const communityResult = await communityTask;
+        const loadedCommunity = communityResult?.data ?? null;
+        if (role === 'Central' && loadedCommunity) {
+          const communityId = loadedCommunity.community.communityId;
+          const lifecycleTask = read<CommunityLifecycleResponse>(
+            `community-lifecycle:${communityId}`,
+            `/api/v1/central/communities/${communityId}/lifecycle`,
+          );
+          await Promise.all([
+            loadPart('community-lifecycle', lifecycleTask, (value) =>
+              setCommunityLifecycle(value?.data ?? null)),
+            loadPart(
+              'community-closure',
+              read<CommunityClosurePlanResponse>(
+                `community-closure:${communityId}`,
+                `/api/v1/central/communities/${communityId}/closure`,
+                queryFreshness.operational,
+                { allowNotFound: true },
+              ),
+              (value) => setCommunityClosurePlan(value?.data ?? null),
+            ),
+            (async () => {
+              const lifecycle = await lifecycleTask;
+              if (!lifecycle || !['ACTIVE', 'PAUSED'].includes(lifecycle.data.state)) {
+                if (loadSequenceRef.current === sequence) {
+                  setCommunityClosureCandidates([]);
+                  setCommunityClosureDispositions({});
+                }
+                return;
+              }
+              await loadPart(
+                'community-closure-candidates',
+                read<CommunityClosureCandidatesResponse>(
+                  `community-closure-candidates:${communityId}`,
+                  `/api/v1/central/communities/${communityId}/closure/candidates`,
+                ),
+                (value) => {
+                  const candidates = value?.data ?? [];
+                  setCommunityClosureCandidates(candidates);
+                  setCommunityClosureDispositions(Object.fromEntries(
+                    candidates.map((candidate) => [
+                      candidate.sessionId,
+                      candidate.recommendedDisposition,
+                    ]),
+                  ));
+                },
+              );
+            })(),
+          ]);
+        } else if (loadSequenceRef.current === sequence) {
+          setCommunityLifecycle(null);
+          setCommunityClosurePlan(null);
+          setCommunityClosureCandidates([]);
+          setCommunityClosureDispositions({});
+        }
+      })().catch(() => { warnings.add('community-operations'); }));
+
+      loads.push((async () => {
+        const communityResult = await communityTask;
+        const loadedCommunity = communityResult?.data ?? null;
+        if (!loadedCommunity?.access.capabilities.includes('MANAGE_MEMBERSHIPS')) {
+          if (loadSequenceRef.current === sequence) {
+            setPendingMemberships([]);
+            setVenueAdminDashboard(null);
+            setVenueMembers([]);
+          }
+          return;
+        }
+        const communityId = loadedCommunity.community.communityId;
+        const venueId = loadedCommunity.venue.venueId;
+        const canLoadVenueAdminData = hasScopedVenueAdminGrant(loadedCommunity);
+        if (!canLoadVenueAdminData && loadSequenceRef.current === sequence) {
+          setVenueAdminDashboard(null);
+          setVenueMembers([]);
+        }
+        await Promise.all([
+          loadPart(
+            'pending-memberships',
+            read<PendingMembershipListResponse>(
+              `pending-memberships:${communityId}`,
+              `/api/v1/communities/${communityId}/memberships/pending`,
+            ),
+            (value) => setPendingMemberships(value?.data ?? []),
+          ),
+          ...(canLoadVenueAdminData ? [loadPart(
+            'venue-dashboard',
+            read<VenueAdminDashboardResponse>(
+              `venue-dashboard:${venueId}`,
+              `/api/v1/venues/${venueId}/admin-dashboard`,
+            ),
+            (value) => {
+              setVenueAdminDashboard(value?.data ?? null);
+              if (value) {
+                setAdminCoachId((current) =>
+                  value.data.coaches.some((coach) => coach.userId === current)
+                    ? current
+                    : value.data.coaches[0]?.userId ?? '');
+              }
+            },
+          )] : []),
+          ...(canLoadVenueAdminData ? [loadPart(
+            'venue-members',
+            read<VenueMemberListResponse>(
+              `venue-members:${venueId}`,
+              `/api/v1/venues/${venueId}/members`,
+              queryFreshness.profile,
+            ),
+            (value) => setVenueMembers(value?.data ?? []),
+          )] : []),
+        ]);
+      })().catch(() => { warnings.add('venue-operations'); }));
+
+      loads.push((async () => {
+        const sessionsResult = await sessionsTask;
+        const resultIds = (sessionsResult?.data.sessions ?? [])
+          .map((session) => session.resultId)
+          .filter((resultId): resultId is string => resultId !== null);
+        const resultSettled = await Promise.allSettled(resultIds.map((resultId) =>
+          read<ResultResponse>(`result:${resultId}`, `/api/v1/results/${resultId}`)));
+        const officialResults = resultSettled.flatMap((result) =>
+          result.status === 'fulfilled' && result.value ? [result.value.data] : []);
+        if (resultSettled.some((result) => result.status === 'rejected')) warnings.add('results');
+        if (loadSequenceRef.current === sequence) {
+          setResultsById(Object.fromEntries(
+            officialResults.map((result) => [result.resultId, result]),
+          ));
+        }
+        const appealSettled = await Promise.allSettled(
+          officialResults
+            .filter((result) => result.state === 'UNDER_APPEAL')
+            .map((result) => read<AppealDetailResponse>(
+              `appeal:${result.resultId}`,
+              `/api/v1/results/${result.resultId}/appeal`,
+              queryFreshness.operational,
+              { allowNotFound: true },
+            )),
+        );
+        const appealDetails = appealSettled.flatMap((result) =>
+          result.status === 'fulfilled' && result.value ? [result.value.data] : []);
+        if (appealSettled.some((result) => result.status === 'rejected')) warnings.add('appeals');
+        if (loadSequenceRef.current === sequence) {
+          setAppealsByResultId(Object.fromEntries(
+            appealDetails.map((appeal) => [appeal.resultId, appeal]),
+          ));
+        }
+      })().catch(() => { warnings.add('results'); }));
+
+      await Promise.all(loads);
+      if (loadSequenceRef.current === sequence) {
+        if (usedStaleFallback) {
+          setDataWarning(staleDataWarning);
+        } else if (warnings.size > 0) {
+          setDataWarning(partialDataWarning);
+        }
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
+      if (loadSequenceRef.current === sequence) {
+        setChatLoadState('error');
+        setSessionsReadState('error');
+        setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
+      }
     } finally {
-      setLoading(false);
+      if (loadSequenceRef.current === sequence) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, []);
+  }, [queryClient]);
+
 
   useEffect(() => {
     let cancelled = false;
+    const scope = getLocalSessionScope();
     void (async () => {
       let canLoadIdentity = __DEV__;
       try {
         const session = await refreshManagedAuthSession();
-        if (session && !cancelled) {
+        if (session && !cancelled && scope === getLocalSessionScope()) {
           setLocalToken(session.accessToken, false);
+          activeTokenRef.current = session.accessToken;
           setActiveTestToken(session.accessToken);
           setManagedAccessExpiresAt(session.accessExpiresAt);
           setManagedLoginRequired(false);
@@ -947,22 +1132,32 @@ export default function IdentityScreen() {
 
   useEffect(() => {
     if (!managedAccessExpiresAt) return;
+    const scope = getLocalSessionScope();
     const delay = Math.max(1_000,
       new Date(managedAccessExpiresAt).getTime() - Date.now() - 60_000);
     const timer = setTimeout(() => {
       void (async () => {
         try {
           const session = await refreshManagedAuthSession();
+          if (scope !== getLocalSessionScope()) return;
           if (!session) {
             setManagedAccessExpiresAt(null);
-            if (!__DEV__) setManagedLoginRequired(true);
+            if (!__DEV__) {
+              setLocalToken('', false);
+              activeTokenRef.current = '';
+              setManagedLoginRequired(true);
+            }
             return;
           }
-          setLocalToken(session.accessToken, false);
+          rotateLocalToken(scope, session.accessToken);
+          activeTokenRef.current = session.accessToken;
           setActiveTestToken(session.accessToken);
           setManagedAccessExpiresAt(session.accessExpiresAt);
         } catch (caught) {
+          if (scope !== getLocalSessionScope()) return;
           if (!__DEV__) {
+            setLocalToken('', false);
+            activeTokenRef.current = '';
             setManagedAccessExpiresAt(null);
             setManagedLoginRequired(true);
           }
@@ -1011,17 +1206,77 @@ export default function IdentityScreen() {
     (adminPublicationKind === 'SLOT'
       ? adminCoachId.length > 0
       : adminGroupClassLabel.trim().length > 0);
-  const activeTestAccount =
-    localTestAccounts.find((account) => account.token === activeTestToken) ??
-    localTestAccounts[0]!;
+  const activeTestAccount = {
+    ...(localTestAccounts.find((account) => account.token === activeTestToken)
+      ?? localTestAccounts[0]!),
+    role: operationalRole,
+  };
+  const currentLayout = layoutMode(width);
+  const isCompactLayout = currentLayout === 'compact';
   const visibleSections = sectionsForRole(activeTestAccount.role);
   const activeSectionCopy =
     visibleSections.find((section) => section.id === activeSection) ?? visibleSections[0]!;
 
+  useEffect(() => {
+    const requested = parseDestination(sectionParams.section);
+    const next = requested && visibleSections.some((section) => section.id === requested)
+      ? requested
+      : visibleSections[0]?.id ?? 'HOME';
+    if (activeSection !== next) setActiveSection(next);
+  }, [activeTestAccount.role, sectionParams.section]);
+
   const openSection = (section: MainSection) => {
     setActiveSection(section);
+    router.setParams({ section: destinationParam(section) });
     scrollRef.current?.scrollTo({ animated: false, y: 0 });
   };
+
+  const operationalCount = activeTestAccount.role === 'Central'
+    ? centralAppeals.length + moderationCases.length + enforcementAppeals.length
+      + missingResultReviews.length + integrityCases.length + technicalCorrections.length
+    : activeTestAccount.role === 'Gym Admin'
+      ? pendingMemberships.length + hostConfirmations.length
+      : activeTestAccount.role === 'Coach'
+        ? hostConfirmations.length + sessions.length
+        : 0;
+
+  const mainNavigation = visibleSections.length > 1 ? (
+    <View
+      accessibilityRole="tablist"
+      style={[
+        styles.mainNavigation,
+        isCompactLayout ? styles.mainNavigationCompact : styles.mainNavigationWide,
+      ]}
+    >
+      {visibleSections.map((section) => {
+        const selected = section.id === activeSection;
+        return (
+          <Pressable
+            key={section.id}
+            aria-selected={selected}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+            onPress={() => openSection(section.id)}
+            style={({ pressed }) => [
+              styles.mainNavigationItem,
+              !isCompactLayout && styles.mainNavigationItemWide,
+              selected && styles.mainNavigationItemSelected,
+              pressed && styles.buttonPressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.mainNavigationText,
+                selected && styles.mainNavigationTextSelected,
+              ]}
+            >
+              {section.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  ) : null;
 
   const saveDisplayName = async () => {
     if (!identity || !canSave) return;
@@ -1133,11 +1388,21 @@ export default function IdentityScreen() {
       void logoutManagedAuthSession(activeTestToken).catch(() => undefined);
       setManagedAccessExpiresAt(null);
     }
+    const previousScope = getLocalSessionScope();
+    loadSequenceRef.current += 1;
+    void queryClient.cancelQueries({ queryKey: clientQueryKeys.session(previousScope) })
+      .then(() => queryClient.removeQueries({ queryKey: clientQueryKeys.session(previousScope) }));
+    activeTokenRef.current = account.token;
+    hasLoadedIdentityRef.current = false;
     setLocalToken(account.token, persistToken);
     setActiveTestToken(account.token);
+    setOperationalRole(account.role);
     setAccountMenuOpen(false);
     openSection(account.startSection);
     setIdentity(null);
+    setLoading(true);
+    setRefreshing(false);
+    setDataWarning(null);
     setHomeVenueSettings(null);
     setSelectedHomeVenueId(null);
     setHomeVenueNotice(null);
@@ -1186,11 +1451,14 @@ export default function IdentityScreen() {
     setHostConfirmations([]);
     setVenueAdminDashboard(null);
     setSessions([]);
+    setSessionVenueTimezones({});
+    setSessionsReadState('loading');
     setGroupPlanConversions([]);
     setResultsById({});
     setCompletedTrainingCount(0);
     setDiscoveryCards([]);
     setMatches([]);
+    setChatLoadState('loading');
     setBlockedUsers([]);
     setDiscoveryNotice(null);
     setHostNotice(null);
@@ -1235,10 +1503,18 @@ export default function IdentityScreen() {
   };
 
   const logoutManagedSession = async () => {
+    const previousScope = getLocalSessionScope();
     await logoutManagedAuthSession(activeTestToken);
+    if (previousScope !== getLocalSessionScope()) return;
     setManagedAccessExpiresAt(null);
     if (__DEV__) switchLocalAccount(localTestAccounts[0]!, true, false);
     else {
+      setLocalToken('', false);
+      activeTokenRef.current = '';
+      loadSequenceRef.current += 1;
+      await queryClient.cancelQueries({ queryKey: clientQueryKeys.session(previousScope) });
+      queryClient.removeQueries({ queryKey: clientQueryKeys.session(previousScope) });
+      hasLoadedIdentityRef.current = false;
       setIdentity(null);
       setManagedLoginRequired(true);
     }
@@ -1677,6 +1953,7 @@ export default function IdentityScreen() {
     operationSuffix: string,
   ) => {
     if (actingSessionKey !== null) return;
+    const scope = getLocalSessionScope();
     const operation = `${session.sessionId}:${action}:${operationSuffix}:v${session.version}`;
     const idempotencyKey =
       sessionActionKeys.current.get(operation) ?? `session:${operation}`;
@@ -1690,7 +1967,7 @@ export default function IdentityScreen() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${localToken}`,
+            Authorization: `Bearer ${localTokenForSession(scope)}`,
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
             'If-Match': String(session.version),
@@ -1698,11 +1975,13 @@ export default function IdentityScreen() {
           body: JSON.stringify(body),
         },
       );
+      if (scope !== getLocalSessionScope()) return;
       if (!response.ok) {
         if (response.status === 409) await loadIdentity();
         throw new Error(await apiErrorMessage(response));
       }
       const result = (await response.json()) as SessionCommandResponse;
+      if (scope !== getLocalSessionScope()) return;
       sessionActionKeys.current.delete(operation);
       setSessions((current) =>
         current.map((item) =>
@@ -1727,9 +2006,10 @@ export default function IdentityScreen() {
                     : 'Coach/зал отменил Session по внешней причине. Для спортсменов нет штрафа.',
       );
     } catch (caught) {
+      if (scope !== getLocalSessionScope()) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Session');
     } finally {
-      setActingSessionKey(null);
+      if (scope === getLocalSessionScope()) setActingSessionKey(null);
     }
   };
 
@@ -2027,6 +2307,7 @@ export default function IdentityScreen() {
   ) => {
     if (!session.challengeId || !session.challengeVersion || actingResultKey !== null) return;
     const winnerUserId = options.winnerUserId ?? null;
+    const scope = getLocalSessionScope();
     const operation = `record:${session.challengeId}:${outcomeCode}:${winnerUserId ?? 'NONE'}:${options.methodCode ?? 'NO_METHOD'}:v${session.challengeVersion}`;
     const idempotencyKey = resultActionKeys.current.get(operation) ?? `result:${operation}`;
     resultActionKeys.current.set(operation, idempotencyKey);
@@ -2038,7 +2319,7 @@ export default function IdentityScreen() {
       const response = await fetch(`${apiUrl}/api/v1/challenges/${session.challengeId}/result`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${localToken}`,
+          Authorization: `Bearer ${localTokenForSession(scope)}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
           'If-Match': String(session.challengeVersion),
@@ -2058,11 +2339,13 @@ export default function IdentityScreen() {
             : {}),
         }),
       });
+      if (scope !== getLocalSessionScope()) return;
       if (!response.ok) {
         if (response.status === 409) await loadIdentity();
         throw new Error(await apiErrorMessage(response));
       }
       const result = (await response.json()) as ResultCommandResponse;
+      if (scope !== getLocalSessionScope()) return;
       resultActionKeys.current.delete(operation);
       setResultsById((current) => ({ ...current, [result.data.resultId]: result.data }));
       setSessions((current) => current.map((item) => item.sessionId === session.sessionId
@@ -2073,9 +2356,10 @@ export default function IdentityScreen() {
         : item));
       setSessionNotice('Coach подтвердил результат. Он уже виден, но остаётся предварительным 48 часов.');
     } catch (caught) {
+      if (scope !== getLocalSessionScope()) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось подтвердить результат');
     } finally {
-      setActingResultKey(null);
+      if (scope === getLocalSessionScope()) setActingResultKey(null);
     }
   };
 
@@ -2084,6 +2368,7 @@ export default function IdentityScreen() {
     action: 'appeal' | 'waive-appeal',
   ) => {
     if (actingResultKey !== null) return;
+    const scope = getLocalSessionScope();
     const statement = appealStatement.trim();
     if (action === 'appeal' && statement.length === 0) return;
     const operation = `${action}:${result.resultId}:v${result.version}`;
@@ -2096,7 +2381,7 @@ export default function IdentityScreen() {
       const response = await fetch(`${apiUrl}/api/v1/results/${result.resultId}/${action}`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${localToken}`,
+          Authorization: `Bearer ${localTokenForSession(scope)}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
           'If-Match': String(result.version),
@@ -2105,19 +2390,23 @@ export default function IdentityScreen() {
           ? { reasonCode: 'RESULT_DISPUTED', statement }
           : {}),
       });
+      if (scope !== getLocalSessionScope()) return;
       if (!response.ok) {
         if (response.status === 409) await loadIdentity();
         throw new Error(await apiErrorMessage(response));
       }
       const updated = (await response.json()) as ResultCommandResponse;
+      if (scope !== getLocalSessionScope()) return;
       resultActionKeys.current.delete(operation);
       setResultsById((current) => ({ ...current, [updated.data.resultId]: updated.data }));
       if (action === 'appeal') {
         const appealResponse = await fetch(`${apiUrl}/api/v1/results/${updated.data.resultId}/appeal`, {
-          headers: { Authorization: `Bearer ${localToken}` },
+          headers: { Authorization: `Bearer ${localTokenForSession(scope)}` },
         });
+        if (scope !== getLocalSessionScope()) return;
         if (!appealResponse.ok) throw new Error(await apiErrorMessage(appealResponse));
         const detail = ((await appealResponse.json()) as AppealDetailResponse).data;
+        if (scope !== getLocalSessionScope()) return;
         setAppealsByResultId((current) => ({ ...current, [detail.resultId]: detail }));
       }
       setSessions((current) => current.map((item) => item.resultId === updated.data.resultId
@@ -2134,15 +2423,12 @@ export default function IdentityScreen() {
         : item));
       setAppealDraftResultId(null);
       setAppealStatement('');
-      setSessionNotice(action === 'appeal'
-        ? 'Appeal отправлен Central. Рассмотрение продолжается, спортивный статус остаётся заблокирован.'
-        : updated.data.state === 'FINAL'
-          ? 'Результат финализирован досрочно, ограничения сняты.'
-          : 'Отказ от Appeal сохранён. Финализация произойдёт после решения второго участника или окончания окна.');
+      setSessionNotice(resultActionNotice(action, updated.data.state));
     } catch (caught) {
+      if (scope !== getLocalSessionScope()) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Result');
     } finally {
-      setActingResultKey(null);
+      if (scope === getLocalSessionScope()) setActingResultKey(null);
     }
   };
 
@@ -2648,9 +2934,11 @@ export default function IdentityScreen() {
   const joinStatusQueue = async () => {
     if (!competitionStatus || actingStatusQueue) return;
     const operation = `join:${competitionStatus.competitionId}`;
-    const idempotencyKey = statusQueueActionKeys.current.get(operation)
-      ?? `status-queue:${operation}:${Date.now().toString(36)}`;
-    statusQueueActionKeys.current.set(operation, idempotencyKey);
+    const idempotencyKey = retryableIdempotencyKey(
+      statusQueueActionKeys.current,
+      operation,
+      () => `status-queue:${operation}:${Date.now().toString(36)}`,
+    );
     setActingStatusQueue(true);
     setStatusQueueNotice(null);
     setError(null);
@@ -3293,10 +3581,10 @@ export default function IdentityScreen() {
 
   if (!authBootstrapped) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.colors.background }]}>
         <View style={styles.container}>
           <Text style={styles.eyebrow}>MOLOKH</Text>
-          <ActivityIndicator color="#221f1a" />
+          <ActivityIndicator color={theme.colors.text} />
           <Text style={styles.hint}>Восстанавливаем защищённую session…</Text>
         </View>
       </SafeAreaView>
@@ -3305,7 +3593,7 @@ export default function IdentityScreen() {
 
   if (managedLoginRequired) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.colors.background }]}>
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
           <Text style={styles.eyebrow}>MOLOKH</Text>
           <Text style={styles.title}>Вход</Text>
@@ -3317,12 +3605,18 @@ export default function IdentityScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="handled"
-      >
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.appFrame, !isCompactLayout && styles.appFrameWide]}>
+        {!isCompactLayout ? mainNavigation : null}
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.container,
+            currentLayout === 'expanded' && styles.containerExpanded,
+          ]}
+          keyboardShouldPersistTaps="handled"
+          style={styles.contentScroll}
+        >
         <Text style={styles.eyebrow}>MOLOKH</Text>
         {__DEV__ ? (
           <View style={styles.testAccountPanel}>
@@ -3379,46 +3673,49 @@ export default function IdentityScreen() {
             ) : null}
           </View>
         ) : null}
-        {visibleSections.length > 1 ? (
-          <View accessibilityRole="tablist" style={styles.mainNavigation}>
-            {visibleSections.map((section) => {
-              const selected = section.id === activeSection;
-              return (
-                <Pressable
-                  key={section.id}
-                  aria-selected={selected}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected }}
-                  onPress={() => openSection(section.id)}
-                  style={({ pressed }) => [
-                    styles.mainNavigationItem,
-                    selected && styles.mainNavigationItemSelected,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.mainNavigationText,
-                      selected && styles.mainNavigationTextSelected,
-                    ]}
-                  >
-                    {section.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : null}
         <Text accessibilityRole="header" aria-level={1} style={styles.title}>{activeSectionCopy.title}</Text>
         <Text style={styles.lead}>{activeSectionCopy.lead}</Text>
 
+        {refreshing ? (
+          <View accessibilityLiveRegion="polite" style={styles.refreshingRow}>
+            <ActivityIndicator color={theme.colors.primary} size="small" />
+            <Text style={styles.muted}>Обновляем данные в фоне…</Text>
+          </View>
+        ) : null}
+
+        {dataWarning ? (
+          <View style={styles.warningCard}>
+            <Text accessibilityLiveRegion="polite" style={styles.warningText}>{dataWarning}</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void loadIdentity()}
+              style={styles.retryButton}
+            >
+              <Text style={styles.retryText}>Обновить</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {loading ? (
           <View style={styles.stateCard}>
-            <ActivityIndicator color="#8b2f22" />
+            <ActivityIndicator color={theme.colors.primary} />
             <Text style={styles.muted}>Подключаемся к Molokh API…</Text>
           </View>
         ) : identity ? (
           <>
+            {activeSection === 'HOME' ? (
+              <HomeSection
+                coachInviteCount={coachInvites.length}
+                hostConfirmationCount={hostConfirmations.length}
+                matchCount={matches.length}
+                onNavigate={openSection}
+                operationalCount={operationalCount}
+                role={activeTestAccount.role}
+                sessionCount={sessionsReadState === 'ready' ? activeSessionCount(sessions) : null}
+                sessionReadFailed={sessionsReadState === 'error'}
+              />
+            ) : null}
+
             {activeSection === 'DISCOVERY' ? (
               <DiscoverySection
                 actingAction={actingDiscoveryAction}
@@ -3436,12 +3733,57 @@ export default function IdentityScreen() {
                     params: {
                       chatId: match.chatId,
                       counterpart: match.counterpartDisplayName,
+                      counterpartUserId: match.counterpartUserId,
+                      returnTo: 'discovery',
                     },
                   } as unknown) as Href)
                 }
+                onOpenProfile={(userId) => router.push(({
+                  pathname: '/athlete/[userId]',
+                  params: { userId, returnTo: 'discovery' },
+                } as unknown) as Href)}
                 onRefresh={() => void loadIdentity()}
                 onUnblock={(blocked) => void unblock(blocked)}
                 onUnmatch={(match) => void endMatch(match, 'unmatch')}
+                showConnections={false}
+              />
+            ) : null}
+
+            {activeSection === 'CHATS' ? (
+              <DiscoverySection
+                actingAction={actingDiscoveryAction}
+                actingCandidateId={actingCandidateId}
+                actingRelationshipId={actingRelationshipId}
+                blockedUsers={blockedUsers}
+                cards={discoveryCards}
+                chatLoadState={chatLoadState}
+                matches={matches}
+                notice={discoveryNotice}
+                onAction={(candidate, action) => void actOnDiscovery(candidate, action)}
+                onBlock={(match) => void endMatch(match, 'block')}
+                onFindPartner={identity.capabilities.includes('USE_DISCOVERY')
+                  && visibleSections.some((section) => section.id === 'DISCOVERY')
+                  ? () => openSection('DISCOVERY')
+                  : undefined}
+                onOpenChat={(match) =>
+                  router.push(({
+                    pathname: '/chat',
+                    params: {
+                      chatId: match.chatId,
+                      counterpart: match.counterpartDisplayName,
+                      counterpartUserId: match.counterpartUserId,
+                      returnTo: 'chats',
+                    },
+                  } as unknown) as Href)
+                }
+                onOpenProfile={(userId) => router.push(({
+                  pathname: '/athlete/[userId]',
+                  params: { userId, returnTo: 'chats' },
+                } as unknown) as Href)}
+                onRefresh={() => void loadIdentity()}
+                onUnblock={(blocked) => void unblock(blocked)}
+                onUnmatch={(match) => void endMatch(match, 'unmatch')}
+                showDiscovery={false}
               />
             ) : null}
 
@@ -3471,7 +3813,7 @@ export default function IdentityScreen() {
                     ]}
                   >
                     {saving ? (
-                      <ActivityIndicator color="#ffffff" />
+                      <ActivityIndicator color={theme.colors.onPrimary} />
                     ) : (
                       <Text style={styles.buttonText}>Сохранить имя</Text>
                     )}
@@ -3568,7 +3910,7 @@ export default function IdentityScreen() {
                     ]}
                   >
                     {savingSports ? (
-                      <ActivityIndicator color="#ffffff" />
+                      <ActivityIndicator color={theme.colors.onPrimary} />
                     ) : (
                       <Text style={styles.buttonText}>Сохранить виды спорта</Text>
                     )}
@@ -3629,7 +3971,7 @@ export default function IdentityScreen() {
                       pressed && canSaveHomeVenue && styles.buttonPressed,
                     ]}
                   >
-                    {savingHomeVenue ? <ActivityIndicator color="#ffffff" /> : (
+                    {savingHomeVenue ? <ActivityIndicator color={theme.colors.onPrimary} /> : (
                       <Text style={styles.buttonText}>Сохранить домашний зал</Text>
                     )}
                   </Pressable>
@@ -3684,7 +4026,7 @@ export default function IdentityScreen() {
                       style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
                     >
                       {startingVerification ? (
-                        <ActivityIndicator color="#8b2f22" />
+                        <ActivityIndicator color={theme.colors.primary} />
                       ) : (
                         <Text style={styles.secondaryButtonText}>Отправить на верификацию</Text>
                       )}
@@ -3746,7 +4088,8 @@ export default function IdentityScreen() {
               </>
             ) : null}
 
-            {activeSection === 'COMMUNITY' ? (
+            {activeSection === 'COMMUNITY'
+              || (activeSection === 'HOME' && activeTestAccount.role !== 'Athlete') ? (
               <>
                 {communityContext?.access.capabilities.includes('MANAGE_MEMBERSHIPS') ? (
                   <View style={styles.card}>
@@ -3781,7 +4124,7 @@ export default function IdentityScreen() {
                           ]}
                         >
                           {actingMembershipId === membership.membershipId
-                            ? <ActivityIndicator color="#ffffff" />
+                            ? <ActivityIndicator color={theme.colors.onPrimary} />
                             : <Text style={styles.buttonText}>Принять в Community</Text>}
                         </Pressable>
                         {rejectingMembershipId === membership.membershipId ? (
@@ -3843,7 +4186,7 @@ export default function IdentityScreen() {
                                 ]}
                               >
                                 {actingMembershipId === membership.membershipId
-                                  ? <ActivityIndicator color="#ffffff" />
+                                  ? <ActivityIndicator color={theme.colors.onPrimary} />
                                   : <Text style={styles.dangerButtonText}>Подтвердить отказ</Text>}
                               </Pressable>
                             </View>
@@ -3908,6 +4251,14 @@ export default function IdentityScreen() {
                         },
                       } as unknown) as Href);
                     }}
+                    onOpenProfile={(userId) => router.push(({
+                      pathname: '/athlete/[userId]',
+                      params: {
+                        userId,
+                        competitionId: competitionStatus.competitionId,
+                        returnTo: 'community',
+                      },
+                    } as unknown) as Href)}
                   />
                 ) : null}
                 {activeTestAccount.role === 'Athlete'
@@ -4142,7 +4493,7 @@ export default function IdentityScreen() {
                             pressed && !actingCommunityLifecycle && styles.buttonPressed,
                           ]}
                         >
-                          {actingCommunityLifecycle ? <ActivityIndicator color="#ffffff" /> : (
+                          {actingCommunityLifecycle ? <ActivityIndicator color={theme.colors.onPrimary} /> : (
                             <Text style={communityLifecycle.state === 'ACTIVE'
                               ? styles.dangerButtonText : styles.buttonText}>
                               {communityLifecycle.state === 'ACTIVE'
@@ -4208,7 +4559,7 @@ export default function IdentityScreen() {
                                 {candidate.athleteDisplayNames.join(' · ')}
                               </Text>
                               <Text style={styles.muted}>
-                                {formatDateTime(candidate.scheduledStartAt)} · {candidate.state}
+                                {formatDateTime(candidate.scheduledStartAt)} · {sessionStateLabels[candidate.state]}
                               </Text>
                               <View style={styles.chips}>
                                 <Pressable
@@ -4309,7 +4660,7 @@ export default function IdentityScreen() {
                             pressed && !actingCommunityClosure && styles.buttonPressed,
                           ]}
                         >
-                          {actingCommunityClosure ? <ActivityIndicator color="#9a3023" /> : (
+                          {actingCommunityClosure ? <ActivityIndicator color={theme.colors.dangerText} /> : (
                             <Text style={styles.dangerButtonText}>
                               {communityClosureArmed
                                 ? 'Подтвердить Closure Plan'
@@ -4351,7 +4702,7 @@ export default function IdentityScreen() {
                                 pressed && !actingCommunityClosure && styles.buttonPressed,
                               ]}
                             >
-                              {actingCommunityClosure ? <ActivityIndicator color="#9a3023" /> : (
+                              {actingCommunityClosure ? <ActivityIndicator color={theme.colors.dangerText} /> : (
                                 <Text style={styles.dangerButtonText}>Завершить закрытие Community</Text>
                               )}
                             </Pressable>
@@ -4424,7 +4775,7 @@ export default function IdentityScreen() {
                                 pressed && actingCentralAppealId === null && styles.buttonPressed,
                               ]}
                             >
-                              {acting ? <ActivityIndicator color="#ffffff" />
+                              {acting ? <ActivityIndicator color={theme.colors.onPrimary} />
                                 : <Text style={styles.buttonText}>Взять в рассмотрение</Text>}
                             </Pressable>
                           ) : null}
@@ -4605,7 +4956,7 @@ export default function IdentityScreen() {
                       ]}
                     >
                       {acceptingCoachGrant === invite.grantId ? (
-                        <ActivityIndicator color="#ffffff" />
+                        <ActivityIndicator color={theme.colors.onPrimary} />
                       ) : (
                         <Text style={styles.buttonText}>Принять роль Coach</Text>
                       )}
@@ -4758,43 +5109,20 @@ export default function IdentityScreen() {
                       <Text style={styles.hint}>
                         Дата и время указываются в часовом поясе зала: {venueAdminDashboard.venue.timezone}.
                       </Text>
-                      <View style={styles.publicationKindTabs}>
-                        {([
+                      <ChoiceGroup
+                        label="Тип тренировки"
+                        options={[
                           ['SLOT', 'Персональная'],
                           ['GROUP', 'Групповая'],
-                        ] as const).map(([kind, label]) => {
-                          const selected = adminPublicationKind === kind;
-                          return (
-                            <Pressable
-                              key={kind}
-                              accessibilityRole="button"
-                              accessibilityState={{
-                                disabled: editingAdminSchedule !== null,
-                                selected,
-                              }}
-                              disabled={editingAdminSchedule !== null}
-                              onPress={() => {
-                                setAdminPublicationKind(kind);
-                                setScheduleNotice(null);
-                                setError(null);
-                              }}
-                              style={({ pressed }) => [
-                                styles.publicationKindTab,
-                                selected && styles.publicationKindTabSelected,
-                                editingAdminSchedule !== null && !selected && styles.buttonDisabled,
-                                pressed && styles.buttonPressed,
-                              ]}
-                            >
-                              <Text style={[
-                                styles.publicationKindTabText,
-                                selected && styles.publicationKindTabTextSelected,
-                              ]}>
-                                {label}
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
+                        ]}
+                        value={adminPublicationKind}
+                        disabled={editingAdminSchedule !== null}
+                        onChange={(kind) => {
+                          setAdminPublicationKind(kind);
+                          setScheduleNotice(null);
+                          setError(null);
+                        }}
+                      />
 
                       <View style={styles.formRow}>
                         <View style={styles.formField}>
@@ -4823,31 +5151,12 @@ export default function IdentityScreen() {
                         </View>
                       </View>
                       <Text style={styles.label}>Длительность</Text>
-                      <View style={styles.chips}>
-                        {([60, 90] as const).map((minutes) => {
-                          const selected = adminDurationMinutes === minutes;
-                          return (
-                            <Pressable
-                              key={minutes}
-                              accessibilityRole="button"
-                              accessibilityState={{ selected }}
-                              onPress={() => setAdminDurationMinutes(minutes)}
-                              style={({ pressed }) => [
-                                styles.choiceChip,
-                                selected && styles.choiceChipSelected,
-                                pressed && styles.buttonPressed,
-                              ]}
-                            >
-                              <Text style={[
-                                styles.choiceChipText,
-                                selected && styles.choiceChipTextSelected,
-                              ]}>
-                                {minutes} мин
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
+                      <ChoiceGroup
+                        label="Длительность тренировки"
+                        options={[[60, '60 мин'], [90, '90 мин']]}
+                        value={adminDurationMinutes}
+                        onChange={setAdminDurationMinutes}
+                      />
 
                       {adminPublicationKind === 'SLOT' ? (
                         <>
@@ -4980,7 +5289,7 @@ export default function IdentityScreen() {
                         ]}
                       >
                         {publishingSchedule ? (
-                          <ActivityIndicator color="#ffffff" />
+                          <ActivityIndicator color={theme.colors.onPrimary} />
                         ) : (
                           <Text style={styles.buttonText}>
                             {editingAdminSchedule ? 'Сохранить изменения' : 'Опубликовать'}
@@ -5018,7 +5327,7 @@ export default function IdentityScreen() {
                       {venueAdminDashboard.slots.map((slot) => (
                         <View key={slot.slotId} style={styles.adminScheduleItem}>
                           <Text style={styles.sessionState}>Персональная</Text>
-                          <Text style={styles.venueName}>{formatDateTime(slot.startAt)}</Text>
+                          <Text style={styles.venueName}>{formatVenueDateTime(slot.startAt, venueAdminDashboard.venue.timezone)}</Text>
                           <Text style={styles.hint}>Coach: {slot.coachDisplayName}</Text>
                           <Text style={styles.hint}>
                             {slot.priceAmount && slot.priceCurrency
@@ -5046,7 +5355,7 @@ export default function IdentityScreen() {
                                 setPendingScheduleWithdrawal({
                                   id: slot.slotId,
                                   kind: 'SLOT',
-                                  label: `${formatDateTime(slot.startAt)}, ${slot.coachDisplayName}`,
+                                  label: `${formatVenueDateTime(slot.startAt, venueAdminDashboard.venue.timezone)}, ${slot.coachDisplayName}`,
                                   version: slot.version,
                                 });
                                 setEditingAdminSchedule(null);
@@ -5066,7 +5375,7 @@ export default function IdentityScreen() {
                         <View key={offering.groupOfferingId} style={styles.adminScheduleItem}>
                           <Text style={styles.groupState}>Групповая</Text>
                           <Text style={styles.venueName}>{offering.classLabel}</Text>
-                          <Text style={styles.muted}>{formatDateTime(offering.startAt)}</Text>
+                          <Text style={styles.muted}>{formatVenueDateTime(offering.startAt, venueAdminDashboard.venue.timezone)}</Text>
                           {offering.coachDisplayName ? (
                             <Text style={styles.hint}>Coach: {offering.coachDisplayName}</Text>
                           ) : null}
@@ -5174,7 +5483,7 @@ export default function IdentityScreen() {
                               ]}
                             >
                               {withdrawingScheduleId ? (
-                                <ActivityIndicator color="#9a3023" />
+                                <ActivityIndicator color={theme.colors.dangerText} />
                               ) : (
                                 <Text style={styles.dangerButtonText}>Снять публикацию</Text>
                               )}
@@ -5196,7 +5505,7 @@ export default function IdentityScreen() {
                       ) : venueAdminDashboard.groupInterests.map((interest) => (
                         <View key={interest.groupPlanId} style={styles.adminScheduleItem}>
                           <Text style={styles.venueName}>{interest.classLabel}</Text>
-                          <Text style={styles.muted}>{formatDateTime(interest.startAt)}</Text>
+                          <Text style={styles.muted}>{formatVenueDateTime(interest.startAt, venueAdminDashboard.venue.timezone)}</Text>
                           <Text style={styles.hint}>
                             {interest.athleteDisplayNames.join(' + ')}
                           </Text>
@@ -5232,7 +5541,7 @@ export default function IdentityScreen() {
                             {item.athleteDisplayNames.join(' + ')}
                           </Text>
                           <Text style={styles.muted}>
-                            {formatDateTime(snapshot.startAt)} · {snapshot.venueDisplayName}
+                            {formatVenueDateTime(snapshot.startAt, item.venueTimezone)} · {snapshot.venueDisplayName}
                           </Text>
                           <Text style={styles.hint}>Тренер: {snapshot.coachDisplayName}</Text>
                           <Pressable
@@ -5247,7 +5556,7 @@ export default function IdentityScreen() {
                             ]}
                           >
                             {confirming ? (
-                              <ActivityIndicator color="#ffffff" />
+                              <ActivityIndicator color={theme.colors.onPrimary} />
                             ) : (
                               <Text style={styles.buttonText}>Подтвердить тренировку</Text>
                             )}
@@ -5317,7 +5626,7 @@ export default function IdentityScreen() {
                                   ]}
                                 >
                                   {confirming ? (
-                                    <ActivityIndicator color="#9a3023" />
+                                    <ActivityIndicator color={theme.colors.dangerText} />
                                   ) : (
                                     <Text style={styles.dangerButtonText}>Подтвердить отказ</Text>
                                   )}
@@ -5434,6 +5743,7 @@ export default function IdentityScreen() {
                       const officialResultPresentation = officialResult
                         ? resultCardPresentation(officialResult)
                         : null;
+                      const resultNotice = sessionResultNotice(session, officialResult, loading || refreshing);
                       const appealDetail = session.resultId
                         ? appealsByResultId[session.resultId] ?? null
                         : null;
@@ -5455,7 +5765,7 @@ export default function IdentityScreen() {
                             <Text style={styles.sessionState}>{sessionStateLabels[session.state]}</Text>
                           </View>
                           <Text style={styles.muted}>
-                            {formatDateTime(session.scheduledStartAt)} · {session.venueDisplayName}
+                            {formatVenueDateTime(session.scheduledStartAt, sessionVenueTimezones[session.venueId])} · {session.venueDisplayName}
                           </Text>
                           <Text style={styles.hint}>Coach: {session.coachDisplayName}</Text>
                           <GuestCoachAuthorizationCard
@@ -5961,7 +6271,7 @@ export default function IdentityScreen() {
                               ]}
                             >
                               {actionPending ? (
-                                <ActivityIndicator color="#ffffff" />
+                                <ActivityIndicator color={theme.colors.onPrimary} />
                               ) : (
                                 <Text style={styles.buttonText}>Начать Session</Text>
                               )}
@@ -6046,7 +6356,7 @@ export default function IdentityScreen() {
                               ]}
                             >
                               {actionPending ? (
-                                <ActivityIndicator color="#ffffff" />
+                                <ActivityIndicator color={theme.colors.onPrimary} />
                               ) : (
                                 <Text style={styles.buttonText}>
                                   {session.purpose === 'OFFICIAL_CHALLENGE'
@@ -6056,11 +6366,7 @@ export default function IdentityScreen() {
                               )}
                             </Pressable>
                           ) : null}
-                          {session.state === 'ENDED'
-                            && session.purpose === 'OFFICIAL_CHALLENGE'
-                            && session.viewerCanRecordResult
-                            && session.challengeState === 'RESULT_PENDING'
-                            && officialResult === null ? (
+                          {canRecordOfficialResult(session, officialResult !== null) ? (
                               <View style={styles.attendanceCard}>
                                 <Text style={styles.label}>Подтвердить официальный результат</Text>
                                 <Text style={styles.hint}>
@@ -6287,11 +6593,6 @@ export default function IdentityScreen() {
                                   </Text>
                                 </View>
                               ) : null}
-                              {officialResult.statusTransitionType !== 'NONE' ? (
-                                <Text style={styles.hint}>
-                                  Статус Community уже обновлён предварительно и защищён от других статусных Challenge.
-                                </Text>
-                              ) : null}
                               {officialResult.state === 'RECORDED' ? (
                                 <Text style={styles.hint}>
                                   Appeal до {formatDateTime(officialResult.appealDeadlineAt)}.
@@ -6442,7 +6743,7 @@ export default function IdentityScreen() {
                                   ]}
                                 >
                                   <Text style={styles.secondaryButtonText}>
-                                    Согласен с результатом — разблокироваться
+                                    Согласен с результатом — отказаться от Appeal
                                   </Text>
                                 </Pressable>
                               ) : null}
@@ -6469,14 +6770,24 @@ export default function IdentityScreen() {
                                 token={activeTestToken}
                               />
                             </View>
-                          ) : session.resultId ? (
-                            <Text style={styles.hint}>Загружаем официальный Result…</Text>
                           ) : null}
-                          {session.state === 'ENDED' ? (
+                          {resultNotice ? (
+                            <View>
+                              <Text style={styles.hint}>{resultNotice.message}</Text>
+                              {resultNotice.retry ? (
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => void loadIdentity()}
+                                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                                >
+                                  <Text style={styles.secondaryButtonText}>Повторить загрузку Result</Text>
+                                </Pressable>
+                              ) : null}
+                            </View>
+                          ) : null}
+                          {session.state === 'ENDED' && session.purpose !== 'OFFICIAL_CHALLENGE' ? (
                             <Text style={styles.hint}>
-                              {session.purpose === 'OFFICIAL_CHALLENGE'
-                                ? 'Session завершена. Теперь Coach должен подтвердить официальный результат.'
-                                : 'В статистику вошли только спортсмены со статусом «Присутствовал» или «Опоздал».'}
+                              В статистику вошли только спортсмены со статусом «Присутствовал» или «Опоздал».
                             </Text>
                           ) : null}
                           {session.state === 'CANCELLED' ? (
@@ -6517,7 +6828,7 @@ export default function IdentityScreen() {
                         ]}
                       >
                         {actingMembershipId === 'request'
-                          ? <ActivityIndicator color="#ffffff" />
+                          ? <ActivityIndicator color={theme.colors.onPrimary} />
                           : <Text style={styles.buttonText}>Вступить в Community</Text>}
                       </Pressable>
                     ) : null}
@@ -6538,7 +6849,7 @@ export default function IdentityScreen() {
                           ]}
                         >
                           {actingMembershipId === communityContext.membership?.membershipId
-                            ? <ActivityIndicator color="#8b2f22" />
+                            ? <ActivityIndicator color={theme.colors.primary} />
                             : <Text style={styles.secondaryButtonText}>Отозвать заявку</Text>}
                         </Pressable>
                       </View>
@@ -6600,7 +6911,7 @@ export default function IdentityScreen() {
                           ]}
                         >
                           {savingPairCooldown
-                            ? <ActivityIndicator color="#8b2f22" />
+                            ? <ActivityIndicator color={theme.colors.primary} />
                             : <Text style={styles.secondaryButtonText}>Опубликовать версию</Text>}
                         </Pressable>
                         {pairCooldownNotice ? (
@@ -6686,13 +6997,19 @@ export default function IdentityScreen() {
           </View>
         ) : null}
 
-      </ScrollView>
+        </ScrollView>
+        {isCompactLayout ? mainNavigation : null}
+      </View>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { backgroundColor: '#f6f4ef', flex: 1 },
+function createStyles(theme: AppTheme) {
+  return StyleSheet.create({
+  safeArea: { backgroundColor: theme.colors.background, flex: 1 },
+  appFrame: { flex: 1 },
+  appFrameWide: { flexDirection: 'row' },
+  contentScroll: { flex: 1 },
   container: {
     alignSelf: 'center',
     boxSizing: 'border-box',
@@ -6702,10 +7019,11 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
     width: '100%',
   },
-  eyebrow: { color: '#8b2f22', fontSize: 13, fontWeight: '700', letterSpacing: 2 },
+  containerExpanded: { maxWidth: 880, paddingHorizontal: 32 },
+  eyebrow: { color: theme.colors.primary, fontSize: 13, fontWeight: '700', letterSpacing: 2 },
   testAccountPanel: {
-    backgroundColor: '#fff7e6',
-    borderColor: '#dfc994',
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
     borderRadius: 14,
     borderWidth: 1,
     gap: 12,
@@ -6713,22 +7031,22 @@ const styles = StyleSheet.create({
   },
   testAccountHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   testAccountIdentity: { flex: 1, gap: 3 },
-  testAccountLabel: { color: '#806218', fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
-  testAccountName: { color: '#3f310c', fontSize: 15, fontWeight: '700' },
+  testAccountLabel: { color: theme.colors.warningText, fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
+  testAccountName: { color: theme.colors.warningText, fontSize: 15, fontWeight: '700' },
   testAccountButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  testAccountButtonText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
+  testAccountButtonText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
   testAccountList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   testAccountOption: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 10,
     borderWidth: 1,
     flexBasis: '48%',
@@ -6737,32 +7055,47 @@ const styles = StyleSheet.create({
     minHeight: 54,
     padding: 10,
   },
-  testAccountOptionSelected: { borderColor: '#8b2f22', borderWidth: 2 },
-  testAccountOptionName: { color: '#171512', fontSize: 13, fontWeight: '700' },
-  testAccountOptionRole: { color: '#777168', fontSize: 12 },
+  testAccountOptionSelected: { borderColor: theme.colors.primary, borderWidth: 2 },
+  testAccountOptionName: { color: theme.colors.text, fontSize: 13, fontWeight: '700' },
+  testAccountOptionRole: { color: theme.colors.textMuted, fontSize: 12 },
   mainNavigation: {
-    backgroundColor: '#e9e5dd',
-    borderRadius: 14,
+    backgroundColor: theme.colors.surfaceStrong,
     flexDirection: 'row',
     gap: 4,
     padding: 4,
+  },
+  mainNavigationCompact: {
+    borderTopColor: theme.colors.border,
+    borderTopWidth: 1,
+    paddingBottom: 6,
+    paddingHorizontal: 6,
+    paddingTop: 6,
+  },
+  mainNavigationWide: {
+    borderRightColor: theme.colors.border,
+    borderRightWidth: 1,
+    flexDirection: 'column',
+    paddingHorizontal: 10,
+    paddingTop: 24,
+    width: 176,
   },
   mainNavigationItem: {
     alignItems: 'center',
     borderRadius: 10,
     flex: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 8,
   },
-  mainNavigationItemSelected: { backgroundColor: '#8b2f22' },
-  mainNavigationText: { color: '#625d55', fontSize: 14, fontWeight: '700' },
-  mainNavigationTextSelected: { color: '#ffffff' },
-  title: { color: '#171512', fontSize: 36, fontWeight: '800', letterSpacing: -1, lineHeight: 42 },
-  lead: { color: '#4c4943', fontSize: 17, lineHeight: 25 },
+  mainNavigationItemWide: { flex: 0, paddingHorizontal: 14 },
+  mainNavigationItemSelected: { backgroundColor: theme.colors.primary },
+  mainNavigationText: { color: theme.colors.textMuted, fontSize: 14, fontWeight: '700' },
+  mainNavigationTextSelected: { color: theme.colors.onPrimary },
+  title: { color: theme.colors.text, fontSize: 36, fontWeight: '800', letterSpacing: -1, lineHeight: 42 },
+  lead: { color: theme.colors.textSecondary, fontSize: 17, lineHeight: 25 },
   card: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 18,
     borderWidth: 1,
     gap: 12,
@@ -6770,14 +7103,24 @@ const styles = StyleSheet.create({
   },
   stateCard: {
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: theme.colors.surface,
     borderRadius: 18,
     gap: 12,
     padding: 28,
   },
+  refreshingRow: { alignItems: 'center', flexDirection: 'row', gap: 10, minHeight: 48 },
+  warningCard: {
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 8,
+    padding: 14,
+  },
+  warningText: { color: theme.colors.warningText, fontSize: 14, lineHeight: 20 },
   hostConfirmationCard: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
@@ -6787,8 +7130,8 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   adminMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   adminMetric: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
     flexBasis: '30%',
@@ -6797,43 +7140,25 @@ const styles = StyleSheet.create({
     minWidth: 120,
     padding: 12,
   },
-  adminMetricValue: { color: '#8b2f22', fontSize: 24, fontWeight: '800' },
-  adminMetricLabel: { color: '#625d55', fontSize: 12, lineHeight: 17 },
-  publicationKindTabs: {
-    backgroundColor: '#e9e5dd',
-    borderRadius: 12,
-    flexDirection: 'row',
-    gap: 4,
-    padding: 4,
-  },
-  publicationKindTab: {
-    alignItems: 'center',
-    borderRadius: 9,
-    flex: 1,
-    justifyContent: 'center',
-    minHeight: 44,
-    paddingHorizontal: 8,
-  },
-  publicationKindTabSelected: { backgroundColor: '#ffffff' },
-  publicationKindTabText: { color: '#625d55', fontSize: 13, fontWeight: '700' },
-  publicationKindTabTextSelected: { color: '#8b2f22' },
+  adminMetricValue: { color: theme.colors.primary, fontSize: 24, fontWeight: '800' },
+  adminMetricLabel: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 17 },
   formRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   formField: { flexBasis: '46%', flexGrow: 1, gap: 7, minWidth: 150 },
   choiceChip: {
     alignItems: 'center',
-    borderColor: '#c9c3b9',
+    borderColor: theme.colors.border,
     borderRadius: 999,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 13,
   },
-  choiceChipSelected: { backgroundColor: '#8b2f22', borderColor: '#8b2f22' },
-  choiceChipText: { color: '#625d55', fontSize: 13, fontWeight: '700' },
-  choiceChipTextSelected: { color: '#ffffff' },
+  choiceChipSelected: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  choiceChipText: { color: theme.colors.textMuted, fontSize: 13, fontWeight: '700' },
+  choiceChipTextSelected: { color: theme.colors.onPrimary },
   adminScheduleItem: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
     gap: 6,
@@ -6841,9 +7166,9 @@ const styles = StyleSheet.create({
   },
   groupState: {
     alignSelf: 'flex-start',
-    backgroundColor: '#e8f1e9',
+    backgroundColor: theme.colors.successBackground,
     borderRadius: 999,
-    color: '#285d35',
+    color: theme.colors.successText,
     fontSize: 12,
     fontWeight: '700',
     overflow: 'hidden',
@@ -6851,17 +7176,17 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   successCard: {
-    backgroundColor: '#eef7ef',
-    borderColor: '#b8d6bc',
+    backgroundColor: theme.colors.successBackground,
+    borderColor: theme.colors.successText,
     borderRadius: 14,
     borderWidth: 1,
     padding: 16,
   },
-  successText: { color: '#285d35', fontSize: 14, lineHeight: 20 },
+  successText: { color: theme.colors.successText, fontSize: 14, lineHeight: 20 },
   sessionState: {
-    backgroundColor: '#e8f1e9',
+    backgroundColor: theme.colors.successBackground,
     borderRadius: 999,
-    color: '#285d35',
+    color: theme.colors.successText,
     fontSize: 12,
     fontWeight: '700',
     overflow: 'hidden',
@@ -6870,52 +7195,52 @@ const styles = StyleSheet.create({
   },
   attendanceList: { gap: 8 },
   sessionConfirmation: {
-    backgroundColor: '#fff7e6',
-    borderColor: '#dfc994',
+    backgroundColor: theme.colors.warningBackground,
+    borderColor: theme.colors.warningBorder,
     borderRadius: 12,
     borderWidth: 1,
     gap: 10,
     padding: 14,
   },
   sessionConfirmationDanger: {
-    backgroundColor: '#fff3f1',
-    borderColor: '#b84838',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
   },
-  confirmationTitle: { color: '#171512', fontSize: 15, fontWeight: '800' },
-  confirmationDescription: { color: '#625d55', fontSize: 13, lineHeight: 19 },
+  confirmationTitle: { color: theme.colors.text, fontSize: 15, fontWeight: '800' },
+  confirmationDescription: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 19 },
   confirmationActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   confirmationCancelButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
   confirmationPrimaryButton: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 10,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
   confirmationDangerButton: {
     alignItems: 'center',
-    backgroundColor: '#9a3023',
+    backgroundColor: theme.colors.dangerText,
     borderRadius: 10,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 46,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  confirmationButtonText: { color: '#ffffff', fontSize: 14, fontWeight: '800' },
+  confirmationButtonText: { color: theme.colors.onPrimary, fontSize: 14, fontWeight: '800' },
   attendanceCard: {
-    backgroundColor: '#ffffff',
-    borderColor: '#e5e0d7',
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderRadius: 10,
     borderWidth: 1,
     gap: 8,
@@ -6924,167 +7249,168 @@ const styles = StyleSheet.create({
   attendanceActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   attendanceButton: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 9,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 10,
   },
-  attendanceButtonText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
-  label: { color: '#171512', fontSize: 14, fontWeight: '700' },
+  attendanceButtonText: { color: theme.colors.onPrimary, fontSize: 12, fontWeight: '700' },
+  label: { color: theme.colors.text, fontSize: 14, fontWeight: '700' },
   input: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#c9c3b9',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 12,
     borderWidth: 1,
-    color: '#171512',
+    color: theme.colors.text,
     fontSize: 17,
     minHeight: 52,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
   appealInput: { minHeight: 96, textAlignVertical: 'top' },
-  hint: { color: '#777168', fontSize: 13, lineHeight: 19 },
+  hint: { color: theme.colors.textMuted, fontSize: 13, lineHeight: 19 },
   button: {
     alignItems: 'center',
-    backgroundColor: '#8b2f22',
+    backgroundColor: theme.colors.primary,
     borderRadius: 12,
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: 18,
   },
-  buttonDisabled: { backgroundColor: '#bbb5ad' },
+  buttonDisabled: { backgroundColor: theme.colors.disabled },
   buttonPressed: { opacity: 0.85 },
-  buttonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
+  buttonText: { color: theme.colors.onPrimary, fontSize: 16, fontWeight: '700' },
   secondaryButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 12,
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: 18,
   },
-  secondaryButtonText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
+  secondaryButtonText: { color: theme.colors.primary, fontSize: 15, fontWeight: '700' },
   compactSecondaryButton: {
     alignItems: 'center',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
   dangerButton: {
     alignItems: 'center',
-    backgroundColor: '#fff3f1',
-    borderColor: '#b84838',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
     borderRadius: 12,
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: 18,
   },
-  dangerButtonText: { color: '#9a3023', fontSize: 15, fontWeight: '700' },
+  dangerButtonText: { color: theme.colors.dangerText, fontSize: 15, fontWeight: '700' },
   compactDangerButton: {
     alignItems: 'center',
-    backgroundColor: '#fff3f1',
-    borderColor: '#b84838',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
     borderRadius: 10,
     borderWidth: 1,
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
   refreshButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    borderColor: '#8b2f22',
+    borderColor: theme.colors.primary,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 14,
   },
-  refreshText: { color: '#8b2f22', fontSize: 14, fontWeight: '700' },
-  cardTitle: { color: '#171512', fontSize: 18, fontWeight: '700' },
-  venueName: { color: '#4c4943', fontSize: 16, fontWeight: '600' },
+  refreshText: { color: theme.colors.primary, fontSize: 14, fontWeight: '700' },
+  cardTitle: { color: theme.colors.text, fontSize: 18, fontWeight: '700' },
+  venueName: { color: theme.colors.textSecondary, fontSize: 16, fontWeight: '600' },
   row: { alignItems: 'flex-start', flexDirection: 'row', gap: 16, justifyContent: 'space-between' },
-  muted: { color: '#777168', flexShrink: 1, fontSize: 14 },
-  value: { color: '#171512', flexShrink: 1, fontSize: 14, fontWeight: '600', textAlign: 'right' },
+  muted: { color: theme.colors.textMuted, flexShrink: 1, fontSize: 14 },
+  value: { color: theme.colors.text, flexShrink: 1, fontSize: 14, fontWeight: '600', textAlign: 'right' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { backgroundColor: '#e8f1e9', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
-  chipText: { color: '#285d35', fontSize: 13, fontWeight: '600' },
+  chip: { backgroundColor: theme.colors.successBackground, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
+  chipText: { color: theme.colors.successText, fontSize: 13, fontWeight: '600' },
   capabilityList: { gap: 8 },
   capabilityRow: {
     alignItems: 'center',
-    backgroundColor: '#faf9f6',
+    backgroundColor: theme.colors.surfaceMuted,
     borderRadius: 10,
     flexDirection: 'row',
     gap: 12,
     justifyContent: 'space-between',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  capabilityText: { color: '#4c4943', flex: 1, fontSize: 14 },
-  capabilityState: { color: '#285d35', fontSize: 13, fontWeight: '700' },
+  capabilityText: { color: theme.colors.textSecondary, flex: 1, fontSize: 14 },
+  capabilityState: { color: theme.colors.successText, fontSize: 13, fontWeight: '700' },
   sportOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   sportOption: {
     alignItems: 'center',
-    borderColor: '#c9c3b9',
+    borderColor: theme.colors.border,
     borderRadius: 10,
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: theme.touchTarget,
     paddingHorizontal: 12,
   },
-  sportOptionSelected: { backgroundColor: '#8b2f22', borderColor: '#8b2f22' },
-  sportOptionText: { color: '#625d55', fontSize: 13, fontWeight: '600' },
-  sportOptionTextSelected: { color: '#ffffff' },
+  sportOptionSelected: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  sportOptionText: { color: theme.colors.textMuted, fontSize: 13, fontWeight: '600' },
+  sportOptionTextSelected: { color: theme.colors.onPrimary },
   discoveryCard: {
-    backgroundColor: '#faf9f6',
-    borderColor: '#ded9cf',
+    backgroundColor: theme.colors.surfaceMuted,
+    borderColor: theme.colors.border,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
     padding: 16,
   },
-  discoveryCardInterested: { borderColor: '#8b2f22', borderWidth: 2 },
+  discoveryCardInterested: { borderColor: theme.colors.primary, borderWidth: 2 },
   discoveryHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   discoveryIdentity: { flex: 1, gap: 3 },
   avatarPlaceholder: {
     alignItems: 'center',
-    backgroundColor: '#e9ddd7',
+    backgroundColor: theme.colors.accentBackground,
     borderRadius: 28,
     height: 56,
     justifyContent: 'center',
     width: 56,
   },
-  avatarText: { color: '#8b2f22', fontSize: 22, fontWeight: '800' },
-  discoveryName: { color: '#171512', fontSize: 17, fontWeight: '700' },
-  discoveryExperience: { color: '#4c4943', fontSize: 14, lineHeight: 20 },
+  avatarText: { color: theme.colors.primary, fontSize: 22, fontWeight: '800' },
+  discoveryName: { color: theme.colors.text, fontSize: 17, fontWeight: '700' },
+  discoveryExperience: { color: theme.colors.textSecondary, fontSize: 14, lineHeight: 20 },
   interestBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#f4dfda',
+    backgroundColor: theme.colors.accentBackground,
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
-  interestText: { color: '#7a261b', fontSize: 13, fontWeight: '700' },
-  denial: { color: '#8b2f22', fontSize: 14, lineHeight: 20 },
+  interestText: { color: theme.colors.dangerText, fontSize: 13, fontWeight: '700' },
+  denial: { color: theme.colors.primary, fontSize: 14, lineHeight: 20 },
   errorCard: {
-    backgroundColor: '#fff0ed',
-    borderColor: '#e5b3aa',
+    backgroundColor: theme.colors.dangerBackground,
+    borderColor: theme.colors.dangerBorder,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
     padding: 16,
   },
-  errorText: { color: '#7a261b', fontSize: 14, lineHeight: 20 },
+  errorText: { color: theme.colors.dangerText, fontSize: 14, lineHeight: 20 },
   retryButton: { alignSelf: 'flex-start', justifyContent: 'center', minHeight: 48, paddingHorizontal: 4 },
-  retryText: { color: '#8b2f22', fontSize: 15, fontWeight: '700' },
-});
+  retryText: { color: theme.colors.primary, fontSize: 15, fontWeight: '700' },
+  });
+}

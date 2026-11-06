@@ -30,6 +30,14 @@ const categoryLabels: Readonly<Record<Category, string>> = {
   LATE_RESULT_CORRECTION: 'Поздно обнаруженная ошибка Result',
 };
 
+const correctionStateLabels: Readonly<Record<Correction['state'], string>> = {
+  SUBMITTED: 'Отправлен в Central',
+  UNDER_REVIEW: 'Рассматривается Central',
+  WITHDRAWN: 'Запрос отозван',
+  APPROVED: 'Исправление подтверждено',
+  REJECTED: 'Исправление отклонено',
+};
+
 export function TechnicalCorrectionRequestCard(props: {
   readonly correction: Correction | null;
   readonly currentUserId: string | null;
@@ -75,7 +83,9 @@ export function TechnicalCorrectionRequestCard(props: {
         : 'Это только заявка для независимого Central. Result, статус и Cooldown не изменены.';
     return (
       <View style={styles.noticeCard}>
-        <Text style={styles.label}>Запрос Coach на исправление · {props.correction.state}</Text>
+        <Text style={styles.label}>
+          Запрос Coach на исправление · {correctionStateLabels[props.correction.state]}
+        </Text>
         <Text style={styles.text}>
           {outcomeLabels[props.correction.originalOutcomeCode]} → {outcomeLabels[props.correction.proposedOutcomeCode]}
         </Text>

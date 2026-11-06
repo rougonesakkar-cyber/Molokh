@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 
 import { apiErrorMessage, apiUrl } from '../../lib/api';
+import { ChoiceGroup } from '../../ui/ChoiceGroup';
 
 type IntegrityCase = IntegrityCaseListResponse['data'][number];
 type Category = IntegrityCase['category'];
@@ -274,22 +275,13 @@ function OpenIntegrityCaseForm({ token, onUpdated }: {
         Только по конкретному доказательству мошенничества, системной ошибки или ошибки личности.
         Обычное несогласие после Final не является основанием.
       </Text>
-      <View style={styles.options}>
-        {(Object.keys(categoryLabels) as Category[]).map((item) => (
-          <Pressable
-            key={item}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: acting, selected: category === item }}
-            disabled={acting}
-            onPress={() => setCategory(item)}
-            style={[styles.option, category === item && styles.optionSelected]}
-          >
-            <Text style={[styles.optionText, category === item && styles.optionTextSelected]}>
-              {categoryLabels[item]}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      <ChoiceGroup
+        label="Тип проверки"
+        options={(Object.keys(categoryLabels) as Category[]).map((item) => [item, categoryLabels[item]])}
+        value={category}
+        disabled={acting}
+        onChange={setCategory}
+      />
       <View style={styles.inlineInputs}>
         <TextInput
           accessibilityLabel="Result ID"

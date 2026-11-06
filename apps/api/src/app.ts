@@ -163,6 +163,12 @@ export async function buildApp(options: BuildAppOptions = {}) {
     max: 300,
     timeWindow: 60_000,
   });
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (request.url.startsWith('/api/v1/')) {
+      void reply.header('cache-control', 'no-store');
+    }
+    return payload;
+  });
 
   await app.register(swagger, {
     openapi: {

@@ -231,6 +231,7 @@ import {
   acceptOptionalChallenge,
   activateStatusQueueHead,
   declineOptionalChallenge,
+  withdrawOptionalChallenge,
   finalizeResult,
   readChatChallenge,
   readChallengeTimerSnapshot,
@@ -1129,6 +1130,16 @@ async function verifySchedulingPublication(
     ).resolves.toEqual([]);
 
     const options = await readTrainingOptions(database, chat, athleteA, occurredAt);
+    const { formatVenueDateTime } = await import('../../../apps/client/src/lib/schedule-time.js');
+    expect(options.venueTimezones).toMatchObject({ [venue]: 'Europe/Moscow' });
+    expect(new Set(Object.keys(options.venueTimezones))).toEqual(new Set([
+      ...options.slots.map((item) => item.venueId),
+      ...options.groupOfferings.map((item) => item.venueId),
+    ]));
+    for (const item of [...options.slots, ...options.groupOfferings]) {
+      expect(formatVenueDateTime(item.startAt, options.venueTimezones[item.venueId]))
+        .toContain('GMT+3 · время зала');
+    }
     expect(options.slots).toEqual(expect.arrayContaining([
       expect.objectContaining({ slotId: slot }),
       expect.objectContaining({ slotId: rejectedSlotId }),
@@ -1456,6 +1467,15 @@ async function verifySchedulingPublication(
     const confirmedSession = confirmedResult?.response.session;
     if (!confirmedSession) throw new Error('Expected the winning Booking to create a Session');
     const [sessionAthleteA, sessionAthleteB] = confirmedSession.athleteUserIds;
+    const confirmedBooking = confirmedResult!.response.booking;
+    const bookedOptions = await readTrainingOptions(
+      database, confirmedBooking.chatId, sessionAthleteA, occurredAt,
+    );
+    const frozenTerms = bookedOptions.activeIntent.booking?.commercialTermsSnapshot;
+    expect(frozenTerms).not.toBeNull();
+    expect(bookedOptions.venueTimezones[frozenTerms!.venueId]).toBe('Europe/Moscow');
+    expect(formatVenueDateTime(frozenTerms!.startAt, bookedOptions.venueTimezones[frozenTerms!.venueId]))
+      .toContain('GMT+3 · время зала');
     await expect(readSessionTimerSnapshot(database, confirmedSession.sessionId)).resolves.toEqual({
       state: 'SCHEDULED',
       version: 1,
@@ -1475,7 +1495,7 @@ async function verifySchedulingPublication(
     const replacementCommand: CommandEnvelope<ReplaceSessionCoachPayload> = {
       commandId: testId(1350),
       commandType: 'REPLACE_SESSION_COACH',
-      idempotencyKey: `replace-session-coach-${confirmedSession.sessionId}`,
+      idempotencyKey: `replace-session-assigned-coach-${confirmedSession.sessionId}`,
       actor: { type: 'USER', id: admin, roles: ['GYM_ADMIN'], scopeIds: [venue] },
       aggregateType: 'Session',
       aggregateId: confirmedSession.sessionId,
@@ -2568,7 +2588,16 @@ describePostgres('PostgreSQL critical command transaction', () => {
     `.execute(database);
   });
 
-  const seedConfirmedTrainingForConversion = async (base: number) => {
+  const seedConfirmedTrainingForConversion = async (
+    base: number,
+    schedule: {
+      readonly startAt: string;
+      readonly endAt: string;
+    } = {
+      startAt: '2026-10-01T10:00:00.000Z',
+      endAt: '2026-10-01T11:00:00.000Z',
+    },
+  ) => {
     const athleteA = testId(base);
     const athleteB = testId(base + 1);
     const coach = testId(base + 2);
@@ -2582,8 +2611,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
     const booking = testId(base + 10);
     const session = testId(base + 11);
     const occurredAt = '2026-09-27T10:00:00.000Z';
-    const scheduledStartAt = '2026-10-01T10:00:00.000Z';
-    const scheduledEndAt = '2026-10-01T11:00:00.000Z';
+    const scheduledStartAt = schedule.startAt;
+    const scheduledEndAt = schedule.endAt;
 
     await sql`
       insert into identity.users (
@@ -5129,7 +5158,10 @@ describePostgres('PostgreSQL critical command transaction', () => {
   });
 
   it('[AC-019] scopes a verified Guest Coach to one Session and expires the grant after cancellation', async () => {
-    const fixture = await seedConfirmedTrainingForConversion(125000);
+    const fixture = await seedConfirmedTrainingForConversion(125000, {
+      startAt: '2099-10-01T10:00:00.000Z',
+      endAt: '2099-10-01T11:00:00.000Z',
+    });
     const other = await seedConfirmedTrainingForConversion(125100);
     const grantId = testId(125200);
     const authorizedAt = new Date('2026-09-28T10:00:00.000Z');
@@ -5180,7 +5212,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(authorized.response).toMatchObject({
       grantId, userId: fixture.coach, role: 'COACH', scopeType: 'SESSION',
       scopeId: fixture.session, state: 'ACTIVE', version: 1,
-      expiresAt: '2026-10-31T11:00:00.000Z',
+      expiresAt: '2099-10-31T11:00:00.000Z',
     });
     await expect(authorizeGuestCoach(
       database, authorizationCommand, authorizationEffects, () => authorizedAt,
@@ -11694,6 +11726,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-09-12T14:00:00.000Z'),
     );
     expect(openedOfficial.response).toMatchObject({ state: 'READY_FOR_COACH', version: 2 });
+    const { activeSessionCount } = await import('../../../apps/client/src/features/navigation/navigation.js');
+    expect(activeSessionCount((await readMySessions(database, athleteA)).sessions)).toBe(1);
     await expect(readChatChallenge(database, sourceChatId, athleteA)).resolves.toMatchObject({
       challenge: { challengeId, state: 'BOOKED', version: 6 },
     });
@@ -11758,9 +11792,114 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-09-12T14:55:00.000Z'),
     );
     expect(endedOfficial.response).toMatchObject({ state: 'ENDED', version: 5 });
+    const endedAthleteSessions = await readMySessions(database, athleteA);
+    expect(endedAthleteSessions.sessions).toEqual([
+      expect.objectContaining({ sessionId, state: 'ENDED', challengeState: 'RESULT_PENDING' }),
+    ]);
+    expect(activeSessionCount(endedAthleteSessions.sessions)).toBe(0);
+    // The command replaces the Coach's card without a reload. Its linked
+    // Challenge and Booking versions must match the committed read projection.
+    expect(endedOfficial.response).toEqual(await readSession(database, sessionId, coachId));
+    expect(endedOfficial.response).toMatchObject({
+      challengeState: 'RESULT_PENDING', challengeVersion: 8, viewerCanRecordResult: true,
+    });
     await expect(readChatChallenge(database, sourceChatId, athleteB)).resolves.toMatchObject({
       challenge: { challengeId, state: 'RESULT_PENDING', version: 8 },
     });
+
+    // Exercise the production route and strict serializer with the real command
+    // projection, not a hand-written Session fixture.
+    const { buildApp } = await import('../../../apps/api/src/app.js');
+    const { StaticBearerAuthRegistryAdapter } = await import('../../../apps/api/src/auth.js');
+    const { canRecordOfficialResult, sessionResultNotice, resultActionNotice } =
+      await import('../../../apps/client/src/lib/result-presentation.js');
+    const unusedSessionRoute = async (): Promise<never> => { throw new Error('Unexpected route'); };
+    const sessionApp = await buildApp({
+      scheduling: {
+        auth: new StaticBearerAuthRegistryAdapter([
+          { token: 'session-assigned-coach', userId: coachId },
+          { token: 'session-eligible-athlete', userId: athleteA },
+          { token: 'session-other-coach', userId: reviewerCoachId },
+        ]),
+        readTrainingOptions: unusedSessionRoute,
+        publishSlot: unusedSessionRoute,
+        updateSlot: unusedSessionRoute,
+        withdrawSlot: unusedSessionRoute,
+        publishGroupOffering: unusedSessionRoute,
+        updateGroupOffering: unusedSessionRoute,
+        withdrawGroupOffering: unusedSessionRoute,
+        selectSlot: unusedSessionRoute,
+        selectSameSlot: unusedSessionRoute,
+        withdrawBookingRequest: unusedSessionRoute,
+        readHostConfirmationQueue: unusedSessionRoute,
+        readVenueAdminDashboard: unusedSessionRoute,
+        confirmBookingHost: unusedSessionRoute,
+        rejectBookingHost: unusedSessionRoute,
+        readMySessions: (viewer) => readMySessions(database, viewer),
+        readSession: (id, viewer) => readSession(database, id, viewer),
+        startSession: unusedSessionRoute,
+        recordSessionAttendance: unusedSessionRoute,
+        endSession: async () => endedOfficial,
+        replaceSessionCoach: unusedSessionRoute,
+        cancelSessionAfterCoachReplacement: unusedSessionRoute,
+        cancelOfficialSessionByAthlete: unusedSessionRoute,
+        failSessionExternal: unusedSessionRoute,
+        reportSafetyAndCancelSession: unusedSessionRoute,
+        requestBookingOfficialConversion: unusedSessionRoute,
+        decideBookingOfficialConversion: unusedSessionRoute,
+        requestTrainingParticipantCancellation: unusedSessionRoute,
+        decideBookingSoloContinuation: unusedSessionRoute,
+        decideBookingTrainingRetention: unusedSessionRoute,
+        proposeGroupPlan: unusedSessionRoute,
+        confirmGroupPlan: unusedSessionRoute,
+        listGroupPlanOfficialConversionsForViewer: unusedSessionRoute,
+        requestGroupPlanOfficialConversion: unusedSessionRoute,
+        decideGroupPlanOfficialConversion: unusedSessionRoute,
+      },
+    });
+    try {
+      const endResponse = await sessionApp.inject({
+        method: 'POST', url: `/api/v1/sessions/${sessionId}/end`,
+        headers: {
+          authorization: 'Bearer session-assigned-coach', 'if-match': '4',
+          'idempotency-key': 'session-command-projection',
+        },
+        payload: {},
+      });
+      expect(endResponse.statusCode).toBe(200);
+      expect(endResponse.json().data).toEqual(await readSession(database, sessionId, coachId));
+      const sessionListResponse = await sessionApp.inject({
+        method: 'GET', url: '/api/v1/me/sessions',
+        headers: { authorization: 'Bearer session-assigned-coach' },
+      });
+      expect(sessionListResponse.statusCode).toBe(200);
+      expect(sessionListResponse.json().data.venueTimezones).toEqual({ [venueId]: 'Europe/Moscow' });
+      const { formatVenueDateTime } = await import('../../../apps/client/src/lib/schedule-time.js');
+      const sessionForDisplay = sessionListResponse.json().data.sessions[0];
+      expect(formatVenueDateTime(
+        sessionForDisplay.scheduledStartAt,
+        sessionListResponse.json().data.venueTimezones[sessionForDisplay.venueId],
+      )).toContain('GMT+3 · время зала');
+      expect(canRecordOfficialResult(endResponse.json().data, false)).toBe(true);
+      expect(sessionResultNotice(endResponse.json().data, null, false)?.message)
+        .toBe('Session завершена. Теперь Coach должен подтвердить официальный результат.');
+      const athleteResponse = await sessionApp.inject({
+        method: 'GET', url: `/api/v1/sessions/${sessionId}`,
+        headers: { authorization: 'Bearer session-eligible-athlete' },
+      });
+      expect(athleteResponse.statusCode).toBe(200);
+      expect(athleteResponse.json().data).toMatchObject({
+        state: 'ENDED', challengeState: 'RESULT_PENDING', viewerCanRecordResult: false,
+      });
+      expect(canRecordOfficialResult(athleteResponse.json().data, false)).toBe(false);
+      const unrelatedCoachResponse = await sessionApp.inject({
+        method: 'GET', url: `/api/v1/sessions/${sessionId}`,
+        headers: { authorization: 'Bearer session-other-coach' },
+      });
+      expect(unrelatedCoachResponse.statusCode).toBe(403);
+    } finally {
+      await sessionApp.close();
+    }
 
     const missingResultTimerCommand = (
       commandType: string,
@@ -11941,6 +12080,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
       database, recordResultCommand, recordResultIds,
       () => new Date('2026-09-13T15:01:00.000Z'),
     );
+    expect(sessionResultNotice(
+      await readSession(database, sessionId, coachId), recordedResult.response, false,
+    )).toEqual({
+      message: 'Результат записан и остаётся предварительным до завершения окна Appeal.', retry: false,
+    });
     expect(recordedResult.response).toMatchObject({
       resultId, challengeId, state: 'RECORDED', outcomeCode: 'WIN_B',
       winnerUserId: athleteB, loserUserId: athleteA,
@@ -12607,6 +12751,13 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(appealed.response).toMatchObject({
       resultId, state: 'UNDER_APPEAL', provisional: true, version: 3,
     });
+    expect(sessionResultNotice(
+      await readSession(database, sessionId, coachId), appealed.response, false,
+    )).toEqual({
+      message: 'Результат находится на рассмотрении Appeal. Решение появится в карточке.', retry: false,
+    });
+    expect(resultActionNotice('appeal', appealed.response.state))
+      .toBe('Appeal отправлен Central. Результат находится на рассмотрении.');
     await expect(listAppealsForCentral(database, centralId)).resolves.toEqual([
       expect.objectContaining({
         appealId, resultId, state: 'SUBMITTED', viewerCanStartReview: true, version: 1,
@@ -12729,9 +12880,16 @@ describePostgres('PostgreSQL critical command transaction', () => {
       loserUserId: athleteB, decision: 'REVERSE',
       decisionReason: 'Coach подтвердил ошибку победителя.', provisional: false,
     });
+    expect(sessionResultNotice(
+      await readSession(database, sessionId, coachId),
+      await readResult(database, resultId, coachId), false,
+    )).toEqual({
+      message: 'Результат пересмотрен. Показан эффективный исход; исходная запись сохранена.', retry: false,
+    });
     await expect(readResultTimerSnapshot(database, resultId)).resolves.toEqual({
       state: 'REVERSED', version: 4,
     });
+    expect(activeSessionCount((await readMySessions(database, athleteA)).sessions)).toBe(0);
     const finalStatus = await sql<{
       readonly contender_user_id: string;
       readonly status_lock_result_id: string | null;
@@ -22166,6 +22324,105 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(JSON.stringify(publicDocuments.rows)).not.toContain('private-equipment-safety-detail');
   });
 
+  it('serializes a persisted Official Challenge for both participants after API reload', async () => {
+    const fixture = await seedConfirmedTrainingForConversion(310000);
+    // Use the real API serializer with the existing DB fixture, not a parallel test database suite.
+    const { buildApp } = await import('../../../apps/api/src/app.js');
+    const { StaticBearerAuthRegistryAdapter } = await import('../../../apps/api/src/auth.js');
+    const initiatorToken = 'challenge-read-initiator-token';
+    const recipientToken = 'challenge-read-recipient-token';
+    const outsiderToken = 'challenge-read-outsider-token';
+    const auth = new StaticBearerAuthRegistryAdapter([
+      { token: initiatorToken, userId: fixture.athleteA },
+      { token: recipientToken, userId: fixture.athleteB },
+      { token: outsiderToken, userId: fixture.coach },
+    ]);
+    const openApp = () => buildApp({
+      challenge: {
+        auth,
+        readChatChallenge: (chatId, viewerId) => readChatChallenge(database, chatId, viewerId),
+        createDirectOpenChallenge: (command, effects) => createDirectOpenChallenge(
+          database, command, effects, () => new Date('2026-09-28T10:00:00.000Z'),
+        ),
+        acceptOptionalChallenge: (command, effects) => acceptOptionalChallenge(database, command, effects),
+        declineOptionalChallenge: (command, effects) => declineOptionalChallenge(database, command, effects),
+        withdrawOptionalChallenge: (command, effects) => withdrawOptionalChallenge(database, command, effects),
+        rescheduleChallengeByAthlete: (command, effects) => rescheduleChallengeByAthlete(database, command, effects),
+        proposeMutualChallengeReschedule: (command, effects) => proposeMutualChallengeReschedule(database, command, effects),
+        confirmMutualChallengeReschedule: (command, effects) => confirmMutualChallengeReschedule(database, command, effects),
+      },
+    });
+    let app = await openApp();
+    try {
+      const createRequest = {
+        method: 'POST' as const,
+        url: '/api/v1/challenges',
+        headers: {
+          authorization: `Bearer ${initiatorToken}`,
+          'idempotency-key': 'challenge-api-db-create-read-reload',
+          'if-match': '0',
+        },
+        payload: { sourceChatId: fixture.chat },
+      };
+      const created = await app.inject(createRequest);
+      expect(created.statusCode).toBe(201);
+      const persisted = await readChatChallenge(database, fixture.chat, fixture.athleteA);
+      expect(persisted.challenge).toMatchObject({
+        competitionId: fixture.competition, sourceChatId: fixture.chat,
+        state: 'AWAITING_RESPONSE', responsePolicy: 'OPTIONAL', stake: 'NONE', version: 1,
+      });
+
+      const effectsBefore = await sql<{
+        readonly events: string; readonly audits: string; readonly outbox: string;
+      }>`select
+        (select count(*)::text from platform.domain_events) as events,
+        (select count(*)::text from platform.audit_events) as audits,
+        (select count(*)::text from platform.outbox_messages) as outbox
+      `.execute(database);
+
+      for (let load = 0; load < 2; load += 1) {
+        if (load > 0) {
+          await app.close();
+          app = await openApp();
+        }
+        for (const [token, viewerId] of [
+          [initiatorToken, fixture.athleteA], [recipientToken, fixture.athleteB],
+        ] as const) {
+          const response = await app.inject({
+            method: 'GET', url: `/api/v1/chats/${fixture.chat}/challenge`,
+            headers: { authorization: `Bearer ${token}` },
+          });
+          expect(response.statusCode).toBe(200);
+          expect(response.json().data).toEqual(await readChatChallenge(database, fixture.chat, viewerId));
+          expect(response.json().data.challenge.viewerRole)
+            .toBe(viewerId === fixture.athleteA ? 'INITIATOR' : 'RECIPIENT');
+        }
+        const denied = await app.inject({
+          method: 'GET', url: `/api/v1/chats/${fixture.chat}/challenge`,
+          headers: { authorization: `Bearer ${outsiderToken}` },
+        });
+        expect(denied.statusCode).toBe(404);
+        expect(denied.json().code).toBe('MATCH_REQUIRED');
+        expect(denied.body).not.toContain(fixture.competition);
+        expect(denied.body).not.toContain(fixture.athleteA);
+      }
+      expect(created.json().data).toEqual(persisted.challenge);
+      const replayed = await app.inject(createRequest);
+      expect(replayed.statusCode).toBe(201);
+      expect(replayed.json()).toMatchObject({ data: persisted.challenge, meta: { replayed: true } });
+      const effectsAfter = await sql<{
+        readonly events: string; readonly audits: string; readonly outbox: string;
+      }>`select
+        (select count(*)::text from platform.domain_events) as events,
+        (select count(*)::text from platform.audit_events) as audits,
+        (select count(*)::text from platform.outbox_messages) as outbox
+      `.execute(database);
+      expect(effectsAfter.rows).toEqual(effectsBefore.rows);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('[AC-073] keeps Champion status outside a matched OPEN Result through the frozen NONE stake', async () => {
     const fixture = await seedConfirmedTrainingForConversion(123000);
     await sql`
@@ -24321,13 +24578,21 @@ describePostgres('PostgreSQL critical command transaction', () => {
       accessTokenHash: firstAccessHash, refreshTokenHash: firstRefreshHash,
     }, () => new Date('2026-10-04T10:01:00.000Z'));
     expect(rejected.response).toMatchObject({ outcome: 'INVALID_CODE',
-      challenge: { attempts: 1, version: 2 }, session: null });
+      challenge: { challengeId, state: 'PENDING', attempts: 1, version: 2,
+        expiresAt: requested.response.expiresAt }, session: null });
+    const beforeLogin = await sql<{ families: string; access_tokens: string; refresh_tokens: string }>`
+      select (select count(*)::text from identity.auth_session_families) as families,
+        (select count(*)::text from identity.auth_access_tokens) as access_tokens,
+        (select count(*)::text from identity.auth_refresh_tokens) as refresh_tokens
+    `.execute(database);
+    expect(beforeLogin.rows[0]).toEqual({ families: '0', access_tokens: '0', refresh_tokens: '0' });
 
     const verified = await verifyAuthOtp(database, {
       commandId: testId(28023), commandType: 'VERIFY_AUTH_OTP',
       idempotencyKey: 'auth-otp-correct-28001',
       actor: { type: 'SYSTEM', id: null, roles: [], scopeIds: [] },
-      aggregateType: 'AuthOtpChallenge', aggregateId: challengeId, expectedVersion: 2,
+      aggregateType: 'AuthOtpChallenge', aggregateId: rejected.response.challenge.challengeId,
+      expectedVersion: rejected.response.challenge.version,
       correlationId: testId(28008), causationId: testId(28015), requestId: testId(28024),
       source: 'api', payloadVersion: 1,
       payload: { challengeId, deviceLabel: 'Pilot browser' },
@@ -24338,6 +24603,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       accessTokenHash: firstAccessHash, refreshTokenHash: firstRefreshHash,
     }, () => new Date('2026-10-04T10:02:00.000Z'));
     expect(verified.response).toMatchObject({ outcome: 'VERIFIED',
+      challenge: { state: 'VERIFIED', attempts: 1, version: 3,
+        expiresAt: requested.response.expiresAt },
       session: { familyId, generation: 1 } });
     await expect(authenticateAccessToken(database, firstAccessHash,
       new Date('2026-10-04T10:03:00.000Z'))).resolves.toMatchObject({

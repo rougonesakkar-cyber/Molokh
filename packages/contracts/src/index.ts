@@ -1200,6 +1200,7 @@ export type MutualChallengeRescheduleRequestContract = Static<
 export const ChallengeProjectionSchema = Type.Object(
   {
     challengeId: Type.String({ format: 'uuid' }),
+    competitionId: Type.String({ format: 'uuid' }),
     sourceChatId: Type.String({ format: 'uuid' }),
     serviceChatId: Type.String({ format: 'uuid' }),
     initiatorUserId: Type.String({ format: 'uuid' }),
@@ -2622,6 +2623,7 @@ export const MySessionsResponseSchema = Type.Object(
       {
         sessions: Type.Array(SessionLifecycleProjectionSchema),
         completedTrainingCount: Type.Integer({ minimum: 0 }),
+        venueTimezones: Type.Record(Type.String(), Type.String({ minLength: 1, maxLength: 80 })),
       },
       { additionalProperties: false },
     ),
@@ -2894,6 +2896,7 @@ export type HostConfirmationContract = Static<typeof HostConfirmationProjectionS
 export const HostConfirmationQueueItemSchema = Type.Object(
   {
     booking: BookingIntentProjectionSchema,
+    venueTimezone: Type.String({ minLength: 1, maxLength: 80 }),
     athleteDisplayNames: Type.Tuple([
       Type.String({ minLength: 1, maxLength: 80 }),
       Type.String({ minLength: 1, maxLength: 80 }),
@@ -3080,6 +3083,7 @@ export const TrainingOptionsResponseSchema = Type.Object(
       {
         slots: Type.Array(SlotProjectionSchema),
         groupOfferings: Type.Array(GroupOfferingProjectionSchema),
+        venueTimezones: Type.Record(Type.String(), Type.String({ minLength: 1, maxLength: 80 })),
         activeIntent: Type.Object(
           {
             booking: Type.Union([BookingIntentProjectionSchema, Type.Null()]),

@@ -158,7 +158,7 @@ export function SafetyCaseReviewSection(props: {
             <Text style={styles.label}>{presentation.title}</Text>
             <Text style={styles.hint}>{presentation.explanation}</Text>
             <Text style={styles.meta}>Case {item.caseId} · Session {item.sessionId}</Text>
-            <Text style={styles.meta}>SLA: {item.finalDueAt ?? 'не задан'} · состояние {item.state}</Text>
+            <Text style={styles.meta}>SLA: {item.finalDueAt ?? 'не задан'}</Text>
             {presentation.action === 'START_REVIEW' ? (
               <Pressable
                 accessibilityRole="button" accessibilityState={{ disabled: actingId !== null }}

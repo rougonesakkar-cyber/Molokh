@@ -2,11 +2,58 @@ import { describe, expect, it } from 'vitest';
 
 import {
   athleteStoppageResult,
+  canRecordOfficialResult,
   externalNoContestResult,
   resultCardPresentation,
+  resultActionNotice,
+  sessionResultNotice,
 } from './result-presentation';
 
 describe('Result card presentation', () => {
+  const endedSession = {
+    state: 'ENDED', purpose: 'OFFICIAL_CHALLENGE', resultId: 'recorded-result',
+    challengeState: 'RESULT_RECORDED',
+  } as const;
+
+  it('only asks Coach to record a genuinely missing Result', () => {
+    expect(sessionResultNotice({ ...endedSession, resultId: null, challengeState: 'RESULT_PENDING' }, null, false))
+      .toEqual({ message: 'Session завершена. Теперь Coach должен подтвердить официальный результат.', retry: false });
+    expect(sessionResultNotice(endedSession, { state: 'RECORDED' }, false))
+      .toEqual({ message: 'Результат записан и остаётся предварительным до завершения окна Appeal.', retry: false });
+    expect(sessionResultNotice(endedSession, { state: 'UNDER_APPEAL' }, false))
+      .toEqual({ message: 'Результат находится на рассмотрении Appeal. Решение появится в карточке.', retry: false });
+    expect(sessionResultNotice(endedSession, { state: 'FINAL' }, false))
+      .toEqual({ message: 'Официальный результат окончательный.', retry: false });
+  });
+
+  it('separates a loading Result from a failed read without suggesting a new record', () => {
+    expect(sessionResultNotice(endedSession, null, true))
+      .toEqual({ message: 'Загружаем официальный Result…', retry: false });
+    expect(sessionResultNotice(endedSession, null, false))
+      .toEqual({ message: 'Не удалось загрузить официальный Result. Повторите загрузку.', retry: true });
+    expect(sessionResultNotice({ ...endedSession, state: 'IN_PROGRESS' }, null, false)).toBeNull();
+    expect(sessionResultNotice({ ...endedSession, purpose: 'TRAINING' }, null, false)).toBeNull();
+  });
+
+  it('does not infer a current Competition lock or other restrictions from an Appeal or waiver', () => {
+    expect(resultActionNotice('appeal', 'UNDER_APPEAL'))
+      .toBe('Appeal отправлен Central. Результат находится на рассмотрении.');
+    expect(resultActionNotice('waive-appeal', 'FINAL')).toBe('Результат финализирован досрочно.');
+  });
+
+  it('opens Result entry immediately from the ended command projection', () => {
+    const session = {
+      state: 'IN_PROGRESS', purpose: 'OFFICIAL_CHALLENGE',
+      viewerCanRecordResult: true, challengeState: 'IN_SESSION',
+    } as const;
+    expect(canRecordOfficialResult(session, false)).toBe(false);
+    const ended = { ...session, state: 'ENDED', challengeState: 'RESULT_PENDING' } as const;
+    expect(canRecordOfficialResult(ended, false)).toBe(true);
+    expect(canRecordOfficialResult({ ...ended, viewerCanRecordResult: false }, false)).toBe(false);
+    expect(canRecordOfficialResult({ ...ended, challengeState: 'IN_SESSION' }, false)).toBe(false);
+    expect(canRecordOfficialResult(ended, true)).toBe(false);
+  });
+
   it('[AC-112] presents DRAW neutrally and follows the server Appeal capability', () => {
     expect(resultCardPresentation({
       outcomeCode: 'DRAW', winnerDisplayName: null,

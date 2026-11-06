@@ -843,6 +843,7 @@ export async function registerSchedulingRoutes(
         data: {
           sessions: projection.sessions.map(sessionContract),
           completedTrainingCount: projection.completedTrainingCount,
+          venueTimezones: projection.venueTimezones,
         },
         meta: { requestId: requestContext(request).requestId },
       };
@@ -1723,6 +1724,7 @@ export async function registerSchedulingRoutes(
       return {
         data: items.map((item) => ({
           booking: bookingIntentContract(item.booking),
+          venueTimezone: item.venueTimezone,
           athleteDisplayNames: [...item.athleteDisplayNames] as [string, string],
         })),
         meta: { requestId: requestContext(request).requestId },
@@ -1766,6 +1768,7 @@ export async function registerSchedulingRoutes(
           groupOfferings: projection.groupOfferings.map(groupOfferingContract),
           hostConfirmations: projection.hostConfirmations.map((item) => ({
             booking: bookingIntentContract(item.booking),
+            venueTimezone: item.venueTimezone,
             athleteDisplayNames: [...item.athleteDisplayNames] as [string, string],
           })),
           groupInterests: projection.groupInterests.map((interest) => ({
@@ -1810,6 +1813,7 @@ export async function registerSchedulingRoutes(
         data: {
           slots: projection.slots.map(slotContract),
           groupOfferings: projection.groupOfferings.map(groupOfferingContract),
+          venueTimezones: projection.venueTimezones,
           activeIntent: {
             booking: projection.activeIntent.booking
               ? bookingIntentContract(projection.activeIntent.booking)

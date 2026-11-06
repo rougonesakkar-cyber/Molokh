@@ -406,6 +406,7 @@ export interface SessionLifecycleProjection {
 export interface MySessionsProjection {
   readonly sessions: readonly SessionLifecycleProjection[];
   readonly completedTrainingCount: number;
+  readonly venueTimezones: Readonly<Record<string, string>>;
 }
 
 interface SessionRow {
@@ -420,6 +421,7 @@ interface SessionRow {
   readonly slot_id: string;
   readonly venue_id: string;
   readonly venue_display_name: string;
+  readonly venue_timezone: string;
   readonly coach_user_id: string;
   readonly coach_display_name: string;
   readonly guest_coach_grant_id: string | null;
@@ -835,6 +837,7 @@ async function readSessionRow(
       result.result_id,
       slot.slot_id, session.venue_id,
       venue.display_name as venue_display_name, session.coach_user_id,
+      venue.timezone as venue_timezone,
       coach.display_name as coach_display_name,
       guest_grant.grant_id as guest_coach_grant_id,
       guest_grant.state as guest_coach_grant_state,
@@ -1070,10 +1073,12 @@ export async function readMySessions(
       session_id
     limit 50
   `.execute(database);
+  const venueTimezones: Record<string, string> = {};
   const sessions = await Promise.all(
     result.rows.map(async (item) => {
       const row = await readSessionRow(database, item.session_id);
       if (!row) throw new SchedulingPermissionDeniedError();
+      venueTimezones[row.venue_id] = row.venue_timezone;
       return sessionProjection(database, row, viewerUserId);
     }),
   );
@@ -1088,6 +1093,7 @@ export async function readMySessions(
   `.execute(database);
   return {
     sessions,
+    venueTimezones,
     completedTrainingCount: Number(stats.rows[0]?.completed_training_count ?? '0'),
   };
 }
@@ -4070,13 +4076,9 @@ export async function endSession(
       const resultReminderDeadlines = challenge
         ? challengeResultReminderDeadlines(context.occurredAt).map((value) => value.toISOString())
         : [];
-      const updated: SessionRow = {
-        ...row,
-        state: 'ENDED',
-        actual_end_at: context.occurredAt,
-        version: String(context.nextVersion),
-      };
-      const response = await sessionProjection(transaction, updated, command.actor.id!);
+      // Include the linked Booking and Challenge transitions in the command
+      // response, just as a subsequent read would, before storing its replay.
+      const response = await readSession(transaction, row.session_id, command.actor.id!);
       return {
         responseStatus: 200,
         response,

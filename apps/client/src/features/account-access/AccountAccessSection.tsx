@@ -12,6 +12,14 @@ import { apiErrorMessage, apiUrl } from '../../lib/api';
 type AccessCase = NonNullable<AccountAccessResponse['data']>;
 type DuplicateCase = DuplicateAccountListResponse['data'][number];
 
+const accessStateLabels: Readonly<Record<string, string>> = {
+  PENDING: 'Ожидает рассмотрения',
+  SECURITY_HOLD: 'Действует защитная пауза',
+  COMPLETED: 'Доступ восстановлен',
+  REJECTED: 'Запрос отклонён',
+  CANCELLED: 'Запрос закрыт',
+};
+
 async function post(token: string, path: string, body: unknown, version?: number) {
   const response = await fetch(`${apiUrl}${path}`, { method: 'POST', headers: {
     Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
@@ -146,7 +154,9 @@ export function CentralAccountAccessSection({ token }: { readonly token: string 
       ? <Text style={styles.hint}>Очереди пусты.</Text> : null}
     {recovery.map((item) => <View key={item.caseId} style={styles.info}>
       <Text style={styles.value}>Recovery · {item.route === 'PHONE_CHANGE' ? 'смена номера' : 'проверенный канал'}</Text>
-      <Text style={styles.hint}>User {item.userId.slice(-8)} · {item.state}</Text>
+      <Text style={styles.hint}>
+        User {item.userId.slice(-8)} · {accessStateLabels[item.state] ?? 'Состояние обновилось'}
+      </Text>
       {item.state === 'PENDING' ? <>
         <Reason value={reasonById[item.caseId] ?? ''}
           onChange={(value) => setReasonById((current) => ({ ...current, [item.caseId]: value }))} />

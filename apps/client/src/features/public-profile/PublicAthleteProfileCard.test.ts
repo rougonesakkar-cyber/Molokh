@@ -4,10 +4,11 @@ vi.mock('react-native', () => ({
   StyleSheet: { create: <T>(styles: T): T => styles },
   Text: () => null,
   View: () => null,
+  useColorScheme: () => 'light',
 }));
 
 import {
-  PUBLIC_PROFILE_COPY, publicResultLabel, publicReviewLabel,
+  PUBLIC_PROFILE_COPY, publicAgeLabel, publicResultLabel, publicReviewLabel, publicSportLabel,
 } from './PublicAthleteProfileCard';
 
 describe('public Athlete profile presentation', () => {
@@ -40,5 +41,11 @@ describe('public Athlete profile presentation', () => {
   it('[AC-183] labels statistics as Competition-scoped without a global rank', () => {
     expect(PUBLIC_PROFILE_COPY.selectedScope).toContain('контур');
     expect(PUBLIC_PROFILE_COPY.scopedStatistics).toContain('Глобального рейтинга нет');
+  });
+
+  it('humanizes sport and age codes without exposing unknown identifiers', () => {
+    expect(publicSportLabel('MUAY_THAI')).toBe('Тайский бокс');
+    expect(publicSportLabel('UNRELEASED_CODE')).toBe('Другой вид спорта');
+    expect(publicAgeLabel('YOUTH')).toContain('14–17');
   });
 });

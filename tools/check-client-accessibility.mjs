@@ -5,6 +5,14 @@ import ts from 'typescript';
 
 const root = path.resolve('apps/client/src');
 const findings = [];
+const primaryInteractionFiles = new Set([
+  'app/chat.tsx',
+  'app/index.tsx',
+  'features/auth/LocalPhoneAuthPanel.tsx',
+  'features/discovery/DiscoverySection.tsx',
+  'features/navigation/HomeSection.tsx',
+  'features/public-profile/PublicAthleteProfileCard.tsx',
+]);
 
 function filesUnder(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -37,7 +45,15 @@ function report(source, node, message) {
 for (const file of filesUnder(root)) {
   const text = fs.readFileSync(file, 'utf8');
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const clientRelativePath = path.relative(root, file).replaceAll('\\', '/');
+  if (primaryInteractionFiles.has(clientRelativePath) && /minHeight:\s*(?:44|46)\b/.test(text)) {
+    findings.push(`${path.relative(process.cwd(), file)} uses a sub-48 primary touch target.`);
+  }
   const visit = (node) => {
+    if (ts.isJsxExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && ['renderKey', 'resourceType', 'stateVersion'].includes(node.expression.name.text)) {
+      report(source, node, 'Internal render/resource/version keys must use human-readable presentation copy.');
+    }
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       const tag = tagName(node);
       const props = attributes(node);

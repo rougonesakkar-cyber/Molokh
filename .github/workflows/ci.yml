@@ -31,8 +31,8 @@ jobs:
       DATABASE_TEST_URL: postgres://molokh:local-only-password@localhost:5432/molokh_test
 
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
@@ -44,6 +44,8 @@ jobs:
         run: pnpm audit:prod
       - name: Verify code and database integration
         run: pnpm check
+      - name: Smoke production Web and enforce its bundle budget
+        run: pnpm smoke:client && pnpm measure:client
       - name: Verify the canonical Core specification
         shell: pwsh
         run: ./tools/validate-spec.ps1

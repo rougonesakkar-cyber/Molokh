@@ -3,18 +3,6 @@ import { fileURLToPath } from "node:url";
 
 const EXCEPTIONS = Object.freeze([
   Object.freeze({
-    advisoryId: "GHSA-86w9-cpqp-85rv",
-    moduleName: "node-forge",
-    installedVersion: "1.4.0",
-    patchedVersion: "1.4.1",
-    expiresOn: "2026-11-16",
-    probe: "./verify-node-forge-cve.mjs",
-    pathAllowed: (path) =>
-      path.startsWith("apps__client>") &&
-      path.includes(">@expo/cli>") &&
-      path.endsWith(">node-forge"),
-  }),
-  Object.freeze({
     advisoryId: "GHSA-vfj7-8cjw-p6xm",
     moduleName: "braces",
     installedVersion: "3.0.3",
