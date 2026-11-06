@@ -11707,6 +11707,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-09-12T14:00:00.000Z'),
     );
     expect(openedOfficial.response).toMatchObject({ state: 'READY_FOR_COACH', version: 2 });
+    const { activeSessionCount } = await import('../../../apps/client/src/features/navigation/navigation.js');
+    expect(activeSessionCount((await readMySessions(database, athleteA)).sessions)).toBe(1);
     await expect(readChatChallenge(database, sourceChatId, athleteA)).resolves.toMatchObject({
       challenge: { challengeId, state: 'BOOKED', version: 6 },
     });
@@ -11771,6 +11773,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
       () => new Date('2026-09-12T14:55:00.000Z'),
     );
     expect(endedOfficial.response).toMatchObject({ state: 'ENDED', version: 5 });
+    const endedAthleteSessions = await readMySessions(database, athleteA);
+    expect(endedAthleteSessions.sessions).toEqual([
+      expect.objectContaining({ sessionId, state: 'ENDED', challengeState: 'RESULT_PENDING' }),
+    ]);
+    expect(activeSessionCount(endedAthleteSessions.sessions)).toBe(0);
     // The command replaces the Coach's card without a reload. Its linked
     // Challenge and Booking versions must match the committed read projection.
     expect(endedOfficial.response).toEqual(await readSession(database, sessionId, coachId));
@@ -12851,6 +12858,7 @@ describePostgres('PostgreSQL critical command transaction', () => {
     await expect(readResultTimerSnapshot(database, resultId)).resolves.toEqual({
       state: 'REVERSED', version: 4,
     });
+    expect(activeSessionCount((await readMySessions(database, athleteA)).sessions)).toBe(0);
     const finalStatus = await sql<{
       readonly contender_user_id: string;
       readonly status_lock_result_id: string | null;

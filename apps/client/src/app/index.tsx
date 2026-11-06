@@ -145,6 +145,7 @@ import {
 } from '../features/enforcement-appeal/EnforcementAppealSection';
 import { HomeSection } from '../features/navigation/HomeSection';
 import {
+  activeSessionCount,
   destinationParam,
   destinationsForRole,
   layoutMode,
@@ -578,6 +579,7 @@ export default function IdentityScreen() {
   const [venueAdminDashboard, setVenueAdminDashboard] =
     useState<VenueAdminDashboard | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsReadState, setSessionsReadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [groupPlanConversions, setGroupPlanConversions] =
     useState<GroupPlanOfficialConversion[]>([]);
   const [resultsById, setResultsById] = useState<Record<string, OfficialResult>>({});
@@ -669,6 +671,7 @@ export default function IdentityScreen() {
     const warnings = new Set<string>();
     let usedStaleFallback = false;
 
+    setSessionsReadState('loading');
     setChatLoadState('loading');
     if (firstLoad) setLoading(true);
     else {
@@ -704,10 +707,12 @@ export default function IdentityScreen() {
       label: string,
       task: Promise<T | null>,
       apply: (value: T | null) => void,
+      onFailure?: () => void,
     ) => {
       const result = await settleSecondaryQuery(task);
       if (result.failed) {
         warnings.add(label);
+        if (loadSequenceRef.current === sequence) onFailure?.();
         return;
       }
       if (loadSequenceRef.current === sequence) apply(result.data);
@@ -796,9 +801,15 @@ export default function IdentityScreen() {
           (value) => setHostConfirmations(value?.data ?? []),
         ),
         loadPart('sessions', sessionsTask, (value) => {
-          setSessions(value?.data.sessions ?? []);
-          setCompletedTrainingCount(value?.data.completedTrainingCount ?? 0);
-        }),
+          if (!value) {
+            warnings.add('sessions');
+            setSessionsReadState('error');
+            return;
+          }
+          setSessions(value.data.sessions);
+          setCompletedTrainingCount(value.data.completedTrainingCount);
+          setSessionsReadState('ready');
+        }, () => setSessionsReadState('error')),
         loadPart(
           'group-conversions',
           read<MyGroupPlanOfficialConversionsResponse>(
@@ -1080,6 +1091,7 @@ export default function IdentityScreen() {
     } catch (caught) {
       if (loadSequenceRef.current === sequence) {
         setChatLoadState('error');
+        setSessionsReadState('error');
         setError(caught instanceof Error ? caught.message : 'Не удалось загрузить профиль');
       }
     } finally {
@@ -1436,6 +1448,7 @@ export default function IdentityScreen() {
     setHostConfirmations([]);
     setVenueAdminDashboard(null);
     setSessions([]);
+    setSessionsReadState('loading');
     setGroupPlanConversions([]);
     setResultsById({});
     setCompletedTrainingCount(0);
@@ -3694,7 +3707,8 @@ export default function IdentityScreen() {
                 onNavigate={openSection}
                 operationalCount={operationalCount}
                 role={activeTestAccount.role}
-                sessionCount={sessions.length}
+                sessionCount={sessionsReadState === 'ready' ? activeSessionCount(sessions) : null}
+                sessionReadFailed={sessionsReadState === 'error'}
               />
             ) : null}
 

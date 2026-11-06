@@ -1,3 +1,11 @@
+import type { SessionLifecycleContract } from '@molokh/contracts';
+
+export function activeSessionCount(sessions: readonly Pick<SessionLifecycleContract, 'state'>[]): number {
+  return sessions.filter((session) => session.state === 'SCHEDULED'
+    || session.state === 'READY_FOR_COACH'
+    || session.state === 'IN_PROGRESS').length;
+}
+
 export type AppDestination = 'HOME' | 'DISCOVERY' | 'CHATS' | 'COMMUNITY' | 'PROFILE';
 export type LayoutMode = 'compact' | 'medium' | 'expanded';
 

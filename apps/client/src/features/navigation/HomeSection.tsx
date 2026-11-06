@@ -10,7 +10,8 @@ interface HomeSectionProps {
   readonly matchCount: number;
   readonly operationalCount: number;
   readonly role: string;
-  readonly sessionCount: number;
+  readonly sessionCount: number | null;
+  readonly sessionReadFailed?: boolean;
   readonly onNavigate: (destination: AppDestination) => void;
 }
 
@@ -43,6 +44,13 @@ function nextAction(props: HomeSectionProps): NextAction {
     action: 'Ответить на приглашение Coach',
     destination: 'COMMUNITY',
     explanation: `Новых приглашений: ${props.coachInviteCount}.`,
+  };
+  if (props.sessionCount === null) return {
+    action: props.sessionReadFailed ? 'Session временно недоступны' : 'Загружаем Session',
+    destination: 'HOME',
+    explanation: props.sessionReadFailed
+      ? 'Обновите данные, чтобы проверить ближайшую Session.'
+      : 'Проверяем актуальное расписание.',
   };
   if (props.sessionCount > 0) return {
     action: 'Проверить ближайшую Session',
