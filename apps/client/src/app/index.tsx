@@ -124,6 +124,8 @@ import {
   canRecordOfficialResult,
   externalNoContestResult,
   resultCardPresentation,
+  resultActionNotice,
+  sessionResultNotice,
 } from '../lib/result-presentation';
 import { trainingRetentionActionCopy } from '../lib/challenge-presentation';
 import {
@@ -2349,6 +2351,7 @@ export default function IdentityScreen() {
     action: 'appeal' | 'waive-appeal',
   ) => {
     if (actingResultKey !== null) return;
+    const scope = getLocalSessionScope();
     const statement = appealStatement.trim();
     if (action === 'appeal' && statement.length === 0) return;
     const operation = `${action}:${result.resultId}:v${result.version}`;
@@ -2361,7 +2364,7 @@ export default function IdentityScreen() {
       const response = await fetch(`${apiUrl}/api/v1/results/${result.resultId}/${action}`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${localToken}`,
+          Authorization: `Bearer ${localTokenForSession(scope)}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
           'If-Match': String(result.version),
@@ -2370,19 +2373,23 @@ export default function IdentityScreen() {
           ? { reasonCode: 'RESULT_DISPUTED', statement }
           : {}),
       });
+      if (scope !== getLocalSessionScope()) return;
       if (!response.ok) {
         if (response.status === 409) await loadIdentity();
         throw new Error(await apiErrorMessage(response));
       }
       const updated = (await response.json()) as ResultCommandResponse;
+      if (scope !== getLocalSessionScope()) return;
       resultActionKeys.current.delete(operation);
       setResultsById((current) => ({ ...current, [updated.data.resultId]: updated.data }));
       if (action === 'appeal') {
         const appealResponse = await fetch(`${apiUrl}/api/v1/results/${updated.data.resultId}/appeal`, {
-          headers: { Authorization: `Bearer ${localToken}` },
+          headers: { Authorization: `Bearer ${localTokenForSession(scope)}` },
         });
+        if (scope !== getLocalSessionScope()) return;
         if (!appealResponse.ok) throw new Error(await apiErrorMessage(appealResponse));
         const detail = ((await appealResponse.json()) as AppealDetailResponse).data;
+        if (scope !== getLocalSessionScope()) return;
         setAppealsByResultId((current) => ({ ...current, [detail.resultId]: detail }));
       }
       setSessions((current) => current.map((item) => item.resultId === updated.data.resultId
@@ -2399,15 +2406,12 @@ export default function IdentityScreen() {
         : item));
       setAppealDraftResultId(null);
       setAppealStatement('');
-      setSessionNotice(action === 'appeal'
-        ? 'Appeal отправлен Central. Рассмотрение продолжается, спортивный статус остаётся заблокирован.'
-        : updated.data.state === 'FINAL'
-          ? 'Результат финализирован досрочно, ограничения сняты.'
-          : 'Отказ от Appeal сохранён. Финализация произойдёт после решения второго участника или окончания окна.');
+      setSessionNotice(resultActionNotice(action, updated.data.state));
     } catch (caught) {
+      if (scope !== getLocalSessionScope()) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось обновить Result');
     } finally {
-      setActingResultKey(null);
+      if (scope === getLocalSessionScope()) setActingResultKey(null);
     }
   };
 
@@ -5721,6 +5725,7 @@ export default function IdentityScreen() {
                       const officialResultPresentation = officialResult
                         ? resultCardPresentation(officialResult)
                         : null;
+                      const resultNotice = sessionResultNotice(session, officialResult, loading || refreshing);
                       const appealDetail = session.resultId
                         ? appealsByResultId[session.resultId] ?? null
                         : null;
@@ -6570,11 +6575,6 @@ export default function IdentityScreen() {
                                   </Text>
                                 </View>
                               ) : null}
-                              {officialResult.statusTransitionType !== 'NONE' ? (
-                                <Text style={styles.hint}>
-                                  Статус Community уже обновлён предварительно и защищён от других статусных Challenge.
-                                </Text>
-                              ) : null}
                               {officialResult.state === 'RECORDED' ? (
                                 <Text style={styles.hint}>
                                   Appeal до {formatDateTime(officialResult.appealDeadlineAt)}.
@@ -6725,7 +6725,7 @@ export default function IdentityScreen() {
                                   ]}
                                 >
                                   <Text style={styles.secondaryButtonText}>
-                                    Согласен с результатом — разблокироваться
+                                    Согласен с результатом — отказаться от Appeal
                                   </Text>
                                 </Pressable>
                               ) : null}
@@ -6752,14 +6752,24 @@ export default function IdentityScreen() {
                                 token={activeTestToken}
                               />
                             </View>
-                          ) : session.resultId ? (
-                            <Text style={styles.hint}>Загружаем официальный Result…</Text>
                           ) : null}
-                          {session.state === 'ENDED' ? (
+                          {resultNotice ? (
+                            <View>
+                              <Text style={styles.hint}>{resultNotice.message}</Text>
+                              {resultNotice.retry ? (
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => void loadIdentity()}
+                                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                                >
+                                  <Text style={styles.secondaryButtonText}>Повторить загрузку Result</Text>
+                                </Pressable>
+                              ) : null}
+                            </View>
+                          ) : null}
+                          {session.state === 'ENDED' && session.purpose !== 'OFFICIAL_CHALLENGE' ? (
                             <Text style={styles.hint}>
-                              {session.purpose === 'OFFICIAL_CHALLENGE'
-                                ? 'Session завершена. Теперь Coach должен подтвердить официальный результат.'
-                                : 'В статистику вошли только спортсмены со статусом «Присутствовал» или «Опоздал».'}
+                              В статистику вошли только спортсмены со статусом «Присутствовал» или «Опоздал».
                             </Text>
                           ) : null}
                           {session.state === 'CANCELLED' ? (

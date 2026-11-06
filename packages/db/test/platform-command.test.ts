@@ -11785,7 +11785,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
     // projection, not a hand-written Session fixture.
     const { buildApp } = await import('../../../apps/api/src/app.js');
     const { StaticBearerAuthRegistryAdapter } = await import('../../../apps/api/src/auth.js');
-    const { canRecordOfficialResult } = await import('../../../apps/client/src/lib/result-presentation.js');
+    const { canRecordOfficialResult, sessionResultNotice, resultActionNotice } =
+      await import('../../../apps/client/src/lib/result-presentation.js');
     const unusedSessionRoute = async (): Promise<never> => { throw new Error('Unexpected route'); };
     const sessionApp = await buildApp({
       scheduling: {
@@ -11842,6 +11843,8 @@ describePostgres('PostgreSQL critical command transaction', () => {
       expect(endResponse.statusCode).toBe(200);
       expect(endResponse.json().data).toEqual(await readSession(database, sessionId, coachId));
       expect(canRecordOfficialResult(endResponse.json().data, false)).toBe(true);
+      expect(sessionResultNotice(endResponse.json().data, null, false)?.message)
+        .toBe('Session завершена. Теперь Coach должен подтвердить официальный результат.');
       const athleteResponse = await sessionApp.inject({
         method: 'GET', url: `/api/v1/sessions/${sessionId}`,
         headers: { authorization: 'Bearer session-eligible-athlete' },
@@ -12039,6 +12042,11 @@ describePostgres('PostgreSQL critical command transaction', () => {
       database, recordResultCommand, recordResultIds,
       () => new Date('2026-09-13T15:01:00.000Z'),
     );
+    expect(sessionResultNotice(
+      await readSession(database, sessionId, coachId), recordedResult.response, false,
+    )).toEqual({
+      message: 'Результат записан и остаётся предварительным до завершения окна Appeal.', retry: false,
+    });
     expect(recordedResult.response).toMatchObject({
       resultId, challengeId, state: 'RECORDED', outcomeCode: 'WIN_B',
       winnerUserId: athleteB, loserUserId: athleteA,
@@ -12705,6 +12713,13 @@ describePostgres('PostgreSQL critical command transaction', () => {
     expect(appealed.response).toMatchObject({
       resultId, state: 'UNDER_APPEAL', provisional: true, version: 3,
     });
+    expect(sessionResultNotice(
+      await readSession(database, sessionId, coachId), appealed.response, false,
+    )).toEqual({
+      message: 'Результат находится на рассмотрении Appeal. Решение появится в карточке.', retry: false,
+    });
+    expect(resultActionNotice('appeal', appealed.response.state))
+      .toBe('Appeal отправлен Central. Результат находится на рассмотрении.');
     await expect(listAppealsForCentral(database, centralId)).resolves.toEqual([
       expect.objectContaining({
         appealId, resultId, state: 'SUBMITTED', viewerCanStartReview: true, version: 1,
@@ -12826,6 +12841,12 @@ describePostgres('PostgreSQL critical command transaction', () => {
       state: 'REVERSED', outcomeCode: 'WIN_A', winnerUserId: athleteA,
       loserUserId: athleteB, decision: 'REVERSE',
       decisionReason: 'Coach подтвердил ошибку победителя.', provisional: false,
+    });
+    expect(sessionResultNotice(
+      await readSession(database, sessionId, coachId),
+      await readResult(database, resultId, coachId), false,
+    )).toEqual({
+      message: 'Результат пересмотрен. Показан эффективный исход; исходная запись сохранена.', retry: false,
     });
     await expect(readResultTimerSnapshot(database, resultId)).resolves.toEqual({
       state: 'REVERSED', version: 4,
